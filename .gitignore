@@ -1,0 +1,35 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+
+.cache/
+.DS_Store
+
+.claude/
+<<<<<<< HEAD
+07-Supervisor/usecase/binmap_4SS4UR9_20260202_225447.png
+07-Supervisor/usecase/binmap_4SS4UR9_20260202_225839.png
+07-Supervisor/usecase/binmap_4SS4UR9_20260202_225917.png
+07-Supervisor/usecase/binmap_4SS4UR9_20260202_230649.png
+07-Supervisor/usecase/binmap_4SS4UR9_20260202_230809.png
+07-Supervisor/usecase/binmap_4SS4UR9_20260202_231033.png
+07-Supervisor/usecase/binmap_4SS4UR9_20260202_231352.png
+07-Supervisor/usecase/binmap_4SS4UR9_20260202_231418.png
+07-Supervisor/usecase/binmap_4SS4UR9_20260202_232222.png
+07-Supervisor/usecase/binmap_4SS4UR9_20260202_232249.png
+07-Supervisor/usecase/binmap_4SS4UR9_20260202_232409.png
+07-Supervisor/usecase/cummap_4SS4UR9_20260202_231442.png
+10-Use-Cases/04-LangGraph-SQL-Agent.ipynb
+=======
+
+# mermaid
+*.mmd
+>>>>>>> 947e80f76d1f2718060427952a62538bb42b60ce
