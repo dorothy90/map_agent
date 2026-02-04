@@ -10,6 +10,7 @@ import json
 from typing import List, Optional
 from langchain_core.messages import convert_to_messages
 
+
 # ============================================================
 # 2. 헬퍼 함수
 # ============================================================
@@ -75,6 +76,21 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import platform
 from datetime import datetime
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import multiprocessing as mp
+
+# orjson 사용 (없으면 기본 json fallback)
+try:
+    import orjson
+
+    def fast_json_loads(s):
+        return orjson.loads(s)
+
+except ImportError:
+
+    def fast_json_loads(s):
+        return json.loads(s)
+
 
 # 폰트 설정
 current_os = platform.system()
@@ -97,7 +113,7 @@ def _query_wafer_data(
     lot_id: Optional[str] = None,
     lot_ids: Optional[str] = None,
     wf_ids: Optional[str] = None,
-    groupkey: Optional[str] = None
+    groupkey: Optional[str] = None,
 ) -> list:
     """Oracle DB에서 wafer 데이터 조회 (내부 함수)
 
@@ -106,11 +122,7 @@ def _query_wafer_data(
     2. groupkey: lot_id.wf_id 형식으로 특정 wafer 조회 (wafer 기준)
     3. lot_id + wf_ids: 단일 lot의 특정 wafer 조회 (wafer 기준)
     """
-    conn = oracledb.connect(
-        user=ORACLE_USER,
-        password=ORACLE_PASSWORD,
-        dsn=ORACLE_DSN
-    )
+    conn = oracledb.connect(user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=ORACLE_DSN)
 
     try:
         cur = conn.cursor()
@@ -229,7 +241,55 @@ def _parse_map_json(map_val_json: str) -> dict:
     반환: {"x_y": {"pt1h_bin": "A", "pt2c_bin": "B"}, ...}
     """
     if isinstance(map_val_json, str):
-        raw_data = json.loads(map_val_json)
+        raw_data = fast_json_loads(map_val_json)
+    else:
+        raw_data = map_val_json
+
+    result = {}
+    for item in raw_data["MAP"]:
+        parts = item.split(",")
+        x, y = parts[0], parts[1]
+        pt1h_bin = parts[2] if len(parts) > 2 else ""
+        pt2c_bin = parts[3] if len(parts) > 3 else ""
+        result[f"{x}_{y}"] = {"pt1h_bin": pt1h_bin, "pt2c_bin": pt2c_bin}
+
+    return result
+
+
+def _parse_wafer_for_cummap(args):
+    """단일 wafer 파싱 (cummap 병렬 처리용)
+
+    Returns:
+        tuple: (rows, cols, passes) - 각각 list
+    """
+    map_val_json, bin_type = args
+    if isinstance(map_val_json, str):
+        raw_data = fast_json_loads(map_val_json)
+    else:
+        raw_data = map_val_json
+
+    rows, cols, passes = [], [], []
+    bin_idx = 2 if bin_type == "pt1h_bin" else 3
+
+    for item in raw_data["MAP"]:
+        parts = item.split(",")
+        rows.append(int(parts[0]))
+        cols.append(int(parts[1]))
+        bin_val = parts[bin_idx] if len(parts) > bin_idx else ""
+        passes.append(1 if bin_val == "A" else 0)
+
+    return rows, cols, passes
+
+
+def _parse_wafer_for_binmap(args):
+    """단일 wafer 파싱 (binmap 병렬 처리용)
+
+    Returns:
+        dict: {"x_y": {"pt1h_bin": "A", "pt2c_bin": "B"}, ...}
+    """
+    map_val_json = args
+    if isinstance(map_val_json, str):
+        raw_data = fast_json_loads(map_val_json)
     else:
         raw_data = map_val_json
 
@@ -245,22 +305,27 @@ def _parse_map_json(map_val_json: str) -> dict:
 
 
 def _get_map_bounds(map_data_list: list) -> tuple:
-    """모든 map 데이터에서 row, col의 최소/최대값 계산"""
-    all_rows = []
-    all_cols = []
+    """가장 많은 좌표를 가진 wafer에서 경계값 계산
+    (동일 제품의 wafer는 같은 die layout을 가지므로 하나만 파싱)
+    """
+    if not map_data_list:
+        return 0, 0, 0, 0
 
-    for data in map_data_list:
-        map_json = _parse_map_json(data["map_val_json"])
-        for key in map_json.keys():
-            row, col = map(int, key.split("_"))
-            all_rows.append(row)
-            all_cols.append(col)
+    # 문자열 길이가 가장 긴 wafer 선택 (좌표가 가장 많을 가능성 높음)
+    longest_data = max(map_data_list, key=lambda d: len(d["map_val_json"]))
+    map_json = _parse_map_json(longest_data["map_val_json"])
 
-    return min(all_rows), max(all_rows), min(all_cols), max(all_cols)
+    rows, cols = [], []
+    for key in map_json.keys():
+        row, col = map(int, key.split("_"))
+        rows.append(row)
+        cols.append(col)
+
+    return min(rows), max(rows), min(cols), max(cols)
 
 
 def _visualize_binmap(map_data_list: list, bin_type: str = "pt1h_bin") -> str:
-    """여러 wafer의 binmap을 개별적으로 시각화 (내부 함수)
+    """여러 wafer의 binmap을 개별적으로 시각화 (병렬 처리 버전)
 
     Args:
         map_data_list: wafer 데이터 리스트
@@ -277,17 +342,23 @@ def _visualize_binmap(map_data_list: list, bin_type: str = "pt1h_bin") -> str:
     height = max_row - min_row + 1
     width = max_col - min_col + 1
 
-    # 모든 bin 값 수집
+    # 병렬 파싱 (ThreadPoolExecutor 사용 - I/O bound 작업에 적합)
+    n_workers = min(mp.cpu_count(), len(map_data_list), 8)
+    args_list = [d["map_val_json"] for d in map_data_list]
+
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        parsed_maps = list(executor.map(_parse_wafer_for_binmap, args_list))
+
+    # 모든 bin 값 수집 (이미 파싱된 결과 사용)
     all_values = set()
-    for data in map_data_list:
-        map_json = _parse_map_json(data["map_val_json"])
+    for map_json in parsed_maps:
         for value in map_json.values():
             bin_val = value.get(bin_type, "")
             if bin_val:
                 all_values.add(bin_val)
     value_to_num = {v: i for i, v in enumerate(sorted(all_values))}
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4*n_cols, 4*n_rows))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
     if n_wafers == 1:
         axes = np.array([[axes]])
     elif n_rows == 1:
@@ -305,13 +376,12 @@ def _visualize_binmap(map_data_list: list, bin_type: str = "pt1h_bin") -> str:
         title = f"Binmap ({bin_type}) - {len(unique_lots)} Lots ({n_wafers} wafers)"
     fig.suptitle(title, fontsize=14)
 
-    for idx, data in enumerate(map_data_list):
+    for idx, (data, map_json) in enumerate(zip(map_data_list, parsed_maps)):
         row_idx = idx // n_cols
         col_idx = idx % n_cols
         ax = axes[row_idx, col_idx]
 
         map_array = np.full((height, width), np.nan)
-        map_json = _parse_map_json(data["map_val_json"])
 
         for key, value in map_json.items():
             r, c = map(int, key.split("_"))
@@ -343,7 +413,7 @@ def _visualize_binmap(map_data_list: list, bin_type: str = "pt1h_bin") -> str:
 
 
 def _visualize_cummap(map_data_list: list, bin_type: str = "pt1h_bin") -> tuple:
-    """여러 wafer를 Pass Rate 기반 cummap으로 시각화 (내부 함수)
+    """여러 wafer를 Pass Rate 기반 cummap으로 시각화 (병렬 처리 + 벡터화 버전)
 
     Args:
         map_data_list: wafer 데이터 리스트
@@ -358,22 +428,32 @@ def _visualize_cummap(map_data_list: list, bin_type: str = "pt1h_bin") -> tuple:
     height = max_row - min_row + 1
     width = max_col - min_col + 1
 
+    # 병렬 파싱 (ThreadPoolExecutor 사용)
+    n_workers = min(mp.cpu_count(), len(map_data_list), 8)
+    args_list = [(d["map_val_json"], bin_type) for d in map_data_list]
+
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        results = list(executor.map(_parse_wafer_for_cummap, args_list))
+
+    # 결과 합치기
+    all_rows, all_cols, all_pass = [], [], []
+    for rows, cols, passes in results:
+        all_rows.extend(rows)
+        all_cols.extend(cols)
+        all_pass.extend(passes)
+
+    # NumPy 배열로 변환 및 인덱스 조정
+    all_rows = np.array(all_rows) - min_row
+    all_cols = np.array(all_cols) - min_col
+    all_pass = np.array(all_pass)
+
+    # 벡터화된 누적 연산 (np.add.at 사용)
     pass_sum = np.zeros((height, width))
     count = np.zeros((height, width))
+    np.add.at(pass_sum, (all_rows, all_cols), all_pass)
+    np.add.at(count, (all_rows, all_cols), 1)
 
-    for data in map_data_list:
-        map_json = _parse_map_json(data["map_val_json"])
-
-        for key, value in map_json.items():
-            r, c = map(int, key.split("_"))
-            r_idx = r - min_row
-            c_idx = c - min_col
-
-            bin_val = value.get(bin_type, "")
-            pass_sum[r_idx, c_idx] += 1 if bin_val == "A" else 0
-            count[r_idx, c_idx] += 1
-
-    with np.errstate(divide='ignore', invalid='ignore'):
+    with np.errstate(divide="ignore", invalid="ignore"):
         pass_rate = np.where(count > 0, pass_sum / count, np.nan)
 
     valid_rates = pass_rate[~np.isnan(pass_rate)]
@@ -408,7 +488,7 @@ def _visualize_cummap(map_data_list: list, bin_type: str = "pt1h_bin") -> tuple:
     file_lot = unique_lots[0] if len(unique_lots) == 1 else "multi"
     filepath = f"cummap_{file_lot}_{timestamp}.png"
     plt.savefig(filepath, dpi=150, bbox_inches="tight")
-    plt.show()
+    plt.show()  # 메모리 해제
 
     return filepath, avg_pass_rate
 
@@ -422,7 +502,7 @@ def show_wafer_map(
     wf_ids: Optional[str] = None,
     groupkey: Optional[str] = None,
     map_type: str = "binmap",
-    bin_type: str = "pt1h_bin"
+    bin_type: str = "pt1h_bin",
 ) -> str:
     """Wafer map 시각화 도구 (DB 조회 + 시각화를 한번에 처리)
 
@@ -459,10 +539,7 @@ def show_wafer_map(
     """
     # 1. 내부에서 DB 조회 (데이터가 LLM을 거치지 않음)
     map_data_list = _query_wafer_data(
-        lot_id=lot_id,
-        lot_ids=lot_ids,
-        wf_ids=wf_ids,
-        groupkey=groupkey
+        lot_id=lot_id, lot_ids=lot_ids, wf_ids=wf_ids, groupkey=groupkey
     )
 
     if not map_data_list:
@@ -517,7 +594,9 @@ def show_wafer_map(
 
     result_msg = "이미지가 생성되었습니다:\n"
     result_msg += "\n".join(f"  - {r}" for r in results)
-    result_msg += f"\n\n- Lot: {lot_info}\n- Wafer 수: {n_wafers}개\n- Bin Type: {bin_type}"
+    result_msg += (
+        f"\n\n- Lot: {lot_info}\n- Wafer 수: {n_wafers}개\n- Bin Type: {bin_type}"
+    )
 
     return result_msg
 
@@ -579,7 +658,7 @@ map_agent = create_agent(
         "- Available parameters: lot_id, lot_ids, wf_ids, groupkey, map_type, bin_type\n"
         "- Always respond in Korean"
     ),
-    name="map_agent"
+    name="map_agent",
 )
 
 
@@ -593,14 +672,14 @@ dummy_agent_2 = create_agent(
     model,
     tools=[dummy_tool],
     system_prompt="You are a placeholder agent. Always respond in Korean.",
-    name="dummy_agent_2"
+    name="dummy_agent_2",
 )
 
 dummy_agent_3 = create_agent(
     model,
     tools=[dummy_tool],
     system_prompt="You are a placeholder agent. Always respond in Korean.",
-    name="dummy_agent_3"
+    name="dummy_agent_3",
 )
 
 
@@ -659,25 +738,17 @@ if __name__ == "__main__":
     print("=" * 80)
 
     # 테스트 1: Binmap 단일
-    run_test(
-        "테스트 1: Binmap 단일",
-        "lot_id 4SS4UR9, wf_id 1의 binmap을 보여줘"
-    )
+    run_test("테스트 1: Binmap 단일", "lot_id 4SS4UR9, wf_id 1의 binmap을 보여줘")
 
     # 테스트 2: Binmap 다중
     run_test(
-        "테스트 2: Binmap 다중",
-        "lot_id 4SS4UR9의 wf_id 1, 2, 3 binmap을 비교해줘"
+        "테스트 2: Binmap 다중", "lot_id 4SS4UR9의 wf_id 1, 2, 3 binmap을 비교해줘"
     )
 
     # 테스트 3: Cummap
-    run_test(
-        "테스트 3: Cummap",
-        "lot_id 4SS4UR9의 wf_id 1~5 cummap을 그려줘"
-    )
+    run_test("테스트 3: Cummap", "lot_id 4SS4UR9의 wf_id 1~5 cummap을 그려줘")
 
     # 테스트 4: 다른 lot 비교
     run_test(
-        "테스트 4: 다른 lot 비교",
-        "4SS4UR9.1, 4SSYY23.2, 4SS8JDL.3 binmap을 비교해줘"
+        "테스트 4: 다른 lot 비교", "4SS4UR9.1, 4SSYY23.2, 4SS8JDL.3 binmap을 비교해줘"
     )

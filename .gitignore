@@ -33,3 +33,7 @@ wheels/
 # mermaid
 *.mmd
 >>>>>>> 947e80f76d1f2718060427952a62538bb42b60ce
+07-Supervisor/usecase/wafer_regions_4SS4UR9_1_20260204_230714.png
+07-Supervisor/usecase/wafer_regions_4SS4UR9_1_20260204_230509.json
+07-Supervisor/usecase/visualize_wafer_regions_json.py
+07-Supervisor/usecase/export_wafer_regions_from_csv.py
