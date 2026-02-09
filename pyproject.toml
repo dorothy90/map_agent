@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "deepagents>=0.3.1",
+    "fastapi>=0.115.0",
     "jupyter>=1.1.1",
     "langchain>=1.2.0",
     "langchain-mcp-adapters>=0.2.1",
@@ -26,4 +27,5 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "scikit-learn>=1.7.2",
     "seaborn>=0.13.2",
+    "uvicorn>=0.30.0",
 ]

@@ -37,3 +37,4 @@ wheels/
 07-Supervisor/usecase/wafer_regions_4SS4UR9_1_20260204_230509.json
 07-Supervisor/usecase/visualize_wafer_regions_json.py
 07-Supervisor/usecase/export_wafer_regions_from_csv.py
+fastapi_app/data/pt1h_weekly.json
