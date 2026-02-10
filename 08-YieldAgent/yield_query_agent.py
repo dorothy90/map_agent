@@ -23,8 +23,8 @@ from langgraph.graph import StateGraph, START, END, add_messages
 from langgraph.types import Command
 
 # ── Langfuse 트레이싱 ────────────────────────────────────
-from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
-from langfuse.decorators import observe, langfuse_context
+from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
+from langfuse import observe, get_client
 
 # Langfuse 콜백 핸들러 (환경변수에서 키 자동 로드)
 langfuse_handler = LangfuseCallbackHandler()
@@ -769,5 +769,5 @@ if __name__ == "__main__":
     )
 
     # Langfuse 트레이스 전송 보장
-    langfuse_handler.flush()
+    get_client().flush()
     logger.info("Langfuse 트레이스 전송 완료")

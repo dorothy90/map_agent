@@ -26,6 +26,7 @@ from yield_query_agent import (
     PARA_COLUMNS,
     _iso_week_str,
 )
+from langfuse import get_client
 from langchain_core.messages import HumanMessage
 
 
@@ -173,7 +174,7 @@ if query:
                 )
 
             # Langfuse 트레이스 비동기 전송
-            langfuse_handler.flush()
+            get_client().flush()
 
         except Exception as e:
             st.error(f"에이전트 실행 오류: {e}")
