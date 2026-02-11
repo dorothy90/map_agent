@@ -75,6 +75,7 @@ if "persistent_state" not in st.session_state:
         "weeks_data": [],
         "table_result": "",
         "analysis_result": "",
+        "yield_artifacts": [],
         "wads_end_tm": "",
         "wads_artifacts": [],
         "next_agent": "",
@@ -90,8 +91,10 @@ def _render_entry(entry):
 
     st.info(entry.get("supervisor_msg", ""))
 
-    # yield 결과
-    if entry.get("df") is not None:
+    # yield 결과 (HTML 우선, 없으면 DataFrame fallback)
+    if entry.get("yield_html"):
+        components.html(entry["yield_html"], height=160, scrolling=True)
+    elif entry.get("df") is not None:
         st.dataframe(entry["df"], use_container_width=True, hide_index=True)
     if entry.get("analysis"):
         st.divider()
@@ -139,6 +142,7 @@ if query:
             "weeks_data": [],
             "table_result": "",
             "analysis_result": "",
+            "yield_artifacts": [],
             "wads_end_tm": "",
             "wads_artifacts": [],
             "next_agent": "",
@@ -195,6 +199,7 @@ if query:
         ref_date = final_state.get("ref_date", "")
         weeks_data = final_state.get("weeks_data", [])
         analysis_result = final_state.get("analysis_result", "")
+        yield_artifacts = final_state.get("yield_artifacts", [])
         wads_artifacts = final_state.get("wads_artifacts", [])
 
         # supervisor 메시지 추출
@@ -219,23 +224,28 @@ if query:
         history_entry = {"query": query, "supervisor_msg": f"🔍 {supervisor_msg}"}
 
         if weeks_data:
-            rows = []
-            for wd in weeks_data:
-                row = {
-                    "WEEK": wd.get("week", "?"),
-                    "LOT": wd.get("lotcount", "-"),
-                    "WF": wd.get("wfCount", "-"),
-                }
-                for col in PARA_COLUMNS:
-                    row[col] = wd.get(col, "-")
-                rows.append(row)
-
-            df = pd.DataFrame(rows)
-
-            st.subheader(f"[{lotcd}] Weekly pt1h Metrics (최근 4주)")
-            if ref_date:
-                st.caption(f"기준 주차: {ref_date}")
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            # HTML 테이블 표시 (yield_artifacts 우선, 없으면 DataFrame fallback)
+            if yield_artifacts:
+                for artifact in yield_artifacts:
+                    html_data = artifact.get("data", "")
+                    if html_data:
+                        components.html(html_data, height=160, scrolling=True)
+                        history_entry["yield_html"] = html_data
+            else:
+                # fallback: HTML 아티팩트 없으면 기존 DataFrame 표시
+                rows = []
+                for wd in weeks_data:
+                    row = {
+                        "WEEK": wd.get("week", "?"),
+                        "LOT": wd.get("lotcount", "-"),
+                        "WF": wd.get("wfCount", "-"),
+                    }
+                    for col in PARA_COLUMNS:
+                        row[col] = wd.get(col, "-")
+                    rows.append(row)
+                df = pd.DataFrame(rows)
+                st.dataframe(df, use_container_width=True, hide_index=True)
+                history_entry["df"] = df
 
             if analysis_result:
                 st.divider()
@@ -246,7 +256,6 @@ if query:
             suggestion = "오늘 검출된 열화 Parameter를 보여드릴까요?"
             st.markdown(f"> {suggestion}")
 
-            history_entry["df"] = df
             history_entry["analysis"] = analysis_result
             history_entry["suggestion"] = suggestion
 

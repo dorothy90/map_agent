@@ -70,6 +70,9 @@ class YieldQueryState(TypedDict):
     table_result: str  # 최종 테이블 문자열
     analysis_result: str  # LLM 분석 결과 (열화/개선 Top 3 등)
 
+    # Yield 관련
+    yield_artifacts: list  # Yield HTML 아티팩트 리스트
+
     # WADS 관련
     wads_end_tm: str       # WADS 조회용 end_tm (예: "2026-02-09")
     wads_artifacts: list   # WADS HTML 아티팩트 리스트
@@ -255,6 +258,63 @@ def _build_table(weeks_data: list[dict], lotcd: str) -> str:
     table = tabulate(rows, headers=headers, tablefmt="grid", numalign="right", stralign="center")
 
     return title + table
+
+
+def _build_html_table(weeks_data: list[dict], lotcd: str) -> str:
+    """4주치 데이터를 심플한 HTML 테이블로 변환
+
+    Args:
+        weeks_data: _fetch_4_weeks 반환값
+        lotcd: 제품코드
+
+    Returns:
+        str: HTML 문자열
+    """
+    headers = ["WEEK", "LOT", "WF"] + PARA_COLUMNS
+
+    rows = []
+    for wd in weeks_data:
+        row = [wd.get("week", "?"), wd.get("lotcount", "-"), wd.get("wfCount", "-")]
+        for col in PARA_COLUMNS:
+            row.append(wd.get(col, "-"))
+        rows.append(row)
+
+    # 헤더 색상 매핑
+    BLUE_COLS = {"VTH", "IDSAT"}
+
+    html = """<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+body { font-family: sans-serif; margin: 0; padding: 0; }
+table { border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: right; }
+th { color: #fff; text-align: center; }
+td:first-child { text-align: center; font-weight: bold; }
+tr:nth-child(even) { background: #f9f9f9; }
+</style></head><body>
+<table>
+<thead><tr>"""
+
+    for h in headers:
+        if h == "WEEK":
+            bg = "#444"          # 진회색
+        elif h in ("LOT", "WF"):
+            bg = "#888"          # 회색
+        elif h in BLUE_COLS:
+            bg = "#3475B3"       # 파란색
+        else:
+            bg = "#C5A330"       # 노란색
+        html += f'<th style="background:{bg}">{h}</th>'
+    html += "</tr></thead>\n<tbody>\n"
+
+    for row in rows:
+        html += "<tr>"
+        for val in row:
+            html += f"<td>{val}</td>"
+        html += "</tr>\n"
+
+    html += "</tbody></table>\n</body></html>"
+    return html
 
 
 # ============================================================
@@ -537,8 +597,9 @@ def yield_agent_node(state: YieldQueryState) -> Command:
             update={"messages": [error_message], "weeks_data": [], "table_result": ""},
         )
 
-    # 테이블 생성
+    # 테이블 생성 (텍스트: LLM 분석용, HTML: 사용자 표시용)
     table_str = _build_table(weeks_data, lotcd)
+    html_table = _build_html_table(weeks_data, lotcd)
     print(table_str)
 
     # LLM 분석 (최근 2주 비교)
@@ -546,10 +607,17 @@ def yield_agent_node(state: YieldQueryState) -> Command:
     analysis = _analyze_with_llm(weeks_data, table_str, lotcd, model)
     print(f"\n[LLM 분석 결과]\n{analysis}")
 
-    # 결과 메시지 생성
+    # HTML 아티팩트 생성
+    yield_artifacts = [{
+        "type": "html",
+        "mime": "text/html",
+        "data": html_table,
+        "title": "yield_table",
+    }]
+
+    # 결과 메시지 생성 (HTML 테이블은 아티팩트로 별도 전달)
     result_msg = f"[{lotcd}] 최근 4주 pt1h 수율 데이터입니다.\n"
     result_msg += f"기준: {_iso_week_str(ref_date)} ({ref_date_str})\n\n"
-    result_msg += table_str
     result_msg += f"\n\n---\n\n{analysis}"
     result_msg += "\n\n---\n\n> 오늘 검출된 열화 Parameter를 보여드릴까요?"
 
@@ -562,6 +630,7 @@ def yield_agent_node(state: YieldQueryState) -> Command:
             "weeks_data": weeks_data,
             "table_result": table_str,
             "analysis_result": analysis,
+            "yield_artifacts": yield_artifacts,
         },
     )
 
@@ -706,6 +775,7 @@ def run_test(test_name: str, user_message: str):
         "weeks_data": [],
         "table_result": "",
         "analysis_result": "",
+        "yield_artifacts": [],
         "wads_end_tm": "",
         "wads_artifacts": [],
         "next_agent": "",
@@ -736,6 +806,14 @@ def run_test(test_name: str, user_message: str):
         print(f"  - 테이블 생성: OK")
     if final_state.get("analysis_result"):
         print(f"  - LLM 분석: OK")
+    if final_state.get("yield_artifacts"):
+        print(f"  - Yield 아티팩트: {len(final_state['yield_artifacts'])}개 (HTML 테이블)")
+        # HTML 파일로 저장하여 브라우저에서 확인 가능하도록
+        for idx, artifact in enumerate(final_state["yield_artifacts"]):
+            html_path = Path(__file__).resolve().parent / f"yield_table_{idx}.html"
+            with open(html_path, "w", encoding="utf-8") as f:
+                f.write(artifact["data"])
+            print(f"    → HTML 저장: {html_path}")
     if final_state.get("wads_end_tm"):
         print(f"  - wads_end_tm: {final_state['wads_end_tm']}")
     if final_state.get("wads_artifacts"):
@@ -750,23 +828,24 @@ if __name__ == "__main__":
     print(f"API 서버: {API_BASE_URL}")
     print("=" * 80)
 
-    # 테스트 1: 오늘 기준 4SS 수율
+    # === Langfuse 기능 테스트 1: Basic Tracing ===
+    # 이 테스트 하나만 실행하여 Langfuse 대시보드에서 트레이스 확인
     run_test(
-        "테스트 1: 오늘 4SS 수율",
+        "Langfuse 테스트 1: Basic Tracing",
         "오늘 4SS 수율 알려줘",
     )
 
-    # 테스트 2: 저번주 수율
-    run_test(
-        "테스트 2: 저번주 수율",
-        "저번주 수율 알려줘",
-    )
+    # # 테스트 2: 저번주 수율
+    # run_test(
+    #     "테스트 2: 저번주 수율",
+    #     "저번주 수율 알려줘",
+    # )
 
-    # 테스트 3: 2주전 수율
-    run_test(
-        "테스트 3: 2주전 수율",
-        "2주전 4SS 수율 보여줘",
-    )
+    # # 테스트 3: 2주전 수율
+    # run_test(
+    #     "테스트 3: 2주전 수율",
+    #     "2주전 4SS 수율 보여줘",
+    # )
 
     # Langfuse 트레이스 전송 보장
     get_client().flush()
