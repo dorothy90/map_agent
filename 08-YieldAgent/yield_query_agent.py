@@ -6,28 +6,19 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 import os
-import sys
-import json
 import time
 import httpx
 import logging
 import functools
 from datetime import date, datetime, timedelta
-from typing import Annotated, TypedDict, Literal
-from pathlib import Path
 from tabulate import tabulate
 
-from langchain_core.messages import convert_to_messages, HumanMessage, AIMessage
+from langchain_core.messages import convert_to_messages, AIMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
-from langgraph.graph import StateGraph, START, END, add_messages
-from langgraph.types import Command
 
 # ── Langfuse 트레이싱 ────────────────────────────────────
-from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
-from langfuse import observe, get_client
-
-# Langfuse 콜백 핸들러 (환경변수에서 키 자동 로드)
-langfuse_handler = LangfuseCallbackHandler()
+from langfuse import observe
 
 # ── 로깅 설정 ────────────────────────────────────────────
 logging.basicConfig(
@@ -49,36 +40,6 @@ def timed(func):
         logger.info(f"◀ {func.__name__} 완료 ({elapsed:.2f}s)")
         return result
     return wrapper
-
-
-# ============================================================
-# 1.1 커스텀 State 정의 (Agent들이 공유하는 데이터)
-# ============================================================
-class YieldQueryState(TypedDict):
-    """Yield Query Supervisor의 공유 State
-
-    모든 agent들이 이 State를 통해 구조화된 데이터를 공유합니다.
-    """
-    messages: Annotated[list, add_messages]  # 대화 히스토리
-
-    # 조회 파라미터
-    lotcd: str         # 제품코드 (예: "4SS")
-    ref_date: str      # 기준 날짜 YYYYMMDD (예: "20260209")
-
-    # 결과 데이터
-    weeks_data: list   # 4주치 API 응답 데이터 [{week, lotcount, wfCount, ...}, ...]
-    table_result: str  # 최종 테이블 문자열
-    analysis_result: str  # LLM 분석 결과 (열화/개선 Top 3 등)
-
-    # Yield 관련
-    yield_artifacts: list  # Yield HTML 아티팩트 리스트
-
-    # WADS 관련
-    wads_end_tm: str       # WADS 조회용 end_tm (예: "2026-02-09")
-    wads_artifacts: list   # WADS HTML 아티팩트 리스트
-
-    # 라우팅
-    next_agent: str    # 다음 에이전트 (yield_agent, wads_agent, END)
 
 
 # ============================================================
@@ -190,7 +151,16 @@ def _fetch_weekly_data(lotcd: str, date_str: str) -> dict | None:
         with httpx.Client(timeout=30) as client:
             resp = client.get(url, params=params)
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+
+            # _pt1hbin 접미사 제거 (FastAPI에서 해당 접미사를 붙여서 전송)
+            if "pt1hPara" in data and isinstance(data["pt1hPara"], dict):
+                data["pt1hPara"] = {
+                    k.replace("_pt1hbin", ""): v
+                    for k, v in data["pt1hPara"].items()
+                }
+
+            return data
     except httpx.HTTPError as e:
         print(f"[ERROR] API 호출 실패 ({date_str}): {e}")
         return None
@@ -199,7 +169,7 @@ def _fetch_weekly_data(lotcd: str, date_str: str) -> dict | None:
 @observe(name="fetch_4_weeks")
 @timed
 def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
-    """기준 날짜로부터 최근 4주 데이터를 가져옴 (오래된 순)
+    """기준 날짜로부터 최근 4주 데이터를 순차 조회 (오래된 순)
 
     Returns:
         list[dict]: 각 dict에 'week' 키가 추가된 API 응답 리스트
@@ -217,7 +187,6 @@ def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
             data["week"] = week_str
             results.append(data)
         else:
-            # 실패 시 빈 행
             results.append({"week": week_str, "lotcount": "-", "wfCount": "-"})
 
     return results
@@ -226,7 +195,7 @@ def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
 # ============================================================
 # 5. 테이블 생성 함수
 # ============================================================
-def _build_table(weeks_data: list[dict], lotcd: str) -> str:
+def _build_table(weeks_data: list[dict], lotcd: str, filter_params=None) -> str:
     """4주치 데이터를 테이블 문자열로 변환
 
     행: 주차 (WEEK)
@@ -235,12 +204,13 @@ def _build_table(weeks_data: list[dict], lotcd: str) -> str:
     Args:
         weeks_data: _fetch_4_weeks 반환값
         lotcd: 제품코드
+        filter_params: 표시할 파라미터 목록 (None 또는 빈 리스트 = 전체)
 
     Returns:
         str: 포맷된 테이블 문자열
     """
-    # 헤더: WEEK | LOT | WF | VTH | IDSAT | ...
-    headers = ["WEEK", "LOT", "WF"] + PARA_COLUMNS
+    cols = [c for c in PARA_COLUMNS if c in filter_params] if filter_params else PARA_COLUMNS
+    headers = ["WEEK", "LOT", "WF"] + cols
 
     rows = []
     for wd in weeks_data:
@@ -249,7 +219,7 @@ def _build_table(weeks_data: list[dict], lotcd: str) -> str:
         wf_count = wd.get("wfCount", "-")
 
         row = [week, lotcount, wf_count]
-        for col in PARA_COLUMNS:
+        for col in cols:
             val = wd.get(col, "-")
             row.append(val)
         rows.append(row)
@@ -260,57 +230,227 @@ def _build_table(weeks_data: list[dict], lotcd: str) -> str:
     return title + table
 
 
-def _build_html_table(weeks_data: list[dict], lotcd: str) -> str:
-    """4주치 데이터를 심플한 HTML 테이블로 변환
+def _build_sparkline_svg(vals: list, param: str) -> str:
+    """SVG sparkline 생성 (36x14 pixels, 헤더 다크 배경용 밝은 색상)"""
+    valid = [(i, v) for i, v in enumerate(vals) if v is not None]
+    if len(valid) < 2:
+        return '<svg width="36" height="14"><line x1="0" y1="7" x2="36" y2="7" stroke="#64748b" stroke-width="1"/></svg>'
+
+    all_vals = [v for _, v in valid]
+    min_v, max_v = min(all_vals), max(all_vals)
+    n = len(vals)
+    w, h, margin = 36, 14, 2
+
+    def to_x(idx):
+        return int(idx * (w - 1) / max(n - 1, 1))
+
+    def to_y(v):
+        if max_v == min_v:
+            return h // 2
+        return int(margin + (1 - (v - min_v) / (max_v - min_v)) * (h - 2 * margin))
+
+    points = " ".join(f"{to_x(i)},{to_y(v)}" for i, v in valid)
+
+    first_v, last_v = valid[0][1], valid[-1][1]
+    delta = last_v - first_v
+    is_better = (
+        (param in HIGHER_IS_BETTER and delta > 0)
+        or (param not in HIGHER_IS_BETTER and delta < 0)
+    )
+    if max_v == min_v or abs(delta) < (max_v - min_v + 1e-15) * 0.05:
+        color = "#94a3b8"
+    elif is_better:
+        color = "#86efac"
+    else:
+        color = "#fca5a5"
+
+    return f'<svg width="36" height="14"><polyline points="{points}" fill="none" stroke="{color}" stroke-width="1.5"/></svg>'
+
+
+def _build_html_table(
+    weeks_data: list[dict],
+    lotcd: str,
+    filter_params=None,
+    anomaly_params=None,
+) -> str:
+    """4주치 데이터를 동적 HTML 테이블로 변환
 
     Args:
         weeks_data: _fetch_4_weeks 반환값
         lotcd: 제품코드
+        filter_params: 표시할 파라미터 목록 (None 또는 빈 리스트 = 전체)
+        anomaly_params: _detect_anomalies 반환값 (None이면 하이라이팅 없음)
 
     Returns:
-        str: HTML 문자열
+        str: HTML 문자열 (이상감지 하이라이팅, Sparkline, Δ행 포함)
     """
-    headers = ["WEEK", "LOT", "WF"] + PARA_COLUMNS
-
-    rows = []
-    for wd in weeks_data:
-        row = [wd.get("week", "?"), wd.get("lotcount", "-"), wd.get("wfCount", "-")]
-        for col in PARA_COLUMNS:
-            row.append(wd.get(col, "-"))
-        rows.append(row)
-
-    # 헤더 색상 매핑
+    cols = [c for c in PARA_COLUMNS if c in filter_params] if filter_params else PARA_COLUMNS
+    headers = ["WEEK", "LOT", "WF"] + cols
     BLUE_COLS = {"VTH", "IDSAT"}
+
+    # anomaly lookup dict {param: info}
+    anomaly_map = {a["param"]: a for a in anomaly_params} if anomaly_params else {}
+
+    # Δ 계산 (최신주 - 직전주, 절대값)
+    delta_vals = {}
+    if len(weeks_data) >= 2:
+        prev, curr = weeks_data[-2], weeks_data[-1]
+        for col in cols:
+            pv, cv = prev.get(col), curr.get(col)
+            if pv in (None, "-", "") or cv in (None, "-", ""):
+                delta_vals[col] = None
+                continue
+            try:
+                delta_vals[col] = float(cv) - float(pv)
+            except (TypeError, ValueError):
+                delta_vals[col] = None
+
+    # Sparkline 데이터 (컬럼별 4개 float or None)
+    sparkline_data = {}
+    for col in cols:
+        vals = []
+        for wd in weeks_data:
+            v = wd.get(col)
+            if v in (None, "-", ""):
+                vals.append(None)
+            else:
+                try:
+                    vals.append(float(v))
+                except (TypeError, ValueError):
+                    vals.append(None)
+        sparkline_data[col] = vals
 
     html = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
-body { font-family: sans-serif; margin: 0; padding: 0; }
-table { border-collapse: collapse; font-size: 13px; white-space: nowrap; }
-th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: right; }
-th { color: #fff; text-align: center; }
-td:first-child { text-align: center; font-weight: bold; }
-tr:nth-child(even) { background: #f9f9f9; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 8px; background: #fff; }
+table { border-collapse: collapse; border: 1px solid #cbd5e1; }
+th {
+  background: #1e293b; color: #e2e8f0;
+  font-size: 11px; font-weight: 600;
+  border: 1px solid #334155;
+}
+th.th-week {
+  background: #334155; min-width: 80px;
+  text-align: center; vertical-align: middle; padding: 8px;
+}
+th.th-meta {
+  background: #475569; min-width: 44px;
+  text-align: center; vertical-align: middle; padding: 8px 6px;
+}
+th.th-param {
+  width: 44px; height: 100px;
+  padding: 0; vertical-align: bottom;
+}
+th.th-blue { background: #1d4ed8; }
+th.th-amber { background: #92400e; }
+.th-param-inner {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: flex-end;
+  height: 100%; padding: 4px 2px;
+  gap: 3px;
+}
+.hname {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
+  flex: 1; display: flex; align-items: center;
+}
+.badge-d { color: #fca5a5; font-size: 9px; margin-top: 2px; }
+.badge-i { color: #86efac; font-size: 9px; margin-top: 2px; }
+.spark { line-height: 0; }
+td {
+  border: 1px solid #e2e8f0; padding: 4px 9px;
+  text-align: right; font-size: 12px; color: #374151;
+  white-space: nowrap;
+}
+td.td-week {
+  text-align: center; font-weight: 600; font-size: 11px;
+  color: #1e293b; background: #f1f5f9 !important;
+}
+tr:nth-child(odd) td:not(.td-week) { background: #ffffff; }
+tr:nth-child(even) td:not(.td-week) { background: #f8fafc; }
+td.degraded {
+  background: #fef2f2 !important; color: #b91c1c;
+  font-weight: 600; border-left: 2px solid #ef4444;
+}
+td.improved {
+  background: #f0fdf4 !important; color: #15803d;
+  font-weight: 600; border-left: 2px solid #22c55e;
+}
+tr.delta td {
+  background: #1e293b !important; color: #94a3b8;
+  font-size: 11px; font-weight: 500; border-color: #334155;
+}
+tr.delta td.delta-week {
+  text-align: center; color: #e2e8f0; font-weight: 700; font-size: 12px;
+}
+td.delta-neg { background: #7f1d1d !important; color: #fca5a5; font-weight: 600; }
+td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600; }
 </style></head><body>
 <table>
 <thead><tr>"""
 
+    # 헤더: WEEK/LOT/WF는 가로, 파라미터는 -90도 회전 + 스파크라인
     for h in headers:
         if h == "WEEK":
-            bg = "#444"          # 진회색
+            html += '<th class="th-week">WEEK</th>'
         elif h in ("LOT", "WF"):
-            bg = "#888"          # 회색
-        elif h in BLUE_COLS:
-            bg = "#3475B3"       # 파란색
+            html += f'<th class="th-meta">{h}</th>'
         else:
-            bg = "#C5A330"       # 노란색
-        html += f'<th style="background:{bg}">{h}</th>'
+            css = "th-blue" if h in BLUE_COLS else "th-amber"
+            badge = ""
+            if h in anomaly_map:
+                badge = '<span class="badge-d">▼</span>' if anomaly_map[h]["direction"] == "열화" else '<span class="badge-i">▲</span>'
+            svg = _build_sparkline_svg(sparkline_data.get(h, []), h)
+            tip = ""
+            if h in anomaly_map:
+                a = anomaly_map[h]
+                tip = f' title="{a["prev_val"]} → {a["curr_val"]} ({a["change_pct"]:+.1f}%)"'
+            html += (
+                f'<th class="th-param {css}"{tip}>'
+                f'<div class="th-param-inner">'
+                f'<div class="hname">{h}{badge}</div>'
+                f'<div class="spark">{svg}</div>'
+                f'</div></th>'
+            )
     html += "</tr></thead>\n<tbody>\n"
 
-    for row in rows:
+    last_idx = len(weeks_data) - 1
+    for i, wd in enumerate(weeks_data):
         html += "<tr>"
-        for val in row:
-            html += f"<td>{val}</td>"
+        html += f'<td class="td-week">{wd.get("week", "?")}</td>'
+        html += f'<td>{wd.get("lotcount", "-")}</td>'
+        html += f'<td>{wd.get("wfCount", "-")}</td>'
+        for col in cols:
+            val = wd.get(col, "-")
+            if i == last_idx and col in anomaly_map:
+                a = anomaly_map[col]
+                css = "degraded" if a["direction"] == "열화" else "improved"
+                tip = f"{a['prev_val']} → {a['curr_val']} ({a['change_pct']:+.1f}%)"
+                html += f'<td class="{css}" title="{tip}">{val}</td>'
+            else:
+                html += f"<td>{val}</td>"
+        html += "</tr>\n"
+
+    # Δ 행 (최신주 - 직전주)
+    if delta_vals:
+        html += '<tr class="delta">'
+        html += '<td class="delta-week">Δ</td>'
+        html += "<td>—</td><td>—</td>"
+        for col in cols:
+            d = delta_vals.get(col)
+            if d is None or abs(d) < 1e-12:
+                html += "<td>—</td>"
+            else:
+                is_better = (
+                    (col in HIGHER_IS_BETTER and d > 0)
+                    or (col not in HIGHER_IS_BETTER and d < 0)
+                )
+                css = "delta-pos" if is_better else "delta-neg"
+                html += f'<td class="{css}">{d:+.4g}</td>'
         html += "</tr>\n"
 
     html += "</tbody></table>\n</body></html>"
@@ -323,6 +463,63 @@ tr:nth-child(even) { background: #f9f9f9; }
 # 값이 높아지면 개선인 파라미터 (2개)
 HIGHER_IS_BETTER = {"VTH", "IDSAT"}
 # 그 외 나머지 23개: 값이 낮아지면 개선
+
+
+# ============================================================
+# 5.1.1 수치 기반 이상감지
+# ============================================================
+ANOMALY_THRESHOLD = float(os.getenv("ANOMALY_THRESHOLD", "10.0"))
+
+
+def _detect_anomalies(weeks_data: list[dict], threshold: float = ANOMALY_THRESHOLD) -> list[dict]:
+    """직전주 vs 최신주 파라미터 변화율 계산, |change%| > threshold인 것만 반환
+
+    Args:
+        weeks_data: 4주치 데이터 리스트 (오래된 순)
+        threshold: 이상 감지 임계값 (기본 10.0%)
+
+    Returns:
+        list[dict]: 이상 파라미터 목록 (열화 우선, 변화율 내림차순)
+    """
+    if len(weeks_data) < 2:
+        return []
+
+    prev, curr = weeks_data[-2], weeks_data[-1]
+    anomalies = []
+
+    for param in PARA_COLUMNS:
+        pv = prev.get(param)
+        cv = curr.get(param)
+        if pv in (None, "-", 0, "") or cv in (None, "-", ""):
+            continue
+        try:
+            pv, cv = float(pv), float(cv)
+        except (TypeError, ValueError):
+            continue
+        if pv == 0:
+            continue
+        # 극소값(e.g. 1e-12) 오버플로 방지: abs(pv) < 1e-15 이면 스킵
+        if abs(pv) < 1e-15:
+            continue
+
+        change_pct = (cv - pv) / abs(pv) * 100
+        if abs(change_pct) > threshold:
+            is_better = (
+                (param in HIGHER_IS_BETTER and change_pct > 0)
+                or (param not in HIGHER_IS_BETTER and change_pct < 0)
+            )
+            direction = "개선" if is_better else "열화"
+            anomalies.append({
+                "param": param,
+                "prev_val": round(pv, 4),
+                "curr_val": round(cv, 4),
+                "change_pct": round(change_pct, 1),
+                "direction": direction,
+            })
+
+    # 열화 우선, 변화율 절댓값 내림차순 정렬
+    anomalies.sort(key=lambda x: (x["direction"] != "열화", -abs(x["change_pct"])))
+    return anomalies
 
 
 # ============================================================
@@ -355,7 +552,7 @@ ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 4주 pt1h 파라�
 
 @observe(name="analyze_with_llm")
 @timed
-def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm) -> str:
+def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm, config=None) -> str:
     """최근 2주 데이터를 LLM에게 전달하여 열화/개선 분석을 받는 헬퍼 함수
 
     Args:
@@ -381,10 +578,13 @@ def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm) -
     )
 
     try:
-        response = llm.invoke([
-            {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ])
+        response = llm.invoke(
+            [
+                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            config=config,
+        )
         return response.content
     except Exception as e:
         print(f"[ERROR] LLM 분석 실패: {e}")
@@ -404,163 +604,11 @@ model = ChatOpenAI(
 
 
 # ============================================================
-# 7. Supervisor 노드 구현
-# ============================================================
-SUPERVISOR_SYSTEM_PROMPT = """You are a supervisor managing semiconductor yield data queries and WADS degradation reports.
-
-Your job is to:
-1. Analyze the user's request
-2. Extract parameters (time reference, product code)
-3. Route to the appropriate agent
-
-TODAY's DATE: {today}
-
-AVAILABLE AGENTS:
-- yield_agent: Fetches weekly pt1h parametric test data and displays it in a table
-- wads_agent: Fetches WADS (Weekly Aggregation Data System) degradation detection reports from Oracle DB
-
-=== ROUTING RULES ===
-
-**Route to yield_agent** when:
-- User asks about 수율 (yield), pt1h data, weekly metrics
-- Examples: "오늘 4SS 수율 알려줘", "저번주 수율 보여줘"
-
-**Route to wads_agent** when:
-- User responds "보여줘", "응", "네", "좋아", "부탁해" to a suggestion about 열화 Parameter
-- User asks about 열화 (degradation) detection, 검출 리포트, WADS 리포트
-- Examples: "보여줘", "열화 검출 리포트 보여줘", "1월 20일 검출 list 보여줘"
-
-=== TIME REFERENCE (시간 표현) ===
-Convert the user's natural language time reference to a concrete date.
-Use TODAY's DATE above as the base for all relative calculations.
-
-For yield_agent: output as YYYYMMDD format
-- "오늘", "금일", "today" → today's date
-- "이번주", "이번 주", "this week" → this week's Monday
-- "저번주", "지난주", "지난 주", "last week" → last week's Monday
-- "2주전", "2주 전" → 2 weeks ago Monday
-- "N주전", "N주 전" → N weeks ago Monday
-- Specific date like "1월 20일" → that date in YYYYMMDD
-- If no time reference is given, default to today
-
-For wads_agent: output as YYYY-MM-DD format in "wads_end_tm" field
-- "보여줘", "응", "네" (simple confirmation with no date) → today's date
-- "1월 20일 검출 보여줘" → "2026-01-20"
-- "저번주 열화 리포트" → last week's Monday date
-- If no date specified, default to today
-
-=== PRODUCT CODE (제품코드) ===
-- Look for product codes like "4SS" in the user's query
-- Default: "4SS" (if not specified)
-- IMPORTANT: If the user is responding to a previous yield query (e.g. "보여줘"), keep the same lotcd from context
-
-Respond in JSON format:
-{{
-    "next_agent": "yield_agent" or "wads_agent" or "END",
-    "lotcd": "4SS",
-    "ref_date": "YYYYMMDD",
-    "wads_end_tm": "YYYY-MM-DD",
-    "message": "한국어로 사용자에게 전달할 메시지"
-}}
-
-Examples:
-- "오늘 4SS 수율 알려줘" → {{"next_agent": "yield_agent", "lotcd": "4SS", "ref_date": "{today_yyyymmdd}", "wads_end_tm": "", "message": "4SS 금주 포함 최근 4주 수율 데이터를 조회합니다."}}
-- "저번주 수율 알려줘" → {{"next_agent": "yield_agent", "lotcd": "4SS", "ref_date": "<last monday YYYYMMDD>", "wads_end_tm": "", "message": "지난주 포함 최근 4주 수율 데이터를 조회합니다."}}
-- "보여줘" (after yield result) → {{"next_agent": "wads_agent", "lotcd": "4SS", "ref_date": "", "wads_end_tm": "{today_yyyy_mm_dd}", "message": "오늘 검출된 열화 Parameter 리포트를 조회합니다."}}
-- "1월 20일 검출 list 보여줘" → {{"next_agent": "wads_agent", "lotcd": "4SS", "ref_date": "", "wads_end_tm": "2026-01-20", "message": "2026년 1월 20일 검출 열화 리포트를 조회합니다."}}
-
-If the request is NOT about yield or WADS data, set next_agent to "END" and provide a helpful message.
-Always respond in Korean for the message field.
-"""
-
-
-@observe(name="supervisor_node")
-@timed
-def supervisor_node(state: YieldQueryState) -> Command:
-    """Supervisor 노드: 사용자 요청을 분석하고 적절한 agent로 라우팅
-
-    LLM이 사용자 요청에서 시간 표현과 제품코드를 추출하고 다음 agent를 결정합니다.
-    """
-    messages = state.get("messages", [])
-
-    # 오늘 날짜를 프롬프트에 주입
-    today = date.today()
-    today_str = today.strftime("%Y년 %m월 %d일 (%A)")
-    today_yyyymmdd = today.strftime("%Y%m%d")
-
-    today_yyyy_mm_dd = today.strftime("%Y-%m-%d")
-
-    prompt = SUPERVISOR_SYSTEM_PROMPT.format(
-        today=today_str,
-        today_yyyymmdd=today_yyyymmdd,
-        today_yyyy_mm_dd=today_yyyy_mm_dd,
-    )
-
-    # LLM 호출
-    response = model.invoke([
-        {"role": "system", "content": prompt},
-        *messages
-    ])
-
-    # JSON 파싱
-    try:
-        content = response.content
-        if "```json" in content:
-            content = content.split("```json")[1].split("```")[0]
-        elif "```" in content:
-            content = content.split("```")[1].split("```")[0]
-
-        parsed = json.loads(content.strip())
-    except (json.JSONDecodeError, IndexError):
-        parsed = {
-            "next_agent": "END",
-            "message": "요청을 이해하지 못했습니다. 수율 관련 질문을 해주세요.",
-        }
-
-    next_agent = parsed.get("next_agent", "END")
-
-    # 결과 메시지 생성
-    result_message = AIMessage(
-        content=parsed.get("message", "처리 중입니다..."),
-        name="supervisor",
-    )
-
-    # lotcd: 이전 State에 값이 있으면 유지 (follow-up 대화에서 중요)
-    prev_lotcd = state.get("lotcd", "")
-    new_lotcd = parsed.get("lotcd", "") or prev_lotcd or "4SS"
-
-    # State 업데이트
-    update_data = {
-        "messages": [result_message],
-        "lotcd": new_lotcd,
-        "ref_date": parsed.get("ref_date", today_yyyymmdd),
-        "wads_end_tm": parsed.get("wads_end_tm", ""),
-        "next_agent": next_agent,
-    }
-
-    # 파라미터 로깅
-    print("=" * 60)
-    print("[Supervisor] 파싱 결과:")
-    print(f"  - lotcd: {update_data['lotcd']}")
-    print(f"  - ref_date: {update_data['ref_date']}")
-    print(f"  - wads_end_tm: {update_data['wads_end_tm']}")
-    print(f"  - next_agent: {next_agent}")
-    print(f"  - message: {parsed.get('message', '')}")
-    print("=" * 60)
-
-    # 다음 노드로 라우팅
-    if next_agent == "END":
-        return Command(goto=END, update=update_data)
-    else:
-        return Command(goto=next_agent, update=update_data)
-
-
-# ============================================================
 # 8. Yield Agent 노드 구현
 # ============================================================
 @observe(name="yield_agent_node")
 @timed
-def yield_agent_node(state: YieldQueryState) -> Command:
+def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     """Yield Agent 노드: State에서 파라미터를 읽어 API 호출 + 테이블 생성
 
     Supervisor가 추출한 lotcd, ref_date를 사용하여
@@ -569,6 +617,7 @@ def yield_agent_node(state: YieldQueryState) -> Command:
     # State에서 파라미터 읽기
     lotcd = state.get("lotcd", "4SS")
     ref_date_str = state.get("ref_date", date.today().strftime("%Y%m%d"))
+    filter_params = state.get("filter_params") or None  # 빈 list → None (전체 표시)
 
     # 날짜 파싱
     try:
@@ -592,19 +641,20 @@ def yield_agent_node(state: YieldQueryState) -> Command:
             content="데이터를 조회할 수 없습니다. FastAPI 서버가 실행 중인지 확인해주세요.",
             name="yield_agent",
         )
-        return Command(
-            goto=END,
-            update={"messages": [error_message], "weeks_data": [], "table_result": ""},
-        )
+        return {"messages": [error_message], "weeks_data": [], "table_result": ""}
+
+    # 수치 기반 이상감지 (html_table 생성 전에 먼저 계산)
+    anomaly_params = _detect_anomalies(weeks_data)
+    print(f"[Yield Agent] 이상 감지: {len(anomaly_params)}개 파라미터")
 
     # 테이블 생성 (텍스트: LLM 분석용, HTML: 사용자 표시용)
-    table_str = _build_table(weeks_data, lotcd)
-    html_table = _build_html_table(weeks_data, lotcd)
+    table_str = _build_table(weeks_data, lotcd, filter_params)
+    html_table = _build_html_table(weeks_data, lotcd, filter_params, anomaly_params)
     print(table_str)
 
     # LLM 분석 (최근 2주 비교)
     print(f"\n[Yield Agent] LLM 분석 시작 (최근 2주 비교)...")
-    analysis = _analyze_with_llm(weeks_data, table_str, lotcd, model)
+    analysis = _analyze_with_llm(weeks_data, table_str, lotcd, model, config=config)
     print(f"\n[LLM 분석 결과]\n{analysis}")
 
     # HTML 아티팩트 생성
@@ -619,234 +669,26 @@ def yield_agent_node(state: YieldQueryState) -> Command:
     result_msg = f"[{lotcd}] 최근 4주 pt1h 수율 데이터입니다.\n"
     result_msg += f"기준: {_iso_week_str(ref_date)} ({ref_date_str})\n\n"
     result_msg += f"\n\n---\n\n{analysis}"
-    result_msg += "\n\n---\n\n> 오늘 검출된 열화 Parameter를 보여드릴까요?"
+
+    if anomaly_params:
+        anomaly_lines = "\n".join(
+            f"- {a['param']}: {a['prev_val']} → {a['curr_val']} ({a['change_pct']:+.1f}%, {a['direction']})"
+            for a in anomaly_params[:5]
+        )
+        result_msg += f"\n\n---\n\n**⚠️ 이상 감지된 파라미터 ({len(anomaly_params)}개)**\n{anomaly_lines}"
+        result_msg += "\n\n> WADS 열화 검출 리포트를 확인하시겠습니까?"
+    else:
+        result_msg += "\n\n> ✅ 이상 파라미터 없음 (±10% 기준)"
 
     result_message = AIMessage(content=result_msg, name="yield_agent")
 
-    return Command(
-        goto=END,
-        update={
-            "messages": [result_message],
-            "weeks_data": weeks_data,
-            "table_result": table_str,
-            "analysis_result": analysis,
-            "yield_artifacts": yield_artifacts,
-        },
-    )
-
-
-# ============================================================
-# 8.1 WADS Agent 노드 구현
-# ============================================================
-# wads_agent.py를 같은 폴더에서 import
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from wads_agent import (
-    _create_wads_agent,
-    _TOOL_PAYLOAD_STORAGE,
-    _render_wads_report_html,
-    _render_wads_query_html,
-)
-
-
-@observe(name="wads_agent_node")
-@timed
-def wads_agent_node(state: YieldQueryState) -> Command:
-    """WADS Agent 노드: 열화 검출 리포트를 Oracle DB에서 조회
-
-    Supervisor가 추출한 lotcd, wads_end_tm을 사용하여
-    WADS 서브에이전트를 호출하고 HTML 리포트를 가져옵니다.
-    """
-    lotcd = state.get("lotcd", "4SS")
-    end_tm = state.get("wads_end_tm", "")
-    if not end_tm:
-        end_tm = date.today().strftime("%Y-%m-%d")
-
-    # 파라미터 로깅
-    print("=" * 60)
-    print("[WADS Agent] State에서 파라미터 읽기:")
-    print(f"  - lotcd: {lotcd}")
-    print(f"  - end_tm: {end_tm}")
-    print("=" * 60)
-
-    # 도구 결과 저장소 초기화
-    _TOOL_PAYLOAD_STORAGE.clear()
-    _TOOL_PAYLOAD_STORAGE["reports"] = []
-
-    # WADS 서브에이전트 생성 및 호출
-    agent = _create_wads_agent()
-    query = f"{lotcd} 로트의 {end_tm} 열화 검출 리포트를 보여줘"
-    print(f"[WADS Agent] 쿼리: {query}")
-
-    try:
-        result = agent.invoke({"messages": [HumanMessage(content=query)]})
-    except Exception as e:
-        print(f"[ERROR] WADS Agent 실행 실패: {e}")
-        error_message = AIMessage(
-            content=f"WADS 리포트 조회 중 오류가 발생했습니다: {e}",
-            name="wads_agent",
-        )
-        return Command(
-            goto=END,
-            update={"messages": [error_message], "wads_artifacts": []},
-        )
-
-    # 결과에서 마지막 AI 메시지 추출
-    ai_messages = [m for m in result.get("messages", []) if isinstance(m, AIMessage)]
-    answer = ai_messages[-1].content if ai_messages else "WADS 조회에 실패했습니다."
-
-    # _TOOL_PAYLOAD_STORAGE에서 실제 데이터 추출
-    query_payload = _TOOL_PAYLOAD_STORAGE.get("query")
-    reports_payload = _TOOL_PAYLOAD_STORAGE.get("reports", [])
-
-    print(f"[WADS Agent] query_payload: {query_payload is not None}")
-    print(f"[WADS Agent] reports_payload count: {len(reports_payload)}")
-
-    # HTML 아티팩트 생성
-    artifacts = []
-    if reports_payload:
-        html = _render_wads_report_html(reports_payload)
-        artifacts.append({
-            "type": "html",
-            "mime": "text/html",
-            "data": html,
-            "title": "wads_report",
-        })
-    elif query_payload:
-        html = _render_wads_query_html(query_payload)
-        artifacts.append({
-            "type": "html",
-            "mime": "text/html",
-            "data": html,
-            "title": "wads_query",
-        })
-
-    # 도구 결과 저장소 정리
-    _TOOL_PAYLOAD_STORAGE.clear()
-    _TOOL_PAYLOAD_STORAGE["reports"] = []
-
-    result_message = AIMessage(content=answer, name="wads_agent")
-
-    return Command(
-        goto=END,
-        update={
-            "messages": [result_message],
-            "wads_artifacts": artifacts,
-        },
-    )
-
-
-# ============================================================
-# 9. StateGraph 구성
-# ============================================================
-workflow = StateGraph(YieldQueryState)
-
-# 노드 추가
-workflow.add_node("supervisor", supervisor_node)
-workflow.add_node("yield_agent", yield_agent_node)
-workflow.add_node("wads_agent", wads_agent_node)
-
-# 엣지 정의
-workflow.add_edge(START, "supervisor")
-# supervisor의 조건부 엣지는 Command가 처리하므로 별도 정의 불필요
-
-# 컴파일
-yield_supervisor = workflow.compile()
-
-
-# ============================================================
-# 10. 테스트 실행
-# ============================================================
-def run_test(test_name: str, user_message: str):
-    """테스트 실행 헬퍼 함수
-
-    StateGraph 구조에서 State를 통해 데이터가 공유됩니다.
-    """
-    print(f"\n{'='*80}")
-    print(f"{test_name}")
-    print(f"{'='*80}")
-    print(f"User: {user_message}\n")
-
-    # 초기 State 설정
-    initial_state = {
-        "messages": [HumanMessage(content=user_message)],
-        "lotcd": "",
-        "ref_date": "",
-        "weeks_data": [],
-        "table_result": "",
-        "analysis_result": "",
-        "yield_artifacts": [],
-        "wads_end_tm": "",
-        "wads_artifacts": [],
-        "next_agent": "",
+    return {
+        "messages": [result_message],
+        "weeks_data": weeks_data,
+        "table_result": table_str,
+        "analysis_result": analysis,
+        "yield_artifacts": yield_artifacts,
+        "anomaly_params": anomaly_params,
     }
 
-    # invoke로 실행하고 최종 State 받기 (Langfuse 콜백 포함)
-    final_state = yield_supervisor.invoke(
-        initial_state,
-        config={"callbacks": [langfuse_handler]},
-    )
 
-    # 메시지 출력
-    if final_state.get("messages"):
-        for msg in final_state["messages"]:
-            if hasattr(msg, "name") and msg.name:
-                print(f"[{msg.name}]: {msg.content}\n")
-            elif hasattr(msg, "content"):
-                print(f"{msg.content}\n")
-
-    # 최종 State 요약 출력
-    print("[최종 State 요약]")
-    print(f"  - lotcd: {final_state.get('lotcd', '')}")
-    print(f"  - ref_date: {final_state.get('ref_date', '')}")
-    if final_state.get("weeks_data"):
-        weeks = [wd.get("week", "?") for wd in final_state["weeks_data"]]
-        print(f"  - 조회 주차: {', '.join(weeks)}")
-    if final_state.get("table_result"):
-        print(f"  - 테이블 생성: OK")
-    if final_state.get("analysis_result"):
-        print(f"  - LLM 분석: OK")
-    if final_state.get("yield_artifacts"):
-        print(f"  - Yield 아티팩트: {len(final_state['yield_artifacts'])}개 (HTML 테이블)")
-        # HTML 파일로 저장하여 브라우저에서 확인 가능하도록
-        for idx, artifact in enumerate(final_state["yield_artifacts"]):
-            html_path = Path(__file__).resolve().parent / f"yield_table_{idx}.html"
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(artifact["data"])
-            print(f"    → HTML 저장: {html_path}")
-    if final_state.get("wads_end_tm"):
-        print(f"  - wads_end_tm: {final_state['wads_end_tm']}")
-    if final_state.get("wads_artifacts"):
-        print(f"  - WADS 아티팩트: {len(final_state['wads_artifacts'])}개")
-
-
-if __name__ == "__main__":
-    print("Yield Query Agent 시작 (StateGraph 기반)")
-    print("=" * 80)
-    print("Agent들이 YieldQueryState를 통해 구조화된 데이터를 공유합니다.")
-    print(f"오늘 날짜: {date.today().strftime('%Y-%m-%d')}")
-    print(f"API 서버: {API_BASE_URL}")
-    print("=" * 80)
-
-    # === Langfuse 기능 테스트 1: Basic Tracing ===
-    # 이 테스트 하나만 실행하여 Langfuse 대시보드에서 트레이스 확인
-    run_test(
-        "Langfuse 테스트 1: Basic Tracing",
-        "오늘 4SS 수율 알려줘",
-    )
-
-    # # 테스트 2: 저번주 수율
-    # run_test(
-    #     "테스트 2: 저번주 수율",
-    #     "저번주 수율 알려줘",
-    # )
-
-    # # 테스트 3: 2주전 수율
-    # run_test(
-    #     "테스트 3: 2주전 수율",
-    #     "2주전 4SS 수율 보여줘",
-    # )
-
-    # Langfuse 트레이스 전송 보장
-    get_client().flush()
-    logger.info("Langfuse 트레이스 전송 완료")

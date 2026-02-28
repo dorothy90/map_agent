@@ -38,3 +38,7 @@ wheels/
 07-Supervisor/usecase/visualize_wafer_regions_json.py
 07-Supervisor/usecase/export_wafer_regions_from_csv.py
 fastapi_app/data/pt1h_weekly.json
+CLAUDE.md
+tasks/lessons.md
+tasks/plan_spec.md
+tasks/todo.md

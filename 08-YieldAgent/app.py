@@ -7,6 +7,7 @@ Yield Query Agent - Streamlit UI
 (FastAPI 서버가 127.0.0.1:8000 에서 실행 중이어야 합니다)
 """
 
+import uuid
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -20,13 +21,10 @@ from pathlib import Path
 # 08-YieldAgent 폴더를 기준으로 프로젝트 루트에서 실행해도 동작하도록 경로 추가
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from yield_query_agent import (
-    yield_supervisor,
-    langfuse_handler,
-    PARA_COLUMNS,
-    _iso_week_str,
-)
+from supervisor import yield_supervisor
+from yield_query_agent import PARA_COLUMNS, _iso_week_str
 from langfuse import get_client
+from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
 from langchain_core.messages import HumanMessage
 
 
@@ -38,7 +36,9 @@ st.set_page_config(
 )
 
 st.title("📊 Yield Query Agent")
-st.caption(f"오늘: {date.today().strftime('%Y-%m-%d')}  |  자연어로 수율 데이터를 조회하세요")
+st.caption(
+    f"오늘: {date.today().strftime('%Y-%m-%d')}  |  자연어로 수율 데이터를 조회하세요"
+)
 
 # ── 사이드바 : 예시 버튼 ─────────────────────────────
 with st.sidebar:
@@ -67,7 +67,10 @@ with st.sidebar:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# 대화 간 유지되는 State (lotcd 등)
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
+# 대화 간 유지되는 State (lotcd, anomaly_params, 이전 AI 메시지)
 if "persistent_state" not in st.session_state:
     st.session_state.persistent_state = {
         "lotcd": "",
@@ -78,8 +81,15 @@ if "persistent_state" not in st.session_state:
         "yield_artifacts": [],
         "wads_end_tm": "",
         "wads_artifacts": [],
-        "next_agent": "",
+        "next": "",
+        "anomaly_params": [],
+        "prev_messages": [],  # 이전 턴 AI 메시지 (supervisor 컨텍스트 유지용)
     }
+
+
+def _make_langfuse_handler() -> LangfuseCallbackHandler:
+    """Langfuse 콜백 핸들러 생성 (session/metadata는 supervisor_node에서 update_current_trace로 설정)"""
+    return LangfuseCallbackHandler()
 
 
 # ── 히스토리 렌더링 헬퍼 ─────────────────────────────
@@ -93,7 +103,7 @@ def _render_entry(entry):
 
     # yield 결과 (HTML 우선, 없으면 DataFrame fallback)
     if entry.get("yield_html"):
-        components.html(entry["yield_html"], height=160, scrolling=True)
+        components.html(entry["yield_html"], height=500, scrolling=True)
     elif entry.get("df") is not None:
         st.dataframe(entry["df"], use_container_width=True, hide_index=True)
     if entry.get("analysis"):
@@ -135,8 +145,11 @@ if query:
     with st.chat_message("assistant"):
         # 이전 대화 맥락을 유지하기 위해 persistent_state 사용
         prev = st.session_state.persistent_state
+        # 이전 AI 메시지를 포함해 supervisor가 대화 맥락을 파악할 수 있도록 함
+        # (예: yield 결과 후 "보여줘" 입력 시 wads_agent로 정확히 라우팅)
+        prev_messages = prev.get("prev_messages", [])
         initial_state = {
-            "messages": [HumanMessage(content=query)],
+            "messages": prev_messages + [HumanMessage(content=query)],
             "lotcd": prev.get("lotcd", ""),
             "ref_date": prev.get("ref_date", ""),
             "weeks_data": [],
@@ -145,8 +158,11 @@ if query:
             "yield_artifacts": [],
             "wads_end_tm": "",
             "wads_artifacts": [],
-            "next_agent": "",
+            "next": "",
+            "anomaly_params": prev.get("anomaly_params", []),
         }
+
+        langfuse_handler = _make_langfuse_handler()
 
         # stream() 모드로 노드별 진행 상황 표시 + Langfuse 트레이싱
         try:
@@ -157,7 +173,13 @@ if query:
 
                 for step_output in yield_supervisor.stream(
                     initial_state,
-                    config={"callbacks": [langfuse_handler]},
+                    config={
+                        "callbacks": [langfuse_handler],
+                        "configurable": {
+                            "session_id": st.session_state.session_id,
+                            "anomaly_count": len(prev.get("anomaly_params", [])),
+                        },
+                    },
                 ):
                     for node_name, node_state in step_output.items():
                         elapsed = time.time() - start_time
@@ -177,14 +199,12 @@ if query:
                     state="complete",
                 )
 
-            # Langfuse 트레이스 비동기 전송
+            # Langfuse 트레이스 전송
             get_client().flush()
 
         except Exception as e:
             st.error(f"에이전트 실행 오류: {e}")
-            st.session_state.chat_history.append(
-                {"query": query, "error": str(e)}
-            )
+            st.session_state.chat_history.append({"query": query, "error": str(e)})
             st.stop()
 
         # ── persistent state 업데이트 ────────────────
@@ -193,6 +213,12 @@ if query:
             ps["lotcd"] = final_state["lotcd"]
         if final_state.get("ref_date"):
             ps["ref_date"] = final_state["ref_date"]
+        if final_state.get("anomaly_params") is not None:
+            ps["anomaly_params"] = final_state["anomaly_params"]
+
+        # 이전 AI 메시지 저장 (다음 턴 supervisor 컨텍스트용, 최근 2개만 유지)
+        ai_msgs = [m for m in all_messages if getattr(m, "type", None) == "ai"]
+        ps["prev_messages"] = ai_msgs[-2:]
 
         # ── 결과 파싱 ────────────────────────────────
         lotcd = final_state.get("lotcd", "4SS")
@@ -229,7 +255,7 @@ if query:
                 for artifact in yield_artifacts:
                     html_data = artifact.get("data", "")
                     if html_data:
-                        components.html(html_data, height=160, scrolling=True)
+                        components.html(html_data, height=500, scrolling=True)
                         history_entry["yield_html"] = html_data
             else:
                 # fallback: HTML 아티팩트 없으면 기존 DataFrame 표시

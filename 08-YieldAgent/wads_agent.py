@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dotenv import load_dotenv
 import os
+from datetime import date
 from typing import Any, Dict, List, Optional, Annotated, Literal
 
 import oracledb
@@ -10,12 +11,14 @@ import pandas as pd
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from rich import print
+from langfuse import observe
 
 # .env 로드 및 모델 설정
 load_dotenv(override=True)
@@ -27,7 +30,7 @@ _API_KEY = os.getenv("OPENROUTER_API_KEY")
 _ORACLE_USER = os.getenv("ORACLE_USER")
 _ORACLE_PASSWORD = os.getenv("ORACLE_PASSWORD")
 _ORACLE_DSN = os.getenv("ORACLE_DSN")
-_ORACLE_TABLE = os.getenv("ORACLE_TABLE", "WADS_TABLE")
+_ORACLE_TABLE = "WADS_TABLE"
 
 # 도구 결과를 임시 저장할 전역 변수 (LLM context에 포함되지 않는 실제 데이터)
 # reports는 리스트로 저장하여 여러 리포트를 누적
@@ -43,6 +46,7 @@ def _get_oracle_connection() -> oracledb.Connection:
     )
 
 
+@observe(name="wads_query_oracle")
 def _query_wads_data(
     lotcd: Optional[str] = None,
     end_tm: Optional[str] = None,
@@ -503,6 +507,93 @@ def wads_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     return result_dict
 
 
+# -------------------- WADS Agent Node (LangGraph 노드용) --------------------
+from yield_query_agent import timed  # noqa: E402
+
+
+@observe(name="wads_agent_node")
+@timed
+def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
+    """WADS Agent 노드: 열화 검출 리포트를 Oracle DB에서 조회
+
+    Supervisor가 추출한 lotcd, wads_end_tm을 사용하여
+    WADS 서브에이전트를 호출하고 HTML 리포트를 가져옵니다.
+    """
+    lotcd = state.get("lotcd", "4SS")
+    end_tm = state.get("wads_end_tm", "")
+    if not end_tm:
+        end_tm = date.today().strftime("%Y-%m-%d")
+
+    # 파라미터 로깅
+    print("=" * 60)
+    print("[WADS Agent] State에서 파라미터 읽기:")
+    print(f"  - lotcd: {lotcd}")
+    print(f"  - end_tm: {end_tm}")
+    print("=" * 60)
+
+    # 도구 결과 저장소 초기화
+    _TOOL_PAYLOAD_STORAGE.clear()
+    _TOOL_PAYLOAD_STORAGE["reports"] = []
+
+    # WADS 서브에이전트 생성 및 호출
+    agent = _create_wads_agent()
+    query = f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘"
+    print(f"[WADS Agent] 쿼리: {query}")
+
+    try:
+        # 부모 config의 LangGraph 내부 파라미터(__pregel_* 등)를 제거하고 콜백만 전달
+        sub_config = {"callbacks": (config.get("callbacks") or [])} if config else {}
+        result = agent.invoke({"messages": [HumanMessage(content=query)]}, config=sub_config)
+    except Exception as e:
+        print(f"[ERROR] WADS Agent 실행 실패: {e}")
+        error_message = AIMessage(
+            content=f"WADS 리포트 조회 중 오류가 발생했습니다: {e}",
+            name="wads_agent",
+        )
+        return {"messages": [error_message], "wads_artifacts": []}
+
+    # 결과에서 마지막 AI 메시지 추출
+    ai_messages = [m for m in result.get("messages", []) if isinstance(m, AIMessage)]
+    answer = ai_messages[-1].content if ai_messages else "WADS 조회에 실패했습니다."
+
+    # _TOOL_PAYLOAD_STORAGE에서 실제 데이터 추출
+    query_payload = _TOOL_PAYLOAD_STORAGE.get("query")
+    reports_payload = _TOOL_PAYLOAD_STORAGE.get("reports", [])
+
+    print(f"[WADS Agent] query_payload: {query_payload is not None}")
+    print(f"[WADS Agent] reports_payload count: {len(reports_payload)}")
+
+    # HTML 아티팩트 생성
+    artifacts = []
+    if reports_payload:
+        html = _render_wads_report_html(reports_payload)
+        artifacts.append({
+            "type": "html",
+            "mime": "text/html",
+            "data": html,
+            "title": "wads_report",
+        })
+    elif query_payload:
+        html = _render_wads_query_html(query_payload)
+        artifacts.append({
+            "type": "html",
+            "mime": "text/html",
+            "data": html,
+            "title": "wads_query",
+        })
+
+    # 도구 결과 저장소 정리
+    _TOOL_PAYLOAD_STORAGE.clear()
+    _TOOL_PAYLOAD_STORAGE["reports"] = []
+
+    result_message = AIMessage(content=answer, name="wads_agent")
+
+    return {
+        "messages": [result_message],
+        "wads_artifacts": artifacts,
+    }
+
+
 # -------------------- 직접 실행 테스트 --------------------
 if __name__ == "__main__":
     from langchain_teddynote.messages import stream_graph
@@ -514,7 +605,7 @@ if __name__ == "__main__":
     stream_graph(
         _create_wads_agent(),
         inputs={
-            "messages": [HumanMessage(content="5NA 로트의 step01 리포트를 보여줘")]
+            "messages": [HumanMessage(content="4SS 로트의 2월28일 리포트를 보여줘")]
         },
     )
 
