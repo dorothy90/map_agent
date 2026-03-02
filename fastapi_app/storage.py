@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from random import Random
-from typing import Any
+from typing import Any, Union
 
-from .models import WeeklyRecord
+from .models import Pt1cPara, GmsPara, WeeklyRecordPt1h, WeeklyRecordPt1c, WeeklyRecordGms
+
+WeeklyRecordAny = Union[WeeklyRecordPt1h, WeeklyRecordPt1c, WeeklyRecordGms]
 
 
 def _iso_week_str(d: date) -> str:
@@ -30,7 +33,7 @@ def _stable_seed_int(key: str) -> int:
     return int(h[:16], 16)
 
 
-def _gen_weekly_record(*, lotcd: str, unit: str, process: str, week_start: date) -> WeeklyRecord:
+def _gen_weekly_record(*, lotcd: str, unit: str, process: str, week_start: date) -> WeeklyRecordPt1h:
     week = _iso_week_str(week_start)
     week_end = week_start + timedelta(days=6)
     seed_key = f"{lotcd}|{unit}|{process}|{week}"
@@ -42,13 +45,7 @@ def _gen_weekly_record(*, lotcd: str, unit: str, process: str, week_start: date)
     def f(low: float, high: float) -> float:
         return round(rng.uniform(low, high), 2)
 
-    # 값 범위는 "그럴듯한" 수준의 예시(단위는 각 항목별로 상이할 수 있음)
-    # - 전압(V): ~0.3~1.2
-    # - 전류(A): 누설은 1e-12~1e-6, 구동은 1e-3~1e-1 등
-    # - 주파수(MHz): ~200~2000
-    # - 지연(ps): ~10~500
-    # - 저항(ohm): ~0.1~1000
-    # - 커패시턴스(fF): ~0.5~50
+    # 모든 파라미터 값을 1 이하로 생성
     pt1hPara = {
         "VTH": f(0.35, 0.85),
         "IDSAT": f(0.005, 0.15),
@@ -57,36 +54,84 @@ def _gen_weekly_record(*, lotcd: str, unit: str, process: str, week_start: date)
         "ION": f(0.01, 0.25),
         "IGATE": f(1e-12, 5e-8),
         "IDDQ": f(1e-6, 5e-3),
-        "VMIN": f(0.6, 1.2),
-        "FMAX": f(200, 2000),
-        "TPD": f(10, 500),
-        "GM_MAX": f(0.1, 10.0),
-        "SS": f(60, 120),
+        "VMIN": f(0.6, 0.95),
+        "FMAX": f(0.2, 0.95),
+        "TPD": f(0.1, 0.95),
+        "GM_MAX": f(0.1, 0.95),
+        "SS": f(0.6, 0.95),
         "DIBL": f(0.01, 0.2),
-        "RON": f(0.1, 50),
-        "RDS_ON": f(0.1, 100),
-        "BVDS": f(5, 80),
+        "RON": f(0.1, 0.95),
+        "RDS_ON": f(0.1, 0.95),
+        "BVDS": f(0.05, 0.8),
         "LEAK_ID": f(1e-12, 1e-7),
         "LEAK_IG": f(1e-12, 1e-8),
-        "CGB": f(0.5, 50),
-        "CGS": f(0.5, 50),
-        "CGD": f(0.5, 50),
-        "CDS": f(0.5, 50),
-        "RSH": f(1, 2000),
-        "RD": f(0.1, 200),
-        "RS": f(0.1, 200),
+        "CGB": f(0.05, 0.5),
+        "CGS": f(0.05, 0.5),
+        "CGD": f(0.05, 0.5),
+        "CDS": f(0.05, 0.5),
+        "RSH": f(0.01, 0.95),
+        "RD": f(0.1, 0.95),
+        "RS": f(0.1, 0.95),
     }
 
-    return WeeklyRecord(
+    return WeeklyRecordPt1h(
         lotcd=lotcd,  # type: ignore[arg-type]
         unit=unit,  # type: ignore[arg-type]
-        process=process,  # type: ignore[arg-type]
+        process="pt1h",
         week=week,
         week_start=week_start,
         week_end=week_end,
         lotcount=lotcount,
         wfCount=wfCount,
-        pt1hPara=pt1hPara,
+        pt1hPara=pt1hPara,  # type: ignore[arg-type]
+    )
+
+
+def _gen_weekly_record_pt1c(*, lotcd: str, unit: str, week_start: date) -> WeeklyRecordPt1c:
+    """pt1c용 주간 레코드 생성 (pt1h와 동일 파라미터 구조)"""
+    pt1h_rec = _gen_weekly_record(lotcd=lotcd, unit=unit, process="pt1h", week_start=week_start)
+    return WeeklyRecordPt1c(
+        lotcd=pt1h_rec.lotcd,
+        unit=pt1h_rec.unit,
+        process="pt1c",
+        week=pt1h_rec.week,
+        week_start=pt1h_rec.week_start,
+        week_end=pt1h_rec.week_end,
+        lotcount=pt1h_rec.lotcount,
+        wfCount=pt1h_rec.wfCount,
+        pt1cPara=Pt1cPara.model_validate(pt1h_rec.pt1hPara.model_dump()),
+    )
+
+
+def _gen_weekly_record_gms(*, lotcd: str, unit: str, week_start: date) -> WeeklyRecordGms:
+    """GMS용 주간 레코드 생성"""
+    week = _iso_week_str(week_start)
+    week_end = week_start + timedelta(days=6)
+    seed_key = f"{lotcd}|{unit}|gms|{week}"
+    rng = Random(_stable_seed_int(seed_key))
+    lotcount = rng.randint(30, 180)
+    wfCount = rng.randint(lotcount * 18, lotcount * 32)
+
+    def f(low: float, high: float) -> float:
+        return round(rng.uniform(low, high), 2)
+
+    gmsPara = {
+        "cum0": f(0.96, 0.99),
+        "cum2": f(0.95, 0.98),
+        "fab": f(0.94, 0.97),
+        "prb": f(0.93, 0.96),
+        "pnt": f(0.92, 0.95),
+    }
+    return WeeklyRecordGms(
+        lotcd=lotcd,  # type: ignore[arg-type]
+        unit=unit,  # type: ignore[arg-type]
+        process="gms",
+        week=week,
+        week_start=week_start,
+        week_end=week_end,
+        lotcount=lotcount,
+        wfCount=wfCount,
+        gmsPara=gmsPara,  # type: ignore[arg-type]
     )
 
 
@@ -98,7 +143,15 @@ class WeeklyStore:
     process: str = "pt1h"
     weeks_to_keep: int = 10  # ~2 months
 
-    _by_week: dict[str, WeeklyRecord] | None = None
+    _by_week: dict[str, WeeklyRecordAny] | None = None
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def _record_model(self):
+        if self.process == "pt1h":
+            return WeeklyRecordPt1h
+        if self.process == "pt1c":
+            return WeeklyRecordPt1c
+        return WeeklyRecordGms
 
     def load(self) -> None:
         if self._by_week is not None:
@@ -108,11 +161,11 @@ class WeeklyStore:
             return
         raw = json.loads(self.path.read_text(encoding="utf-8"))
         items = raw.get("items", [])
+        model = self._record_model()
         for item in items:
             try:
-                rec = WeeklyRecord.model_validate(item)
+                rec = model.model_validate(item)
             except Exception:
-                # 스키마 변경(A~G -> 테스트명 25개 등) 시 구버전 데이터는 무시하고 재생성
                 continue
             self._by_week[rec.week] = rec
 
@@ -130,41 +183,73 @@ class WeeklyStore:
             },
             "items": [self._by_week[k].model_dump(mode="json") for k in sorted(self._by_week.keys())],
         }
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        # 고유 tmp 파일 사용 — 동시 쓰기 시 파일 충돌 방지
+        tmp = self.path.with_name(f"{self.path.stem}_{os.getpid()}.tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, self.path)
 
     def ensure_window_for_date(self, d: date) -> None:
+        """요청된 날짜가 포함된 주와 그 이전 weeks_to_keep-1주 데이터를 보장.
+        오래된 주는 삭제하지 않음 — 동시 요청 간 race condition 방지.
+        """
         self.load()
         assert self._by_week is not None
 
         week_start, _ = _week_bounds(d)
-        # Keep a rolling window ending at requested week.
         starts: list[date] = [week_start - timedelta(days=7 * i) for i in range(self.weeks_to_keep - 1, -1, -1)]
+        changed = False
         for s in starts:
             w = _iso_week_str(s)
             if w not in self._by_week:
-                self._by_week[w] = _gen_weekly_record(
-                    lotcd=self.lotcd, unit=self.unit, process=self.process, week_start=s
-                )
+                if self.process == "pt1h":
+                    self._by_week[w] = _gen_weekly_record(
+                        lotcd=self.lotcd, unit=self.unit, process="pt1h", week_start=s
+                    )
+                elif self.process == "pt1c":
+                    self._by_week[w] = _gen_weekly_record_pt1c(
+                        lotcd=self.lotcd, unit=self.unit, week_start=s
+                    )
+                else:
+                    self._by_week[w] = _gen_weekly_record_gms(
+                        lotcd=self.lotcd, unit=self.unit, week_start=s
+                    )
+                changed = True
 
-        # Drop old weeks outside the window.
-        keep = {_iso_week_str(s) for s in starts}
-        for w in list(self._by_week.keys()):
-            if w not in keep:
-                del self._by_week[w]
+        if changed:
+            self.save()
 
-        self.save()
+    def get_week(self, d: date) -> WeeklyRecordAny:
+        with self._lock:
+            self.ensure_window_for_date(d)
+            assert self._by_week is not None
+            week_start, _ = _week_bounds(d)
+            week = _iso_week_str(week_start)
+            return self._by_week[week]
 
-    def get_week(self, d: date) -> WeeklyRecord:
-        self.ensure_window_for_date(d)
-        assert self._by_week is not None
-        week_start, _ = _week_bounds(d)
-        week = _iso_week_str(week_start)
-        return self._by_week[week]
+
+PROCESS_FILES: dict[str, str] = {
+    "pt1h": "pt1h_weekly.json",
+    "pt1c": "pt1c_weekly.json",
+    "gms": "gms_weekly.json",
+}
+
+
+_store_cache: dict[str, WeeklyStore] = {}
+_store_cache_lock = threading.Lock()
+
+
+def get_store(process: str) -> WeeklyStore:
+    """process별 싱글턴 WeeklyStore 반환 — 동시 요청에도 인스턴스 공유"""
+    if process not in PROCESS_FILES:
+        raise ValueError(f"process는 {list(PROCESS_FILES.keys())} 중 하나여야 합니다.")
+    with _store_cache_lock:
+        if process not in _store_cache:
+            data_path = Path(__file__).resolve().parent / "data" / PROCESS_FILES[process]
+            _store_cache[process] = WeeklyStore(path=data_path, process=process)
+        return _store_cache[process]
 
 
 def default_store() -> WeeklyStore:
-    data_path = Path(__file__).resolve().parent / "data" / "pt1h_weekly.json"
-    return WeeklyStore(path=data_path)
+    """하위 호환: pt1h store 반환"""
+    return get_store("pt1h")
 

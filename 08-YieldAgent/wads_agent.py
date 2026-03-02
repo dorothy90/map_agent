@@ -18,7 +18,20 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from rich import print
-from langfuse import observe
+from langfuse import observe, get_client
+from langfuse.langchain import CallbackHandler as _LFHandler
+
+
+def _lf_callbacks() -> list:
+    """현재 Langfuse span에 연결된 LangChain CallbackHandler 반환"""
+    lf = get_client()
+    trace_id = lf.get_current_trace_id()
+    if not trace_id:
+        return []
+    return [_LFHandler(trace_context={
+        "trace_id": trace_id,
+        "parent_span_id": lf.get_current_observation_id(),
+    })]
 
 # .env 로드 및 모델 설정
 load_dotenv(override=True)
@@ -50,7 +63,7 @@ def _get_oracle_connection() -> oracledb.Connection:
 def _query_wads_data(
     lotcd: Optional[str] = None,
     end_tm: Optional[str] = None,
-    ctn_desc: Optional[str] = None,
+    parameter: Optional[str] = None,
     columns: str = "*",
 ) -> pd.DataFrame:
     """Oracle에서 WADS 데이터 조회 (SQL WHERE + LIKE 필터링)
@@ -58,7 +71,7 @@ def _query_wads_data(
     Args:
         lotcd: 로트코드 부분 일치 필터 (case-insensitive)
         end_tm: 종료시간 부분 일치 필터
-        ctn_desc: 스텝 설명 부분 일치 필터
+        parameter: 스텝 설명 부분 일치 필터
         columns: 조회할 컬럼 (기본값: "*")
 
     Returns:
@@ -73,9 +86,9 @@ def _query_wads_data(
     if end_tm:
         conditions.append("END_TM LIKE :end_tm")
         bind_vars["end_tm"] = f"%{end_tm}%"
-    if ctn_desc:
-        conditions.append("UPPER(CTN_DESC) LIKE UPPER(:ctn_desc)")
-        bind_vars["ctn_desc"] = f"%{ctn_desc}%"
+    if parameter:
+        conditions.append("UPPER(CTN_DESC) LIKE UPPER(:parameter)")
+        bind_vars["parameter"] = f"%{parameter}%"
 
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     sql = f"SELECT {columns} FROM {_ORACLE_TABLE} WHERE {where_clause}"
@@ -110,7 +123,7 @@ def _query_wads_data(
 def wads_query_data(
     lotcd: Optional[str] = None,
     end_tm: Optional[str] = None,
-    ctn_desc: Optional[str] = None,
+    parameter: Optional[str] = None,
 ) -> str:
     """
     WADS 데이터를 조회합니다. 선택적 필터를 적용하여 매칭되는 데이터의 메타정보를 반환합니다.
@@ -118,7 +131,7 @@ def wads_query_data(
     Args:
         lotcd: 랏코드 필터 (예: "5NA", "4SA"). 부분 일치 검색. 미입력시 전체 조회.
         end_tm: 종료시간 필터 (예: "2026-01-01", "18:07"). 부분 일치 검색. 미입력시 전체 조회.
-        ctn_desc: 스텝 설명 필터 (예: "step01", "step02"). 부분 일치 검색. 미입력시 전체 조회.
+        parameter: 스텝 설명 필터 (예: "step01", "step02"). 부분 일치 검색. 미입력시 전체 조회.
 
     Returns:
         조회 결과 요약 메시지 (실제 데이터는 별도 저장됨)
@@ -129,8 +142,8 @@ def wads_query_data(
         filtered_df = _query_wads_data(
             lotcd=lotcd,
             end_tm=end_tm,
-            ctn_desc=ctn_desc,
-            columns="LOTCD, END_TM, CTN_DESC",
+            parameter=parameter,
+            columns="LOTCD, END_TM, CTN_DESC AS PARAMETER",
         )
     except Exception as e:
         _TOOL_PAYLOAD_STORAGE["query"] = [
@@ -148,7 +161,7 @@ def wads_query_data(
         return "조건에 맞는 WADS 데이터가 없습니다."
 
     # 실제 데이터는 전역 저장소에 저장 (LLM context에 포함되지 않음)
-    result = filtered_df[["lotcd", "end_tm", "ctn_desc"]].to_dict(orient="records")
+    result = filtered_df[["lotcd", "end_tm", "parameter"]].to_dict(orient="records")
     _TOOL_PAYLOAD_STORAGE["query"] = result
 
     # LLM에게는 요약만 전달
@@ -159,7 +172,7 @@ def wads_query_data(
 def wads_get_html_report(
     lotcd: Optional[str] = None,
     end_tm: Optional[str] = None,
-    ctn_desc: Optional[str] = None,
+    parameter: Optional[str] = None,
     limit: int = 1,
 ) -> str:
     """
@@ -169,7 +182,7 @@ def wads_get_html_report(
     Args:
         lotcd: 로트코드 필터 (예: "5NA", "4SA"). 부분 일치 검색. 미입력시 전체 조회.
         end_tm: 종료시간 필터 (예: "2026-01-01", "18:07"). 부분 일치 검색. 미입력시 전체 조회.
-        ctn_desc: 스텝 설명 필터 (예: "step01", "step02"). 부분 일치 검색. 미입력시 전체 조회.
+        parameter: 스텝 설명 필터 (예: "step01", "step02"). 부분 일치 검색. 미입력시 전체 조회.
         limit: 하위호환을 위해 받지만, 현재는 무시됩니다. (항상 1개만 반환)
 
     Returns:
@@ -178,7 +191,12 @@ def wads_get_html_report(
     global _TOOL_PAYLOAD_STORAGE
 
     try:
-        filtered_df = _query_wads_data(lotcd=lotcd, end_tm=end_tm, ctn_desc=ctn_desc)
+        filtered_df = _query_wads_data(
+            lotcd=lotcd,
+            end_tm=end_tm,
+            parameter=parameter,
+            columns="LOTCD, END_TM, CTN_DESC AS PARAMETER, HTML",
+        )
     except Exception as e:
         return f"오류: Oracle 연결/조회에 실패했습니다. ({e})"
 
@@ -186,20 +204,24 @@ def wads_get_html_report(
         return "조건에 맞는 WADS 데이터가 없습니다."
 
     # 실제 데이터는 전역 저장소에 리스트로 누적 (LLM context에 포함되지 않음)
-    report_data = {
-        "lotcd": filtered_df.iloc[0]["lotcd"],
-        "end_tm": filtered_df.iloc[0]["end_tm"],
-        "ctn_desc": filtered_df.iloc[0]["ctn_desc"],
-        "html": filtered_df.iloc[0]["html"],
-    }
-
-    # reports 리스트에 추가 (덮어쓰지 않고 누적)
     if "reports" not in _TOOL_PAYLOAD_STORAGE:
         _TOOL_PAYLOAD_STORAGE["reports"] = []
-    _TOOL_PAYLOAD_STORAGE["reports"].append(report_data)
 
+    for _, row in filtered_df.iterrows():
+        _TOOL_PAYLOAD_STORAGE["reports"].append({
+            "lotcd": row["lotcd"],
+            "end_tm": row["end_tm"],
+            "parameter": row["parameter"],
+            "html": row["html"],
+        })
+
+    count = len(filtered_df)
+    summary = ", ".join(
+        f"lotcd={r['lotcd']} parameter={r['parameter']}"
+        for r in _TOOL_PAYLOAD_STORAGE["reports"][-count:]
+    )
     # LLM에게는 메타정보 요약만 전달 (HTML 전체 내용은 제외)
-    return f"WADS HTML 리포트 조회 완료: lotcd={report_data['lotcd']}, end_tm={report_data['end_tm']}, ctn_desc={report_data['ctn_desc']} (리포트는 화면에 별도 표시됩니다)"
+    return f"WADS HTML 리포트 조회 완료: {count}건 — {summary} (리포트는 화면에 별도 표시됩니다)"
 
 
 # -------------------- WADS Agent (StateGraph 패턴) --------------------
@@ -215,18 +237,18 @@ WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 
 
 ## 사용 가능한 도구:
 1. **wads_query_data**: WADS 데이터 메타정보 조회
-   - lotcd, end_tm, ctn_desc로 필터링하여 매칭되는 데이터 목록 반환
+   - lotcd, end_tm, parameter로 필터링하여 매칭되는 데이터 목록 반환
    - HTML 콘텐츠는 제외하고 메타정보만 반환
 
 2. **wads_get_html_report**: WADS HTML 리포트 조회
-   - lotcd, end_tm, ctn_desc로 필터링하여 HTML 리포트 반환
+   - lotcd, end_tm, parameter로 필터링하여 HTML 리포트 반환
    - **여러 리포트 요청 시**: 각 조건별로 도구를 여러 번 호출하세요. 모든 리포트가 누적되어 표시됩니다.
-   - 예: step01, step02 리포트 요청 시 → wads_get_html_report(ctn_desc="step01") + wads_get_html_report(ctn_desc="step02")
+   - 예: step01, step02 리포트 요청 시 → wads_get_html_report(parameter="step01") + wads_get_html_report(parameter="step02")
 
 ## 데이터 구조:
 - lotcd: 로트코드 (예: 5NA, 4SA, 6E2)
 - end_tm: 종료 시간 (예: 2026-01-01 18:07:01)
-- ctn_desc: 스텝 설명 (예: step01, step02, ..., step09)
+- parameter: 스텝 설명 (예: step01, step02, ..., step09)
 - html: Layer1 전수 집계 테이블 HTML
 
 ## 응답 규칙:
@@ -241,8 +263,8 @@ WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 
 - 전체 데이터 조회: wads_query_data()
 - 특정 로트 조회: wads_query_data(lotcd="5NA")
 - 특정 날짜 조회: wads_query_data(end_tm="2026-01-01")
-- 특정 스텝 리포트: wads_get_html_report(ctn_desc="step01")
-- 복합 조건: wads_get_html_report(lotcd="5NA", ctn_desc="step05")
+- 특정 스텝 리포트: wads_get_html_report(parameter="step01")
+- 복합 조건: wads_get_html_report(lotcd="5NA", parameter="step05")
 
 ## 중요: 응답 형식
 - 도구 호출 결과(데이터/리포트)는 별도의 HTML 카드로 자동 표시됩니다.
@@ -360,7 +382,7 @@ def _render_wads_query_html(payload: List[Dict[str, Any]]) -> str:
             "<tr>"
             f"<td>{_html_escape(row.get('lotcd'))}</td>"
             f"<td>{_html_escape(row.get('end_tm'))}</td>"
-            f"<td>{_html_escape(row.get('ctn_desc'))}</td>"
+            f"<td>{_html_escape(row.get('parameter'))}</td>"
             "</tr>"
         )
 
@@ -393,7 +415,7 @@ def _render_wads_report_html(payload: Any) -> str:
             else:
                 # 리포트 메타정보 헤더
                 header = f"""<div style="background:#f0f9ff;padding:8px 12px;border-radius:8px;margin-bottom:8px;border-left:4px solid #0284c7;">
-                    <strong>📊 리포트 {idx + 1}</strong>: {_html_escape(report.get('lotcd', ''))} / {_html_escape(report.get('ctn_desc', ''))} ({_html_escape(report.get('end_tm', ''))})
+                    <strong>📊 리포트 {idx + 1}</strong>: {_html_escape(report.get('lotcd', ''))} / {_html_escape(report.get('parameter', ''))} ({_html_escape(report.get('end_tm', ''))})
                 </div>"""
                 html_content = report.get("html", "")
                 if html_content:
@@ -451,7 +473,10 @@ def wads_agent(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # 현재 날짜가 포함된 에이전트 생성 및 호출
     agent = _create_wads_agent()
-    result = agent.invoke({"messages": messages + [HumanMessage(content=q)]})
+    result = agent.invoke(
+        {"messages": messages + [HumanMessage(content=q)]},
+        config={"callbacks": _lf_callbacks()},
+    )
 
     print(f"result messages count: {len(result.get('messages', []))}")
 
@@ -542,7 +567,8 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     try:
         # 부모 config의 LangGraph 내부 파라미터(__pregel_* 등)를 제거하고 콜백만 전달
-        sub_config = {"callbacks": (config.get("callbacks") or [])} if config else {}
+        lf_cbs = _lf_callbacks()
+        sub_config = {"callbacks": lf_cbs + (config.get("callbacks") or [])} if config else {"callbacks": lf_cbs}
         result = agent.invoke({"messages": [HumanMessage(content=query)]}, config=sub_config)
     except Exception as e:
         print(f"[ERROR] WADS Agent 실행 실패: {e}")
@@ -618,5 +644,5 @@ if __name__ == "__main__":
 
     for idx, report in enumerate(reports):
         print(f"  report[{idx}] lotcd: {report.get('lotcd')}")
-        print(f"  report[{idx}] ctn_desc: {report.get('ctn_desc')}")
+        print(f"  report[{idx}] parameter: {report.get('parameter')}")
         print(f"  report[{idx}] html 길이: {len(report.get('html', ''))} 글자")

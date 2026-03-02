@@ -10,6 +10,7 @@ import time
 import httpx
 import logging
 import functools
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from tabulate import tabulate
 
@@ -18,7 +19,20 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 
 # ── Langfuse 트레이싱 ────────────────────────────────────
-from langfuse import observe
+from langfuse import observe, get_client
+from langfuse.langchain import CallbackHandler as _LFHandler
+
+
+def _lf_callbacks() -> list:
+    """현재 Langfuse span에 연결된 LangChain CallbackHandler 반환"""
+    lf = get_client()
+    trace_id = lf.get_current_trace_id()
+    if not trace_id:
+        return []
+    return [_LFHandler(trace_context={
+        "trace_id": trace_id,
+        "parent_span_id": lf.get_current_observation_id(),
+    })]
 
 # ── 로깅 설정 ────────────────────────────────────────────
 logging.basicConfig(
@@ -127,67 +141,71 @@ PARA_COLUMNS = [
     "RSH", "RD", "RS",
 ]
 
+GMS_COLUMNS = ["cum0", "cum2", "fab", "prb", "pnt"]
+GMS_HIGHER_IS_BETTER = set(GMS_COLUMNS)  # gms는 전부 높을수록 좋음
 
-@observe(name="fetch_weekly_data")
-@timed
-def _fetch_weekly_data(lotcd: str, date_str: str) -> dict | None:
-    """FastAPI /pt1h/weekly 엔드포인트에서 1주치 데이터 조회
 
-    Args:
-        lotcd: 제품코드 (예: "4SS")
-        date_str: YYYYMMDD 형식 날짜
-
-    Returns:
-        dict: API 응답 (lotcount, wfCount, VTH, IDSAT, ...) 또는 None
-    """
-    url = f"{API_BASE_URL}/pt1h/weekly"
-    params = {
-        "lotcd": lotcd,
-        "unit": "weekly",
-        "process": "pt1h",
-        "date": date_str,
-    }
+def _fetch_single(lotcd: str, date_str: str, process: str) -> dict:
+    """단일 프로세스 1주 데이터 조회 (스레드 안전)"""
+    url = f"{API_BASE_URL}/yieldAvg"
+    payload = {"lotcd": lotcd, "unit": "weekly", "process": process, "date": date_str}
     try:
         with httpx.Client(timeout=30) as client:
-            resp = client.get(url, params=params)
+            resp = client.post(url, json=payload)
             resp.raise_for_status()
-            data = resp.json()
-
-            # _pt1hbin 접미사 제거 (FastAPI에서 해당 접미사를 붙여서 전송)
-            if "pt1hPara" in data and isinstance(data["pt1hPara"], dict):
-                data["pt1hPara"] = {
-                    k.replace("_pt1hbin", ""): v
-                    for k, v in data["pt1hPara"].items()
-                }
-
-            return data
+            return resp.json()
     except httpx.HTTPError as e:
-        print(f"[ERROR] API 호출 실패 ({date_str}): {e}")
-        return None
+        print(f"[ERROR] {process} ({date_str}): {e}")
+        return {}
 
 
 @observe(name="fetch_4_weeks")
 @timed
 def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
-    """기준 날짜로부터 최근 4주 데이터를 순차 조회 (오래된 순)
-
-    Returns:
-        list[dict]: 각 dict에 'week' 키가 추가된 API 응답 리스트
-    """
+    """4주 × 3프로세스 = 12개 요청을 ThreadPoolExecutor로 병렬 조회 (오래된 순)"""
     mondays = _get_4_week_dates(ref_date)
-    results = []
 
+    # 12개 작업 동시 실행
+    raw: dict = {}  # (date_str, process) -> response dict
+    tasks = [(m, p) for m in mondays for p in ("pt1h", "pt1c", "gms")]
+
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        futures = {
+            executor.submit(_fetch_single, lotcd, m.strftime("%Y%m%d"), p): (m, p)
+            for m, p in tasks
+        }
+        for future in as_completed(futures):
+            monday, process = futures[future]
+            raw[(monday.strftime("%Y%m%d"), process)] = future.result()
+
+    # 주차별 flat dict 조립 (오래된 순 유지)
+    results = []
     for monday in mondays:
         date_str = monday.strftime("%Y%m%d")
         week_str = _iso_week_str(monday)
-        print(f"  [API] {week_str} ({date_str}) 조회 중...")
+        print(f"  [API] {week_str} ({date_str}) 완료")
 
-        data = _fetch_weekly_data(lotcd, date_str)
-        if data:
-            data["week"] = week_str
-            results.append(data)
-        else:
-            results.append({"week": week_str, "lotcount": "-", "wfCount": "-"})
+        pt1h = raw.get((date_str, "pt1h"), {})
+        pt1c = raw.get((date_str, "pt1c"), {})
+        gms  = raw.get((date_str, "gms"),  {})
+
+        wd = {"week": week_str}
+        wd["lotcount"] = pt1h.get("lotcount", "-")
+        wd["wfCount"]  = pt1h.get("wfCount", "-")
+        for col in PARA_COLUMNS:
+            wd[col] = pt1h.get(col, "-")
+
+        wd["pt1c_lotcount"] = pt1c.get("lotcount", "-")
+        wd["pt1c_wfCount"]  = pt1c.get("wfCount", "-")
+        for col in PARA_COLUMNS:
+            wd[f"pt1c_{col}"] = pt1c.get(col, "-")
+
+        wd["gms_lotcount"] = gms.get("lotcount", "-")
+        wd["gms_wfCount"]  = gms.get("wfCount", "-")
+        for col in GMS_COLUMNS:
+            wd[f"gms_{col}"] = gms.get(col, "-")
+
+        results.append(wd)
 
     return results
 
@@ -195,11 +213,28 @@ def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
 # ============================================================
 # 5. 테이블 생성 함수
 # ============================================================
-def _build_table(weeks_data: list[dict], lotcd: str, filter_params=None) -> str:
-    """4주치 데이터를 테이블 문자열로 변환
+def _fmt_val(val) -> str:
+    """raw value → ×100, 소수점 2자리 포맷. 숫자가 아니면 '-' 반환."""
+    if val in (None, "-", ""):
+        return "-"
+    try:
+        return f"{float(val) * 100:.2f}"
+    except (TypeError, ValueError):
+        return "-"
 
-    행: 주차 (WEEK)
-    열: LOT, WF, VTH, IDSAT, ... (파라미터명)
+
+def _fmt_gms_val(val) -> str:
+    """gms raw value → 소수점 2자리 (×100 없음, 이미 % 단위)"""
+    if val in (None, "-", ""):
+        return "-"
+    try:
+        return f"{float(val):.2f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _build_table(weeks_data: list[dict], lotcd: str, filter_params=None) -> str:
+    """4주치 데이터를 테이블 문자열로 변환 (pt1h + pt1c + gms 3섹션)
 
     Args:
         weeks_data: _fetch_4_weeks 반환값
@@ -210,28 +245,33 @@ def _build_table(weeks_data: list[dict], lotcd: str, filter_params=None) -> str:
         str: 포맷된 테이블 문자열
     """
     cols = [c for c in PARA_COLUMNS if c in filter_params] if filter_params else PARA_COLUMNS
-    headers = ["WEEK", "LOT", "WF"] + cols
+    gms_cols = GMS_COLUMNS
+
+    headers = (
+        ["WEEK", "LOT", "WF"]
+        + [f"PT1H_{c}" for c in cols]
+        + [f"PT1C_{c}" for c in cols]
+        + [f"GMS_{c}" for c in gms_cols]
+    )
 
     rows = []
     for wd in weeks_data:
-        week = wd.get("week", "?")
-        lotcount = wd.get("lotcount", "-")
-        wf_count = wd.get("wfCount", "-")
-
-        row = [week, lotcount, wf_count]
-        for col in cols:
-            val = wd.get(col, "-")
-            row.append(val)
+        row = [wd.get("week", "?"), wd.get("lotcount", "-"), wd.get("wfCount", "-")]
+        row += [_fmt_val(wd.get(col, "-")) for col in cols]
+        row += [_fmt_val(wd.get(f"pt1c_{col}", "-")) for col in cols]
+        row += [_fmt_gms_val(wd.get(f"gms_{col}", "-")) for col in gms_cols]
         rows.append(row)
 
-    title = f"\n[{lotcd}] Weekly pt1h Metrics (최근 4주)\n"
+    title = f"\n[{lotcd}] Weekly pt1h+pt1c+gms Metrics (최근 4주)\n"
     table = tabulate(rows, headers=headers, tablefmt="grid", numalign="right", stralign="center")
 
     return title + table
 
 
-def _build_sparkline_svg(vals: list, param: str) -> str:
+def _build_sparkline_svg(vals: list, param: str, higher_is_better_set=None) -> str:
     """SVG sparkline 생성 (36x14 pixels, 헤더 다크 배경용 밝은 색상)"""
+    if higher_is_better_set is None:
+        higher_is_better_set = HIGHER_IS_BETTER
     valid = [(i, v) for i, v in enumerate(vals) if v is not None]
     if len(valid) < 2:
         return '<svg width="36" height="14"><line x1="0" y1="7" x2="36" y2="7" stroke="#64748b" stroke-width="1"/></svg>'
@@ -254,8 +294,8 @@ def _build_sparkline_svg(vals: list, param: str) -> str:
     first_v, last_v = valid[0][1], valid[-1][1]
     delta = last_v - first_v
     is_better = (
-        (param in HIGHER_IS_BETTER and delta > 0)
-        or (param not in HIGHER_IS_BETTER and delta < 0)
+        (param in higher_is_better_set and delta > 0)
+        or (param not in higher_is_better_set and delta < 0)
     )
     if max_v == min_v or abs(delta) < (max_v - min_v + 1e-15) * 0.05:
         color = "#94a3b8"
@@ -273,7 +313,7 @@ def _build_html_table(
     filter_params=None,
     anomaly_params=None,
 ) -> str:
-    """4주치 데이터를 동적 HTML 테이블로 변환
+    """4주치 데이터를 동적 HTML 테이블로 변환 (pt1h + pt1c + gms 3섹션)
 
     Args:
         weeks_data: _fetch_4_weeks 반환값
@@ -285,32 +325,60 @@ def _build_html_table(
         str: HTML 문자열 (이상감지 하이라이팅, Sparkline, Δ행 포함)
     """
     cols = [c for c in PARA_COLUMNS if c in filter_params] if filter_params else PARA_COLUMNS
-    headers = ["WEEK", "LOT", "WF"] + cols
+    gms_cols = GMS_COLUMNS
     BLUE_COLS = {"VTH", "IDSAT"}
 
-    # anomaly lookup dict {param: info}
     anomaly_map = {a["param"]: a for a in anomaly_params} if anomaly_params else {}
 
-    # Δ 계산 (최신주 - 직전주, 절대값)
-    delta_vals = {}
+    # Delta 계산 (최신주 - 직전주)
+    delta_pt1h: dict = {}
+    delta_pt1c: dict = {}
+    delta_gms: dict = {}
     if len(weeks_data) >= 2:
         prev, curr = weeks_data[-2], weeks_data[-1]
         for col in cols:
-            pv, cv = prev.get(col), curr.get(col)
+            for delta_dict, prefix in [(delta_pt1h, ""), (delta_pt1c, "pt1c_")]:
+                pv = prev.get(f"{prefix}{col}")
+                cv = curr.get(f"{prefix}{col}")
+                if pv in (None, "-", "") or cv in (None, "-", ""):
+                    delta_dict[col] = None
+                else:
+                    try:
+                        delta_dict[col] = float(cv) - float(pv)
+                    except (TypeError, ValueError):
+                        delta_dict[col] = None
+        for col in gms_cols:
+            pv = prev.get(f"gms_{col}")
+            cv = curr.get(f"gms_{col}")
             if pv in (None, "-", "") or cv in (None, "-", ""):
-                delta_vals[col] = None
-                continue
-            try:
-                delta_vals[col] = float(cv) - float(pv)
-            except (TypeError, ValueError):
-                delta_vals[col] = None
+                delta_gms[col] = None
+            else:
+                try:
+                    delta_gms[col] = float(cv) - float(pv)
+                except (TypeError, ValueError):
+                    delta_gms[col] = None
 
-    # Sparkline 데이터 (컬럼별 4개 float or None)
-    sparkline_data = {}
+    # Sparkline 데이터
+    sparkline_pt1h: dict = {}
+    sparkline_pt1c: dict = {}
+    sparkline_gms: dict = {}
     for col in cols:
+        for sd, prefix in [(sparkline_pt1h, ""), (sparkline_pt1c, "pt1c_")]:
+            vals = []
+            for wd in weeks_data:
+                v = wd.get(f"{prefix}{col}")
+                if v in (None, "-", ""):
+                    vals.append(None)
+                else:
+                    try:
+                        vals.append(float(v))
+                    except (TypeError, ValueError):
+                        vals.append(None)
+            sd[col] = vals
+    for col in gms_cols:
         vals = []
         for wd in weeks_data:
-            v = wd.get(col)
+            v = wd.get(f"gms_{col}")
             if v in (None, "-", ""):
                 vals.append(None)
             else:
@@ -318,7 +386,11 @@ def _build_html_table(
                     vals.append(float(v))
                 except (TypeError, ValueError):
                     vals.append(None)
-        sparkline_data[col] = vals
+        sparkline_gms[col] = vals
+
+    pt1h_span = len(cols)
+    pt1c_span = len(cols)
+    gms_span = len(gms_cols)
 
     html = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
@@ -339,12 +411,23 @@ th.th-meta {
   background: #475569; min-width: 44px;
   text-align: center; vertical-align: middle; padding: 8px 6px;
 }
+th.th-meta-pt1c { background: #2d4a7a; }
+th.th-meta-gms  { background: #2d5a3d; }
+th.th-section {
+  text-align: center; padding: 6px; font-size: 12px; font-weight: 700;
+}
+th.th-section-pt1h { background: #1e293b; }
+th.th-section-pt1c { background: #1e3a5f; border-left: 3px solid #3b82f6; }
+th.th-section-gms  { background: #1a3a2a; border-left: 3px solid #22c55e; }
 th.th-param {
   width: 44px; height: 100px;
   padding: 0; vertical-align: bottom;
 }
-th.th-blue { background: #1d4ed8; }
-th.th-amber { background: #92400e; }
+th.th-blue       { background: #1d4ed8; }
+th.th-amber      { background: #92400e; }
+th.th-blue-pt1c  { background: #1e40af; border-left: 1px solid #3b82f6; }
+th.th-amber-pt1c { background: #78350f; border-left: 1px solid #3b82f6; }
+th.th-gms        { background: #14532d; border-left: 1px solid #22c55e; }
 .th-param-inner {
   display: flex; flex-direction: column;
   align-items: center; justify-content: flex-end;
@@ -380,6 +463,8 @@ td.improved {
   background: #f0fdf4 !important; color: #15803d;
   font-weight: 600; border-left: 2px solid #22c55e;
 }
+td.td-pt1c-sep { border-left: 3px solid #3b82f6 !important; }
+td.td-gms-sep  { border-left: 3px solid #22c55e !important; }
 tr.delta td {
   background: #1e293b !important; color: #94a3b8;
   font-size: 11px; font-weight: 500; border-color: #334155;
@@ -391,57 +476,112 @@ td.delta-neg { background: #7f1d1d !important; color: #fca5a5; font-weight: 600;
 td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600; }
 </style></head><body>
 <table>
-<thead><tr>"""
+<thead>"""
 
-    # 헤더: WEEK/LOT/WF는 가로, 파라미터는 -90도 회전 + 스파크라인
-    for h in headers:
-        if h == "WEEK":
-            html += '<th class="th-week">WEEK</th>'
-        elif h in ("LOT", "WF"):
-            html += f'<th class="th-meta">{h}</th>'
-        else:
-            css = "th-blue" if h in BLUE_COLS else "th-amber"
-            badge = ""
-            if h in anomaly_map:
-                badge = '<span class="badge-d">▼</span>' if anomaly_map[h]["direction"] == "열화" else '<span class="badge-i">▲</span>'
-            svg = _build_sparkline_svg(sparkline_data.get(h, []), h)
-            tip = ""
-            if h in anomaly_map:
-                a = anomaly_map[h]
-                tip = f' title="{a["prev_val"]} → {a["curr_val"]} ({a["change_pct"]:+.1f}%)"'
-            html += (
-                f'<th class="th-param {css}"{tip}>'
-                f'<div class="th-param-inner">'
-                f'<div class="hname">{h}{badge}</div>'
-                f'<div class="spark">{svg}</div>'
-                f'</div></th>'
-            )
-    html += "</tr></thead>\n<tbody>\n"
+    # Row 1: 섹션 헤더 (WEEK rowspan=2, pt1h/pt1c/gms colspan)
+    html += (
+        f'\n<tr>'
+        f'<th class="th-week" rowspan="2">WEEK</th>'
+        f'<th class="th-meta" rowspan="2">LOT</th>'
+        f'<th class="th-meta" rowspan="2">WF</th>'
+        f'<th colspan="{pt1h_span}" class="th-section th-section-pt1h">pt1h</th>'
+        f'<th colspan="{pt1c_span}" class="th-section th-section-pt1c">pt1c</th>'
+        f'<th colspan="{gms_span}" class="th-section th-section-gms">gms</th>'
+        f'</tr>'
+    )
+
+    # Row 2: 서브헤더 (LOT, WF, 파라미터명 × 3섹션)
+    html += "\n<tr>"
+
+    # pt1h 서브헤더
+    for col in cols:
+        css = "th-blue" if col in BLUE_COLS else "th-amber"
+        badge = ""
+        if col in anomaly_map:
+            badge = '<span class="badge-d">▼</span>' if anomaly_map[col]["direction"] == "열화" else '<span class="badge-i">▲</span>'
+        svg = _build_sparkline_svg(sparkline_pt1h.get(col, []), col)
+        tip = ""
+        if col in anomaly_map:
+            a = anomaly_map[col]
+            tip = f' title="{a["prev_val"]} → {a["curr_val"]} ({a["change_pct"]:+.1f}%)"'
+        html += (
+            f'<th class="th-param {css}"{tip}>'
+            f'<div class="th-param-inner">'
+            f'<div class="hname">{col}{badge}</div>'
+            f'<div class="spark">{svg}</div>'
+            f'</div></th>'
+        )
+
+    # pt1c 서브헤더 (첫 컬럼에 좌측 구분선)
+    for j, col in enumerate(cols):
+        css = "th-blue-pt1c" if col in BLUE_COLS else "th-amber-pt1c"
+        svg = _build_sparkline_svg(sparkline_pt1c.get(col, []), col)
+        sep = ' style="border-left: 3px solid #3b82f6;"' if j == 0 else ""
+        html += (
+            f'<th class="th-param {css}"{sep}>'
+            f'<div class="th-param-inner">'
+            f'<div class="hname">{col}</div>'
+            f'<div class="spark">{svg}</div>'
+            f'</div></th>'
+        )
+
+    # gms 서브헤더 (첫 컬럼에 좌측 구분선)
+    for j, col in enumerate(gms_cols):
+        svg = _build_sparkline_svg(sparkline_gms.get(col, []), col, GMS_HIGHER_IS_BETTER)
+        sep = ' style="border-left: 3px solid #22c55e;"' if j == 0 else ""
+        html += (
+            f'<th class="th-param th-gms"{sep}>'
+            f'<div class="th-param-inner">'
+            f'<div class="hname">{col}</div>'
+            f'<div class="spark">{svg}</div>'
+            f'</div></th>'
+        )
+
+    html += "\n</tr>\n</thead>\n<tbody>\n"
 
     last_idx = len(weeks_data) - 1
     for i, wd in enumerate(weeks_data):
         html += "<tr>"
         html += f'<td class="td-week">{wd.get("week", "?")}</td>'
+
+        # 공통 LOT/WF (한 번만)
         html += f'<td>{wd.get("lotcount", "-")}</td>'
         html += f'<td>{wd.get("wfCount", "-")}</td>'
+
+        # pt1h 셀
         for col in cols:
-            val = wd.get(col, "-")
+            display = _fmt_val(wd.get(col, "-"))
             if i == last_idx and col in anomaly_map:
                 a = anomaly_map[col]
                 css = "degraded" if a["direction"] == "열화" else "improved"
                 tip = f"{a['prev_val']} → {a['curr_val']} ({a['change_pct']:+.1f}%)"
-                html += f'<td class="{css}" title="{tip}">{val}</td>'
+                html += f'<td class="{css}" title="{tip}">{display}</td>'
             else:
-                html += f"<td>{val}</td>"
+                html += f"<td>{display}</td>"
+
+        # pt1c 셀 (첫 셀에 구분선)
+        for j, col in enumerate(cols):
+            display = _fmt_val(wd.get(f"pt1c_{col}", "-"))
+            sep = ' class="td-pt1c-sep"' if j == 0 else ""
+            html += f"<td{sep}>{display}</td>"
+
+        # gms 셀 (첫 셀에 구분선)
+        for j, col in enumerate(gms_cols):
+            display = _fmt_gms_val(wd.get(f"gms_{col}", "-"))
+            sep = ' class="td-gms-sep"' if j == 0 else ""
+            html += f"<td{sep}>{display}</td>"
+
         html += "</tr>\n"
 
-    # Δ 행 (최신주 - 직전주)
-    if delta_vals:
+    # Δ 행 (최신주 - 직전주, 3섹션)
+    if len(weeks_data) >= 2:
         html += '<tr class="delta">'
         html += '<td class="delta-week">Δ</td>'
-        html += "<td>—</td><td>—</td>"
+        html += "<td>—</td><td>—</td>"  # 공통 LOT/WF
+
+        # pt1h delta
         for col in cols:
-            d = delta_vals.get(col)
+            d = delta_pt1h.get(col)
             if d is None or abs(d) < 1e-12:
                 html += "<td>—</td>"
             else:
@@ -450,7 +590,33 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
                     or (col not in HIGHER_IS_BETTER and d < 0)
                 )
                 css = "delta-pos" if is_better else "delta-neg"
-                html += f'<td class="{css}">{d:+.4g}</td>'
+                html += f'<td class="{css}">{d * 100:+.2f}</td>'
+
+        # pt1c delta (첫 셀에 구분선)
+        for j, col in enumerate(cols):
+            d = delta_pt1c.get(col)
+            sep = " td-pt1c-sep" if j == 0 else ""
+            if d is None or abs(d) < 1e-12:
+                html += f'<td class="{sep.strip()}">—</td>' if sep else "<td>—</td>"
+            else:
+                is_better = (
+                    (col in HIGHER_IS_BETTER and d > 0)
+                    or (col not in HIGHER_IS_BETTER and d < 0)
+                )
+                css = ("delta-pos" if is_better else "delta-neg") + sep
+                html += f'<td class="{css}">{d * 100:+.2f}</td>'
+
+        # gms delta (첫 셀에 구분선)
+        for j, col in enumerate(gms_cols):
+            d = delta_gms.get(col)
+            sep = " td-gms-sep" if j == 0 else ""
+            if d is None or abs(d) < 1e-12:
+                html += f'<td class="{sep.strip()}">—</td>' if sep else "<td>—</td>"
+            else:
+                is_better = col in GMS_HIGHER_IS_BETTER and d > 0
+                css = ("delta-pos" if is_better else "delta-neg") + sep
+                html += f'<td class="{css}">{d:+.2f}</td>'
+
         html += "</tr>\n"
 
     html += "</tbody></table>\n</body></html>"
@@ -511,8 +677,8 @@ def _detect_anomalies(weeks_data: list[dict], threshold: float = ANOMALY_THRESHO
             direction = "개선" if is_better else "열화"
             anomalies.append({
                 "param": param,
-                "prev_val": round(pv, 4),
-                "curr_val": round(cv, 4),
+                "prev_val": round(pv * 100, 2),
+                "curr_val": round(cv * 100, 2),
                 "change_pct": round(change_pct, 1),
                 "direction": direction,
             })
@@ -583,7 +749,7 @@ def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm, c
                 {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            config=config,
+            config={**(config or {}), "callbacks": _lf_callbacks()},
         )
         return response.content
     except Exception as e:
@@ -682,6 +848,36 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     result_message = AIMessage(content=result_msg, name="yield_agent")
 
+    # agent_suggestion: UI 렌더링용 (anomaly가 있을 때만 제안)
+    agent_suggestion = (
+        "오늘 검출된 열화 Parameter를 보여드릴까요?"
+        if anomaly_params else ""
+    )
+
+    # need_cummap 시 4주치 날짜 범위 + target_bin 설정
+    need_cummap = state.get("need_cummap", False)
+    cummap_weeks = []
+    cummap_target_bin = ""
+    cummap_category = ""
+
+    if need_cummap and filter_params:
+        from map_agent import CATEGORY_TO_BIN
+        category = filter_params[0].upper()
+        target_bin = CATEGORY_TO_BIN.get(category, "")
+        if target_bin:
+            cummap_target_bin = target_bin
+            cummap_category = category
+            mondays = _get_4_week_dates(ref_date)
+            for m in mondays:
+                end = m + timedelta(days=7)
+                cummap_weeks.append({
+                    "week": _iso_week_str(m),
+                    "start": m.strftime("%Y%m%d"),
+                    "end": end.strftime("%Y%m%d"),
+                })
+            logger.info("[YieldAgent] cummap 연계: %s (bin=%s), %d weeks",
+                        category, target_bin, len(cummap_weeks))
+
     return {
         "messages": [result_message],
         "weeks_data": weeks_data,
@@ -689,6 +885,11 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         "analysis_result": analysis,
         "yield_artifacts": yield_artifacts,
         "anomaly_params": anomaly_params,
+        "agent_suggestion": agent_suggestion,
+        "need_cummap": need_cummap and bool(cummap_weeks),
+        "cummap_weeks": cummap_weeks,
+        "cummap_target_bin": cummap_target_bin,
+        "cummap_category": cummap_category,
     }
 
 
