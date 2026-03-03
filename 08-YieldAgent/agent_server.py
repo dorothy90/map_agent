@@ -100,6 +100,9 @@ async def chat_stream(request: ChatRequest):
         "map_bin_type": "pt1h_bin",
         "map_result":   "",
         "map_artifacts": [],
+        # Yield lot 비교 파라미터
+        "yield_lot_ids":  "",
+        "yield_groupkey": "",
     }
 
     loop = asyncio.get_event_loop()

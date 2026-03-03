@@ -76,6 +76,8 @@ class RouteResponse(BaseModel):
         default=False,
         description="True면 yield 테이블 후 4주치 category별 cummap도 생성. 특정 파라미터 수율 질문 시 True"
     )
+    unit: str = Field(default="weekly", description='"weekly" | "monthly" | "daily"')
+    periods: int = Field(default=0, description="조회 기간 수 (0 = 기본값: weekly=4, monthly=3, daily=4)")
     message: str = Field(description="사용자에게 전달할 한국어 메시지")
     # Map 파라미터
     map_lot_id:   str = Field(default="", description="단일 lot ID (예: 'LOTABC123')")
@@ -84,6 +86,9 @@ class RouteResponse(BaseModel):
     map_groupkey: str = Field(default="", description="lot_id.wf_id 형식 (예: 'LOT001.01,LOT001.02')")
     map_type:     str = Field(default="binmap", description="binmap | cummap | all")
     map_bin_type: str = Field(default="pt1h_bin", description="pt1h_bin | pt2c_bin")
+    # Yield lot 비교 파라미터
+    yield_lot_ids:  str = Field(default="", description="수율 조회용 lot ID 목록, 쉼표 구분 (예: '4SS2DPD,4SSXCEW')")
+    yield_groupkey: str = Field(default="", description="수율 조회용 lot.wf 형식 (예: '4SS2DPD.01,4SS2DPD.05')")
 
 
 # ── Rewrite 시스템 프롬프트 ─────────────────────────────────
@@ -212,7 +217,31 @@ Route to **map_agent** when the user explicitly requests:
 - map_type:     "binmap"(기본) | "cummap" | "all"
 - map_bin_type: "pt1h_bin"(기본) | "pt2c_bin"
 
+=== YIELD LOT FILTER ===
+- 사용자가 specific lot ID(길이 > 5자)를 언급하고 수율/비교 조회 → yield_lot_ids에 저장, next="yield_agent"
+  예: "4SS2DPD 수율 알려줘"      → yield_lot_ids="4SS2DPD", next="yield_agent"
+  예: "4SS2DPD,4SSXCEW 비교"   → yield_lot_ids="4SS2DPD,4SSXCEW", next="yield_agent"
+- LOT.WF 형식(숫자 서픽스 포함) + 수율/비교 → yield_groupkey에 저장, next="yield_agent"
+  예: "4SS2DPD.01,4SS2DPD.05 비교"  → yield_groupkey="4SS2DPD.01,4SS2DPD.05", next="yield_agent"
+  예: "4SS2DPD.01,4SS2DPD.05 수율"  → yield_groupkey="4SS2DPD.01,4SS2DPD.05", next="yield_agent"
+  ※ 단, "맵"/"map" 키워드가 없는 경우에만 yield_groupkey 사용
+- yield_lot_ids/yield_groupkey 있으면 lotcd는 lot ID 앞 3-4자에서 자동 추론
+  예: "4SS2DPD" → lotcd="4SS"
+- yield_lot_ids/yield_groupkey 없으면 기존 lotcd 기반 period 조회 유지
+
 Route to **FINISH** when the request is unrelated to yield, WADS, or wafer map.
+
+=== UNIT & PERIODS ===
+unit 결정:
+  "월별", "매월", "월간"  → unit="monthly"
+  "일별", "매일", "일간"  → unit="daily"
+  명시 없음              → unit="weekly"
+
+periods 오버라이드 (자연어에서 숫자 파싱):
+  "최근 3달"  → unit="monthly", periods=3
+  "지난 7일"  → unit="daily",   periods=7
+  "6주 치"    → unit="weekly",  periods=6
+  숫자 없으면 → periods=0 (yield_agent가 기본값 적용: weekly=4, monthly=3, daily=4)
 
 === TIME REFERENCE ===
 
@@ -231,8 +260,10 @@ For wads_agent → wads_end_tm (YYYY-MM-DD):
 
 === PRODUCT CODE ===
 - lotcd is a SHORT 3-4 character code only: "4SS", "5NA", "6E2"
-- A full lot ID like "4SS2DPD", "4SSXCEW" is NOT a lotcd — it goes into map_lot_id or map_lot_ids
-- Rule: if the string is longer than 5 characters, it is a lot ID, NOT a lotcd
+- A full lot ID (> 5 chars) like "4SS2DPD", "4SSXCEW" is NOT a lotcd
+  → for yield/수율 queries:  put it in yield_lot_ids (NOT map_lot_id)
+  → for map/맵 queries:     put it in map_lot_id or map_lot_ids
+- When yield_lot_ids is set, auto-infer lotcd from the first 3-4 chars (e.g. "4SS2DPD" → lotcd="4SS")
 - Default: "4SS"
 - For follow-up queries, keep the same lotcd from conversation history
 
@@ -245,13 +276,17 @@ Respond with ONLY a raw JSON object — no markdown, no code fences, no extra fi
   "wads_end_tm": "<YYYY-MM-DD for wads_agent, else empty string>",
   "filter_params": ["VTH", "IDSAT"],
   "need_cummap": false,
+  "unit": "weekly",
+  "periods": 0,
   "message": "<Korean message>",
   "map_lot_id":   "",
   "map_lot_ids":  "",
   "map_wf_ids":   "",
   "map_groupkey": "",
   "map_type":     "binmap",
-  "map_bin_type": "pt1h_bin"
+  "map_bin_type": "pt1h_bin",
+  "yield_lot_ids":  "",
+  "yield_groupkey": ""
 }}\
 """
 
@@ -346,6 +381,8 @@ def supervisor_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         "wads_end_tm": wads_end_tm,
         "filter_params": decision.filter_params,
         "need_cummap": decision.need_cummap,
+        "unit": decision.unit or "weekly",
+        "periods": decision.periods,
         "next": decision.next,
         "map_lot_id":   decision.map_lot_id,
         "map_lot_ids":  decision.map_lot_ids,
@@ -353,6 +390,8 @@ def supervisor_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         "map_groupkey": decision.map_groupkey,
         "map_type":     decision.map_type or "binmap",
         "map_bin_type": decision.map_bin_type or "pt1h_bin",
+        "yield_lot_ids":  decision.yield_lot_ids,
+        "yield_groupkey": decision.yield_groupkey,
     }
 
 
@@ -368,6 +407,8 @@ class YieldQueryState(TypedDict):
     # 조회 파라미터
     lotcd: str
     ref_date: str
+    unit: str      # "weekly" | "monthly" | "daily"
+    periods: int   # 조회 기간 수 (0 = 기본값)
 
     # 결과 데이터
     weeks_data: list
@@ -400,6 +441,10 @@ class YieldQueryState(TypedDict):
     map_groupkey: str
     map_type:     str
     map_bin_type: str
+
+    # Yield lot 비교 파라미터
+    yield_lot_ids:  str
+    yield_groupkey: str
 
     # Map 결과
     map_result:    str

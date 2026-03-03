@@ -7,10 +7,9 @@ load_dotenv(override=True)
 
 import os
 import time
-import httpx
+import oracledb
 import logging
 import functools
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from tabulate import tabulate
 
@@ -127,11 +126,14 @@ def _get_4_week_dates(ref: date) -> list[date]:
 
 
 # ============================================================
-# 4. FastAPI 호출 함수
+# 4. Oracle SQL 조회 함수
 # ============================================================
-API_BASE_URL = os.getenv("YIELD_API_BASE_URL", "http://127.0.0.1:8000")
+ORACLE_USER     = os.getenv("ORACLE_USER")
+ORACLE_PASSWORD = os.getenv("ORACLE_PASSWORD")
+ORACLE_DSN      = os.getenv("ORACLE_DSN")
+YLD_TABLE       = "DF_DIE_TO_WF_YLD"
 
-# 파라미터 컬럼 순서 (API 응답의 키 중 lotcount, wfCount 제외한 pt1h 파라미터)
+# 파라미터 컬럼 순서 (pt1h/pt1c PARAM 컬럼 값)
 PARA_COLUMNS = [
     "VTH", "IDSAT", "IDLIN", "IOFF", "ION", "IGATE", "IDDQ",
     "VMIN", "FMAX", "TPD", "GM_MAX", "SS", "DIBL",
@@ -141,55 +143,415 @@ PARA_COLUMNS = [
     "RSH", "RD", "RS",
 ]
 
+PT1C_COLUMNS = ["PT1C", "CFTA"]
+
 GMS_COLUMNS = ["cum0", "cum2", "fab", "prb", "pnt"]
 GMS_HIGHER_IS_BETTER = set(GMS_COLUMNS)  # gms는 전부 높을수록 좋음
 
 
-def _fetch_single(lotcd: str, date_str: str, process: str) -> dict:
-    """단일 프로세스 1주 데이터 조회 (스레드 안전)"""
-    url = f"{API_BASE_URL}/yieldAvg"
-    payload = {"lotcd": lotcd, "unit": "weekly", "process": process, "date": date_str}
+def _get_oracle_connection() -> oracledb.Connection:
+    return oracledb.connect(user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=ORACLE_DSN)
+
+
+def _week_to_db_yld(week_agent: str) -> str:
+    """'2026-W06' → '2026-06'  (DF_DIE_TO_WF_YLD WEEK 컬럼용)"""
+    return week_agent.replace("-W", "-")
+
+
+def _week_to_db_gms(week_agent: str) -> str:
+    """'2026-W06' → '202606'  (DF_GMS_YIELD_WEEKLY PERIOD_DATE 컬럼용)"""
+    return week_agent.replace("-W", "")
+
+
+def _fetch_weekly_sql(lotcd: str, week_strs: list[str], process: str) -> dict[str, dict]:
+    """pt1h 또는 pt1c 프로세스의 n주 데이터를 Oracle SQL 한 번으로 조회.
+
+    Returns:
+        {week_agent_str: {"lotcount": N, "wfCount": N, PARAM: avg_val, ...}}
+    """
+    db_weeks = [_week_to_db_yld(w) for w in week_strs]
+    placeholders = ", ".join(f":w{i}" for i in range(len(week_strs)))
+    sql = f"""
+        WITH base AS (
+            SELECT WEEK, LOTID, WFID, PARAM, VALUE
+            FROM DF_DIE_TO_WF_YLD
+            WHERE LOT_CD = :lot_cd
+              AND WEEK IN ({placeholders})
+              AND PROCESS = :process
+        ),
+        counts AS (
+            SELECT WEEK,
+                   COUNT(DISTINCT LOTID) AS LOT_COUNT,
+                   COUNT(DISTINCT LOTID || '-' || TO_CHAR(WFID)) AS WF_COUNT
+            FROM base GROUP BY WEEK
+        ),
+        param_avgs AS (
+            SELECT WEEK, PARAM, AVG(VALUE) AS AVG_VALUE
+            FROM base GROUP BY WEEK, PARAM
+        )
+        SELECT pa.WEEK, pa.PARAM, pa.AVG_VALUE, c.LOT_COUNT, c.WF_COUNT
+        FROM param_avgs pa
+        JOIN counts c ON pa.WEEK = c.WEEK
+        ORDER BY pa.WEEK, pa.PARAM
+    """
+    # DB week → agent week 역매핑
+    db_to_agent = {_week_to_db_yld(w): w for w in week_strs}
+    params = {"lot_cd": lotcd, "process": process}
+    for i, w in enumerate(db_weeks):
+        params[f"w{i}"] = w
+
+    result: dict[str, dict] = {}
     try:
-        with httpx.Client(timeout=30) as client:
-            resp = client.post(url, json=payload)
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.HTTPError as e:
-        print(f"[ERROR] {process} ({date_str}): {e}")
-        return {}
+        conn = _get_oracle_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            for db_week, param, avg_val, lot_cnt, wf_cnt in cur:
+                agent_week = db_to_agent.get(db_week, db_week)
+                if agent_week not in result:
+                    result[agent_week] = {"lotcount": int(lot_cnt), "wfCount": int(wf_cnt)}
+                result[agent_week][param] = float(avg_val) if avg_val is not None else "-"
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("[%s/%s] Oracle 조회 실패: %s", process, lotcd, e)
+
+    return result
 
 
-@observe(name="fetch_4_weeks")
+def _fetch_gms_sql(lotcd: str, week_strs: list[str]) -> dict[str, dict]:
+    """GMS 주차별 yield 조회 (DF_GMS_YIELD_WEEKLY).
+
+    Returns:
+        {week_agent_str: {"fab": v, "prb": v, "cum0": v, "cum2": "-", "pnt": "-",
+                          "lotcount": "-", "wfCount": "-"}}
+    """
+    db_periods = [_week_to_db_gms(w) for w in week_strs]
+    placeholders = ", ".join(f":p{i}" for i in range(len(week_strs)))
+    sql = f"""
+        SELECT PERIOD_DATE, FAB_YIELD, PRB_YIELD, CUM0_YIELD
+        FROM DF_GMS_YIELD_WEEKLY
+        WHERE LOTCODE = :lot_cd
+          AND PERIOD_DATE IN ({placeholders})
+    """
+    db_to_agent = {_week_to_db_gms(w): w for w in week_strs}
+    params = {"lot_cd": lotcd}
+    for i, p in enumerate(db_periods):
+        params[f"p{i}"] = p
+
+    result: dict[str, dict] = {}
+    try:
+        conn = _get_oracle_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            for period_date, fab, prb, cum0 in cur:
+                agent_week = db_to_agent.get(period_date, period_date)
+                result[agent_week] = {
+                    "fab":      float(fab)  if fab  is not None else "-",
+                    "prb":      float(prb)  if prb  is not None else "-",
+                    "cum0":     float(cum0) if cum0 is not None else "-",
+                    "cum2":     "-",
+                    "pnt":      "-",
+                    "lotcount": "-",
+                    "wfCount":  "-",
+                }
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("[gms/%s] Oracle 조회 실패: %s", lotcd, e)
+
+    return result
+
+
+def _get_n_weeks(ref: date, n: int) -> list[date]:
+    """ref 기준 최근 n주의 월요일 리스트 (오래된순)"""
+    monday = _week_monday(ref)
+    return [monday - timedelta(weeks=i) for i in range(n - 1, -1, -1)]
+
+
+def _get_n_months(ref: date, n: int) -> list[str]:
+    """ref 기준 최근 n개월의 YYYY-MM 리스트 (오래된순)
+
+    예: ref=2026-03-27, n=3 → ["2026-01", "2026-02", "2026-03"]
+    """
+    result = []
+    year, month = ref.year, ref.month
+    for i in range(n - 1, -1, -1):
+        m = month - i
+        y = year
+        while m <= 0:
+            m += 12
+            y -= 1
+        result.append(f"{y:04d}-{m:02d}")
+    return result
+
+
+def _get_n_days(ref: date, n: int) -> list[date]:
+    """ref 기준 최근 n일의 date 리스트 (오래된순)
+
+    예: ref=2026-03-27, n=4 → [2026-03-24, 2026-03-25, 2026-03-26, 2026-03-27]
+    """
+    return [ref - timedelta(days=n - 1 - i) for i in range(n)]
+
+
+def _fetch_monthly_sql(lotcd: str, month_strs: list[str], process: str) -> dict[str, dict]:
+    """MONTH 컬럼 기반 월별 조회 (DF_DIE_TO_WF_YLD).
+    month_strs: "YYYY-MM" 포맷 (DB MONTH 컬럼과 동일)
+
+    Returns:
+        {"YYYY-MM": {"lotcount": N, "wfCount": N, PARAM: avg_val, ...}}
+    """
+    placeholders = ", ".join(f":m{i}" for i in range(len(month_strs)))
+    sql = f"""
+        WITH base AS (
+            SELECT MONTH, LOTID, WFID, PARAM, VALUE
+            FROM DF_DIE_TO_WF_YLD
+            WHERE LOT_CD = :lot_cd
+              AND MONTH IN ({placeholders})
+              AND PROCESS = :process
+        ),
+        counts AS (
+            SELECT MONTH,
+                   COUNT(DISTINCT LOTID) AS LOT_COUNT,
+                   COUNT(DISTINCT LOTID || '-' || TO_CHAR(WFID)) AS WF_COUNT
+            FROM base GROUP BY MONTH
+        ),
+        param_avgs AS (
+            SELECT MONTH, PARAM, AVG(VALUE) AS AVG_VALUE
+            FROM base GROUP BY MONTH, PARAM
+        )
+        SELECT pa.MONTH, pa.PARAM, pa.AVG_VALUE, c.LOT_COUNT, c.WF_COUNT
+        FROM param_avgs pa
+        JOIN counts c ON pa.MONTH = c.MONTH
+        ORDER BY pa.MONTH, pa.PARAM
+    """
+    params = {"lot_cd": lotcd, "process": process}
+    for i, m in enumerate(month_strs):
+        params[f"m{i}"] = m
+
+    result: dict[str, dict] = {}
+    try:
+        conn = _get_oracle_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            for month, param, avg_val, lot_cnt, wf_cnt in cur:
+                if month not in result:
+                    result[month] = {"lotcount": int(lot_cnt), "wfCount": int(wf_cnt)}
+                result[month][param] = float(avg_val) if avg_val is not None else "-"
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("[%s/%s] monthly Oracle 조회 실패: %s", process, lotcd, e)
+
+    return result
+
+
+def _fetch_daily_sql(lotcd: str, days: list[date], process: str) -> dict[str, dict]:
+    """MEASURETIME_START 범위 조건 기반 일별 조회 (DF_DIE_TO_WF_YLD, range scan).
+
+    Returns:
+        {"YYYY-MM-DD": {"lotcount": N, "wfCount": N, PARAM: avg_val, ...}}
+    """
+    start_dt = datetime.combine(min(days), datetime.min.time())
+    end_dt = datetime.combine(max(days) + timedelta(days=1), datetime.min.time())
+    days_set = {d.strftime("%Y-%m-%d") for d in days}
+
+    sql = """
+        WITH base AS (
+            SELECT TRUNC(MEASURETIME_START) AS DAY_DATE,
+                   LOTID, WFID, PARAM, VALUE
+            FROM DF_DIE_TO_WF_YLD
+            WHERE LOT_CD = :lot_cd
+              AND MEASURETIME_START >= :start_dt
+              AND MEASURETIME_START <  :end_dt
+              AND PROCESS = :process
+        ),
+        counts AS (
+            SELECT DAY_DATE,
+                   COUNT(DISTINCT LOTID) AS LOT_COUNT,
+                   COUNT(DISTINCT LOTID || '-' || TO_CHAR(WFID)) AS WF_COUNT
+            FROM base GROUP BY DAY_DATE
+        ),
+        param_avgs AS (
+            SELECT DAY_DATE, PARAM, AVG(VALUE) AS AVG_VALUE
+            FROM base GROUP BY DAY_DATE, PARAM
+        )
+        SELECT pa.DAY_DATE, pa.PARAM, pa.AVG_VALUE, c.LOT_COUNT, c.WF_COUNT
+        FROM param_avgs pa JOIN counts c ON pa.DAY_DATE = c.DAY_DATE
+        ORDER BY pa.DAY_DATE, pa.PARAM
+    """
+    result: dict[str, dict] = {}
+    try:
+        conn = _get_oracle_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, {
+                "lot_cd": lotcd,
+                "start_dt": start_dt,
+                "end_dt": end_dt,
+                "process": process,
+            })
+            for day_date, param, avg_val, lot_cnt, wf_cnt in cur:
+                # day_date는 datetime 또는 date 객체일 수 있음
+                if hasattr(day_date, "date"):
+                    day_str = day_date.date().strftime("%Y-%m-%d")
+                else:
+                    day_str = day_date.strftime("%Y-%m-%d")
+                if day_str not in days_set:
+                    continue
+                if day_str not in result:
+                    result[day_str] = {"lotcount": int(lot_cnt), "wfCount": int(wf_cnt)}
+                result[day_str][param] = float(avg_val) if avg_val is not None else "-"
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("[%s/%s] daily Oracle 조회 실패: %s", process, lotcd, e)
+
+    return result
+
+
+def _fetch_gms_monthly_sql(lotcd: str, month_strs: list[str]) -> dict[str, dict]:
+    """GMS 월별 yield 조회 (DF_GMS_YIELD_MONTHLY).
+    month_strs: "YYYY-MM" → DB PERIOD_DATE "YYYYMM" 변환
+
+    Returns:
+        {"YYYY-MM": {"fab": v, "prb": v, "cum0": v, ...}}
+    """
+    db_periods = [m.replace("-", "") for m in month_strs]
+    db_to_agent = {db: agent for db, agent in zip(db_periods, month_strs)}
+    placeholders = ", ".join(f":p{i}" for i in range(len(month_strs)))
+    sql = f"""
+        SELECT PERIOD_DATE, FAB_YIELD, PRB_YIELD, CUM0_YIELD
+        FROM DF_GMS_YIELD_MONTHLY
+        WHERE LOTCODE = :lot_cd
+          AND PERIOD_DATE IN ({placeholders})
+    """
+    params = {"lot_cd": lotcd}
+    for i, p in enumerate(db_periods):
+        params[f"p{i}"] = p
+
+    result: dict[str, dict] = {}
+    try:
+        conn = _get_oracle_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            for period_date, fab, prb, cum0 in cur:
+                agent_key = db_to_agent.get(period_date, period_date)
+                result[agent_key] = {
+                    "fab":      float(fab)  if fab  is not None else "-",
+                    "prb":      float(prb)  if prb  is not None else "-",
+                    "cum0":     float(cum0) if cum0 is not None else "-",
+                    "cum2":     "-",
+                    "pnt":      "-",
+                    "lotcount": "-",
+                    "wfCount":  "-",
+                }
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("[gms-monthly/%s] Oracle 조회 실패: %s", lotcd, e)
+
+    return result
+
+
+def _fetch_gms_daily_sql(lotcd: str, days: list[date]) -> dict[str, dict]:
+    """GMS 일별 yield 조회 (DF_GMS_YIELD_DAILY).
+    days: date 객체 → DB PERIOD_DATE "YYYYMMDD" 변환
+
+    Returns:
+        {"YYYY-MM-DD": {"fab": v, "prb": v, "cum0": v, ...}}
+    """
+    db_periods = [d.strftime("%Y%m%d") for d in days]
+    db_to_agent = {db: d.strftime("%Y-%m-%d") for db, d in zip(db_periods, days)}
+    placeholders = ", ".join(f":p{i}" for i in range(len(days)))
+    sql = f"""
+        SELECT PERIOD_DATE, FAB_YIELD, PRB_YIELD, CUM0_YIELD
+        FROM DF_GMS_YIELD_DAILY
+        WHERE LOTCODE = :lot_cd
+          AND PERIOD_DATE IN ({placeholders})
+    """
+    params = {"lot_cd": lotcd}
+    for i, p in enumerate(db_periods):
+        params[f"p{i}"] = p
+
+    result: dict[str, dict] = {}
+    try:
+        conn = _get_oracle_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            for period_date, fab, prb, cum0 in cur:
+                agent_key = db_to_agent.get(period_date, period_date)
+                result[agent_key] = {
+                    "fab":      float(fab)  if fab  is not None else "-",
+                    "prb":      float(prb)  if prb  is not None else "-",
+                    "cum0":     float(cum0) if cum0 is not None else "-",
+                    "cum2":     "-",
+                    "pnt":      "-",
+                    "lotcount": "-",
+                    "wfCount":  "-",
+                }
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("[gms-daily/%s] Oracle 조회 실패: %s", lotcd, e)
+
+    return result
+
+
+DEFAULT_PERIODS = {"weekly": 4, "monthly": 3, "daily": 4}
+
+
+@observe(name="fetch_periods")
 @timed
-def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
-    """4주 × 3프로세스 = 12개 요청을 ThreadPoolExecutor로 병렬 조회 (오래된 순)"""
-    mondays = _get_4_week_dates(ref_date)
+def _fetch_periods(lotcd: str, ref_date: date,
+                   unit: str = "weekly", periods: int = 0) -> list[dict]:
+    """unit(weekly/monthly/daily) + periods 기반 데이터 조회.
 
-    # 12개 작업 동시 실행
-    raw: dict = {}  # (date_str, process) -> response dict
-    tasks = [(m, p) for m in mondays for p in ("pt1h", "pt1c", "gms")]
+    Args:
+        lotcd: 제품코드
+        ref_date: 기준 날짜
+        unit: "weekly" | "monthly" | "daily"
+        periods: 조회 기간 수 (0 = DEFAULT_PERIODS 기본값 사용)
 
-    with ThreadPoolExecutor(max_workers=12) as executor:
-        futures = {
-            executor.submit(_fetch_single, lotcd, m.strftime("%Y%m%d"), p): (m, p)
-            for m, p in tasks
-        }
-        for future in as_completed(futures):
-            monday, process = futures[future]
-            raw[(monday.strftime("%Y%m%d"), process)] = future.result()
+    Returns:
+        list[dict]: 각 기간별 데이터 (wd["week"] 키 유지)
+    """
+    n = periods if periods > 0 else DEFAULT_PERIODS.get(unit, 4)
 
-    # 주차별 flat dict 조립 (오래된 순 유지)
+    if unit == "monthly":
+        month_strs = _get_n_months(ref_date, n)
+        pt1h_data = _fetch_monthly_sql(lotcd, month_strs, "pt1h")
+        pt1c_data = _fetch_monthly_sql(lotcd, month_strs, "pt1c")
+        gms_data  = _fetch_gms_monthly_sql(lotcd, month_strs)
+        period_labels = month_strs
+    elif unit == "daily":
+        days = _get_n_days(ref_date, n)
+        pt1h_data = _fetch_daily_sql(lotcd, days, "pt1h")
+        pt1c_data = _fetch_daily_sql(lotcd, days, "pt1c")
+        gms_data  = _fetch_gms_daily_sql(lotcd, days)
+        period_labels = [d.strftime("%Y-%m-%d") for d in days]
+    else:
+        # weekly (기본값)
+        mondays = _get_n_weeks(ref_date, n)
+        week_strs = [_iso_week_str(m) for m in mondays]
+        pt1h_data = _fetch_weekly_sql(lotcd, week_strs, "pt1h")
+        pt1c_data = _fetch_weekly_sql(lotcd, week_strs, "pt1c")
+        gms_data  = _fetch_gms_sql(lotcd, week_strs)
+        period_labels = week_strs
+
     results = []
-    for monday in mondays:
-        date_str = monday.strftime("%Y%m%d")
-        week_str = _iso_week_str(monday)
-        print(f"  [API] {week_str} ({date_str}) 완료")
+    for label in period_labels:
+        print(f"  [SQL] {label} 완료")
 
-        pt1h = raw.get((date_str, "pt1h"), {})
-        pt1c = raw.get((date_str, "pt1c"), {})
-        gms  = raw.get((date_str, "gms"),  {})
+        pt1h = pt1h_data.get(label, {})
+        pt1c = pt1c_data.get(label, {})
+        gms  = gms_data.get(label, {})
 
-        wd = {"week": week_str}
+        wd = {"week": label}   # downstream 코드가 wd["week"]를 사용하므로 키 이름 유지
         wd["lotcount"] = pt1h.get("lotcount", "-")
         wd["wfCount"]  = pt1h.get("wfCount", "-")
         for col in PARA_COLUMNS:
@@ -197,7 +559,7 @@ def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
 
         wd["pt1c_lotcount"] = pt1c.get("lotcount", "-")
         wd["pt1c_wfCount"]  = pt1c.get("wfCount", "-")
-        for col in PARA_COLUMNS:
+        for col in PT1C_COLUMNS:
             wd[f"pt1c_{col}"] = pt1c.get(col, "-")
 
         wd["gms_lotcount"] = gms.get("lotcount", "-")
@@ -210,15 +572,22 @@ def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
     return results
 
 
+@observe(name="fetch_4_weeks")
+@timed
+def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
+    """[하위 호환] _fetch_periods(unit='weekly', periods=4)로 위임."""
+    return _fetch_periods(lotcd, ref_date, unit="weekly", periods=4)
+
+
 # ============================================================
 # 5. 테이블 생성 함수
 # ============================================================
 def _fmt_val(val) -> str:
-    """raw value → ×100, 소수점 2자리 포맷. 숫자가 아니면 '-' 반환."""
+    """raw value → 소수점 2자리 포맷. 숫자가 아니면 '-' 반환."""
     if val in (None, "-", ""):
         return "-"
     try:
-        return f"{float(val) * 100:.2f}"
+        return f"{float(val):.2f}"
     except (TypeError, ValueError):
         return "-"
 
@@ -233,24 +602,30 @@ def _fmt_gms_val(val) -> str:
         return "-"
 
 
-def _build_table(weeks_data: list[dict], lotcd: str, filter_params=None) -> str:
-    """4주치 데이터를 테이블 문자열로 변환 (pt1h + pt1c + gms 3섹션)
+_PERIOD_LABEL = {"weekly": "WEEK", "monthly": "MONTH", "daily": "DATE", "lot": "LOT"}
+
+
+def _build_table(weeks_data: list[dict], lotcd: str, filter_params=None,
+                 unit: str = "weekly") -> str:
+    """n기간치 데이터를 테이블 문자열로 변환 (pt1h + pt1c + gms 3섹션)
 
     Args:
-        weeks_data: _fetch_4_weeks 반환값
+        weeks_data: _fetch_periods 반환값
         lotcd: 제품코드
         filter_params: 표시할 파라미터 목록 (None 또는 빈 리스트 = 전체)
+        unit: "weekly" | "monthly" | "daily"
 
     Returns:
         str: 포맷된 테이블 문자열
     """
     cols = [c for c in PARA_COLUMNS if c in filter_params] if filter_params else PARA_COLUMNS
     gms_cols = GMS_COLUMNS
+    period_label = _PERIOD_LABEL.get(unit, "WEEK")
 
     headers = (
-        ["WEEK", "LOT", "WF"]
+        [period_label, "LOT", "WF"]
         + [f"PT1H_{c}" for c in cols]
-        + [f"PT1C_{c}" for c in cols]
+        + [f"PT1C_{c}" for c in PT1C_COLUMNS]
         + [f"GMS_{c}" for c in gms_cols]
     )
 
@@ -258,53 +633,15 @@ def _build_table(weeks_data: list[dict], lotcd: str, filter_params=None) -> str:
     for wd in weeks_data:
         row = [wd.get("week", "?"), wd.get("lotcount", "-"), wd.get("wfCount", "-")]
         row += [_fmt_val(wd.get(col, "-")) for col in cols]
-        row += [_fmt_val(wd.get(f"pt1c_{col}", "-")) for col in cols]
+        row += [_fmt_val(wd.get(f"pt1c_{col}", "-")) for col in PT1C_COLUMNS]
         row += [_fmt_gms_val(wd.get(f"gms_{col}", "-")) for col in gms_cols]
         rows.append(row)
 
-    title = f"\n[{lotcd}] Weekly pt1h+pt1c+gms Metrics (최근 4주)\n"
+    n = len(weeks_data)
+    title = f"\n[{lotcd}] {period_label} pt1h+pt1c+gms Metrics (최근 {n}개)\n"
     table = tabulate(rows, headers=headers, tablefmt="grid", numalign="right", stralign="center")
 
     return title + table
-
-
-def _build_sparkline_svg(vals: list, param: str, higher_is_better_set=None) -> str:
-    """SVG sparkline 생성 (36x14 pixels, 헤더 다크 배경용 밝은 색상)"""
-    if higher_is_better_set is None:
-        higher_is_better_set = HIGHER_IS_BETTER
-    valid = [(i, v) for i, v in enumerate(vals) if v is not None]
-    if len(valid) < 2:
-        return '<svg width="36" height="14"><line x1="0" y1="7" x2="36" y2="7" stroke="#64748b" stroke-width="1"/></svg>'
-
-    all_vals = [v for _, v in valid]
-    min_v, max_v = min(all_vals), max(all_vals)
-    n = len(vals)
-    w, h, margin = 36, 14, 2
-
-    def to_x(idx):
-        return int(idx * (w - 1) / max(n - 1, 1))
-
-    def to_y(v):
-        if max_v == min_v:
-            return h // 2
-        return int(margin + (1 - (v - min_v) / (max_v - min_v)) * (h - 2 * margin))
-
-    points = " ".join(f"{to_x(i)},{to_y(v)}" for i, v in valid)
-
-    first_v, last_v = valid[0][1], valid[-1][1]
-    delta = last_v - first_v
-    is_better = (
-        (param in higher_is_better_set and delta > 0)
-        or (param not in higher_is_better_set and delta < 0)
-    )
-    if max_v == min_v or abs(delta) < (max_v - min_v + 1e-15) * 0.05:
-        color = "#94a3b8"
-    elif is_better:
-        color = "#86efac"
-    else:
-        color = "#fca5a5"
-
-    return f'<svg width="36" height="14"><polyline points="{points}" fill="none" stroke="{color}" stroke-width="1.5"/></svg>'
 
 
 def _build_html_table(
@@ -312,14 +649,16 @@ def _build_html_table(
     lotcd: str,
     filter_params=None,
     anomaly_params=None,
+    unit: str = "weekly",
 ) -> str:
-    """4주치 데이터를 동적 HTML 테이블로 변환 (pt1h + pt1c + gms 3섹션)
+    """n기간치 데이터를 동적 HTML 테이블로 변환 (pt1h + pt1c + gms 3섹션)
 
     Args:
-        weeks_data: _fetch_4_weeks 반환값
+        weeks_data: _fetch_periods 반환값
         lotcd: 제품코드
         filter_params: 표시할 파라미터 목록 (None 또는 빈 리스트 = 전체)
         anomaly_params: _detect_anomalies 반환값 (None이면 하이라이팅 없음)
+        unit: "weekly" | "monthly" | "daily"
 
     Returns:
         str: HTML 문자열 (이상감지 하이라이팅, Sparkline, Δ행 포함)
@@ -337,16 +676,25 @@ def _build_html_table(
     if len(weeks_data) >= 2:
         prev, curr = weeks_data[-2], weeks_data[-1]
         for col in cols:
-            for delta_dict, prefix in [(delta_pt1h, ""), (delta_pt1c, "pt1c_")]:
-                pv = prev.get(f"{prefix}{col}")
-                cv = curr.get(f"{prefix}{col}")
-                if pv in (None, "-", "") or cv in (None, "-", ""):
-                    delta_dict[col] = None
-                else:
-                    try:
-                        delta_dict[col] = float(cv) - float(pv)
-                    except (TypeError, ValueError):
-                        delta_dict[col] = None
+            pv = prev.get(col)
+            cv = curr.get(col)
+            if pv in (None, "-", "") or cv in (None, "-", ""):
+                delta_pt1h[col] = None
+            else:
+                try:
+                    delta_pt1h[col] = float(cv) - float(pv)
+                except (TypeError, ValueError):
+                    delta_pt1h[col] = None
+        for col in PT1C_COLUMNS:
+            pv = prev.get(f"pt1c_{col}")
+            cv = curr.get(f"pt1c_{col}")
+            if pv in (None, "-", "") or cv in (None, "-", ""):
+                delta_pt1c[col] = None
+            else:
+                try:
+                    delta_pt1c[col] = float(cv) - float(pv)
+                except (TypeError, ValueError):
+                    delta_pt1c[col] = None
         for col in gms_cols:
             pv = prev.get(f"gms_{col}")
             cv = curr.get(f"gms_{col}")
@@ -358,38 +706,8 @@ def _build_html_table(
                 except (TypeError, ValueError):
                     delta_gms[col] = None
 
-    # Sparkline 데이터
-    sparkline_pt1h: dict = {}
-    sparkline_pt1c: dict = {}
-    sparkline_gms: dict = {}
-    for col in cols:
-        for sd, prefix in [(sparkline_pt1h, ""), (sparkline_pt1c, "pt1c_")]:
-            vals = []
-            for wd in weeks_data:
-                v = wd.get(f"{prefix}{col}")
-                if v in (None, "-", ""):
-                    vals.append(None)
-                else:
-                    try:
-                        vals.append(float(v))
-                    except (TypeError, ValueError):
-                        vals.append(None)
-            sd[col] = vals
-    for col in gms_cols:
-        vals = []
-        for wd in weeks_data:
-            v = wd.get(f"gms_{col}")
-            if v in (None, "-", ""):
-                vals.append(None)
-            else:
-                try:
-                    vals.append(float(v))
-                except (TypeError, ValueError):
-                    vals.append(None)
-        sparkline_gms[col] = vals
-
     pt1h_span = len(cols)
-    pt1c_span = len(cols)
+    pt1c_span = len(PT1C_COLUMNS)
     gms_span = len(gms_cols)
 
     html = """<!DOCTYPE html>
@@ -443,7 +761,6 @@ th.th-gms        { background: #14532d; border-left: 1px solid #22c55e; }
 }
 .badge-d { color: #fca5a5; font-size: 9px; margin-top: 2px; }
 .badge-i { color: #86efac; font-size: 9px; margin-top: 2px; }
-.spark { line-height: 0; }
 td {
   border: 1px solid #e2e8f0; padding: 4px 9px;
   text-align: right; font-size: 12px; color: #374151;
@@ -478,10 +795,12 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
 <table>
 <thead>"""
 
-    # Row 1: 섹션 헤더 (WEEK rowspan=2, pt1h/pt1c/gms colspan)
+    period_label = _PERIOD_LABEL.get(unit, "WEEK")
+
+    # Row 1: 섹션 헤더 (WEEK/MONTH/DATE rowspan=2, pt1h/pt1c/gms colspan)
     html += (
         f'\n<tr>'
-        f'<th class="th-week" rowspan="2">WEEK</th>'
+        f'<th class="th-week" rowspan="2">{period_label}</th>'
         f'<th class="th-meta" rowspan="2">LOT</th>'
         f'<th class="th-meta" rowspan="2">WF</th>'
         f'<th colspan="{pt1h_span}" class="th-section th-section-pt1h">pt1h</th>'
@@ -499,7 +818,6 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
         badge = ""
         if col in anomaly_map:
             badge = '<span class="badge-d">▼</span>' if anomaly_map[col]["direction"] == "열화" else '<span class="badge-i">▲</span>'
-        svg = _build_sparkline_svg(sparkline_pt1h.get(col, []), col)
         tip = ""
         if col in anomaly_map:
             a = anomaly_map[col]
@@ -508,32 +826,26 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
             f'<th class="th-param {css}"{tip}>'
             f'<div class="th-param-inner">'
             f'<div class="hname">{col}{badge}</div>'
-            f'<div class="spark">{svg}</div>'
             f'</div></th>'
         )
 
     # pt1c 서브헤더 (첫 컬럼에 좌측 구분선)
-    for j, col in enumerate(cols):
-        css = "th-blue-pt1c" if col in BLUE_COLS else "th-amber-pt1c"
-        svg = _build_sparkline_svg(sparkline_pt1c.get(col, []), col)
+    for j, col in enumerate(PT1C_COLUMNS):
         sep = ' style="border-left: 3px solid #3b82f6;"' if j == 0 else ""
         html += (
-            f'<th class="th-param {css}"{sep}>'
+            f'<th class="th-param th-amber-pt1c"{sep}>'
             f'<div class="th-param-inner">'
             f'<div class="hname">{col}</div>'
-            f'<div class="spark">{svg}</div>'
             f'</div></th>'
         )
 
     # gms 서브헤더 (첫 컬럼에 좌측 구분선)
     for j, col in enumerate(gms_cols):
-        svg = _build_sparkline_svg(sparkline_gms.get(col, []), col, GMS_HIGHER_IS_BETTER)
         sep = ' style="border-left: 3px solid #22c55e;"' if j == 0 else ""
         html += (
             f'<th class="th-param th-gms"{sep}>'
             f'<div class="th-param-inner">'
             f'<div class="hname">{col}</div>'
-            f'<div class="spark">{svg}</div>'
             f'</div></th>'
         )
 
@@ -560,7 +872,7 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
                 html += f"<td>{display}</td>"
 
         # pt1c 셀 (첫 셀에 구분선)
-        for j, col in enumerate(cols):
+        for j, col in enumerate(PT1C_COLUMNS):
             display = _fmt_val(wd.get(f"pt1c_{col}", "-"))
             sep = ' class="td-pt1c-sep"' if j == 0 else ""
             html += f"<td{sep}>{display}</td>"
@@ -590,21 +902,17 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
                     or (col not in HIGHER_IS_BETTER and d < 0)
                 )
                 css = "delta-pos" if is_better else "delta-neg"
-                html += f'<td class="{css}">{d * 100:+.2f}</td>'
+                html += f'<td class="{css}">{d:+.2f}</td>'
 
         # pt1c delta (첫 셀에 구분선)
-        for j, col in enumerate(cols):
+        for j, col in enumerate(PT1C_COLUMNS):
             d = delta_pt1c.get(col)
             sep = " td-pt1c-sep" if j == 0 else ""
             if d is None or abs(d) < 1e-12:
                 html += f'<td class="{sep.strip()}">—</td>' if sep else "<td>—</td>"
             else:
-                is_better = (
-                    (col in HIGHER_IS_BETTER and d > 0)
-                    or (col not in HIGHER_IS_BETTER and d < 0)
-                )
-                css = ("delta-pos" if is_better else "delta-neg") + sep
-                html += f'<td class="{css}">{d * 100:+.2f}</td>'
+                css = "delta-pos" + sep
+                html += f'<td class="{css}">{d:+.2f}</td>'
 
         # gms delta (첫 셀에 구분선)
         for j, col in enumerate(gms_cols):
@@ -677,8 +985,8 @@ def _detect_anomalies(weeks_data: list[dict], threshold: float = ANOMALY_THRESHO
             direction = "개선" if is_better else "열화"
             anomalies.append({
                 "param": param,
-                "prev_val": round(pv * 100, 2),
-                "curr_val": round(cv * 100, 2),
+                "prev_val": round(pv, 2),
+                "curr_val": round(cv, 2),
                 "change_pct": round(change_pct, 1),
                 "direction": direction,
             })
@@ -770,6 +1078,350 @@ model = ChatOpenAI(
 
 
 # ============================================================
+# 7. Lot 비교 모드 유틸리티
+# ============================================================
+
+def _parse_lot_specs(lot_ids: str = "", groupkey: str = "") -> list[tuple[str, int | None]]:
+    """lot_ids / groupkey 문자열 → [(lotid, wfid_or_None), ...] 정규화
+
+    lot_ids="4SS2DPD,4SSXCEW"           → [("4SS2DPD", None), ("4SSXCEW", None)]
+    groupkey="4SS2DPD.01,4SS2DPD.05"    → [("4SS2DPD", 1), ("4SS2DPD", 5)]
+    mixed: groupkey에 점 없는 "LOT3"    → ("LOT3", None)
+    """
+    specs: list[tuple[str, int | None]] = []
+
+    def _add(token: str):
+        token = token.strip()
+        if not token:
+            return
+        if "." in token:
+            parts = token.rsplit(".", 1)
+            lotid = parts[0].strip().upper()
+            try:
+                wfid: int | None = int(parts[1])
+            except ValueError:
+                wfid = None
+            specs.append((lotid, wfid))
+        else:
+            specs.append((token.upper(), None))
+
+    for raw in (groupkey or "").split(","):
+        _add(raw)
+
+    for raw in (lot_ids or "").split(","):
+        tok = raw.strip().upper()
+        if tok and not any(s[0] == tok and s[1] is None for s in specs):
+            specs.append((tok, None))
+
+    # 중복 제거 (순서 유지)
+    seen: set = set()
+    result = []
+    for item in specs:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+@observe(name="fetch_lot_sql")
+@timed
+@observe(name="fetch_lot_sql")
+@timed
+def _fetch_lot_sql(lot_specs: list[tuple[str, int | None]], process: str) -> dict[str, dict]:
+    """lot 단위 수율 비교 조회.
+
+    - wfid=None  → lot 전체 평균 (GROUP BY LOTID, PARAM). "_wf_count" 키에 WF 수 저장.
+    - wfid!=None → 해당 WF만 조회 (GROUP BY LOTID, WFID, PARAM).
+
+    Returns:
+        {"4SSXCEW": {"_wf_count": 25, PARAM: avg_val, ...},
+         "4SS2DPD.01": {PARAM: avg_val, ...}}
+    """
+    if not lot_specs:
+        return {}
+
+    result: dict[str, dict] = {}
+
+    # lot-level 스펙과 wf-level 스펙을 분리
+    lot_level  = [(i, lotid) for i, (lotid, wfid) in enumerate(lot_specs) if wfid is None]
+    wf_level   = [(i, lotid, wfid) for i, (lotid, wfid) in enumerate(lot_specs) if wfid is not None]
+
+    try:
+        conn = _get_oracle_connection()
+        with conn.cursor() as cur:
+
+            # ── lot-level: LOTID별 전체 평균 + WF 수 ──
+            if lot_level:
+                bind: dict = {"process": process}
+                clauses = []
+                for idx, (_, lotid) in enumerate(lot_level):
+                    bind[f"l{idx}"] = lotid
+                    clauses.append(f"LOTID = :l{idx}")
+                where = " OR ".join(clauses)
+                sql = f"""
+                    SELECT LOTID, COUNT(DISTINCT WFID) AS WF_CNT, PARAM, AVG(VALUE) AS AVG_VALUE
+                    FROM {YLD_TABLE}
+                    WHERE ({where}) AND PROCESS = :process
+                    GROUP BY LOTID, PARAM
+                    ORDER BY LOTID, PARAM
+                """
+                cur.execute(sql, bind)
+                for lotid, wf_cnt, param, avg_val in cur.fetchall():
+                    key = str(lotid)
+                    if key not in result:
+                        result[key] = {"_wf_count": int(wf_cnt)}
+                    result[key][str(param)] = float(avg_val) if avg_val is not None else None
+
+            # ── wf-level: 특정 WF 조회 ──
+            if wf_level:
+                bind2: dict = {"process": process}
+                clauses2 = []
+                for idx, (_, lotid, wfid) in enumerate(wf_level):
+                    bind2[f"l{idx}"] = lotid
+                    bind2[f"w{idx}"] = wfid
+                    clauses2.append(f"(LOTID = :l{idx} AND WFID = :w{idx})")
+                where2 = " OR ".join(clauses2)
+                sql2 = f"""
+                    SELECT LOTID, WFID, PARAM, AVG(VALUE) AS AVG_VALUE
+                    FROM {YLD_TABLE}
+                    WHERE ({where2}) AND PROCESS = :process
+                    GROUP BY LOTID, WFID, PARAM
+                    ORDER BY LOTID, WFID, PARAM
+                """
+                cur.execute(sql2, bind2)
+                for lotid, wfid, param, avg_val in cur.fetchall():
+                    key = f"{lotid}.{int(wfid):02d}"
+                    if key not in result:
+                        result[key] = {}
+                    result[key][str(param)] = float(avg_val) if avg_val is not None else None
+
+        conn.close()
+    except Exception as e:
+        logger.error("[fetch_lot_sql] 조회 실패 (process=%s): %s", process, e)
+
+    return result
+
+
+def _merge_lot_data(pt1h: dict[str, dict], pt1c: dict[str, dict]) -> dict[str, dict]:
+    """pt1h + pt1c 데이터를 lot 키 기준으로 병합.
+
+    pt1c param들은 "pt1c_{PARAM}" 접두사로 저장.
+    """
+    all_keys = set(pt1h) | set(pt1c)
+    merged: dict[str, dict] = {}
+    for key in all_keys:
+        merged[key] = {}
+        for param, val in (pt1h.get(key) or {}).items():
+            merged[key][param] = val
+        for param, val in (pt1c.get(key) or {}).items():
+            merged[key][f"pt1c_{param}"] = val
+    return merged
+
+
+def _build_lot_table(lot_data: dict[str, dict], mode: str = "lot", filter_params=None) -> str:
+    """lot 비교 텍스트 테이블.
+
+    mode="lot"      → lot ID 행, WF_CNT 컬럼 포함
+    mode="groupkey" → LOT.WF 행, WF_CNT 컬럼 없음
+    첫 행: Avg
+    """
+    if not lot_data:
+        return "(lot 데이터 없음)"
+
+    cols = [c for c in PARA_COLUMNS if c in filter_params] if filter_params else PARA_COLUMNS
+    all_params = cols + [f"pt1c_{c}" for c in PT1C_COLUMNS]
+    lot_keys = sorted(k for k in lot_data if not k.startswith("_"))
+
+    # avg 계산
+    def _avg_param(p):
+        vals = [lot_data[k].get(p) for k in lot_keys if isinstance(lot_data[k].get(p), (int, float))]
+        return sum(vals) / len(vals) if vals else None
+
+    if mode == "lot":
+        headers = ["LOT", "WF_CNT"] + all_params
+        avg_wf = sum(lot_data[k].get("_wf_count", 0) for k in lot_keys)
+        rows = [["Avg", str(avg_wf)] + [_fmt_val(_avg_param(p)) for p in all_params]]
+        for key in lot_keys:
+            wf_cnt = lot_data[key].get("_wf_count", "-")
+            rows.append([key, str(wf_cnt)] + [_fmt_val(lot_data[key].get(p)) for p in all_params])
+    else:
+        headers = ["LOT"] + all_params
+        rows = [["Avg"] + [_fmt_val(_avg_param(p)) for p in all_params]]
+        for key in lot_keys:
+            rows.append([key] + [_fmt_val(lot_data[key].get(p)) for p in all_params])
+
+    return tabulate(rows, headers=headers, tablefmt="grid", numalign="right", stralign="center")
+
+
+def _build_lot_html_table(lot_data: dict[str, dict], mode: str = "lot", filter_params=None) -> str:
+    """lot 비교 HTML 테이블.
+
+    mode="lot"      → LOT 열 + WF_CNT 열, 첫 행 Avg
+    mode="groupkey" → LOT 열만, 첫 행 Avg
+    기존 period 테이블과 동일한 CSS/구조.
+    """
+    if not lot_data:
+        return "<p>(lot 데이터 없음)</p>"
+
+    cols = [c for c in PARA_COLUMNS if c in filter_params] if filter_params else PARA_COLUMNS
+    gms_cols = GMS_COLUMNS
+    BLUE_COLS = {"VTH", "IDSAT"}
+
+    lot_keys = sorted(k for k in lot_data if not k.startswith("_"))
+
+    def _numeric(key, param):
+        v = lot_data[key].get(param)
+        return float(v) if isinstance(v, (int, float)) else None
+
+    def _avg_param(p):
+        vals = [_numeric(k, p) for k in lot_keys]
+        vals = [v for v in vals if v is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    pt1h_span = len(cols)
+    pt1c_span = len(PT1C_COLUMNS)
+    gms_span  = len(gms_cols)
+
+    # ── CSS (period 테이블과 동일) ──────────────────────────
+    html = """<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 8px; background: #fff; }
+table { border-collapse: collapse; border: 1px solid #cbd5e1; }
+th {
+  background: #1e293b; color: #e2e8f0;
+  font-size: 11px; font-weight: 600;
+  border: 1px solid #334155;
+}
+th.th-week {
+  background: #334155; min-width: 100px;
+  text-align: center; vertical-align: middle; padding: 8px;
+}
+th.th-meta {
+  background: #475569; min-width: 44px;
+  text-align: center; vertical-align: middle; padding: 8px 6px;
+}
+th.th-section {
+  text-align: center; padding: 6px; font-size: 12px; font-weight: 700;
+}
+th.th-section-pt1h { background: #1e293b; }
+th.th-section-pt1c { background: #1e3a5f; border-left: 3px solid #3b82f6; }
+th.th-section-gms  { background: #1a3a2a; border-left: 3px solid #22c55e; }
+th.th-param {
+  width: 44px; height: 80px;
+  padding: 0; vertical-align: bottom;
+}
+th.th-blue       { background: #1d4ed8; }
+th.th-amber      { background: #92400e; }
+th.th-amber-pt1c { background: #78350f; border-left: 1px solid #3b82f6; }
+th.th-gms        { background: #14532d; border-left: 1px solid #22c55e; }
+.th-param-inner {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: flex-end;
+  height: 100%; padding: 4px 2px;
+}
+.hname {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  white-space: nowrap;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
+  flex: 1; display: flex; align-items: center;
+}
+td {
+  border: 1px solid #e2e8f0; padding: 4px 9px;
+  text-align: right; font-size: 12px; color: #374151;
+  white-space: nowrap;
+}
+td.td-week {
+  text-align: center; font-weight: 600; font-size: 11px;
+  color: #1e293b; background: #f1f5f9 !important;
+}
+tr:nth-child(odd) td:not(.td-week) { background: #ffffff; }
+tr:nth-child(even) td:not(.td-week) { background: #f8fafc; }
+tr.avg-row td { background: #eff6ff !important; font-weight: 600; color: #1d4ed8; }
+tr.avg-row td.td-week { background: #1d4ed8 !important; color: #fff; }
+td.td-pt1c-sep { border-left: 3px solid #3b82f6 !important; }
+td.td-gms-sep  { border-left: 3px solid #22c55e !important; }
+</style></head><body>
+<table>
+<thead>"""
+
+    # ── 섹션 헤더 ──────────────────────────────────────────
+    meta_span = 2 if mode == "lot" else 1  # LOT + WF_CNT or LOT only
+    html += (
+        f'\n<tr>'
+        f'<th class="th-week" rowspan="2">LOT</th>'
+    )
+    if mode == "lot":
+        html += '<th class="th-meta" rowspan="2">WF_CNT</th>'
+    html += (
+        f'<th colspan="{pt1h_span}" class="th-section th-section-pt1h">pt1h</th>'
+        f'<th colspan="{pt1c_span}" class="th-section th-section-pt1c">pt1c</th>'
+        f'<th colspan="{gms_span}" class="th-section th-section-gms">gms</th>'
+        f'</tr>'
+    )
+
+    # ── 파라미터 서브헤더 ───────────────────────────────────
+    html += "\n<tr>"
+    for col in cols:
+        css = "th-blue" if col in BLUE_COLS else "th-amber"
+        html += (
+            f'<th class="th-param {css}">'
+            f'<div class="th-param-inner"><div class="hname">{col}</div></div></th>'
+        )
+    for j, col in enumerate(PT1C_COLUMNS):
+        sep = ' style="border-left: 3px solid #3b82f6;"' if j == 0 else ""
+        html += (
+            f'<th class="th-param th-amber-pt1c"{sep}>'
+            f'<div class="th-param-inner"><div class="hname">{col}</div></div></th>'
+        )
+    for j, col in enumerate(gms_cols):
+        sep = ' style="border-left: 3px solid #22c55e;"' if j == 0 else ""
+        html += (
+            f'<th class="th-param th-gms"{sep}>'
+            f'<div class="th-param-inner"><div class="hname">{col}</div></div></th>'
+        )
+    html += "\n</tr>\n</thead>\n<tbody>\n"
+
+    # ── Avg 행 (첫 행) ─────────────────────────────────────
+    html += '<tr class="avg-row">'
+    html += '<td class="td-week">Avg</td>'
+    if mode == "lot":
+        total_wf = sum(lot_data[k].get("_wf_count", 0) for k in lot_keys)
+        html += f'<td>{total_wf}</td>'
+    for col in cols:
+        html += f'<td>{_fmt_val(_avg_param(col))}</td>'
+    for j, col in enumerate(PT1C_COLUMNS):
+        sep = ' class="td-pt1c-sep"' if j == 0 else ""
+        html += f'<td{sep}>{_fmt_val(_avg_param(f"pt1c_{col}"))}</td>'
+    for j, col in enumerate(gms_cols):
+        sep = ' class="td-gms-sep"' if j == 0 else ""
+        html += f'<td{sep}>-</td>'
+    html += "</tr>\n"
+
+    # ── 데이터 행 ──────────────────────────────────────────
+    for key in lot_keys:
+        html += "<tr>"
+        html += f'<td class="td-week">{key}</td>'
+        if mode == "lot":
+            wf_cnt = lot_data[key].get("_wf_count", "-")
+            html += f'<td>{wf_cnt}</td>'
+        for col in cols:
+            html += f'<td>{_fmt_val(_numeric(key, col))}</td>'
+        for j, col in enumerate(PT1C_COLUMNS):
+            sep = ' class="td-pt1c-sep"' if j == 0 else ""
+            html += f'<td{sep}>{_fmt_val(_numeric(key, f"pt1c_{col}"))}</td>'
+        for j, col in enumerate(gms_cols):
+            sep = ' class="td-gms-sep"' if j == 0 else ""
+            html += f'<td{sep}>-</td>'
+        html += "</tr>\n"
+
+    html += "</tbody></table>\n</body></html>"
+    return html
+
+
+# ============================================================
 # 8. Yield Agent 노드 구현
 # ============================================================
 @observe(name="yield_agent_node")
@@ -784,27 +1436,89 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     lotcd = state.get("lotcd", "4SS")
     ref_date_str = state.get("ref_date", date.today().strftime("%Y%m%d"))
     filter_params = state.get("filter_params") or None  # 빈 list → None (전체 표시)
+    unit    = state.get("unit", "weekly")
+    periods = state.get("periods", 0)
+    yield_lot_ids  = state.get("yield_lot_ids", "")
+    yield_groupkey = state.get("yield_groupkey", "")
 
+    # ── LOT 비교 모드 ────────────────────────────────────────
+    if yield_lot_ids or yield_groupkey:
+        logger.info("[YieldAgent] lot 비교 모드: lot_ids=%s groupkey=%s", yield_lot_ids, yield_groupkey)
+        lot_specs = _parse_lot_specs(yield_lot_ids, yield_groupkey)
+
+        print("=" * 60)
+        print("[Yield Agent] LOT 비교 모드:")
+        print(f"  - lot_specs: {lot_specs}")
+        print("=" * 60)
+
+        # groupkey 포함 여부로 모드 결정
+        lot_mode = "groupkey" if yield_groupkey else "lot"
+
+        pt1h_lot = _fetch_lot_sql(lot_specs, "pt1h")
+        pt1c_lot = _fetch_lot_sql(lot_specs, "pt1c")
+        merged   = _merge_lot_data(pt1h_lot, pt1c_lot)
+
+        if not merged:
+            error_message = AIMessage(
+                content="해당 lot 데이터를 조회할 수 없습니다. lot ID와 process를 확인해주세요.",
+                name="yield_agent",
+            )
+            return {"messages": [error_message], "weeks_data": [], "table_result": ""}
+
+        table_str  = _build_lot_table(merged, mode=lot_mode, filter_params=filter_params)
+        html_table = _build_lot_html_table(merged, mode=lot_mode, filter_params=filter_params)
+        print(table_str)
+
+        lot_label = yield_groupkey or yield_lot_ids
+        result_msg = f"[LOT 비교] {lot_label} pt1h+pt1c 수율 비교 테이블입니다.\n\n"
+        result_msg += table_str
+
+        yield_artifacts = [{
+            "type": "html",
+            "mime": "text/html",
+            "data": html_table,
+            "title": "lot_compare_table",
+        }]
+
+        result_message = AIMessage(content=result_msg, name="yield_agent")
+        return {
+            "messages": [result_message],
+            "weeks_data": [],
+            "table_result": table_str,
+            "analysis_result": "",
+            "yield_artifacts": yield_artifacts,
+            "anomaly_params": [],
+            "agent_suggestion": "",
+            "need_cummap": False,
+            "cummap_weeks": [],
+            "cummap_target_bin": "",
+            "cummap_category": "",
+        }
+
+    # ── 기존 period 모드 ────────────────────────────────────
     # 날짜 파싱
     try:
         ref_date = datetime.strptime(ref_date_str, "%Y%m%d").date()
     except ValueError:
         ref_date = date.today()
 
+    n = periods if periods > 0 else DEFAULT_PERIODS.get(unit, 4)
+
     # 파라미터 로깅
     print("=" * 60)
     print("[Yield Agent] State에서 파라미터 읽기:")
     print(f"  - lotcd: {lotcd}")
-    print(f"  - ref_date: {ref_date_str} ({_iso_week_str(ref_date)})")
+    print(f"  - ref_date: {ref_date_str}")
+    print(f"  - unit: {unit}, periods: {n}")
     print("=" * 60)
 
-    # FastAPI에서 4주치 데이터 조회
-    print(f"\n[Yield Agent] {lotcd} 최근 4주 데이터 조회 시작...")
-    weeks_data = _fetch_4_weeks(lotcd, ref_date)
+    # 데이터 조회
+    print(f"\n[Yield Agent] {lotcd} 최근 {n}{dict(weekly='주', monthly='달', daily='일').get(unit, unit)} 데이터 조회 시작...")
+    weeks_data = _fetch_periods(lotcd, ref_date, unit=unit, periods=periods)
 
     if not weeks_data or all(wd.get("lotcount") == "-" for wd in weeks_data):
         error_message = AIMessage(
-            content="데이터를 조회할 수 없습니다. FastAPI 서버가 실행 중인지 확인해주세요.",
+            content="데이터를 조회할 수 없습니다. Oracle DB 연결 또는 해당 기간 데이터를 확인해주세요.",
             name="yield_agent",
         )
         return {"messages": [error_message], "weeks_data": [], "table_result": ""}
@@ -814,8 +1528,8 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     print(f"[Yield Agent] 이상 감지: {len(anomaly_params)}개 파라미터")
 
     # 테이블 생성 (텍스트: LLM 분석용, HTML: 사용자 표시용)
-    table_str = _build_table(weeks_data, lotcd, filter_params)
-    html_table = _build_html_table(weeks_data, lotcd, filter_params, anomaly_params)
+    table_str = _build_table(weeks_data, lotcd, filter_params, unit=unit)
+    html_table = _build_html_table(weeks_data, lotcd, filter_params, anomaly_params, unit=unit)
     print(table_str)
 
     # LLM 분석 (최근 2주 비교)
@@ -832,8 +1546,9 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     }]
 
     # 결과 메시지 생성 (HTML 테이블은 아티팩트로 별도 전달)
-    result_msg = f"[{lotcd}] 최근 4주 pt1h 수율 데이터입니다.\n"
-    result_msg += f"기준: {_iso_week_str(ref_date)} ({ref_date_str})\n\n"
+    unit_label = {"weekly": f"주간 (최근 {n}주)", "monthly": f"월별 (최근 {n}달)", "daily": f"일별 (최근 {n}일)"}.get(unit, f"최근 {n}개")
+    result_msg = f"[{lotcd}] {unit_label} pt1h 수율 데이터입니다.\n"
+    result_msg += f"기준: {ref_date_str}\n\n"
     result_msg += f"\n\n---\n\n{analysis}"
 
     if anomaly_params:
@@ -891,5 +1606,6 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         "cummap_target_bin": cummap_target_bin,
         "cummap_category": cummap_category,
     }
+
 
 

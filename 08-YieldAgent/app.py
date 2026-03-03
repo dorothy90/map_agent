@@ -187,6 +187,7 @@ if query:
         # ── 결과 없음 처리 ───────────────────────────────
         if (
             not final_data.get("has_weeks_data")
+            and not final_data.get("yield_html")
             and not final_data.get("wads_answer")
             and not final_data.get("wads_html")
             and not final_data.get("map_html")
