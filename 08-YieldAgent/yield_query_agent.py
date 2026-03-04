@@ -296,39 +296,47 @@ def _get_n_days(ref: date, n: int) -> list[date]:
 
 
 def _fetch_monthly_sql(lotcd: str, month_strs: list[str], process: str) -> dict[str, dict]:
-    """MONTH 컬럼 기반 월별 조회 (DF_DIE_TO_WF_YLD).
-    month_strs: "YYYY-MM" 포맷 (DB MONTH 컬럼과 동일)
+    """YEAR + MONTH 컬럼 기반 월별 조회 (DF_DIE_TO_WF_YLD).
+    month_strs: "YYYY-MM" 포맷
 
     Returns:
         {"YYYY-MM": {"lotcount": N, "wfCount": N, PARAM: avg_val, ...}}
     """
-    placeholders = ", ".join(f":m{i}" for i in range(len(month_strs)))
+    params = {"lot_cd": lotcd, "process": process}
+    for i, ym in enumerate(month_strs):
+        y, m = ym.split("-")
+        params[f"y{i}"] = y
+        params[f"m{i}"] = m
+
+    clauses = [
+        f"(YEAR = :y{i} AND TO_NUMBER(MONTH) = TO_NUMBER(:m{i}))"
+        for i in range(len(month_strs))
+    ]
+    where_ym = " OR ".join(clauses)
+
     sql = f"""
         WITH base AS (
-            SELECT MONTH, LOTID, WFID, PARAM, VALUE
+            SELECT YEAR, MONTH, LOTID, WFID, PARAM, VALUE
             FROM DF_DIE_TO_WF_YLD
             WHERE LOT_CD = :lot_cd
-              AND MONTH IN ({placeholders})
+              AND ({where_ym})
               AND PROCESS = :process
         ),
         counts AS (
-            SELECT MONTH,
+            SELECT YEAR, MONTH,
                    COUNT(DISTINCT LOTID) AS LOT_COUNT,
                    COUNT(DISTINCT LOTID || '-' || TO_CHAR(WFID)) AS WF_COUNT
-            FROM base GROUP BY MONTH
+            FROM base GROUP BY YEAR, MONTH
         ),
         param_avgs AS (
-            SELECT MONTH, PARAM, AVG(VALUE) AS AVG_VALUE
-            FROM base GROUP BY MONTH, PARAM
+            SELECT YEAR, MONTH, PARAM, AVG(VALUE) AS AVG_VALUE
+            FROM base GROUP BY YEAR, MONTH, PARAM
         )
-        SELECT pa.MONTH, pa.PARAM, pa.AVG_VALUE, c.LOT_COUNT, c.WF_COUNT
+        SELECT pa.YEAR, pa.MONTH, pa.PARAM, pa.AVG_VALUE, c.LOT_COUNT, c.WF_COUNT
         FROM param_avgs pa
-        JOIN counts c ON pa.MONTH = c.MONTH
-        ORDER BY pa.MONTH, pa.PARAM
+        JOIN counts c ON pa.YEAR = c.YEAR AND pa.MONTH = c.MONTH
+        ORDER BY pa.YEAR, pa.MONTH, pa.PARAM
     """
-    params = {"lot_cd": lotcd, "process": process}
-    for i, m in enumerate(month_strs):
-        params[f"m{i}"] = m
 
     result: dict[str, dict] = {}
     try:
@@ -336,10 +344,11 @@ def _fetch_monthly_sql(lotcd: str, month_strs: list[str], process: str) -> dict[
         try:
             cur = conn.cursor()
             cur.execute(sql, params)
-            for month, param, avg_val, lot_cnt, wf_cnt in cur:
-                if month not in result:
-                    result[month] = {"lotcount": int(lot_cnt), "wfCount": int(wf_cnt)}
-                result[month][param] = float(avg_val) if avg_val is not None else "-"
+            for year, month, param, avg_val, lot_cnt, wf_cnt in cur:
+                key = f"{year}-{str(month).zfill(2)}"
+                if key not in result:
+                    result[key] = {"lotcount": int(lot_cnt), "wfCount": int(wf_cnt)}
+                result[key][param] = float(avg_val) if avg_val is not None else "-"
         finally:
             conn.close()
     except Exception as e:
@@ -1000,10 +1009,10 @@ def _detect_anomalies(weeks_data: list[dict], threshold: float = ANOMALY_THRESHO
 # 5.2 LLM 분석 함수
 # ============================================================
 ANALYSIS_SYSTEM_PROMPT = """당신은 반도체 수율(yield) 분석 전문가입니다.
-주어진 주차별 pt1h 파라미터 데이터를 분석하여 인사이트를 제공합니다.
+주어진 기간별 pt1h 파라미터 데이터를 분석하여 인사이트를 제공합니다.
 항상 한국어로 답변하세요."""
 
-ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 4주 pt1h 파라미터 데이터입니다.
+ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 {n}기간 pt1h 파라미터 데이터입니다.
 
 {table}
 
@@ -1012,13 +1021,13 @@ ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 4주 pt1h 파라�
 - 그 외 모든 파라미터: 값이 낮아지면 개선 (↓ = 개선)
 
 === 비교 대상 ===
-- 직전주: {prev_week}
-- 최신주: {curr_week}
+- Pre:    {prev_week}
+- Latest: {curr_week}
 
-위 두 주차를 비교하여 다음을 분석해주세요:
+위 두 기간을 비교하여 다음을 분석해주세요:
 
-1. **가장 열화된 파라미터 Top 3** (파라미터명, 직전주 값, 최신주 값, 변화율%)
-2. **가장 개선된 파라미터 Top 3** (파라미터명, 직전주 값, 최신주 값, 변화율%)
+1. **가장 열화된 파라미터 Top 3** (파라미터명, Pre 값, Latest 값, 변화율%)
+2. **가장 개선된 파라미터 Top 3** (파라미터명, Pre 값, Latest 값, 변화율%)
 3. **전반적인 트렌드 요약** (1~2문장)
 
 마크다운 표 형식으로 깔끔하게 정리해주세요."""
@@ -1026,20 +1035,21 @@ ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 4주 pt1h 파라�
 
 @observe(name="analyze_with_llm")
 @timed
-def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm, config=None) -> str:
-    """최근 2주 데이터를 LLM에게 전달하여 열화/개선 분석을 받는 헬퍼 함수
+def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm, n: int = 4, config=None) -> str:
+    """최근 2기간 데이터를 LLM에게 전달하여 열화/개선 분석을 받는 헬퍼 함수
 
     Args:
-        weeks_data: 4주치 데이터 리스트 (오래된 순)
+        weeks_data: n기간 데이터 리스트 (오래된 순)
         table_str: 이미 생성된 테이블 문자열
         lotcd: 제품코드
         llm: ChatOpenAI 인스턴스
+        n: 조회 기간 수
 
     Returns:
         str: LLM 분석 결과 (마크다운)
     """
     if len(weeks_data) < 2:
-        return "분석에 필요한 2주 이상의 데이터가 부족합니다."
+        return "분석에 필요한 2기간 이상의 데이터가 부족합니다."
 
     prev_week = weeks_data[-2]
     curr_week = weeks_data[-1]
@@ -1047,6 +1057,7 @@ def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm, c
     user_prompt = ANALYSIS_USER_PROMPT.format(
         lotcd=lotcd,
         table=table_str,
+        n=n,
         prev_week=prev_week.get("week", "?"),
         curr_week=curr_week.get("week", "?"),
     )
@@ -1439,7 +1450,7 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     unit    = state.get("unit", "weekly")
     periods = state.get("periods", 0)
     yield_lot_ids  = state.get("yield_lot_ids", "")
-    yield_groupkey = state.get("yield_groupkey", "")
+    yㅈield_groupkey = state.get("yield_groupkey", "")
 
     # ── LOT 비교 모드 ────────────────────────────────────────
     if yield_lot_ids or yield_groupkey:
@@ -1534,7 +1545,7 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     # LLM 분석 (최근 2주 비교)
     print(f"\n[Yield Agent] LLM 분석 시작 (최근 2주 비교)...")
-    analysis = _analyze_with_llm(weeks_data, table_str, lotcd, model, config=config)
+    analysis = _analyze_with_llm(weeks_data, table_str, lotcd, model, n=n, config=config)
     print(f"\n[LLM 분석 결과]\n{analysis}")
 
     # HTML 아티팩트 생성
