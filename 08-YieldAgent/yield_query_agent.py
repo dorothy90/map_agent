@@ -6,10 +6,8 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 import os
-import time
-import oracledb
 import logging
-import functools
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from tabulate import tabulate
 
@@ -19,19 +17,20 @@ from langchain_openai import ChatOpenAI
 
 # ── Langfuse 트레이싱 ────────────────────────────────────
 from langfuse import observe, get_client
-from langfuse.langchain import CallbackHandler as _LFHandler
 
-
-def _lf_callbacks() -> list:
-    """현재 Langfuse span에 연결된 LangChain CallbackHandler 반환"""
-    lf = get_client()
-    trace_id = lf.get_current_trace_id()
-    if not trace_id:
-        return []
-    return [_LFHandler(trace_context={
-        "trace_id": trace_id,
-        "parent_span_id": lf.get_current_observation_id(),
-    })]
+from lf_utils import lf_callbacks as _lf_callbacks
+from common import (
+    get_oracle_connection as _get_oracle_connection,
+    timed,
+    iso_week_str as _iso_week_str,
+    week_monday as _week_monday,
+    get_4_week_dates as _get_4_week_dates,
+    PARA_COLUMNS,
+    PT1C_COLUMNS,
+    GMS_COLUMNS,
+    GMS_HIGHER_IS_BETTER,
+    HIGHER_IS_BETTER,
+)
 
 # ── 로깅 설정 ────────────────────────────────────────────
 logging.basicConfig(
@@ -40,19 +39,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("yield_agent")
-
-
-def timed(func):
-    """함수 실행 시간을 측정하는 데코레이터"""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        start = time.time()
-        logger.info(f"▶ {func.__name__} 시작")
-        result = func(*args, **kwargs)
-        elapsed = time.time() - start
-        logger.info(f"◀ {func.__name__} 완료 ({elapsed:.2f}s)")
-        return result
-    return wrapper
 
 
 # ============================================================
@@ -103,54 +89,9 @@ def pretty_print_messages(update, last_message=False):
 
 
 # ============================================================
-# 3. 날짜 유틸리티
+# 3. Oracle SQL 조회 함수 설정
 # ============================================================
-def _iso_week_str(d: date) -> str:
-    """date -> ISO 주차 문자열 (예: 2026-W06)"""
-    y, w, _ = d.isocalendar()
-    return f"{y}-W{w:02d}"
-
-
-def _week_monday(d: date) -> date:
-    """date가 속한 주의 월요일을 반환"""
-    return d - timedelta(days=d.isoweekday() - 1)
-
-
-def _get_4_week_dates(ref: date) -> list[date]:
-    """기준 날짜가 속한 주부터 과거 4주의 월요일 리스트 반환 (오래된순)
-
-    예: ref가 2026-W06이면 -> [W03 월요일, W04 월요일, W05 월요일, W06 월요일]
-    """
-    monday = _week_monday(ref)
-    return [monday - timedelta(weeks=i) for i in range(3, -1, -1)]
-
-
-# ============================================================
-# 4. Oracle SQL 조회 함수
-# ============================================================
-ORACLE_USER     = os.getenv("ORACLE_USER")
-ORACLE_PASSWORD = os.getenv("ORACLE_PASSWORD")
-ORACLE_DSN      = os.getenv("ORACLE_DSN")
-YLD_TABLE       = "DF_DIE_TO_WF_YLD"
-
-# 파라미터 컬럼 순서 (pt1h/pt1c PARAM 컬럼 값)
-PARA_COLUMNS = [
-    "VTH", "IDSAT", "IDLIN", "IOFF", "ION", "IGATE", "IDDQ",
-    "VMIN", "FMAX", "TPD", "GM_MAX", "SS", "DIBL",
-    "RON", "RDS_ON", "BVDS",
-    "LEAK_ID", "LEAK_IG",
-    "CGB", "CGS", "CGD", "CDS",
-    "RSH", "RD", "RS",
-]
-
-PT1C_COLUMNS = ["PT1C", "CFTA"]
-
-GMS_COLUMNS = ["cum0", "cum2", "fab", "prb", "pnt"]
-GMS_HIGHER_IS_BETTER = set(GMS_COLUMNS)  # gms는 전부 높을수록 좋음
-
-
-def _get_oracle_connection() -> oracledb.Connection:
-    return oracledb.connect(user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=ORACLE_DSN)
+YLD_TABLE = "DF_DIE_TO_WF_YLD"
 
 
 def _week_to_db_yld(week_agent: str) -> str:
@@ -531,26 +472,30 @@ def _fetch_periods(lotcd: str, ref_date: date,
     """
     n = periods if periods > 0 else DEFAULT_PERIODS.get(unit, 4)
 
-    if unit == "monthly":
-        month_strs = _get_n_months(ref_date, n)
-        pt1h_data = _fetch_monthly_sql(lotcd, month_strs, "pt1h")
-        pt1c_data = _fetch_monthly_sql(lotcd, month_strs, "pt1c")
-        gms_data  = _fetch_gms_monthly_sql(lotcd, month_strs)
-        period_labels = month_strs
-    elif unit == "daily":
-        days = _get_n_days(ref_date, n)
-        pt1h_data = _fetch_daily_sql(lotcd, days, "pt1h")
-        pt1c_data = _fetch_daily_sql(lotcd, days, "pt1c")
-        gms_data  = _fetch_gms_daily_sql(lotcd, days)
-        period_labels = [d.strftime("%Y-%m-%d") for d in days]
-    else:
-        # weekly (기본값)
-        mondays = _get_n_weeks(ref_date, n)
-        week_strs = [_iso_week_str(m) for m in mondays]
-        pt1h_data = _fetch_weekly_sql(lotcd, week_strs, "pt1h")
-        pt1c_data = _fetch_weekly_sql(lotcd, week_strs, "pt1c")
-        gms_data  = _fetch_gms_sql(lotcd, week_strs)
-        period_labels = week_strs
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        if unit == "monthly":
+            month_strs = _get_n_months(ref_date, n)
+            f_pt1h = ex.submit(_fetch_monthly_sql, lotcd, month_strs, "pt1h")
+            f_pt1c = ex.submit(_fetch_monthly_sql, lotcd, month_strs, "pt1c")
+            f_gms  = ex.submit(_fetch_gms_monthly_sql, lotcd, month_strs)
+            period_labels = month_strs
+        elif unit == "daily":
+            days = _get_n_days(ref_date, n)
+            f_pt1h = ex.submit(_fetch_daily_sql, lotcd, days, "pt1h")
+            f_pt1c = ex.submit(_fetch_daily_sql, lotcd, days, "pt1c")
+            f_gms  = ex.submit(_fetch_gms_daily_sql, lotcd, days)
+            period_labels = [d.strftime("%Y-%m-%d") for d in days]
+        else:
+            # weekly (기본값)
+            mondays = _get_n_weeks(ref_date, n)
+            week_strs = [_iso_week_str(m) for m in mondays]
+            f_pt1h = ex.submit(_fetch_weekly_sql, lotcd, week_strs, "pt1h")
+            f_pt1c = ex.submit(_fetch_weekly_sql, lotcd, week_strs, "pt1c")
+            f_gms  = ex.submit(_fetch_gms_sql, lotcd, week_strs)
+            period_labels = week_strs
+        pt1h_data = f_pt1h.result()
+        pt1c_data = f_pt1c.result()
+        gms_data  = f_gms.result()
 
     results = []
     for label in period_labels:
@@ -941,10 +886,9 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
 
 
 # ============================================================
-# 5.1 파라미터 극성 정의
+# 5.1 파라미터 극성 정의 (common.py에서 import)
 # ============================================================
-# 값이 높아지면 개선인 파라미터 (2개)
-HIGHER_IS_BETTER = {"VTH", "IDSAT"}
+# HIGHER_IS_BETTER, GMS_HIGHER_IS_BETTER → common.py 참조
 # 그 외 나머지 23개: 값이 낮아지면 개선
 
 
@@ -1134,8 +1078,6 @@ def _parse_lot_specs(lot_ids: str = "", groupkey: str = "") -> list[tuple[str, i
     return result
 
 
-@observe(name="fetch_lot_sql")
-@timed
 @observe(name="fetch_lot_sql")
 @timed
 def _fetch_lot_sql(lot_specs: list[tuple[str, int | None]], process: str) -> dict[str, dict]:
@@ -1450,7 +1392,7 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     unit    = state.get("unit", "weekly")
     periods = state.get("periods", 0)
     yield_lot_ids  = state.get("yield_lot_ids", "")
-    yㅈield_groupkey = state.get("yield_groupkey", "")
+    yield_groupkey = state.get("yield_groupkey", "")
 
     # ── LOT 비교 모드 ────────────────────────────────────────
     if yield_lot_ids or yield_groupkey:
@@ -1465,9 +1407,12 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         # groupkey 포함 여부로 모드 결정
         lot_mode = "groupkey" if yield_groupkey else "lot"
 
-        pt1h_lot = _fetch_lot_sql(lot_specs, "pt1h")
-        pt1c_lot = _fetch_lot_sql(lot_specs, "pt1c")
-        merged   = _merge_lot_data(pt1h_lot, pt1c_lot)
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_pt1h = ex.submit(_fetch_lot_sql, lot_specs, "pt1h")
+            f_pt1c = ex.submit(_fetch_lot_sql, lot_specs, "pt1c")
+            pt1h_lot = f_pt1h.result()
+            pt1c_lot = f_pt1c.result()
+        merged = _merge_lot_data(pt1h_lot, pt1c_lot)
 
         if not merged:
             error_message = AIMessage(
@@ -1500,10 +1445,6 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
             "yield_artifacts": yield_artifacts,
             "anomaly_params": [],
             "agent_suggestion": "",
-            "need_cummap": False,
-            "cummap_weeks": [],
-            "cummap_target_bin": "",
-            "cummap_category": "",
         }
 
     # ── 기존 period 모드 ────────────────────────────────────
@@ -1580,30 +1521,6 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         if anomaly_params else ""
     )
 
-    # need_cummap 시 4주치 날짜 범위 + target_bin 설정
-    need_cummap = state.get("need_cummap", False)
-    cummap_weeks = []
-    cummap_target_bin = ""
-    cummap_category = ""
-
-    if need_cummap and filter_params:
-        from map_agent import CATEGORY_TO_BIN
-        category = filter_params[0].upper()
-        target_bin = CATEGORY_TO_BIN.get(category, "")
-        if target_bin:
-            cummap_target_bin = target_bin
-            cummap_category = category
-            mondays = _get_4_week_dates(ref_date)
-            for m in mondays:
-                end = m + timedelta(days=7)
-                cummap_weeks.append({
-                    "week": _iso_week_str(m),
-                    "start": m.strftime("%Y%m%d"),
-                    "end": end.strftime("%Y%m%d"),
-                })
-            logger.info("[YieldAgent] cummap 연계: %s (bin=%s), %d weeks",
-                        category, target_bin, len(cummap_weeks))
-
     return {
         "messages": [result_message],
         "weeks_data": weeks_data,
@@ -1612,10 +1529,6 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         "yield_artifacts": yield_artifacts,
         "anomaly_params": anomaly_params,
         "agent_suggestion": agent_suggestion,
-        "need_cummap": need_cummap and bool(cummap_weeks),
-        "cummap_weeks": cummap_weeks,
-        "cummap_target_bin": cummap_target_bin,
-        "cummap_category": cummap_category,
     }
 
 

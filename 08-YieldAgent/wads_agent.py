@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import contextvars
 from dotenv import load_dotenv
 import os
 from datetime import date
 from typing import Any, Dict, List, Optional, Annotated, Literal
 
-import oracledb
 import pandas as pd
-
+import oracledb
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
@@ -19,19 +19,9 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from rich import print
 from langfuse import observe, get_client
-from langfuse.langchain import CallbackHandler as _LFHandler
 
-
-def _lf_callbacks() -> list:
-    """현재 Langfuse span에 연결된 LangChain CallbackHandler 반환"""
-    lf = get_client()
-    trace_id = lf.get_current_trace_id()
-    if not trace_id:
-        return []
-    return [_LFHandler(trace_context={
-        "trace_id": trace_id,
-        "parent_span_id": lf.get_current_observation_id(),
-    })]
+from lf_utils import lf_callbacks as _lf_callbacks
+from common import get_oracle_connection as _get_oracle_connection
 
 # .env 로드 및 모델 설정
 load_dotenv(override=True)
@@ -39,24 +29,23 @@ _MODEL_NAME = os.getenv("RETRIEVE_CHAIN_MODEL")
 _BASE_URL = os.getenv("OPENROUTER_BASE_URL")
 _API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Oracle DB 연결 설정
-_ORACLE_USER = os.getenv("ORACLE_USER")
-_ORACLE_PASSWORD = os.getenv("ORACLE_PASSWORD")
-_ORACLE_DSN = os.getenv("ORACLE_DSN")
-_ORACLE_TABLE = "WADS_TABLE"
+_ORACLE_TABLE = os.getenv("WADS_TABLE", "WADS_TABLE")
 
-# 도구 결과를 임시 저장할 전역 변수 (LLM context에 포함되지 않는 실제 데이터)
-# reports는 리스트로 저장하여 여러 리포트를 누적
-_TOOL_PAYLOAD_STORAGE: Dict[str, Any] = {"reports": []}
+# 도구 결과를 요청별로 격리하는 ContextVar (thread-safe & async-safe)
+# 각 wads_agent_node 호출 시 새 dict를 set()하여 격리
+_tool_payload_var: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
+    "_wads_tool_payload"
+)
 
 
-def _get_oracle_connection() -> oracledb.Connection:
-    """Oracle thin-mode 연결 생성"""
-    return oracledb.connect(
-        user=_ORACLE_USER,
-        password=_ORACLE_PASSWORD,
-        dsn=_ORACLE_DSN,
-    )
+def _get_tool_payload() -> Dict[str, Any]:
+    """현재 컨텍스트의 tool payload storage 반환 (없으면 초기화)"""
+    try:
+        return _tool_payload_var.get()
+    except LookupError:
+        storage: Dict[str, Any] = {"reports": []}
+        _tool_payload_var.set(storage)
+        return storage
 
 
 @observe(name="wads_query_oracle")
@@ -116,7 +105,7 @@ def _query_wads_data(
 
 
 # -------------------- WADS Tools --------------------
-# 도구 결과는 요약만 LLM에 전달하고, 실제 데이터는 _TOOL_PAYLOAD_STORAGE에 저장
+# 도구 결과는 요약만 LLM에 전달하고, 실제 데이터는 ContextVar(_tool_payload_var)에 저장
 
 
 @tool
@@ -136,7 +125,7 @@ def wads_query_data(
     Returns:
         조회 결과 요약 메시지 (실제 데이터는 별도 저장됨)
     """
-    global _TOOL_PAYLOAD_STORAGE
+    storage = _get_tool_payload()
 
     try:
         filtered_df = _query_wads_data(
@@ -146,7 +135,7 @@ def wads_query_data(
             columns="LOTCD, END_TM, CTN_DESC AS PARAMETER",
         )
     except Exception as e:
-        _TOOL_PAYLOAD_STORAGE["query"] = [
+        storage["query"] = [
             {
                 "error": "DBError",
                 "detail": f"Oracle 연결/조회 오류: {e}",
@@ -155,14 +144,14 @@ def wads_query_data(
         return f"오류: Oracle 연결/조회에 실패했습니다. ({e})"
 
     if filtered_df.empty:
-        _TOOL_PAYLOAD_STORAGE["query"] = [
+        storage["query"] = [
             {"error": "NoMatch", "detail": "조건에 맞는 WADS 데이터가 없습니다."}
         ]
         return "조건에 맞는 WADS 데이터가 없습니다."
 
-    # 실제 데이터는 전역 저장소에 저장 (LLM context에 포함되지 않음)
+    # 실제 데이터는 컨텍스트 저장소에 저장 (LLM context에 포함되지 않음)
     result = filtered_df[["lotcd", "end_tm", "parameter"]].to_dict(orient="records")
-    _TOOL_PAYLOAD_STORAGE["query"] = result
+    storage["query"] = result
 
     # LLM에게는 요약만 전달
     return f"WADS 데이터 조회 완료: 총 {len(result)}건의 데이터가 조회되었습니다. (데이터는 화면에 별도 표시됩니다)"
@@ -188,7 +177,7 @@ def wads_get_html_report(
     Returns:
         조회 결과 요약 메시지 (실제 HTML은 별도 저장됨)
     """
-    global _TOOL_PAYLOAD_STORAGE
+    storage = _get_tool_payload()
 
     try:
         filtered_df = _query_wads_data(
@@ -203,22 +192,24 @@ def wads_get_html_report(
     if filtered_df.empty:
         return "조건에 맞는 WADS 데이터가 없습니다."
 
-    # 실제 데이터는 전역 저장소에 리스트로 누적 (LLM context에 포함되지 않음)
-    if "reports" not in _TOOL_PAYLOAD_STORAGE:
-        _TOOL_PAYLOAD_STORAGE["reports"] = []
+    # 실제 데이터는 컨텍스트 저장소에 리스트로 누적 (LLM context에 포함되지 않음)
+    if "reports" not in storage:
+        storage["reports"] = []
 
     for _, row in filtered_df.iterrows():
-        _TOOL_PAYLOAD_STORAGE["reports"].append({
-            "lotcd": row["lotcd"],
-            "end_tm": row["end_tm"],
-            "parameter": row["parameter"],
-            "html": row["html"],
-        })
+        storage["reports"].append(
+            {
+                "lotcd": row["lotcd"],
+                "end_tm": row["end_tm"],
+                "parameter": row["parameter"],
+                "html": row["html"],
+            }
+        )
 
     count = len(filtered_df)
     summary = ", ".join(
         f"lotcd={r['lotcd']} parameter={r['parameter']}"
-        for r in _TOOL_PAYLOAD_STORAGE["reports"][-count:]
+        for r in storage["reports"][-count:]
     )
     # LLM에게는 메타정보 요약만 전달 (HTML 전체 내용은 제외)
     return f"WADS HTML 리포트 조회 완료: {count}건 — {summary} (리포트는 화면에 별도 표시됩니다)"
@@ -271,6 +262,11 @@ WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 
 - 따라서 **테이블이나 표를 직접 만들지 마세요**.
 - 조회 결과에 대해 간단한 요약/설명만 1-2문장으로 작성하세요.
 - 예시: "5NA 로트의 step01 리포트를 조회했습니다."
+
+## 중요: 데이터 없음 vs 연결 오류 구분
+- 도구가 "조건에 맞는 WADS 데이터가 없습니다"를 반환하면 → 연결 오류가 아님. "해당 조건의 WADS 데이터가 없습니다"로 안내.
+- 도구가 "Oracle 연결/조회에 실패했습니다"를 반환한 경우에만 → 연결 오류로 안내.
+- 데이터가 없는 것을 절대 "연결 오류", "시스템 오류"로 표현하지 마세요.
 """
 
 # WADS 전용 도구 리스트
@@ -292,13 +288,12 @@ class WADSAgentState(Dict):
     messages: Annotated[List, add_messages]
 
 
-def _create_wads_agent():
-    """현재 날짜를 포함한 WADS Agent 생성 (StateGraph 패턴)"""
-    from datetime import datetime
-    from langchain_core.messages import SystemMessage
+def _build_wads_graph():
+    """WADS Agent StateGraph 구조 빌드 (1회만 실행, 모듈 수준 싱글턴)
 
-    current_date = datetime.now().strftime("%Y년 %m월 %d일")
-    system_prompt = WADS_SYSTEM_PROMPT_TEMPLATE.format(current_date=current_date)
+    날짜는 호출 시 SystemMessage로 주입하므로 그래프 자체는 날짜에 무관합니다.
+    """
+    from langchain_core.messages import SystemMessage
 
     # LLM에 도구 바인딩
     llm_with_tools = _wads_model.bind_tools(WADS_TOOLS)
@@ -308,32 +303,37 @@ def _create_wads_agent():
 
     def chatbot(state: WADSAgentState):
         """도구를 사용할 수 있는 챗봇 노드"""
-        # 시스템 메시지가 없으면 추가
         messages = state["messages"]
+        # SystemMessage가 없으면 placeholder (호출자가 반드시 주입)
         if not messages or not isinstance(messages[0], SystemMessage):
-            messages = [SystemMessage(content=system_prompt)] + list(messages)
+            from datetime import datetime
+
+            fallback_date = datetime.now().strftime("%Y년 %m월 %d일")
+            fallback_prompt = WADS_SYSTEM_PROMPT_TEMPLATE.format(
+                current_date=fallback_date
+            )
+            messages = [SystemMessage(content=fallback_prompt)] + list(messages)
 
         response = llm_with_tools.invoke(messages)
         return {"messages": [response]}
 
-    # 노드 추가
     builder.add_node("chatbot", chatbot)
-
-    # ToolNode 추가 - 도구를 실행하는 노드
     tool_node = ToolNode(tools=WADS_TOOLS)
     builder.add_node("tools", tool_node)
-
-    # 조건부 엣지 추가
     builder.add_conditional_edges("chatbot", tools_condition)
-
-    # 도구 실행 후 다시 챗봇으로
     builder.add_edge("tools", "chatbot")
-
-    # 시작점 설정
     builder.add_edge(START, "chatbot")
 
-    # 그래프 컴파일
     return builder.compile()
+
+
+# 모듈 수준 싱글턴 — 매번 재생성하지 않음
+_wads_graph = _build_wads_graph()
+
+
+def _create_wads_agent():
+    """호환성 유지용 래퍼 — 싱글턴 그래프 반환"""
+    return _wads_graph
 
 
 # -------------------- HTML 렌더링 --------------------
@@ -452,10 +452,8 @@ def wads_agent(state: Dict[str, Any]) -> Dict[str, Any]:
 
     도구 결과는 LLM context에 포함되지 않고, 별도의 artifacts로 반환됩니다.
     - LLM은 도구 실행 요약만 받습니다 (예: "WADS 데이터 조회 완료: 총 10건")
-    - 실제 데이터(HTML 리포트, 쿼리 결과)는 _TOOL_PAYLOAD_STORAGE에서 가져와 artifacts로 전달
+    - 실제 데이터(HTML 리포트, 쿼리 결과)는 _tool_payload_var(ContextVar)에서 가져와 artifacts로 전달
     """
-    global _TOOL_PAYLOAD_STORAGE
-
     print(f"\n{'='*60}")
     print("[WADS Agent] 시작")
 
@@ -467,9 +465,9 @@ def wads_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     # 이전 대화 히스토리 구성
     messages = state.get("messages", [])
 
-    # 도구 결과 저장소 초기화 (reports는 리스트로 유지)
-    _TOOL_PAYLOAD_STORAGE.clear()
-    _TOOL_PAYLOAD_STORAGE["reports"] = []
+    # 요청별 격리된 저장소 초기화
+    storage: Dict[str, Any] = {"reports": []}
+    _tool_payload_var.set(storage)
 
     # 현재 날짜가 포함된 에이전트 생성 및 호출
     agent = _create_wads_agent()
@@ -484,10 +482,9 @@ def wads_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     ai_messages = [m for m in result.get("messages", []) if isinstance(m, AIMessage)]
     answer = ai_messages[-1].content if ai_messages else "WADS 조회에 실패했습니다."
 
-    # _TOOL_PAYLOAD_STORAGE에서 실제 데이터 추출
-    # (도구 함수에서 저장한 데이터 - LLM context에 포함되지 않음)
-    query_payload = _TOOL_PAYLOAD_STORAGE.get("query")
-    reports_payload = _TOOL_PAYLOAD_STORAGE.get("reports", [])
+    # 저장소에서 실제 데이터 추출 (LLM context에 포함되지 않음)
+    query_payload = storage.get("query")
+    reports_payload = storage.get("reports", [])
 
     print(f"[DEBUG] query_payload: {query_payload is not None}")
     print(f"[DEBUG] reports_payload count: {len(reports_payload)}")
@@ -516,10 +513,6 @@ def wads_agent(state: Dict[str, Any]) -> Dict[str, Any]:
             }
         ]
 
-    # 도구 결과 저장소 정리
-    _TOOL_PAYLOAD_STORAGE.clear()
-    _TOOL_PAYLOAD_STORAGE["reports"] = []
-
     result_dict = {
         "answer": answer,
         "artifacts": artifacts,
@@ -533,7 +526,7 @@ def wads_agent(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # -------------------- WADS Agent Node (LangGraph 노드용) --------------------
-from yield_query_agent import timed  # noqa: E402
+from common import timed  # noqa: E402
 
 
 @observe(name="wads_agent_node")
@@ -556,20 +549,32 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     print(f"  - end_tm: {end_tm}")
     print("=" * 60)
 
-    # 도구 결과 저장소 초기화
-    _TOOL_PAYLOAD_STORAGE.clear()
-    _TOOL_PAYLOAD_STORAGE["reports"] = []
+    # 요청별 격리된 저장소 초기화
+    storage: Dict[str, Any] = {"reports": []}
+    _tool_payload_var.set(storage)
 
-    # WADS 서브에이전트 생성 및 호출
-    agent = _create_wads_agent()
+    # WADS 서브에이전트 호출 (싱글턴 그래프 + 날짜를 SystemMessage로 주입)
+    from langchain_core.messages import SystemMessage
+    from datetime import datetime
+
+    current_date = datetime.now().strftime("%Y년 %m월 %d일")
+    system_prompt = WADS_SYSTEM_PROMPT_TEMPLATE.format(current_date=current_date)
+
     query = f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘"
     print(f"[WADS Agent] 쿼리: {query}")
 
     try:
-        # 부모 config의 LangGraph 내부 파라미터(__pregel_* 등)를 제거하고 콜백만 전달
-        lf_cbs = _lf_callbacks()
-        sub_config = {"callbacks": lf_cbs + (config.get("callbacks") or [])} if config else {"callbacks": lf_cbs}
-        result = agent.invoke({"messages": [HumanMessage(content=query)]}, config=sub_config)
+        # 부모 config의 LangGraph 내부 파라미터(__pregel_* 등)를 제거하고 Langfuse 콜백만 전달
+        sub_config = {"callbacks": _lf_callbacks()}
+        result = _wads_graph.invoke(
+            {
+                "messages": [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=query),
+                ]
+            },
+            config=sub_config,
+        )
     except Exception as e:
         print(f"[ERROR] WADS Agent 실행 실패: {e}")
         error_message = AIMessage(
@@ -582,9 +587,9 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     ai_messages = [m for m in result.get("messages", []) if isinstance(m, AIMessage)]
     answer = ai_messages[-1].content if ai_messages else "WADS 조회에 실패했습니다."
 
-    # _TOOL_PAYLOAD_STORAGE에서 실제 데이터 추출
-    query_payload = _TOOL_PAYLOAD_STORAGE.get("query")
-    reports_payload = _TOOL_PAYLOAD_STORAGE.get("reports", [])
+    # 저장소에서 실제 데이터 추출 (LLM context에 포함되지 않음)
+    query_payload = storage.get("query")
+    reports_payload = storage.get("reports", [])
 
     print(f"[WADS Agent] query_payload: {query_payload is not None}")
     print(f"[WADS Agent] reports_payload count: {len(reports_payload)}")
@@ -593,24 +598,24 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     artifacts = []
     if reports_payload:
         html = _render_wads_report_html(reports_payload)
-        artifacts.append({
-            "type": "html",
-            "mime": "text/html",
-            "data": html,
-            "title": "wads_report",
-        })
+        artifacts.append(
+            {
+                "type": "html",
+                "mime": "text/html",
+                "data": html,
+                "title": "wads_report",
+            }
+        )
     elif query_payload:
         html = _render_wads_query_html(query_payload)
-        artifacts.append({
-            "type": "html",
-            "mime": "text/html",
-            "data": html,
-            "title": "wads_query",
-        })
-
-    # 도구 결과 저장소 정리
-    _TOOL_PAYLOAD_STORAGE.clear()
-    _TOOL_PAYLOAD_STORAGE["reports"] = []
+        artifacts.append(
+            {
+                "type": "html",
+                "mime": "text/html",
+                "data": html,
+                "title": "wads_query",
+            }
+        )
 
     result_message = AIMessage(content=answer, name="wads_agent")
 
@@ -636,10 +641,11 @@ if __name__ == "__main__":
     )
 
     # 실제 데이터가 저장소에 있는지 확인
+    storage = _get_tool_payload()
     print("\n" + "=" * 60)
-    print("[DEBUG] _TOOL_PAYLOAD_STORAGE 내용:")
-    print(f"  query: {_TOOL_PAYLOAD_STORAGE.get('query') is not None}")
-    reports = _TOOL_PAYLOAD_STORAGE.get("reports", [])
+    print("[DEBUG] tool payload 내용:")
+    print(f"  query: {storage.get('query') is not None}")
+    reports = storage.get("reports", [])
     print(f"  reports count: {len(reports)}")
 
     for idx, report in enumerate(reports):

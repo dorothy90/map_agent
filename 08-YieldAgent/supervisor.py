@@ -12,6 +12,7 @@ Pydantic with_structured_output() 방식으로 JSON 파싱 오류 없이 안정�
 from __future__ import annotations
 
 import json
+import operator
 import os
 import re
 import logging
@@ -19,30 +20,19 @@ from datetime import date
 from typing import Annotated, Any, Dict, Literal, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, trim_messages
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langfuse import get_client, observe
-from langfuse.langchain import CallbackHandler as _LFHandler
 from langgraph.graph import StateGraph, START, END, add_messages
+from langgraph.types import Command, RetryPolicy
 from pydantic import BaseModel, Field
+
+from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 
 load_dotenv(override=True)
 
 logger = logging.getLogger("yield_agent.supervisor")
-
-
-def _lf_callbacks() -> list:
-    """현재 Langfuse span에 연결된 LangChain CallbackHandler 반환.
-    @observe 컨텍스트 안에서 호출해야 generation이 child span으로 기록됨."""
-    lf = get_client()
-    trace_id = lf.get_current_trace_id()
-    if not trace_id:
-        return []
-    return [_LFHandler(trace_context={
-        "trace_id": trace_id,
-        "parent_span_id": lf.get_current_observation_id(),
-    })]
 
 # ── LLM 모델 ────────────────────────────────────────────────
 _model = ChatOpenAI(
@@ -71,10 +61,6 @@ class RouteResponse(BaseModel):
     filter_params: list[str] = Field(
         default=[],
         description="표시할 파라미터 목록 (비어있으면 전체 표시). 예: ['VTH', 'IDSAT']"
-    )
-    need_cummap: bool = Field(
-        default=False,
-        description="True면 yield 테이블 후 4주치 category별 cummap도 생성. 특정 파라미터 수율 질문 시 True"
     )
     unit: str = Field(default="weekly", description='"weekly" | "monthly" | "daily"')
     periods: int = Field(default=0, description="조회 기간 수 (0 = 기본값: weekly=4, monthly=3, daily=4)")
@@ -160,14 +146,8 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     rewritten = response.content.strip()
     logger.info("[Rewrite] '%s' → '%s'", last_human.content, rewritten)
 
-    # 마지막 HumanMessage만 교체
-    new_messages = list(messages)
-    for i in range(len(new_messages) - 1, -1, -1):
-        if isinstance(new_messages[i], HumanMessage):
-            new_messages[i] = HumanMessage(content=rewritten)
-            break
-
-    return {"messages": new_messages}
+    # 동일 ID로 교체 → add_messages가 제자리 업데이트, 풀 리스트 반환 불필요
+    return {"messages": [HumanMessage(content=rewritten, id=last_human.id)]}
 
 
 # ── 시스템 프롬프트 ──────────────────────────────────────────
@@ -187,13 +167,6 @@ AVAILABLE AGENTS:
 - Example: "VTH만 보여줘" → filter_params: ["VTH"]
 - Example: "VTH랑 IDSAT 수율" → filter_params: ["VTH", "IDSAT"]
 - No specific params → filter_params: []
-
-=== need_cummap (수율 + cummap 동시 요청) ===
-- When user asks about yield of a SPECIFIC parameter → need_cummap: true
-- Example: "IOFF 수율 알려줘" → yield_agent, filter_params: ["IOFF"], need_cummap: true
-- Example: "VTH 수율 보여줘" → yield_agent, filter_params: ["VTH"], need_cummap: true
-- Example: "수율 알려줘" (no specific param) → yield_agent, need_cummap: false
-- When need_cummap is true, yield_agent runs first then map_agent generates 4-week category cummaps
 
 Route to **yield_agent** when the user asks about:
 - 수율(yield), pt1h 데이터, weekly metrics, 주간 파라미터
@@ -267,15 +240,36 @@ For wads_agent → wads_end_tm (YYYY-MM-DD):
 - Default: "4SS"
 - For follow-up queries, keep the same lotcd from conversation history
 
-=== OUTPUT FORMAT (STRICT) ===
-Respond with ONLY a raw JSON object — no markdown, no code fences, no extra fields:
+=== MULTI-STEP REASONING ===
+You can call agents MULTIPLE TIMES in sequence to achieve the user's goal.
+After each agent completes, you see its result summary (marked with [AGENT_RESULT]) in the message history.
+
+DECISION FLOW:
+1. Analyze the user's goal and current results so far
+2. If more data/analysis is needed → call next agent
+3. If goal is fully achieved → FINISH
+
+EXAMPLES:
+- "4SS IOFF 수율 이상한데 원인 분석해줘"
+  → yield_agent(IOFF) → 이상 감지됨 → wads_agent(열화 확인) → map_agent(cummap) → FINISH
+
+- "4SS 수율 알려줘" → yield_agent → FINISH (단순 조회는 1스텝)
+
+RULES:
+- 같은 에이전트를 동일 파라미터로 재호출 금지
+- 최대 4스텝 이내 완료
+- 단순 조회는 1스텝으로 끝낼 것
+
+=== CRITICAL: OUTPUT FORMAT (STRICT) ===
+You MUST ALWAYS respond with ONLY a single raw JSON object.
+Do NOT continue or summarize agent results. Do NOT output markdown, analysis, or explanations.
+Even when you see agent results in the message history, your ONLY job is to output the next routing JSON.
 {{
   "next": "yield_agent" | "wads_agent" | "map_agent" | "FINISH",
   "lotcd": "<product code, default 4SS>",
   "ref_date": "<YYYYMMDD for yield_agent, else empty string>",
   "wads_end_tm": "<YYYY-MM-DD for wads_agent, else empty string>",
   "filter_params": ["VTH", "IDSAT"],
-  "need_cummap": false,
   "unit": "weekly",
   "periods": 0,
   "message": "<Korean message>",
@@ -293,12 +287,27 @@ Respond with ONLY a raw JSON object — no markdown, no code fences, no extra fi
 
 # ── Supervisor 노드 ──────────────────────────────────────────
 @observe(name="supervisor_node")
-def supervisor_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
-    """Supervisor 노드: with_structured_output으로 타입 안전 라우팅.
+def supervisor_node(
+    state: Dict[str, Any], config: RunnableConfig
+) -> Command[Literal["yield_agent", "wads_agent", "map_agent", "__end__"]]:
+    """Supervisor 노드: ReAct 스타일 멀티스텝 루프.
 
-    이전 대화 히스토리(messages)를 그대로 LLM에 전달하므로
-    "보여줘" 같은 follow-up 쿼리에서도 컨텍스트가 유지됩니다.
+    각 스텝마다 에이전트 결과를 확인하고 다음 행동을 결정합니다.
+    Command를 반환하여 state 업데이트 + 라우팅을 하나로 통합합니다.
     """
+    step_count = state.get("step_count", 0) + 1
+
+    # 최대 스텝 강제 종료 (무한루프 방지)
+    if step_count > 4:
+        logger.warning("[Supervisor] 최대 스텝(%d) 초과 → 강제 종료", step_count)
+        return Command(
+            update={
+                "step_count": step_count,
+                "messages": [AIMessage(content="분석을 완료했습니다.", name="supervisor")],
+            },
+            goto=END,
+        )
+
     configurable = config.get("configurable", {}) if config else {}
     messages = state.get("messages", [])
     today = date.today()
@@ -319,11 +328,27 @@ def supervisor_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             f"\n\n[이전 분석 결과] 이상 감지된 파라미터 ({len(anomaly_params)}개): {param_names}"
         )
 
-    # 직접 호출 + 정규식 JSON 추출
-    # (gpt-oss-120b는 response_format=json_object를 지원하지 않아 content가 빈 문자열로 반환됨)
+    # 에이전트 메시지를 짧은 요약으로 교체 (LLM이 분석 텍스트를 이어쓰지 않도록)
+    _AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent"}
+    _MAX_AGENT_MSG_LEN = 200
+
+    condensed = []
+    for m in messages:
+        agent_name = getattr(m, "name", "")
+        if isinstance(m, AIMessage) and agent_name in _AGENT_NAMES and len(m.content) > _MAX_AGENT_MSG_LEN:
+            summary = m.content[:_MAX_AGENT_MSG_LEN].rsplit("\n", 1)[0]
+            condensed.append(AIMessage(
+                content=f"[AGENT_RESULT:{agent_name}] {summary}...(결과 생략)",
+                name=agent_name,
+            ))
+        else:
+            condensed.append(m)
+
+    # token_counter=len → 메시지 개수 기준 (문자수 아님). 최근 20개 메시지만 전달.
+    trimmed_messages = trim_messages(condensed, max_tokens=20, strategy="last", token_counter=len)
     try:
         raw = _model.invoke(
-            [{"role": "system", "content": prompt}, *messages],
+            [{"role": "system", "content": prompt}, *trimmed_messages],
             config={"callbacks": _lf_callbacks()},
         )
         content = raw.content.strip()
@@ -342,17 +367,35 @@ def supervisor_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             message="요청을 이해하지 못했습니다. 다시 시도해 주세요.",
         )
 
+    # 동일 에이전트 재호출 방지: 직전 에이전트와 같으면 FINISH
+    if decision.next not in ("FINISH",):
+        last_agent = next(
+            (getattr(m, "name", "") for m in reversed(messages)
+             if isinstance(m, AIMessage) and getattr(m, "name", "") in _AGENT_NAMES),
+            None,
+        )
+        if last_agent == decision.next:
+            logger.info("[Supervisor] 동일 에이전트(%s) 재호출 방지 → FINISH", last_agent)
+            decision = RouteResponse(
+                next="FINISH",
+                lotcd=decision.lotcd,
+                ref_date=decision.ref_date,
+                wads_end_tm=decision.wads_end_tm,
+                message=decision.message or "분석을 완료했습니다.",
+            )
+
     # lotcd: 이전 State 값 유지 (follow-up 대화)
     prev_lotcd = state.get("lotcd", "")
     new_lotcd = decision.lotcd or prev_lotcd or "4SS"
 
-    # Langfuse — 라우팅 결정 후 메타데이터 기록 (session_id/tags는 root trace에서 설정)
+    # Langfuse — 라우팅 결정 후 메타데이터 기록
     try:
         get_client().update_current_trace(
             metadata={
                 "anomaly_count": configurable.get("anomaly_count", 0),
                 "route": decision.next,
                 "lotcd": new_lotcd,
+                "step": step_count,
             }
         )
     except Exception:
@@ -367,23 +410,23 @@ def supervisor_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     result_message = AIMessage(content=decision.message, name="supervisor")
 
     logger.info(
-        "[Supervisor] next=%-12s lotcd=%-6s ref_date=%s wads_end_tm=%s",
+        "[Supervisor] step=%d next=%-12s lotcd=%-6s ref_date=%s wads_end_tm=%s",
+        step_count,
         decision.next,
         new_lotcd,
         ref_date,
         wads_end_tm,
     )
 
-    return {
+    update_dict = {
+        "step_count": step_count,
         "messages": [result_message],
         "lotcd": new_lotcd,
         "ref_date": ref_date,
         "wads_end_tm": wads_end_tm,
         "filter_params": decision.filter_params,
-        "need_cummap": decision.need_cummap,
         "unit": decision.unit or "weekly",
         "periods": decision.periods,
-        "next": decision.next,
         "map_lot_id":   decision.map_lot_id,
         "map_lot_ids":  decision.map_lot_ids,
         "map_wf_ids":   decision.map_wf_ids,
@@ -394,15 +437,22 @@ def supervisor_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         "yield_groupkey": decision.yield_groupkey,
     }
 
+    if decision.next == "FINISH":
+        return Command(update=update_dict, goto=END)
+
+    return Command(update=update_dict, goto=decision.next)
+
 
 # ── 공유 State 정의 ──────────────────────────────────────
 class YieldQueryState(TypedDict):
     """Yield Query Supervisor의 공유 State
 
     모든 agent들이 이 State를 통해 구조화된 데이터를 공유합니다.
+    멀티스텝 루프에서 artifacts는 operator.add reducer로 누적됩니다.
     """
 
     messages: Annotated[list, add_messages]
+    step_count: int  # supervisor 루프 카운터
 
     # 조회 파라미터
     lotcd: str
@@ -415,24 +465,18 @@ class YieldQueryState(TypedDict):
     table_result: str
     analysis_result: str
 
-    # Yield 관련
-    yield_artifacts: list
+    # Yield 관련 — reducer로 누적 (멀티스텝에서 여러 에이전트 결과 보존)
+    yield_artifacts: Annotated[list, operator.add]
 
     # WADS 관련
     wads_end_tm: str
-    wads_artifacts: list
+    wads_artifacts: Annotated[list, operator.add]
 
     # 이상감지
     anomaly_params: list
 
     # 파라미터 필터
     filter_params: list  # 표시할 파라미터 필터 (빈 list = 전체)
-
-    # yield → map 연계 (category별 cummap)
-    need_cummap: bool
-    cummap_weeks: list     # [{"week": "2026-W04", "start": "20260119", "end": "20260126"}, ...]
-    cummap_target_bin: str  # fail bin value (예: "H")
-    cummap_category: str    # category 이름 (예: "IOFF")
 
     # Map Agent 파라미터
     map_lot_id:   str
@@ -448,10 +492,7 @@ class YieldQueryState(TypedDict):
 
     # Map 결과
     map_result:    str
-    map_artifacts: list
-
-    # 라우팅
-    next: str
+    map_artifacts: Annotated[list, operator.add]
 
     # 에이전트 제안 (UI 렌더링용)
     agent_suggestion: str
@@ -462,30 +503,22 @@ from yield_query_agent import yield_agent_node  # noqa: E402
 from wads_agent import wads_agent_node  # noqa: E402
 from map_agent import map_agent_node  # noqa: E402
 
+# 에이전트 노드 재시도 정책 (Oracle/LLM 일시적 오류 자동 재시도)
+_retry = RetryPolicy(max_attempts=2, initial_interval=1.0)
+
 workflow = StateGraph(YieldQueryState)
 workflow.add_node("rewrite", rewrite_node)
-workflow.add_node("supervisor", supervisor_node)
-workflow.add_node("yield_agent", yield_agent_node)
-workflow.add_node("wads_agent", wads_agent_node)
-workflow.add_node("map_agent", map_agent_node)
+workflow.add_node("supervisor", supervisor_node)  # Command가 라우팅 처리
+workflow.add_node("yield_agent", yield_agent_node, retry_policy=_retry)
+workflow.add_node("wads_agent", wads_agent_node, retry_policy=_retry)
+workflow.add_node("map_agent", map_agent_node, retry_policy=_retry)
+
 workflow.add_edge(START, "rewrite")
 workflow.add_edge("rewrite", "supervisor")
-workflow.add_conditional_edges(
-    "supervisor",
-    lambda x: x["next"],
-    {
-        "yield_agent": "yield_agent",
-        "wads_agent":  "wads_agent",
-        "map_agent":   "map_agent",
-        "FINISH":      END,
-    },
-)
-workflow.add_conditional_edges(
-    "yield_agent",
-    lambda x: "map_agent" if x.get("need_cummap") else END,
-    {"map_agent": "map_agent", END: END},
-)
-workflow.add_edge("wads_agent", END)
-workflow.add_edge("map_agent", END)
+# supervisor → agent: Command(goto=...)가 처리 (conditional_edges 불필요)
+# agent → supervisor: 정적 엣지로 루프 복귀
+workflow.add_edge("yield_agent", "supervisor")
+workflow.add_edge("wads_agent", "supervisor")
+workflow.add_edge("map_agent", "supervisor")
 
 yield_supervisor = workflow.compile()

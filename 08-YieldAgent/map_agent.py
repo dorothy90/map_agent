@@ -14,8 +14,6 @@ import json
 import logging
 import os
 import re
-import time
-import functools
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -28,7 +26,6 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import platform
 
-import oracledb
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -38,24 +35,13 @@ load_dotenv(override=True)
 
 logger = logging.getLogger("yield_agent.map_agent")
 
-# ── bin_value ↔ bin_category 매핑 ─────────────────────────
-# A = Pass(양품), B~Z = 25개 PARA_COLUMNS에 1:1 대응하는 fail bin
-BIN_CATEGORY_MAP: dict[str, str] = {
-    "A": "PASS",
-    "B": "VTH",    "C": "IDSAT",   "D": "IDLIN",  "E": "ION",
-    "F": "IGATE",  "G": "IDDQ",    "H": "IOFF",   "I": "VMIN",
-    "J": "FMAX",   "K": "TPD",     "L": "GM_MAX", "M": "SS",
-    "N": "DIBL",   "O": "RON",     "P": "RDS_ON", "Q": "BVDS",
-    "R": "LEAK_ID","S": "LEAK_IG", "T": "CGB",    "U": "CGS",
-    "V": "CGD",    "W": "CDS",     "X": "RSH",    "Y": "RD",
-    "Z": "RS",
-}
-CATEGORY_TO_BIN: dict[str, str] = {v: k for k, v in BIN_CATEGORY_MAP.items() if v != "PASS"}
+from common import (  # noqa: E402
+    get_oracle_connection as _get_oracle_connection_common,
+    timed,
+    BIN_CATEGORY_MAP,
+    CATEGORY_TO_BIN,
+)
 
-# ── Oracle 연결 설정 ─────────────────────────────────────
-ORACLE_USER = os.getenv("ORACLE_USER")
-ORACLE_PASSWORD = os.getenv("ORACLE_PASSWORD")
-ORACLE_DSN = os.getenv("ORACLE_DSN")
 ORACLE_TABLE = os.getenv("ORACLE_TABLE", "LANGGRAPH_DATA")
 
 # ── 한글 폰트 설정 ───────────────────────────────────────
@@ -86,18 +72,6 @@ except ImportError:
         return json.loads(s)
 
 
-# ── timed 데코레이터 (yield_query_agent와 동일 패턴) ─────
-def timed(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        start = time.time()
-        logger.info("▶ %s 시작", func.__name__)
-        result = func(*args, **kwargs)
-        logger.info("◀ %s 완료 (%.2fs)", func.__name__, time.time() - start)
-        return result
-    return wrapper
-
-
 # ============================================================
 # 내부 DB 조회 함수
 # ============================================================
@@ -115,7 +89,7 @@ def _query_wafer_data(
     3. lot_id + wf_ids: 단일 lot의 특정 wafer 조회
     4. lot_id only: 단일 lot의 모든 wafer 조회
     """
-    conn = oracledb.connect(user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=ORACLE_DSN)
+    conn = _get_oracle_connection_common()
     try:
         cur = conn.cursor()
         results = []
@@ -489,7 +463,7 @@ def _query_lot_ids_by_date(lotcd: str, start_date: str, end_date: str) -> list[s
         start_date: 시작일 YYYYMMDD (inclusive)
         end_date: 종료일 YYYYMMDD (exclusive)
     """
-    conn = oracledb.connect(user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=ORACLE_DSN)
+    conn = _get_oracle_connection_common()
     try:
         cur = conn.cursor()
         sql = f"""
@@ -674,16 +648,7 @@ def _png_to_html(png_path: str, title: str) -> str:
 @observe(name="map_agent_node")
 @timed
 def map_agent_node(state: dict, config: RunnableConfig) -> dict:
-    """Wafer map 시각화 노드
-
-    분기 1 (need_cummap=True): yield_agent에서 넘어온 4주치 cummap 생성
-    분기 2 (기본): 기존 binmap/cummap 생성
-    """
-    need_cummap = state.get("need_cummap", False)
-
-    if need_cummap:
-        return _handle_weekly_cummap(state)
-
+    """Wafer map 시각화 노드 — supervisor가 직접 호출"""
     return _handle_standard_map(state)
 
 

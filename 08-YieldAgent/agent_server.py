@@ -2,7 +2,7 @@
 Agent Server — LangGraph Supervisor FastAPI Backend
 ====================================================
 LangGraph yield_supervisor를 직접 실행하고 SSE로 스트리밍합니다.
-Streamlit UI는 이 서버에 HTTP 요청을 보내는 클라이언트입니다.
+React 프론트엔드 대응: 타입별 분리된 SSE 이벤트 (message / artifact / suggestion).
 
 실행: uvicorn 08-YieldAgent.agent_server:app --port 8001
   또는 (08-YieldAgent 디렉터리 내): uvicorn agent_server:app --port 8001
@@ -13,19 +13,39 @@ import json
 import logging
 import sys
 import time
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from threading import Thread
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from langfuse import get_client, observe
-from pydantic import BaseModel
+from langgraph.checkpoint.mongodb import MongoDBSaver
+from langgraph.types import Overwrite
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # 이 파일의 디렉터리(08-YieldAgent/)를 sys.path에 추가 (로컬 모듈 임포트용)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from supervisor import yield_supervisor  # noqa: E402
+from models import (  # noqa: E402
+    ArtifactData,
+    ArtifactEvent,
+    ArtifactType,
+    ChatRequest,
+    ErrorEvent,
+    HistoryMessage,
+    MessageEvent,
+    NodeCompleteEvent,
+    SessionHistory,
+    SessionSummary,
+    StreamEndEvent,
+    StreamStartEvent,
+    SuggestionEvent,
+)
+from supervisor import workflow  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,16 +54,64 @@ logging.basicConfig(
 )
 logger = logging.getLogger("agent_server")
 
-app = FastAPI(title="Yield Agent Server")
-
-# ── 인메모리 세션 저장소 ─────────────────────────────────
-# { session_id: {"lotcd": str, "prev_messages": list, "anomaly_params": list} }
-sessions: dict[str, dict] = {}
+MONGO_URI = "mongodb://localhost:27017"
+MONGO_DB = "yield_agent"
 
 
-class ChatRequest(BaseModel):
-    query: str
-    session_id: str
+# ── FastAPI lifespan — MongoDB 연결 관리 ──────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # motor (async) — 대화 이력 저장용
+    motor_client = AsyncIOMotorClient(MONGO_URI)
+    app.state.motor_db = motor_client[MONGO_DB]
+
+    # MongoDBSaver (sync) — LangGraph 체크포인터
+    with MongoDBSaver.from_conn_string(MONGO_URI, db_name=MONGO_DB) as checkpointer:
+        app.state.graph = workflow.compile(checkpointer=checkpointer)
+        logger.info("MongoDB 체크포인터 + motor 연결 완료 (%s/%s)", MONGO_URI, MONGO_DB)
+        yield
+
+    motor_client.close()
+    logger.info("MongoDB 연결 종료")
+
+
+app = FastAPI(title="Yield Agent Server", lifespan=lifespan)
+
+# ── CORS — React dev server 허용 ─────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def _on_task_error(task: asyncio.Task) -> None:
+    """create_task 예외를 로그에 기록 (fire-and-forget 무음 실패 방지)"""
+    if not task.cancelled() and task.exception():
+        logger.exception("Graph task failed: %s", task.exception())
+
+
+def _sse(event: dict | object) -> str:
+    """Pydantic model 또는 dict → SSE data line"""
+    if hasattr(event, "model_dump"):
+        payload = event.model_dump()
+    else:
+        payload = event
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _detect_artifact_type(data: str) -> ArtifactType:
+    """아티팩트 데이터에서 타입 추론"""
+    if not data:
+        return ArtifactType.html
+    stripped = data.strip()
+    if stripped.startswith("<") or stripped.startswith("<!"):
+        return ArtifactType.html
+    if stripped.startswith("data:image") or stripped.endswith((".png", ".jpg", ".svg")):
+        return ArtifactType.image
+    return ArtifactType.html
 
 
 # ── 헬스체크 ─────────────────────────────────────────────
@@ -54,106 +122,167 @@ def health():
 
 # ── 세션 삭제 ─────────────────────────────────────────────
 @app.delete("/session/{session_id}")
-def delete_session(session_id: str):
-    sessions.pop(session_id, None)
+async def delete_session(session_id: str, request: Request):
+    graph = request.app.state.graph
+    try:
+        await graph.checkpointer.adelete_thread(session_id)
+    except Exception as e:
+        logger.warning("세션 삭제 실패: %s", e)
+
+    # chat_turns도 삭제
+    db = request.app.state.motor_db
+    await db.chat_turns.delete_many({"session_id": session_id})
     return {"deleted": session_id}
+
+
+# ── 새 세션 생성 ─────────────────────────────────────────
+@app.post("/session")
+async def create_session():
+    session_id = str(uuid.uuid4())
+    return {"session_id": session_id}
+
+
+# ── 세션 목록 ─────────────────────────────────────────────
+@app.get("/sessions", response_model=list[SessionSummary])
+async def list_sessions(request: Request):
+    db = request.app.state.motor_db
+    pipeline = [
+        {"$sort": {"timestamp": -1}},
+        {"$group": {
+            "_id": "$session_id",
+            "last_query": {"$first": "$query"},
+            "turn_count": {"$sum": 1},
+            "updated_at": {"$first": "$timestamp"},
+        }},
+        {"$sort": {"updated_at": -1}},
+        {"$limit": 50},
+    ]
+    results = []
+    async for doc in db.chat_turns.aggregate(pipeline):
+        results.append(SessionSummary(
+            session_id=doc["_id"],
+            last_query=doc.get("last_query", ""),
+            turn_count=doc.get("turn_count", 0),
+            updated_at=doc.get("updated_at", datetime.now(timezone.utc)),
+        ))
+    return results
+
+
+# ── 세션 대화 이력 조회 ──────────────────────────────────
+@app.get("/session/{session_id}/history", response_model=SessionHistory)
+async def get_session_history(session_id: str, request: Request):
+    db = request.app.state.motor_db
+    turns: list[HistoryMessage] = []
+    async for doc in db.chat_turns.find(
+        {"session_id": session_id},
+        {"_id": 0},
+    ).sort("timestamp", 1):
+        # user turn
+        turns.append(HistoryMessage(
+            role="user",
+            content=doc.get("query", ""),
+            timestamp=doc.get("timestamp", datetime.now(timezone.utc)),
+        ))
+        # assistant turns
+        for msg in doc.get("messages", []):
+            artifacts = [ArtifactData(**a) for a in msg.get("artifacts", [])]
+            turns.append(HistoryMessage(
+                role="assistant",
+                agent=msg.get("agent", ""),
+                content=msg.get("content", ""),
+                artifacts=artifacts,
+                suggestion=msg.get("suggestion", ""),
+                timestamp=doc.get("timestamp", datetime.now(timezone.utc)),
+            ))
+    return SessionHistory(session_id=session_id, turns=turns)
 
 
 # ── SSE 스트리밍 ──────────────────────────────────────────
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
-    session = sessions.setdefault(
-        request.session_id,
-        {"lotcd": "", "prev_messages": [], "anomaly_params": []},
-    )
-    prev_messages = session["prev_messages"]
+async def chat_stream(request: ChatRequest, req: Request):
+    graph = req.app.state.graph
+    db = req.app.state.motor_db
+    config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 20}
 
-    # rewrite_node는 prev_messages + rewritten HumanMessage 전체를 반환하므로
-    # 현재 턴 메시지는 그 이후부터 시작 (버그 수정 핵심)
-    n_prev_offset = len(prev_messages) + 1
-
-    initial_state = {
-        "messages": prev_messages + [HumanMessage(content=request.query)],
-        "lotcd": session["lotcd"],
-        "ref_date": "",
+    # 이번 턴 입력: 새 HumanMessage + 퍼-턴 리셋 필드
+    input_state = {
+        "messages": [HumanMessage(content=request.query)],
+        "yield_artifacts": Overwrite([]),
+        "wads_artifacts": Overwrite([]),
+        "map_artifacts": Overwrite([]),
         "weeks_data": [],
         "table_result": "",
         "analysis_result": "",
-        "yield_artifacts": [],
-        "wads_end_tm": "",
-        "wads_artifacts": [],
-        "next": "",
-        "anomaly_params": session["anomaly_params"],
         "agent_suggestion": "",
-        "filter_params": [],
-        # yield → map 연계 (category별 cummap)
-        "need_cummap": False,
-        "cummap_weeks": [],
-        "cummap_target_bin": "",
-        "cummap_category": "",
-        # Map Agent 파라미터
-        "map_lot_id":   "",
-        "map_lot_ids":  "",
-        "map_wf_ids":   "",
-        "map_groupkey": "",
-        "map_type":     "binmap",
-        "map_bin_type": "pt1h_bin",
-        "map_result":   "",
-        "map_artifacts": [],
-        # Yield lot 비교 파라미터
-        "yield_lot_ids":  "",
-        "yield_groupkey": "",
+        "step_count": 0,
     }
 
-    loop = asyncio.get_event_loop()
+    # 첫 번째 턴이면 나머지 기본값도 함께 전달
+    prev_state = await graph.aget_state(config)
+    if not (prev_state and prev_state.values):
+        input_state.update({
+            "lotcd": "",
+            "ref_date": "",
+            "unit": "weekly",
+            "periods": 0,
+            "wads_end_tm": "",
+            "anomaly_params": [],
+            "filter_params": [],
+            "map_lot_id": "",
+            "map_lot_ids": "",
+            "map_wf_ids": "",
+            "map_groupkey": "",
+            "map_type": "binmap",
+            "map_bin_type": "pt1h_bin",
+            "map_result": "",
+            "yield_lot_ids": "",
+            "yield_groupkey": "",
+        })
+
     queue: asyncio.Queue = asyncio.Queue()
 
     @observe(name="yield_agent_request")
-    def _run_graph():
-        # 모든 노드의 @observe가 이 trace의 child span이 됨
+    async def _run_graph():
         lf = get_client()
         lf.update_current_trace(
             session_id=request.session_id,
             input={"query": request.query},
-            tags=["yield-agent", "v3"],
+            tags=["yield-agent", "v4-multistep"],
         )
-        route = ""
+        routes: list[str] = []
         try:
-            for step in yield_supervisor.stream(
-                initial_state,
-                config={
-                    "configurable": {
-                        "session_id": request.session_id,
-                        "anomaly_count": len(session["anomaly_params"]),
-                    }
-                },
-            ):
-                # supervisor 스텝에서 라우팅 결정 캡처
-                if "supervisor" in step:
-                    route = step["supervisor"].get("next", route)
-                asyncio.run_coroutine_threadsafe(
-                    queue.put(("step", step)), loop
-                ).result()
-            # 루트 트레이스 output에 라우팅 결과 기록
-            lf.update_current_trace(output={"route": route, "query": request.query})
-            asyncio.run_coroutine_threadsafe(queue.put(("done", None)), loop).result()
+            async for step in graph.astream(input_state, config=config):
+                await queue.put(("step", step))
+            lf.update_current_trace(output={"routes": routes, "query": request.query})
+            await queue.put(("done", None))
         except Exception as e:
             logger.exception("Graph execution error")
             lf.update_current_trace(output={"error": str(e)})
-            asyncio.run_coroutine_threadsafe(queue.put(("error", e)), loop).result()
+            await queue.put(("error", e))
 
-    Thread(target=_run_graph, daemon=True).start()
+    task = asyncio.create_task(_run_graph())
+    task.add_done_callback(_on_task_error)
 
     async def generate():
         start = time.time()
-        all_messages: list = []
-        final_state: dict = {}
+        step_count = 0
+
+        # 대화 이력 저장용 — 이번 턴에서 발생한 모든 이벤트 수집
+        turn_messages: list[dict] = []
+        turn_artifacts: list[dict] = []
+        turn_suggestion = ""
+
+        # stream_start
+        yield _sse(StreamStartEvent(
+            session_id=request.session_id,
+            query=request.query,
+        ))
 
         while True:
             kind, data = await queue.get()
 
             if kind == "error":
-                yield f'data: {json.dumps({"type": "error", "message": str(data)})}\n\n'
+                yield _sse(ErrorEvent(message=str(data)))
                 try:
                     get_client().flush()
                 except Exception:
@@ -163,67 +292,109 @@ async def chat_stream(request: ChatRequest):
             if kind == "done":
                 break
 
-            # step: {node_name: node_state_update}
             for node_name, node_state in data.items():
-                elapsed = time.time() - start
-                if "messages" in node_state:
-                    all_messages.extend(node_state["messages"])
-                final_state.update(node_state)
-                yield f'data: {json.dumps({"type": "node", "node": node_name, "elapsed": round(elapsed, 1)})}\n\n'
+                elapsed = round(time.time() - start, 1)
+                if "step_count" in node_state:
+                    step_count = node_state["step_count"]
 
-        # 현재 턴 메시지만 추출 — prev_messages + rewritten HumanMessage 건너뜀
-        current_msgs = all_messages[n_prev_offset:]
+                # 1) node_complete
+                yield _sse(NodeCompleteEvent(
+                    node=node_name,
+                    step=step_count,
+                    elapsed=elapsed,
+                ))
 
-        supervisor_msg = next(
-            (m.content for m in current_msgs if getattr(m, "name", None) == "supervisor"),
-            "처리 완료",
-        )
-        wads_answer = next(
-            (m.content for m in current_msgs if getattr(m, "name", None) == "wads_agent"),
-            "",
-        )
-        map_answer = next(
-            (m.content for m in current_msgs if getattr(m, "name", None) == "map_agent"),
-            "",
-        )
+                # 2) AIMessage → message 이벤트 (채팅 패널)
+                for msg in node_state.get("messages", []):
+                    agent_name = getattr(msg, "name", None) or node_name
+                    content = msg.content if hasattr(msg, "content") else str(msg)
+                    if not content:
+                        continue
+                    evt = MessageEvent(
+                        agent=agent_name,
+                        content=content,
+                        step=step_count,
+                    )
+                    yield _sse(evt)
+                    turn_messages.append({
+                        "agent": agent_name,
+                        "content": content,
+                    })
 
-        # 세션 업데이트 — 최근 AI 메시지 2개만 유지 (컨텍스트 토큰 절약)
-        ai_msgs = [m for m in all_messages if getattr(m, "type", None) == "ai"]
-        session["prev_messages"] = ai_msgs[-2:]
-        if final_state.get("lotcd"):
-            session["lotcd"] = final_state["lotcd"]
-        if final_state.get("anomaly_params") is not None:
-            session["anomaly_params"] = final_state["anomaly_params"]
+                # 3) artifacts → artifact 이벤트 (오른쪽 패널)
+                artifact_sources = [
+                    ("yield_artifacts", "yield_agent"),
+                    ("wads_artifacts", "wads_agent"),
+                    ("map_artifacts", "map_agent"),
+                ]
+                for key, default_agent in artifact_sources:
+                    for art in node_state.get(key, []):
+                        art_data = art.get("data", "")
+                        if not art_data:
+                            continue
+                        art_type = _detect_artifact_type(art_data)
+                        mime = {
+                            ArtifactType.html: "text/html",
+                            ArtifactType.image: "image/png",
+                            ArtifactType.markdown: "text/markdown",
+                        }.get(art_type, "text/html")
+                        evt = ArtifactEvent(
+                            artifact_type=art_type,
+                            mime=mime,
+                            title=art.get("title", key.replace("_artifacts", "")),
+                            agent=art.get("agent", default_agent),
+                            data=art_data,
+                            step=step_count,
+                        )
+                        yield _sse(evt)
+                        turn_artifacts.append(evt.model_dump())
 
-        # HTML 아티팩트 추출
-        yield_html = next(
-            (a["data"] for a in final_state.get("yield_artifacts", []) if a.get("data")),
-            "",
-        )
-        wads_html = next(
-            (a["data"] for a in final_state.get("wads_artifacts", []) if a.get("data")),
-            "",
-        )
-        map_html = next(
-            (a["data"] for a in final_state.get("map_artifacts", []) if a.get("data")),
-            "",
-        )
+                # 4) analysis_result → markdown artifact
+                analysis = node_state.get("analysis_result", "")
+                if analysis:
+                    evt = ArtifactEvent(
+                        artifact_type=ArtifactType.markdown,
+                        mime="text/markdown",
+                        title="analysis",
+                        agent=node_name,
+                        data=analysis,
+                        step=step_count,
+                    )
+                    yield _sse(evt)
+                    turn_artifacts.append(evt.model_dump())
 
-        result = {
-            "type": "result",
-            "supervisor_msg": supervisor_msg,
-            "yield_html": yield_html,
-            "analysis": final_state.get("analysis_result", ""),
-            "agent_suggestion": final_state.get("agent_suggestion", ""),
-            "wads_answer": wads_answer,
-            "wads_html": wads_html,
-            "map_answer": map_answer,
-            "map_html": map_html,
-            "has_weeks_data": bool(final_state.get("weeks_data")),
+                # 5) suggestion
+                suggestion = node_state.get("agent_suggestion", "")
+                if suggestion:
+                    yield _sse(SuggestionEvent(
+                        content=suggestion,
+                        step=step_count,
+                    ))
+                    turn_suggestion = suggestion
+
+        # stream_end
+        total_elapsed = round(time.time() - start, 1)
+        yield _sse(StreamEndEvent(
+            total_steps=step_count,
+            elapsed=total_elapsed,
+        ))
+
+        # MongoDB에 이번 턴 저장
+        turn_doc = {
+            "session_id": request.session_id,
+            "query": request.query,
+            "messages": turn_messages,
+            "artifacts": turn_artifacts,
+            "suggestion": turn_suggestion,
+            "step_count": step_count,
+            "elapsed": total_elapsed,
+            "timestamp": datetime.now(timezone.utc),
         }
-        yield f"data: {json.dumps(result, ensure_ascii=False)}\n\n"
+        try:
+            await db.chat_turns.insert_one(turn_doc)
+        except Exception as e:
+            logger.warning("대화 이력 저장 실패: %s", e)
 
-        # Langfuse 트레이스 전송
         try:
             get_client().flush()
         except Exception:
