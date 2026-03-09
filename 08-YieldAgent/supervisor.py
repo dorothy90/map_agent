@@ -1,12 +1,13 @@
 """
-Supervisor Node — Yield/WADS 라우팅 담당
-=========================================
-Pydantic with_structured_output() 방식으로 JSON 파싱 오류 없이 안정적으로 라우팅합니다.
+Supervisor Node — Yield/WADS/Map 라우팅 담당
+=============================================
+수동 JSON 파싱 + RouteResponse Pydantic 검증 방식으로 라우팅을 수행합니다.
 
 라우팅 대상:
   yield_agent  → pt1h 수율 조회
   wads_agent   → WADS 열화 검출 리포트 조회
-  END          → 범위 외 요청
+  map_agent    → 웨이퍼 맵 시각화
+  FINISH       → 범위 외 요청
 """
 
 from __future__ import annotations
@@ -14,13 +15,13 @@ from __future__ import annotations
 import json
 import operator
 import os
-import re
 import logging
+import re
 from datetime import date
 from typing import Annotated, Any, Dict, Literal, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, HumanMessage, trim_messages
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, trim_messages
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langfuse import get_client, observe
@@ -40,8 +41,9 @@ _model = ChatOpenAI(
     base_url=os.getenv("OPENROUTER_BASE_URL"),
     api_key=os.getenv("OPENROUTER_API_KEY"),
     temperature=0,
-    request_timeout=180,
+    # request_timeout=180,
 )
+
 
 
 # ── Pydantic 라우팅 결정 모델 ────────────────────────────────
@@ -77,6 +79,8 @@ class RouteResponse(BaseModel):
     yield_groupkey: str = Field(default="", description="수율 조회용 lot.wf 형식 (예: '4SS2DPD.01,4SS2DPD.05')")
 
 
+
+
 # ── Rewrite 시스템 프롬프트 ─────────────────────────────────
 REWRITE_SYSTEM_PROMPT = """\
 You are a query rewriter for a semiconductor yield analysis system.
@@ -100,11 +104,20 @@ Rules:
 """
 
 
+_MAX_CHECKPOINT_MESSAGES = 30
+
+
 @observe(name="rewrite_node")
 def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     messages = state.get("messages", [])
     if not messages:
         return {}
+
+    # 체크포인트 메시지 pruning: 오래된 메시지 제거하여 체크포인트 크기 제한
+    prune_ops = []
+    if len(messages) > _MAX_CHECKPOINT_MESSAGES:
+        excess = messages[: len(messages) - _MAX_CHECKPOINT_MESSAGES]
+        prune_ops = [RemoveMessage(id=m.id) for m in excess if getattr(m, "id", None)]
 
     # 마지막 HumanMessage 추출
     last_human = next(
@@ -147,7 +160,7 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     logger.info("[Rewrite] '%s' → '%s'", last_human.content, rewritten)
 
     # 동일 ID로 교체 → add_messages가 제자리 업데이트, 풀 리스트 반환 불필요
-    return {"messages": [HumanMessage(content=rewritten, id=last_human.id)]}
+    return {"messages": prune_ops + [HumanMessage(content=rewritten, id=last_human.id)]}
 
 
 # ── 시스템 프롬프트 ──────────────────────────────────────────
@@ -346,19 +359,34 @@ def supervisor_node(
 
     # token_counter=len → 메시지 개수 기준 (문자수 아님). 최근 20개 메시지만 전달.
     trimmed_messages = trim_messages(condensed, max_tokens=20, strategy="last", token_counter=len)
+    # ── 수동 JSON 파싱 방식 (with_structured_output 사용 금지) ──
+    # 이유: gpt-oss-120b는 function calling을 지원하지만, OpenRouter 프록시가
+    #       structured output 파라미터를 제대로 전달하지 못함.
+    #       _model.with_structured_output(RouteResponse).invoke() 사용 시
+    #       예외 발생 → fallback "요청을 이해하지 못했습니다" 반환되는 버그 발생.
+    # 해결: LLM에게 raw JSON 출력을 요청하고, regex로 추출 후 Pydantic 검증.
+    # 참고: with_structured_output 재도입 시 OpenRouter 호환성 먼저 확인할 것.
     try:
-        raw = _model.invoke(
+        raw_response = _model.invoke(
             [{"role": "system", "content": prompt}, *trimmed_messages],
             config={"callbacks": _lf_callbacks()},
         )
-        content = raw.content.strip()
-        match = re.search(r"\{.*\}", content, re.DOTALL)
-        if not match:
-            raise ValueError(f"JSON 없음: {content[:200]}")
-        data = json.loads(match.group())
+        raw_text = raw_response.content.strip()
+        logger.debug("[Supervisor] raw LLM response: %s", raw_text[:500])
+
+        # JSON 블록 추출 (```json ... ``` 또는 { ... })
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+        if not json_match:
+            json_match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
+        if not json_match:
+            raise ValueError(f"No JSON found in response: {raw_text[:200]}")
+
+        data = json.loads(json_match.group(1))
         decision = RouteResponse(**data)
+    except (ConnectionError, TimeoutError, OSError):
+        raise  # Tier 1: RetryPolicy가 재시도
     except Exception as e:
-        logger.error("Supervisor 파싱 실패: %s", e)
+        logger.error("Supervisor JSON 파싱 실패: %s", e)
         decision = RouteResponse(
             next="FINISH",
             lotcd=state.get("lotcd") or "4SS",
@@ -367,8 +395,9 @@ def supervisor_node(
             message="요청을 이해하지 못했습니다. 다시 시도해 주세요.",
         )
 
-    # 동일 에이전트 재호출 방지: 직전 에이전트와 같으면 FINISH
-    if decision.next not in ("FINISH",):
+    # 동일 에이전트 재호출 방지: 같은 턴 내 직전 에이전트와 같으면 FINISH
+    # step_count > 1 조건: 첫 스텝은 새 질의이므로 이전 대화 히스토리의 에이전트와 겹쳐도 허용
+    if step_count > 1 and decision.next not in ("FINISH",):
         last_agent = next(
             (getattr(m, "name", "") for m in reversed(messages)
              if isinstance(m, AIMessage) and getattr(m, "name", "") in _AGENT_NAMES),
@@ -504,11 +533,11 @@ from wads_agent import wads_agent_node  # noqa: E402
 from map_agent import map_agent_node  # noqa: E402
 
 # 에이전트 노드 재시도 정책 (Oracle/LLM 일시적 오류 자동 재시도)
-_retry = RetryPolicy(max_attempts=2, initial_interval=1.0)
+_retry = RetryPolicy(max_attempts=3, initial_interval=1.0)
 
 workflow = StateGraph(YieldQueryState)
-workflow.add_node("rewrite", rewrite_node)
-workflow.add_node("supervisor", supervisor_node)  # Command가 라우팅 처리
+workflow.add_node("rewrite", rewrite_node, retry_policy=_retry)
+workflow.add_node("supervisor", supervisor_node, retry_policy=_retry)
 workflow.add_node("yield_agent", yield_agent_node, retry_policy=_retry)
 workflow.add_node("wads_agent", wads_agent_node, retry_policy=_retry)
 workflow.add_node("map_agent", map_agent_node, retry_policy=_retry)

@@ -613,7 +613,7 @@ model = ChatOpenAI(
     base_url=os.getenv("OPENROUTER_BASE_URL"),
     api_key=os.getenv("OPENROUTER_API_KEY"),
     temperature=0,
-    request_timeout=180,
+    # request_timeout=180,
 )
 
 # map_agent 생성 (단일 통합 도구 사용)

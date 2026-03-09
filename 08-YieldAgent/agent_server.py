@@ -11,6 +11,7 @@ React 프론트엔드 대응: 타입별 분리된 SSE 이벤트 (message / artif
 import asyncio
 import json
 import logging
+import os
 import sys
 import time
 import uuid
@@ -215,6 +216,7 @@ async def chat_stream(request: ChatRequest, req: Request):
         "analysis_result": "",
         "agent_suggestion": "",
         "step_count": 0,
+        "anomaly_params": [],
     }
 
     # 첫 번째 턴이면 나머지 기본값도 함께 전달
@@ -332,6 +334,18 @@ async def chat_stream(request: ChatRequest, req: Request):
                         art_data = art.get("data", "")
                         if not art_data:
                             continue
+
+                        # file:// 참조인 경우 파일에서 읽기
+                        if art_data.startswith("file://"):
+                            file_path = art_data[7:]
+                            try:
+                                with open(file_path, "r", encoding="utf-8") as f:
+                                    art_data = f.read()
+                                # 전송 후 임시 파일 삭제
+                                os.remove(file_path)
+                            except FileNotFoundError:
+                                continue
+
                         art_type = _detect_artifact_type(art_data)
                         mime = {
                             ArtifactType.html: "text/html",
@@ -347,7 +361,10 @@ async def chat_stream(request: ChatRequest, req: Request):
                             step=step_count,
                         )
                         yield _sse(evt)
-                        turn_artifacts.append(evt.model_dump())
+                        # MongoDB에는 data 제외하여 저장 (크기 절감)
+                        turn_artifact = evt.model_dump()
+                        turn_artifact["data"] = ""
+                        turn_artifacts.append(turn_artifact)
 
                 # 4) analysis_result → markdown artifact
                 analysis = node_state.get("analysis_result", "")

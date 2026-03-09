@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import threading
 import time
 from datetime import date, timedelta
 
@@ -28,14 +29,31 @@ ORACLE_USER     = os.getenv("ORACLE_USER")
 ORACLE_PASSWORD = os.getenv("ORACLE_PASSWORD")
 ORACLE_DSN      = os.getenv("ORACLE_DSN")
 
+_pool: oracledb.ConnectionPool | None = None
+_pool_lock = threading.Lock()
+
+
+def _get_oracle_pool() -> oracledb.ConnectionPool:
+    """Oracle 커넥션 풀 싱글턴 (lazy init, thin-mode, thread-safe)"""
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:  # double-checked locking
+                _pool = oracledb.create_pool(
+                    user=ORACLE_USER,
+                    password=ORACLE_PASSWORD,
+                    dsn=ORACLE_DSN,
+                    min=2,
+                    max=10,
+                    increment=1,
+                )
+                logger.info("Oracle 커넥션 풀 생성 (min=2, max=10)")
+    return _pool
+
 
 def get_oracle_connection() -> oracledb.Connection:
-    """Oracle thin-mode 연결 생성"""
-    return oracledb.connect(
-        user=ORACLE_USER,
-        password=ORACLE_PASSWORD,
-        dsn=ORACLE_DSN,
-    )
+    """풀에서 커넥션 획득 (conn.close() 시 풀에 반환)"""
+    return _get_oracle_pool().acquire()
 
 
 # ============================================================
@@ -81,7 +99,7 @@ GMS_COLUMNS: list[str] = ["cum0", "cum2", "fab", "prb", "pnt"]
 
 GMS_HIGHER_IS_BETTER: set[str] = set(GMS_COLUMNS)  # gms는 전부 높을수록 좋음
 
-HIGHER_IS_BETTER: set[str] = {"VTH", "IDSAT"}
+HIGHER_IS_BETTER: set[str] = {"VTH", "IDSAT", "PT1C", "CFTA"}
 
 # bin_value ↔ bin_category 매핑
 # A = Pass(양품), B~Z = 25개 PARA_COLUMNS에 1:1 대응하는 fail bin

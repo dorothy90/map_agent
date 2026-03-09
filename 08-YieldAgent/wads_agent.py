@@ -4,7 +4,7 @@ import contextvars
 from dotenv import load_dotenv
 import os
 from datetime import date
-from typing import Any, Dict, List, Optional, Annotated, Literal
+from typing import Any, Dict, List, Optional, Annotated, Literal, TypedDict
 
 import pandas as pd
 import oracledb
@@ -282,7 +282,7 @@ _wads_model = ChatOpenAI(
 
 
 # WADS Agent State 정의
-class WADSAgentState(Dict):
+class WADSAgentState(TypedDict):
     """WADS Agent 내부 상태"""
 
     messages: Annotated[List, add_messages]
@@ -318,13 +318,13 @@ def _build_wads_graph():
         return {"messages": [response]}
 
     builder.add_node("chatbot", chatbot)
-    tool_node = ToolNode(tools=WADS_TOOLS)
+    tool_node = ToolNode(tools=WADS_TOOLS, handle_tool_errors=True)
     builder.add_node("tools", tool_node)
     builder.add_conditional_edges("chatbot", tools_condition)
     builder.add_edge("tools", "chatbot")
     builder.add_edge(START, "chatbot")
 
-    return builder.compile()
+    return builder.compile(checkpointer=False)
 
 
 # 모듈 수준 싱글턴 — 매번 재생성하지 않음
@@ -565,7 +565,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     try:
         # 부모 config의 LangGraph 내부 파라미터(__pregel_* 등)를 제거하고 Langfuse 콜백만 전달
-        sub_config = {"callbacks": _lf_callbacks()}
+        sub_config = {"callbacks": _lf_callbacks(), "recursion_limit": 10}
         result = _wads_graph.invoke(
             {
                 "messages": [

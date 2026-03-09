@@ -89,7 +89,12 @@ def _query_wafer_data(
     3. lot_id + wf_ids: 단일 lot의 특정 wafer 조회
     4. lot_id only: 단일 lot의 모든 wafer 조회
     """
-    conn = _get_oracle_connection_common()
+    try:
+        conn = _get_oracle_connection_common()
+    except Exception as e:
+        logger.error("[MapAgent] Oracle 연결 실패: %s", e)
+        return []
+
     try:
         cur = conn.cursor()
         results = []
@@ -174,8 +179,14 @@ def _query_wafer_data(
                 results.append(record)
 
         return results
+    except Exception as e:
+        logger.error("[MapAgent] wafer 데이터 조회 실패: %s", e)
+        return []
     finally:
-        cur.close()
+        try:
+            cur.close()
+        except Exception:
+            pass
         conn.close()
 
 
@@ -249,6 +260,14 @@ def _visualize_binmap(map_data_list: list, bin_type: str = "pt1h_bin") -> str:
     if not map_data_list:
         return ""
 
+    try:
+        return _visualize_binmap_inner(map_data_list, bin_type)
+    except Exception as e:
+        logger.error("[MapAgent] binmap 시각화 실패: %s", e)
+        return ""
+
+
+def _visualize_binmap_inner(map_data_list: list, bin_type: str) -> str:
     n_wafers = len(map_data_list)
     n_cols = min(4, n_wafers)
     n_rows = (n_wafers + n_cols - 1) // n_cols
@@ -319,15 +338,24 @@ def _visualize_cummap(
     category_name: Optional[str] = None,
     subtitle: Optional[str] = None,
 ) -> tuple:
-    """여러 wafer를 Pass Rate 기반 cummap으로 시각화 → (filepath, avg_pass_rate)
-
-    target_bin: 특정 bin value 지정 시 해당 bin이 아닌 die가 Pass (category별 수율)
-    category_name: title에 표시할 category 이름 (예: "IOFF")
-    subtitle: 추가 제목 줄 (예: 주차 정보)
-    """
+    """여러 wafer를 Pass Rate 기반 cummap으로 시각화 → (filepath, avg_pass_rate)"""
     if not map_data_list:
         return None, 0
 
+    try:
+        return _visualize_cummap_inner(map_data_list, bin_type, target_bin, category_name, subtitle)
+    except Exception as e:
+        logger.error("[MapAgent] cummap 시각화 실패: %s", e)
+        return None, 0
+
+
+def _visualize_cummap_inner(
+    map_data_list: list,
+    bin_type: str,
+    target_bin: Optional[str],
+    category_name: Optional[str],
+    subtitle: Optional[str],
+) -> tuple:
     n_wafers = len(map_data_list)
     min_row, max_row, min_col, max_col = _get_map_bounds(map_data_list)
     height = max_row - min_row + 1
@@ -456,14 +484,12 @@ def _visualize_combined_cummap(
 
 
 def _query_lot_ids_by_date(lotcd: str, start_date: str, end_date: str) -> list[str]:
-    """지정 기간(end_tm 기준)의 DISTINCT lot_id 목록 조회
-
-    Args:
-        lotcd: 제품코드 (lot_cd 컬럼)
-        start_date: 시작일 YYYYMMDD (inclusive)
-        end_date: 종료일 YYYYMMDD (exclusive)
-    """
-    conn = _get_oracle_connection_common()
+    """지정 기간(end_tm 기준)의 DISTINCT lot_id 목록 조회"""
+    try:
+        conn = _get_oracle_connection_common()
+    except Exception as e:
+        logger.error("[MapAgent] Oracle 연결 실패 (lot_ids_by_date): %s", e)
+        return []
     try:
         cur = conn.cursor()
         sql = f"""

@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 import os
+import uuid
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
@@ -39,6 +40,19 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("yield_agent")
+
+
+GENERATED_DIR = os.path.join(os.path.dirname(__file__), "generated")
+os.makedirs(GENERATED_DIR, exist_ok=True)
+
+
+def _save_html_to_file(html: str, prefix: str) -> str:
+    """HTML 문자열을 파일로 저장하고 file:// 경로를 반환."""
+    fname = f"{prefix}_{uuid.uuid4().hex[:8]}.html"
+    fpath = os.path.join(GENERATED_DIR, fname)
+    with open(fpath, "w", encoding="utf-8") as f:
+        f.write(html)
+    return f"file://{fpath}"
 
 
 # ============================================================
@@ -533,6 +547,168 @@ def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
     return _fetch_periods(lotcd, ref_date, unit="weekly", periods=4)
 
 
+# ── Wafer-level scatter 데이터 조회 ──────────────────────────
+def _fetch_wafer_scatter(
+    lotcd: str, ref_date: date, unit: str, periods: int, process: str,
+) -> list[dict]:
+    """기간별 wafer-level raw 데이터 조회 (scatter plot용).
+
+    모든 unit에서 MEASURETIME_START 원본 타임스탬프를 가져옴.
+
+    Returns:
+        [{"ts": "yyyy-mm-dd hh:mm:ss", "param": str, "value": float}, ...]
+    """
+    n = periods if periods > 0 else DEFAULT_PERIODS.get(unit, 4)
+    rows: list[dict] = []
+
+    try:
+        conn = _get_oracle_connection()
+        try:
+            cur = conn.cursor()
+
+            if unit == "weekly":
+                mondays = _get_n_weeks(ref_date, n)
+                week_strs = [_iso_week_str(m) for m in mondays]
+                db_weeks = [_week_to_db_yld(w) for w in week_strs]
+                placeholders = ", ".join(f":w{i}" for i in range(len(db_weeks)))
+                sql = f"""
+                    SELECT MEASURETIME_START, PARAM, VALUE
+                    FROM {YLD_TABLE}
+                    WHERE LOT_CD = :lot_cd AND WEEK IN ({placeholders})
+                      AND PROCESS = :process
+                    ORDER BY MEASURETIME_START
+                """
+                params: dict = {"lot_cd": lotcd, "process": process}
+                for i, w in enumerate(db_weeks):
+                    params[f"w{i}"] = w
+                cur.execute(sql, params)
+                for ts, param, value in cur:
+                    if value is None:
+                        continue
+                    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+                    rows.append({"ts": ts_str, "param": str(param),
+                                 "value": float(value)})
+
+            elif unit == "monthly":
+                month_strs = _get_n_months(ref_date, n)
+                bind: dict = {"lot_cd": lotcd, "process": process}
+                clauses = []
+                for i, ym in enumerate(month_strs):
+                    y, m = ym.split("-")
+                    bind[f"y{i}"] = y
+                    bind[f"m{i}"] = m
+                    clauses.append(f"(YEAR = :y{i} AND TO_NUMBER(MONTH) = TO_NUMBER(:m{i}))")
+                where_ym = " OR ".join(clauses)
+                sql = f"""
+                    SELECT MEASURETIME_START, PARAM, VALUE
+                    FROM {YLD_TABLE}
+                    WHERE LOT_CD = :lot_cd AND ({where_ym}) AND PROCESS = :process
+                    ORDER BY MEASURETIME_START
+                """
+                cur.execute(sql, bind)
+                for ts, param, value in cur:
+                    if value is None:
+                        continue
+                    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+                    rows.append({"ts": ts_str, "param": str(param),
+                                 "value": float(value)})
+
+            elif unit == "daily":
+                days = _get_n_days(ref_date, n)
+                start_dt = datetime.combine(min(days), datetime.min.time())
+                end_dt = datetime.combine(max(days) + timedelta(days=1), datetime.min.time())
+                sql = f"""
+                    SELECT MEASURETIME_START, PARAM, VALUE
+                    FROM {YLD_TABLE}
+                    WHERE LOT_CD = :lot_cd
+                      AND MEASURETIME_START >= :start_dt
+                      AND MEASURETIME_START <  :end_dt
+                      AND PROCESS = :process
+                    ORDER BY MEASURETIME_START
+                """
+                cur.execute(sql, {"lot_cd": lotcd, "start_dt": start_dt,
+                                  "end_dt": end_dt, "process": process})
+                for ts, param, value in cur:
+                    if value is None:
+                        continue
+                    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+                    rows.append({"ts": ts_str, "param": str(param),
+                                 "value": float(value)})
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error("[wafer-scatter/%s/%s] Oracle 조회 실패: %s", process, lotcd, e)
+
+    return rows
+
+
+def _fetch_lot_wafer_scatter(
+    lot_specs: list[tuple[str, int | None]], process: str,
+) -> list[dict]:
+    """LOT 비교 모드용 wafer-level raw 데이터 조회.
+
+    Returns:
+        [{"ts": "yyyy-mm-dd hh:mm:ss", "param": str, "value": float}, ...]
+    """
+    if not lot_specs:
+        return []
+
+    lot_level = [(i, lotid) for i, (lotid, wfid) in enumerate(lot_specs) if wfid is None]
+    wf_level = [(i, lotid, wfid) for i, (lotid, wfid) in enumerate(lot_specs) if wfid is not None]
+    rows: list[dict] = []
+
+    try:
+        conn = _get_oracle_connection()
+        with conn.cursor() as cur:
+            if lot_level:
+                bind: dict = {"process": process}
+                clauses = []
+                for idx, (_, lotid) in enumerate(lot_level):
+                    bind[f"l{idx}"] = lotid
+                    clauses.append(f"LOTID = :l{idx}")
+                where = " OR ".join(clauses)
+                sql = f"""
+                    SELECT MEASURETIME_START, PARAM, VALUE
+                    FROM {YLD_TABLE}
+                    WHERE ({where}) AND PROCESS = :process
+                    ORDER BY MEASURETIME_START
+                """
+                cur.execute(sql, bind)
+                for ts, param, value in cur.fetchall():
+                    if value is None:
+                        continue
+                    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+                    rows.append({"ts": ts_str, "param": str(param),
+                                 "value": float(value)})
+
+            if wf_level:
+                bind2: dict = {"process": process}
+                clauses2 = []
+                for idx, (_, lotid, wfid) in enumerate(wf_level):
+                    bind2[f"l{idx}"] = lotid
+                    bind2[f"w{idx}"] = wfid
+                    clauses2.append(f"(LOTID = :l{idx} AND WFID = :w{idx})")
+                where2 = " OR ".join(clauses2)
+                sql2 = f"""
+                    SELECT MEASURETIME_START, PARAM, VALUE
+                    FROM {YLD_TABLE}
+                    WHERE ({where2}) AND PROCESS = :process
+                    ORDER BY MEASURETIME_START
+                """
+                cur.execute(sql2, bind2)
+                for ts, param, value in cur.fetchall():
+                    if value is None:
+                        continue
+                    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+                    rows.append({"ts": ts_str, "param": str(param),
+                                 "value": float(value)})
+        conn.close()
+    except Exception as e:
+        logger.error("[lot-wafer-scatter/%s] Oracle 조회 실패: %s", process, e)
+
+    return rows
+
+
 # ============================================================
 # 5. 테이블 생성 함수
 # ============================================================
@@ -596,6 +772,118 @@ def _build_table(weeks_data: list[dict], lotcd: str, filter_params=None,
     table = tabulate(rows, headers=headers, tablefmt="grid", numalign="right", stralign="center")
 
     return title + table
+
+
+# ── Scatter Plot (Period 모드) ──────────────────────────────
+_PERIOD_COLORS = [
+    "#3b82f6", "#ef4444", "#22c55e", "#f59e0b",
+    "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
+    "#6366f1", "#84cc16", "#06b6d4", "#e11d48",
+]
+
+
+def _build_scatter_html(
+    wafer_rows: list[dict], anomaly_params: list[dict],
+) -> str:
+    """Period 모드 scatter plot HTML — X축 MEASURETIME_START, 모든 wafer 타점.
+
+    Args:
+        wafer_rows: _fetch_wafer_scatter 반환값 [{"ts", "param", "value"}, ...]
+        anomaly_params: _detect_anomalies 반환값
+
+    Row 1: VTH + PT1C (고정)
+    Row 2: 개선 파라미터 top 3
+    Row 3: 열화 파라미터 top 3
+    """
+    if not wafer_rows:
+        return ""
+
+    import json as _json
+    from collections import defaultdict
+
+    # param → [{"x": ts_str, "y": value}]
+    param_data: dict[str, list[dict]] = defaultdict(list)
+    for r in wafer_rows:
+        param_data[r["param"]].append({"x": r["ts"], "y": round(r["value"], 4)})
+
+    improved = [a for a in anomaly_params if a["direction"] == "개선"][:3]
+    degraded = [a for a in anomaly_params if a["direction"] == "열화"][:3]
+
+    rows_config: list[tuple[str, str, list[tuple[str, str]]]] = []
+    rows_config.append(("고정 파라미터", "#3b82f6", [("VTH", "VTH"), ("PT1C", "PT1C")]))
+    if improved:
+        rows_config.append(("개선 파라미터", "#22c55e", [(a["param"], a["param"]) for a in improved]))
+    if degraded:
+        rows_config.append(("열화 파라미터", "#ef4444", [(a["param"], a["param"]) for a in degraded]))
+
+    chart_blocks = []
+    chart_id = 0
+    for row_title, row_color, charts in rows_config:
+        cells = []
+        for label, param_name in charts:
+            cid = f"sc_{chart_id}"
+            chart_id += 1
+            pts = param_data.get(param_name, [])
+            pts_js = _json.dumps(pts, ensure_ascii=False)
+            cells.append(f"""
+<div style="flex:1;min-width:320px;max-width:500px;">
+  <canvas id="{cid}"></canvas>
+  <script>
+  new Chart(document.getElementById('{cid}'), {{
+    type: 'scatter',
+    data: {{
+      datasets: [{{
+        label: '{label}',
+        data: {pts_js},
+        backgroundColor: '{row_color}',
+        borderColor: '{row_color}',
+        pointRadius: 2.5,
+        showLine: false,
+      }}]
+    }},
+    options: {{
+      responsive: true,
+      plugins: {{
+        title: {{ display: true, text: '{label}', font: {{ size: 14 }}, color: '{row_color}' }},
+        legend: {{ display: false }},
+        tooltip: {{
+          callbacks: {{
+            label: function(ctx) {{
+              return ctx.raw.x + '  →  ' + ctx.raw.y;
+            }}
+          }}
+        }}
+      }},
+      scales: {{
+        x: {{
+          type: 'time',
+          time: {{ tooltipFormat: 'yyyy-MM-dd HH:mm:ss', displayFormats: {{ day: 'MM-dd', hour: 'MM-dd HH:mm' }} }},
+          title: {{ display: true, text: 'MEASURETIME' }},
+          ticks: {{ maxRotation: 45, font: {{ size: 9 }} }}
+        }},
+        y: {{ title: {{ display: true, text: '{label}' }} }}
+      }}
+    }}
+  }});
+  </script>
+</div>""")
+        chart_blocks.append(
+            f'<div style="margin-bottom:8px;font-weight:600;font-size:13px;color:#475569;">{row_title}</div>'
+            f'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;">{"".join(cells)}</div>'
+        )
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 12px; background: #fff; }}
+</style>
+</head><body>
+{"".join(chart_blocks)}
+</body></html>"""
+    return html
 
 
 def _build_html_table(
@@ -895,28 +1183,32 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
 # ============================================================
 # 5.1.1 수치 기반 이상감지
 # ============================================================
-ANOMALY_THRESHOLD = float(os.getenv("ANOMALY_THRESHOLD", "10.0"))
+TOP_N_ANOMALIES = int(os.getenv("TOP_N_ANOMALIES", "3"))
 
 
-def _detect_anomalies(weeks_data: list[dict], threshold: float = ANOMALY_THRESHOLD) -> list[dict]:
-    """직전주 vs 최신주 파라미터 변화율 계산, |change%| > threshold인 것만 반환
+def _detect_anomalies(weeks_data: list[dict], top_n: int = TOP_N_ANOMALIES) -> list[dict]:
+    """직전주 vs 최신주 파라미터 변화율 계산, 열화 Top N + 개선 Top N 반환
 
     Args:
         weeks_data: 4주치 데이터 리스트 (오래된 순)
-        threshold: 이상 감지 임계값 (기본 10.0%)
+        top_n: 열화/개선 각각 반환할 최대 개수 (기본 3)
 
     Returns:
-        list[dict]: 이상 파라미터 목록 (열화 우선, 변화율 내림차순)
+        list[dict]: 이상 파라미터 목록 (열화 우선, 변화율 내림차순, 최대 top_n*2개)
     """
     if len(weeks_data) < 2:
         return []
 
     prev, curr = weeks_data[-2], weeks_data[-1]
-    anomalies = []
+    degraded = []
+    improved = []
 
-    for param in PARA_COLUMNS:
-        pv = prev.get(param)
-        cv = curr.get(param)
+    # pt1h + pt1c 파라미터 (gms 제외)
+    all_params = [(p, p) for p in PARA_COLUMNS] + [(f"pt1c_{p}", p) for p in PT1C_COLUMNS]
+
+    for data_key, param in all_params:
+        pv = prev.get(data_key)
+        cv = curr.get(data_key)
         if pv in (None, "-", 0, "") or cv in (None, "-", ""):
             continue
         try:
@@ -930,63 +1222,73 @@ def _detect_anomalies(weeks_data: list[dict], threshold: float = ANOMALY_THRESHO
             continue
 
         change_pct = (cv - pv) / abs(pv) * 100
-        if abs(change_pct) > threshold:
-            is_better = (
-                (param in HIGHER_IS_BETTER and change_pct > 0)
-                or (param not in HIGHER_IS_BETTER and change_pct < 0)
-            )
-            direction = "개선" if is_better else "열화"
-            anomalies.append({
-                "param": param,
-                "prev_val": round(pv, 2),
-                "curr_val": round(cv, 2),
-                "change_pct": round(change_pct, 1),
-                "direction": direction,
-            })
+        if change_pct == 0:
+            continue
 
-    # 열화 우선, 변화율 절댓값 내림차순 정렬
-    anomalies.sort(key=lambda x: (x["direction"] != "열화", -abs(x["change_pct"])))
-    return anomalies
+        is_better = (
+            (param in HIGHER_IS_BETTER and change_pct > 0)
+            or (param not in HIGHER_IS_BETTER and change_pct < 0)
+        )
+        entry = {
+            "param": param,
+            "prev_val": round(pv, 2),
+            "curr_val": round(cv, 2),
+            "change_pct": round(change_pct, 1),
+            "direction": "개선" if is_better else "열화",
+        }
+        if is_better:
+            improved.append(entry)
+        else:
+            degraded.append(entry)
+
+    # 각각 abs(change_pct) 내림차순 Top N
+    degraded.sort(key=lambda x: -abs(x["change_pct"]))
+    improved.sort(key=lambda x: -abs(x["change_pct"]))
+
+    # 열화 우선으로 합쳐서 반환
+    return degraded[:top_n] + improved[:top_n]
 
 
 # ============================================================
 # 5.2 LLM 분석 함수
 # ============================================================
 ANALYSIS_SYSTEM_PROMPT = """당신은 반도체 수율(yield) 분석 전문가입니다.
-주어진 기간별 pt1h 파라미터 데이터를 분석하여 인사이트를 제공합니다.
+아래 제공되는 이상감지 결과는 시스템이 계산한 확정 데이터입니다.
+이 데이터를 기반으로 트렌드를 요약·정리해주세요. 직접 파라미터를 선별하지 마세요.
 항상 한국어로 답변하세요."""
 
-ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 {n}기간 pt1h 파라미터 데이터입니다.
+ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 {n}기간 pt1h+pt1c 파라미터 데이터입니다.
 
 {table}
 
-=== 파라미터 극성 규칙 ===
-- VTH, IDSAT: 값이 높아지면 개선 (↑ = 개선)
-- 그 외 모든 파라미터: 값이 낮아지면 개선 (↓ = 개선)
+=== 시스템 이상감지 결과 (확정) ===
+비교 대상: {prev_week} → {curr_week}
+대상: pt1h + pt1c 파라미터만 (GMS 제외)
 
-=== 비교 대상 ===
-- Pre:    {prev_week}
-- Latest: {curr_week}
+{anomaly_summary}
 
-위 두 기간을 비교하여 다음을 분석해주세요:
+위 이상감지 결과를 그대로 사용하여 다음을 정리해주세요:
 
-1. **가장 열화된 파라미터 Top 3** (파라미터명, Pre 값, Latest 값, 변화율%)
-2. **가장 개선된 파라미터 Top 3** (파라미터명, Pre 값, Latest 값, 변화율%)
+1. **열화 파라미터** — 위 이상감지에서 direction=열화인 항목을 표로 정리 (파라미터명, Pre 값, Latest 값, 변화율%)
+2. **개선 파라미터** — 위 이상감지에서 direction=개선인 항목을 표로 정리
 3. **전반적인 트렌드 요약** (1~2문장)
 
+이상감지 결과가 없으면 "이상 파라미터 없음"으로 정리하세요.
 마크다운 표 형식으로 깔끔하게 정리해주세요."""
 
 
 @observe(name="analyze_with_llm")
 @timed
-def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm, n: int = 4, config=None) -> str:
-    """최근 2기간 데이터를 LLM에게 전달하여 열화/개선 분석을 받는 헬퍼 함수
+def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm,
+                      anomaly_params: list[dict], n: int = 4, config=None) -> str:
+    """_detect_anomalies 결과를 LLM에게 전달하여 정리하는 함수.
 
     Args:
         weeks_data: n기간 데이터 리스트 (오래된 순)
         table_str: 이미 생성된 테이블 문자열
         lotcd: 제품코드
         llm: ChatOpenAI 인스턴스
+        anomaly_params: _detect_anomalies 반환값 (확정된 이상 파라미터)
         n: 조회 기간 수
 
     Returns:
@@ -998,12 +1300,25 @@ def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm, n
     prev_week = weeks_data[-2]
     curr_week = weeks_data[-1]
 
+    # anomaly_params → 텍스트 요약
+    if anomaly_params:
+        lines = []
+        for a in anomaly_params:
+            lines.append(
+                f"- {a['param']}: {a['prev_val']} → {a['curr_val']} "
+                f"({a['change_pct']:+.1f}%, {a['direction']})"
+            )
+        anomaly_summary = "\n".join(lines)
+    else:
+        anomaly_summary = "(이상 파라미터 없음)"
+
     user_prompt = ANALYSIS_USER_PROMPT.format(
         lotcd=lotcd,
         table=table_str,
         n=n,
         prev_week=prev_week.get("week", "?"),
         curr_week=curr_week.get("week", "?"),
+        anomaly_summary=anomaly_summary,
     )
 
     try:
@@ -1028,7 +1343,7 @@ model = ChatOpenAI(
     base_url=os.getenv("OPENROUTER_BASE_URL"),
     api_key=os.getenv("OPENROUTER_API_KEY"),
     temperature=0,
-    request_timeout=180,
+    # request_timeout=180,
 )
 
 
@@ -1374,6 +1689,95 @@ td.td-gms-sep  { border-left: 3px solid #22c55e !important; }
     return html
 
 
+# ── Scatter Plot (LOT 비교 모드) ─────────────────────────────
+def _build_lot_scatter_html(
+    wafer_rows: list[dict], filter_params: list[str] | None,
+) -> str:
+    """LOT 비교 모드 scatter plot HTML — X축 MEASURETIME_START, 모든 wafer 타점.
+
+    Args:
+        wafer_rows: _fetch_lot_wafer_scatter 반환값 [{"ts", "param", "value"}, ...]
+        filter_params: 표시할 파라미터 목록 (None = VTH + PT1C)
+    """
+    if not wafer_rows:
+        return ""
+
+    import json as _json
+    from collections import defaultdict
+
+    if filter_params:
+        chart_params = [(p, p) for p in filter_params]
+    else:
+        chart_params = [("VTH", "VTH"), ("PT1C", "PT1C")]
+
+    # param → [{"x": ts, "y": value}]
+    param_data: dict[str, list[dict]] = defaultdict(list)
+    for r in wafer_rows:
+        param_data[r["param"]].append({"x": r["ts"], "y": round(r["value"], 4)})
+
+    chart_blocks = []
+    for idx, (label, param_name) in enumerate(chart_params):
+        cid = f"lsc_{idx}"
+        pts = param_data.get(param_name, [])
+        pts_js = _json.dumps(pts, ensure_ascii=False)
+
+        chart_blocks.append(f"""
+<div style="flex:1;min-width:320px;max-width:500px;">
+  <canvas id="{cid}"></canvas>
+  <script>
+  new Chart(document.getElementById('{cid}'), {{
+    type: 'scatter',
+    data: {{
+      datasets: [{{
+        label: '{label}',
+        data: {pts_js},
+        backgroundColor: '#3b82f6',
+        borderColor: '#3b82f6',
+        pointRadius: 2.5,
+        showLine: false,
+      }}]
+    }},
+    options: {{
+      responsive: true,
+      plugins: {{
+        title: {{ display: true, text: '{label}', font: {{ size: 14 }} }},
+        legend: {{ display: false }},
+        tooltip: {{
+          callbacks: {{
+            label: function(ctx) {{
+              return ctx.raw.x + '  →  ' + ctx.raw.y;
+            }}
+          }}
+        }}
+      }},
+      scales: {{
+        x: {{
+          type: 'time',
+          time: {{ tooltipFormat: 'yyyy-MM-dd HH:mm:ss', displayFormats: {{ day: 'MM-dd', hour: 'MM-dd HH:mm' }} }},
+          title: {{ display: true, text: 'MEASURETIME' }},
+          ticks: {{ maxRotation: 45, font: {{ size: 9 }} }}
+        }},
+        y: {{ title: {{ display: true, text: '{label}' }} }}
+      }}
+    }}
+  }});
+  </script>
+</div>""")
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+<style>
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 12px; background: #fff; }}
+</style>
+</head><body>
+<div style="display:flex;gap:12px;flex-wrap:wrap;">{"".join(chart_blocks)}</div>
+</body></html>"""
+    return html
+
+
 # ============================================================
 # 8. Yield Agent 노드 구현
 # ============================================================
@@ -1407,12 +1811,17 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         # groupkey 포함 여부로 모드 결정
         lot_mode = "groupkey" if yield_groupkey else "lot"
 
-        with ThreadPoolExecutor(max_workers=2) as ex:
+        with ThreadPoolExecutor(max_workers=4) as ex:
             f_pt1h = ex.submit(_fetch_lot_sql, lot_specs, "pt1h")
             f_pt1c = ex.submit(_fetch_lot_sql, lot_specs, "pt1c")
+            f_sc_pt1h = ex.submit(_fetch_lot_wafer_scatter, lot_specs, "pt1h")
+            f_sc_pt1c = ex.submit(_fetch_lot_wafer_scatter, lot_specs, "pt1c")
             pt1h_lot = f_pt1h.result()
             pt1c_lot = f_pt1c.result()
+            sc_pt1h = f_sc_pt1h.result()
+            sc_pt1c = f_sc_pt1c.result()
         merged = _merge_lot_data(pt1h_lot, pt1c_lot)
+        lot_wafer_rows = sc_pt1h + sc_pt1c
 
         if not merged:
             error_message = AIMessage(
@@ -1432,9 +1841,18 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         yield_artifacts = [{
             "type": "html",
             "mime": "text/html",
-            "data": html_table,
+            "data": _save_html_to_file(html_table, "lot_table"),
             "title": "lot_compare_table",
         }]
+
+        scatter_html = _build_lot_scatter_html(lot_wafer_rows, filter_params)
+        if scatter_html:
+            yield_artifacts.append({
+                "type": "html",
+                "mime": "text/html",
+                "data": _save_html_to_file(scatter_html, "lot_scatter"),
+                "title": "lot_scatter",
+            })
 
         result_message = AIMessage(content=result_msg, name="yield_agent")
         return {
@@ -1464,9 +1882,14 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     print(f"  - unit: {unit}, periods: {n}")
     print("=" * 60)
 
-    # 데이터 조회
+    # 데이터 조회 (테이블용 집계 + scatter용 wafer-level 병렬)
     print(f"\n[Yield Agent] {lotcd} 최근 {n}{dict(weekly='주', monthly='달', daily='일').get(unit, unit)} 데이터 조회 시작...")
-    weeks_data = _fetch_periods(lotcd, ref_date, unit=unit, periods=periods)
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_periods = ex.submit(_fetch_periods, lotcd, ref_date, unit, periods)
+        f_sc_pt1h = ex.submit(_fetch_wafer_scatter, lotcd, ref_date, unit, periods, "pt1h")
+        f_sc_pt1c = ex.submit(_fetch_wafer_scatter, lotcd, ref_date, unit, periods, "pt1c")
+        weeks_data = f_periods.result()
+        wafer_rows = f_sc_pt1h.result() + f_sc_pt1c.result()
 
     if not weeks_data or all(wd.get("lotcount") == "-" for wd in weeks_data):
         error_message = AIMessage(
@@ -1486,22 +1909,30 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     # LLM 분석 (최근 2주 비교)
     print(f"\n[Yield Agent] LLM 분석 시작 (최근 2주 비교)...")
-    analysis = _analyze_with_llm(weeks_data, table_str, lotcd, model, n=n, config=config)
+    analysis = _analyze_with_llm(weeks_data, table_str, lotcd, model, anomaly_params=anomaly_params, n=n, config=config)
     print(f"\n[LLM 분석 결과]\n{analysis}")
 
-    # HTML 아티팩트 생성
+    # HTML 아티팩트 생성 (파일로 저장하여 state 크기 절감)
     yield_artifacts = [{
         "type": "html",
         "mime": "text/html",
-        "data": html_table,
+        "data": _save_html_to_file(html_table, "yield_table"),
         "title": "yield_table",
     }]
+
+    scatter_html = _build_scatter_html(wafer_rows, anomaly_params)
+    if scatter_html:
+        yield_artifacts.append({
+            "type": "html",
+            "mime": "text/html",
+            "data": _save_html_to_file(scatter_html, "yield_scatter"),
+            "title": "yield_scatter",
+        })
 
     # 결과 메시지 생성 (HTML 테이블은 아티팩트로 별도 전달)
     unit_label = {"weekly": f"주간 (최근 {n}주)", "monthly": f"월별 (최근 {n}달)", "daily": f"일별 (최근 {n}일)"}.get(unit, f"최근 {n}개")
     result_msg = f"[{lotcd}] {unit_label} pt1h 수율 데이터입니다.\n"
-    result_msg += f"기준: {ref_date_str}\n\n"
-    result_msg += f"\n\n---\n\n{analysis}"
+    result_msg += f"기준: {ref_date_str}"
 
     if anomaly_params:
         anomaly_lines = "\n".join(
