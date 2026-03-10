@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 import os
+import re
 import uuid
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -34,11 +35,6 @@ from common import (
 )
 
 # ── 로깅 설정 ────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
-    datefmt="%H:%M:%S",
-)
 logger = logging.getLogger("yield_agent")
 
 
@@ -642,72 +638,6 @@ def _fetch_wafer_scatter(
     return rows
 
 
-def _fetch_lot_wafer_scatter(
-    lot_specs: list[tuple[str, int | None]], process: str,
-) -> list[dict]:
-    """LOT 비교 모드용 wafer-level raw 데이터 조회.
-
-    Returns:
-        [{"ts": "yyyy-mm-dd hh:mm:ss", "param": str, "value": float}, ...]
-    """
-    if not lot_specs:
-        return []
-
-    lot_level = [(i, lotid) for i, (lotid, wfid) in enumerate(lot_specs) if wfid is None]
-    wf_level = [(i, lotid, wfid) for i, (lotid, wfid) in enumerate(lot_specs) if wfid is not None]
-    rows: list[dict] = []
-
-    try:
-        conn = _get_oracle_connection()
-        with conn.cursor() as cur:
-            if lot_level:
-                bind: dict = {"process": process}
-                clauses = []
-                for idx, (_, lotid) in enumerate(lot_level):
-                    bind[f"l{idx}"] = lotid
-                    clauses.append(f"LOTID = :l{idx}")
-                where = " OR ".join(clauses)
-                sql = f"""
-                    SELECT MEASURETIME_START, PARAM, VALUE
-                    FROM {YLD_TABLE}
-                    WHERE ({where}) AND PROCESS = :process
-                    ORDER BY MEASURETIME_START
-                """
-                cur.execute(sql, bind)
-                for ts, param, value in cur.fetchall():
-                    if value is None:
-                        continue
-                    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
-                    rows.append({"ts": ts_str, "param": str(param),
-                                 "value": float(value)})
-
-            if wf_level:
-                bind2: dict = {"process": process}
-                clauses2 = []
-                for idx, (_, lotid, wfid) in enumerate(wf_level):
-                    bind2[f"l{idx}"] = lotid
-                    bind2[f"w{idx}"] = wfid
-                    clauses2.append(f"(LOTID = :l{idx} AND WFID = :w{idx})")
-                where2 = " OR ".join(clauses2)
-                sql2 = f"""
-                    SELECT MEASURETIME_START, PARAM, VALUE
-                    FROM {YLD_TABLE}
-                    WHERE ({where2}) AND PROCESS = :process
-                    ORDER BY MEASURETIME_START
-                """
-                cur.execute(sql2, bind2)
-                for ts, param, value in cur.fetchall():
-                    if value is None:
-                        continue
-                    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
-                    rows.append({"ts": ts_str, "param": str(param),
-                                 "value": float(value)})
-        conn.close()
-    except Exception as e:
-        logger.error("[lot-wafer-scatter/%s] Oracle 조회 실패: %s", process, e)
-
-    return rows
-
 
 # ============================================================
 # 5. 테이블 생성 함수
@@ -1267,11 +1197,19 @@ ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 {n}기간 pt1h+pt
 
 {anomaly_summary}
 
-위 이상감지 결과를 그대로 사용하여 다음을 정리해주세요:
+위 이상감지 결과를 기반으로 다음을 정리해주세요:
 
-1. **열화 파라미터** — 위 이상감지에서 direction=열화인 항목을 표로 정리 (파라미터명, Pre 값, Latest 값, 변화율%)
-2. **개선 파라미터** — 위 이상감지에서 direction=개선인 항목을 표로 정리
-3. **전반적인 트렌드 요약** (1~2문장)
+1. **핵심 발견**을 1-2문장으로 먼저 요약 (대화하듯 자연스럽게)
+2. **열화 파라미터** — 위 이상감지에서 direction=열화인 항목을 마크다운 표로 정리 (파라미터명, Pre 값, Latest 값, 변화율%)
+3. **개선 파라미터** — 위 이상감지에서 direction=개선인 항목을 마크다운 표로 정리
+4. **전반적인 트렌드 요약** (1~2문장)
+5. 마지막 줄에 반드시 [SUGGESTION: 후속 제안] 형식으로 자연스러운 다음 행동 1개를 제안
+
+후속 제안 규칙:
+- 열화 감지됨 → [SUGGESTION: WADS에서 열화 원인을 확인해볼까요?]
+- 특정 lot 이상 → [SUGGESTION: 해당 lot의 웨이퍼 맵을 확인해볼까요?]
+- 정상 → [SUGGESTION: 다른 제품도 확인해보시겠어요?]
+- 이상 없음 → [SUGGESTION: ]
 
 이상감지 결과가 없으면 "이상 파라미터 없음"으로 정리하세요.
 마크다운 표 형식으로 깔끔하게 정리해주세요."""
@@ -1331,7 +1269,7 @@ def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm,
         )
         return response.content
     except Exception as e:
-        print(f"[ERROR] LLM 분석 실패: {e}")
+        logger.error("[Yield Agent] LLM 분석 실패: %s", e, exc_info=True)
         return f"LLM 분석 중 오류가 발생했습니다: {e}"
 
 
@@ -1689,94 +1627,6 @@ td.td-gms-sep  { border-left: 3px solid #22c55e !important; }
     return html
 
 
-# ── Scatter Plot (LOT 비교 모드) ─────────────────────────────
-def _build_lot_scatter_html(
-    wafer_rows: list[dict], filter_params: list[str] | None,
-) -> str:
-    """LOT 비교 모드 scatter plot HTML — X축 MEASURETIME_START, 모든 wafer 타점.
-
-    Args:
-        wafer_rows: _fetch_lot_wafer_scatter 반환값 [{"ts", "param", "value"}, ...]
-        filter_params: 표시할 파라미터 목록 (None = VTH + PT1C)
-    """
-    if not wafer_rows:
-        return ""
-
-    import json as _json
-    from collections import defaultdict
-
-    if filter_params:
-        chart_params = [(p, p) for p in filter_params]
-    else:
-        chart_params = [("VTH", "VTH"), ("PT1C", "PT1C")]
-
-    # param → [{"x": ts, "y": value}]
-    param_data: dict[str, list[dict]] = defaultdict(list)
-    for r in wafer_rows:
-        param_data[r["param"]].append({"x": r["ts"], "y": round(r["value"], 4)})
-
-    chart_blocks = []
-    for idx, (label, param_name) in enumerate(chart_params):
-        cid = f"lsc_{idx}"
-        pts = param_data.get(param_name, [])
-        pts_js = _json.dumps(pts, ensure_ascii=False)
-
-        chart_blocks.append(f"""
-<div style="flex:1;min-width:320px;max-width:500px;">
-  <canvas id="{cid}"></canvas>
-  <script>
-  new Chart(document.getElementById('{cid}'), {{
-    type: 'scatter',
-    data: {{
-      datasets: [{{
-        label: '{label}',
-        data: {pts_js},
-        backgroundColor: '#3b82f6',
-        borderColor: '#3b82f6',
-        pointRadius: 2.5,
-        showLine: false,
-      }}]
-    }},
-    options: {{
-      responsive: true,
-      plugins: {{
-        title: {{ display: true, text: '{label}', font: {{ size: 14 }} }},
-        legend: {{ display: false }},
-        tooltip: {{
-          callbacks: {{
-            label: function(ctx) {{
-              return ctx.raw.x + '  →  ' + ctx.raw.y;
-            }}
-          }}
-        }}
-      }},
-      scales: {{
-        x: {{
-          type: 'time',
-          time: {{ tooltipFormat: 'yyyy-MM-dd HH:mm:ss', displayFormats: {{ day: 'MM-dd', hour: 'MM-dd HH:mm' }} }},
-          title: {{ display: true, text: 'MEASURETIME' }},
-          ticks: {{ maxRotation: 45, font: {{ size: 9 }} }}
-        }},
-        y: {{ title: {{ display: true, text: '{label}' }} }}
-      }}
-    }}
-  }});
-  </script>
-</div>""")
-
-    html = f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8">
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
-<style>
-* {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 12px; background: #fff; }}
-</style>
-</head><body>
-<div style="display:flex;gap:12px;flex-wrap:wrap;">{"".join(chart_blocks)}</div>
-</body></html>"""
-    return html
-
 
 # ============================================================
 # 8. Yield Agent 노드 구현
@@ -1811,17 +1661,12 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         # groupkey 포함 여부로 모드 결정
         lot_mode = "groupkey" if yield_groupkey else "lot"
 
-        with ThreadPoolExecutor(max_workers=4) as ex:
+        with ThreadPoolExecutor(max_workers=2) as ex:
             f_pt1h = ex.submit(_fetch_lot_sql, lot_specs, "pt1h")
             f_pt1c = ex.submit(_fetch_lot_sql, lot_specs, "pt1c")
-            f_sc_pt1h = ex.submit(_fetch_lot_wafer_scatter, lot_specs, "pt1h")
-            f_sc_pt1c = ex.submit(_fetch_lot_wafer_scatter, lot_specs, "pt1c")
             pt1h_lot = f_pt1h.result()
             pt1c_lot = f_pt1c.result()
-            sc_pt1h = f_sc_pt1h.result()
-            sc_pt1c = f_sc_pt1c.result()
         merged = _merge_lot_data(pt1h_lot, pt1c_lot)
-        lot_wafer_rows = sc_pt1h + sc_pt1c
 
         if not merged:
             error_message = AIMessage(
@@ -1835,8 +1680,7 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         print(table_str)
 
         lot_label = yield_groupkey or yield_lot_ids
-        result_msg = f"[LOT 비교] {lot_label} pt1h+pt1c 수율 비교 테이블입니다.\n\n"
-        result_msg += table_str
+        result_msg = f"[LOT 비교] {lot_label} pt1h+pt1c 수율 비교 테이블입니다."
 
         yield_artifacts = [{
             "type": "html",
@@ -1844,15 +1688,6 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
             "data": _save_html_to_file(html_table, "lot_table"),
             "title": "lot_compare_table",
         }]
-
-        scatter_html = _build_lot_scatter_html(lot_wafer_rows, filter_params)
-        if scatter_html:
-            yield_artifacts.append({
-                "type": "html",
-                "mime": "text/html",
-                "data": _save_html_to_file(scatter_html, "lot_scatter"),
-                "title": "lot_scatter",
-            })
 
         result_message = AIMessage(content=result_msg, name="yield_agent")
         return {
@@ -1875,21 +1710,26 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     n = periods if periods > 0 else DEFAULT_PERIODS.get(unit, 4)
 
     # 파라미터 로깅
-    print("=" * 60)
-    print("[Yield Agent] State에서 파라미터 읽기:")
-    print(f"  - lotcd: {lotcd}")
-    print(f"  - ref_date: {ref_date_str}")
-    print(f"  - unit: {unit}, periods: {n}")
-    print("=" * 60)
+    logger.info("[Yield Agent] 파라미터: lotcd=%s ref_date=%s unit=%s periods=%d", lotcd, ref_date_str, unit, n)
 
     # 데이터 조회 (테이블용 집계 + scatter용 wafer-level 병렬)
-    print(f"\n[Yield Agent] {lotcd} 최근 {n}{dict(weekly='주', monthly='달', daily='일').get(unit, unit)} 데이터 조회 시작...")
+    logger.info("[Yield Agent] %s 최근 %d%s 데이터 조회 시작", lotcd, n, dict(weekly='주', monthly='달', daily='일').get(unit, unit))
     with ThreadPoolExecutor(max_workers=3) as ex:
         f_periods = ex.submit(_fetch_periods, lotcd, ref_date, unit, periods)
         f_sc_pt1h = ex.submit(_fetch_wafer_scatter, lotcd, ref_date, unit, periods, "pt1h")
         f_sc_pt1c = ex.submit(_fetch_wafer_scatter, lotcd, ref_date, unit, periods, "pt1c")
-        weeks_data = f_periods.result()
-        wafer_rows = f_sc_pt1h.result() + f_sc_pt1c.result()
+        try:
+            weeks_data = f_periods.result()
+        except Exception as e:
+            logger.error("[Yield Agent] _fetch_periods 실패: %s", e, exc_info=True)
+            weeks_data = []
+        try:
+            wafer_rows = f_sc_pt1h.result() + f_sc_pt1c.result()
+        except Exception as e:
+            logger.error("[Yield Agent] wafer fetch 실패: %s", e, exc_info=True)
+            wafer_rows = []
+
+    logger.info("[Yield Agent] fetch 완료: weeks=%d, wafer_rows=%d", len(weeks_data), len(wafer_rows))
 
     if not weeks_data or all(wd.get("lotcount") == "-" for wd in weeks_data):
         error_message = AIMessage(
@@ -1946,11 +1786,11 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     result_message = AIMessage(content=result_msg, name="yield_agent")
 
-    # agent_suggestion: UI 렌더링용 (anomaly가 있을 때만 제안)
-    agent_suggestion = (
-        "오늘 검출된 열화 Parameter를 보여드릴까요?"
-        if anomaly_params else ""
-    )
+    # agent_suggestion: LLM 분석 결과에서 [SUGGESTION: ...] 태그 파싱
+    suggestion_match = re.search(r'\[SUGGESTION:\s*(.*?)\]', analysis)
+    agent_suggestion = suggestion_match.group(1).strip() if suggestion_match else ""
+    # 분석 결과 본문에서 태그 제거
+    analysis = re.sub(r'\[SUGGESTION:.*?\]', '', analysis).strip()
 
     return {
         "messages": [result_message],

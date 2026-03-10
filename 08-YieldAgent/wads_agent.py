@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextvars
+import re
 from dotenv import load_dotenv
 import os
 from datetime import date
@@ -260,8 +261,17 @@ WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 
 ## 중요: 응답 형식
 - 도구 호출 결과(데이터/리포트)는 별도의 HTML 카드로 자동 표시됩니다.
 - 따라서 **테이블이나 표를 직접 만들지 마세요**.
-- 조회 결과에 대해 간단한 요약/설명만 1-2문장으로 작성하세요.
-- 예시: "5NA 로트의 step01 리포트를 조회했습니다."
+
+## 응답 스타일:
+- 조회 결과에 대해 자연스러운 대화체로 2-3문장 요약하세요
+- 핵심 발견이 있으면 먼저 언급하세요
+- 마지막에 [SUGGESTION: 후속 제안] 형식으로 다음 행동 1개를 제안하세요
+  예시: [SUGGESTION: 다른 step도 확인해볼까요?]
+  제안할 내용이 없으면: [SUGGESTION: ]
+
+예시:
+❌ "5NA 로트의 step01 리포트를 조회했습니다."
+✅ "5NA step01 리포트를 확인했습니다. 해당 스텝에서 열화 징후가 보이네요. [SUGGESTION: step02도 같이 확인해볼까요?]"
 
 ## 중요: 데이터 없음 vs 연결 오류 구분
 - 도구가 "조건에 맞는 WADS 데이터가 없습니다"를 반환하면 → 연결 오류가 아님. "해당 조건의 WADS 데이터가 없습니다"로 안내.
@@ -617,11 +627,18 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             }
         )
 
+    # agent_suggestion: LLM 응답에서 [SUGGESTION: ...] 태그 파싱
+    suggestion_match = re.search(r'\[SUGGESTION:\s*(.*?)\]', answer)
+    agent_suggestion = suggestion_match.group(1).strip() if suggestion_match else ""
+    # 응답 본문에서 태그 제거
+    answer = re.sub(r'\[SUGGESTION:.*?\]', '', answer).strip()
+
     result_message = AIMessage(content=answer, name="wads_agent")
 
     return {
         "messages": [result_message],
         "wads_artifacts": artifacts,
+        "agent_suggestion": agent_suggestion,
     }
 
 

@@ -48,11 +48,16 @@ from models import (  # noqa: E402
 )
 from supervisor import workflow  # noqa: E402
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+_handler = logging.StreamHandler()
+_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(name)s] %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
-)
+))
+for _name in ("agent_server", "yield_agent"):
+    _lg = logging.getLogger(_name)
+    _lg.setLevel(logging.INFO)
+    _lg.addHandler(_handler)
+
 logger = logging.getLogger("agent_server")
 
 MONGO_URI = "mongodb://localhost:27017"
@@ -214,7 +219,6 @@ async def chat_stream(request: ChatRequest, req: Request):
         "weeks_data": [],
         "table_result": "",
         "analysis_result": "",
-        "agent_suggestion": "",
         "step_count": 0,
         "anomaly_params": [],
     }
@@ -284,7 +288,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             kind, data = await queue.get()
 
             if kind == "error":
-                yield _sse(ErrorEvent(message=str(data)))
+                yield _sse(ErrorEvent(message=f"[step {step_count}] {str(data)}"))
                 try:
                     get_client().flush()
                 except Exception:

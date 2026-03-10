@@ -84,27 +84,41 @@ class RouteResponse(BaseModel):
 # ── Rewrite 시스템 프롬프트 ─────────────────────────────────
 REWRITE_SYSTEM_PROMPT = """\
 You are a query rewriter for a semiconductor yield analysis system.
-Rewrite the user's message to be explicit and unambiguous using the provided context.
+You will receive the recent conversation history and the user's latest message.
+Rewrite the user's message to be explicit and unambiguous.
 
 Rules:
-- If the message contains an explicit time reference (저번주, 이번주, 오늘, 금일, N주전, 지난주, 어제, specific date)
-  AND a request word (알려줘, 보여줘, 조회, 알아봐) → treat as a YIELD query.
-  Expand using the current product code (lotcd) from context if available.
-  Example: context has "현재 제품: 4SS" + user "저번주 알려줘" → "저번주 4SS 수율 알려줘"
-  Do NOT apply AI suggestion context when an explicit time reference is present.
-- If the message already has clear intent ("4SS 수율 알려줘"), return it UNCHANGED
-- If "AI 직전 응답" context exists and user sends a pure short affirmative with NO time/topic hint
-  ("응", "네", "좋아", "부탁해"):
-  → Expand into a concrete command based on what the AI previously suggested
-  → Example: AI said "WADS 열화 검출 리포트를 확인하시겠습니까?" + user "응" → "WADS 열화 검출 리포트 보여줘"
-  → Example: AI said "다른 제품 코드로 조회할까요?" + user "응" → "다른 제품 코드로 조회해줘"
-- If NO "AI 직전 응답" context, use only prior state context (lotcd, anomaly_params) to expand
+- Read the conversation history to understand what the user is referring to
+- If the user responds with a short affirmative ("응", "네", "좋아", "부탁해") or adds conditions to a previous AI suggestion, incorporate the suggestion's intent into the rewrite
+- If the message already has clear intent, return it UNCHANGED
+- Expand ambiguous references using conversation context (e.g., product code, agent type)
 - If specific parameter names are mentioned, preserve them exactly
 - Respond with ONLY the rewritten query string. No explanation.
 """
 
 
 _MAX_CHECKPOINT_MESSAGES = 30
+
+
+def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMessage | None = None) -> list[dict]:
+    """최근 N턴의 Human/AI 메시지를 chat format으로 변환.
+
+    ToolMessage, SystemMessage 등은 스킵.
+    exclude_last로 지정된 메시지는 제외 (rewrite 대상이므로 별도 전달).
+    """
+    filtered = []
+    for m in messages:
+        if exclude_last and m is exclude_last:
+            continue
+        if isinstance(m, HumanMessage):
+            filtered.append({"role": "user", "content": m.content})
+        elif isinstance(m, AIMessage):
+            # AIMessage content가 텍스트인 경우만 (artifact는 별도 state 필드)
+            content = m.content if isinstance(m.content, str) else str(m.content)
+            if content.strip():
+                filtered.append({"role": "assistant", "content": content})
+    # 최근 max_turns * 2개 (Human+AI 각 1개 = 1턴)
+    return filtered[-(max_turns * 2):]
 
 
 @observe(name="rewrite_node")
@@ -126,33 +140,24 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     if not last_human:
         return {}
 
-    # 구조화된 state 필드로 컨텍스트 구성 (messages 누적 없음 → O(1) 토큰)
-    ctx_parts = []
+    # 최근 5턴 대화 히스토리 추출 (마지막 HumanMessage 제외)
+    recent = _get_recent_turns(messages, max_turns=5, exclude_last=last_human)
+
+    # state 메타데이터 (lotcd 등 — 대화에 없을 수 있는 정보)
+    meta_parts = []
     if state.get("lotcd"):
-        ctx_parts.append(f"현재 제품: {state['lotcd']}")
-    if state.get("anomaly_params"):
-        params = [a["param"] for a in state["anomaly_params"][:5]]
-        ctx_parts.append(f"이전 이상감지 파라미터: {', '.join(params)}")
-    if state.get("analysis_result"):
-        ctx_parts.append(f"이전 분석 요약: {state['analysis_result'][:300]}")
+        meta_parts.append(f"현재 제품: {state['lotcd']}")
+    meta = "\n".join(meta_parts) if meta_parts else ""
 
-    # 마지막 agent AI 메시지에서 꼬리(제안/질문) 추출 — agent 이름 무관, 6+ 노드 확장 가능
-    last_agent_msg = next(
-        (m for m in reversed(messages)
-         if isinstance(m, AIMessage) and getattr(m, "name", "") not in ("", "supervisor")),
-        None,
-    )
-    if last_agent_msg:
-        tail_lines = [l.strip() for l in last_agent_msg.content.strip().split("\n") if l.strip()][-3:]
-        ctx_parts.append(f"AI 직전 응답 (마지막 부분): {' / '.join(tail_lines)}")
-
-    context = "\n".join(ctx_parts) if ctx_parts else "이전 컨텍스트 없음"
+    # LLM 호출: system + recent messages + user message
+    invoke_messages: list[dict] = [{"role": "system", "content": REWRITE_SYSTEM_PROMPT}]
+    if meta:
+        invoke_messages.append({"role": "system", "content": f"State metadata:\n{meta}"})
+    invoke_messages.extend(recent)
+    invoke_messages.append({"role": "user", "content": f"Rewrite this message: {last_human.content}"})
 
     response = _model.invoke(
-        [
-            {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Context:\n{context}\n\nUser message: {last_human.content}\n\nRewrite:"},
-        ],
+        invoke_messages,
         config={"callbacks": _lf_callbacks()},
     )
 
@@ -227,6 +232,8 @@ periods 오버라이드 (자연어에서 숫자 파싱):
   "최근 3달"  → unit="monthly", periods=3
   "지난 7일"  → unit="daily",   periods=7
   "6주 치"    → unit="weekly",  periods=6
+  "N주차"     → unit="weekly",  periods=1  (특정 1주만 조회, ref_date로 해당 주 월요일 지정)
+  주의: "N주차"(특정 주 1개)와 "N주 치"(최근 N주)는 완전히 다름
   숫자 없으면 → periods=0 (yield_agent가 기본값 적용: weekly=4, monthly=3, daily=4)
 
 === TIME REFERENCE ===
@@ -236,6 +243,9 @@ For yield_agent → ref_date (YYYYMMDD):
   "이번주"               → this week's Monday in YYYYMMDD
   "저번주" / "지난주"    → last week's Monday in YYYYMMDD
   "N주전"                → N weeks ago Monday in YYYYMMDD
+  "N주차"                → 올해 ISO week N의 월요일 YYYYMMDD, periods=1
+                           예: "11주차" (2026년) → ref_date=20260309, periods=1
+                           주의: "N주차"(특정 주 1개)와 "N주 치"(최근 N주)는 다름
   specific date "1월 20일" → 20260120
   no time mentioned      → {today_yyyymmdd}
 
@@ -439,12 +449,15 @@ def supervisor_node(
     result_message = AIMessage(content=decision.message, name="supervisor")
 
     logger.info(
-        "[Supervisor] step=%d next=%-12s lotcd=%-6s ref_date=%s wads_end_tm=%s",
+        "[Supervisor] step=%d next=%-12s lotcd=%-6s ref_date=%s wads_end_tm=%s periods=%s unit=%s filter_params=%s",
         step_count,
         decision.next,
         new_lotcd,
         ref_date,
         wads_end_tm,
+        decision.periods,
+        decision.unit,
+        decision.filter_params,
     )
 
     update_dict = {
