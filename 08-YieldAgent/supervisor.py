@@ -82,16 +82,20 @@ class RouteResponse(BaseModel):
 
 
 # ── Rewrite 시스템 프롬프트 ─────────────────────────────────
-REWRITE_SYSTEM_PROMPT = """\
+REWRITE_SYSTEM_PROMPT_TEMPLATE = """\
 You are a query rewriter for a semiconductor yield analysis system.
 You will receive the recent conversation history and the user's latest message.
 Rewrite the user's message to be explicit and unambiguous.
+
+TODAY's DATE: {today}
 
 Rules:
 - Read the conversation history to understand what the user is referring to
 - If the user responds with a short affirmative ("응", "네", "좋아", "부탁해") or adds conditions to a previous AI suggestion, incorporate the suggestion's intent into the rewrite
 - If the message already has clear intent, return it UNCHANGED
 - Expand ambiguous references using conversation context (e.g., product code, agent type)
+- When a date is mentioned without a year (e.g., "3월 2일"), assume the current year ({year})
+- Do NOT expand or convert date expressions — keep them as the user wrote them (e.g., "3월 2일" stays "3월 2일")
 - If specific parameter names are mentioned, preserve them exactly
 - Respond with ONLY the rewritten query string. No explanation.
 """
@@ -150,7 +154,12 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     meta = "\n".join(meta_parts) if meta_parts else ""
 
     # LLM 호출: system + recent messages + user message
-    invoke_messages: list[dict] = [{"role": "system", "content": REWRITE_SYSTEM_PROMPT}]
+    today = date.today()
+    rewrite_prompt = REWRITE_SYSTEM_PROMPT_TEMPLATE.format(
+        today=today.strftime("%Y년 %m월 %d일 (%A)"),
+        year=today.year,
+    )
+    invoke_messages: list[dict] = [{"role": "system", "content": rewrite_prompt}]
     if meta:
         invoke_messages.append({"role": "system", "content": f"State metadata:\n{meta}"})
     invoke_messages.extend(recent)
