@@ -123,6 +123,11 @@ if query:
 
         try:
             with st.status("에이전트 처리 중...", expanded=True) as status:
+                # 토큰 스트리밍용 상태
+                token_buffer = ""
+                token_placeholder = None
+                token_agent = None
+
                 with httpx.Client(timeout=120) as client:
                     with client.stream(
                         "POST",
@@ -145,10 +150,36 @@ if query:
                                     f"**{event.get('node', '?')}** 노드 완료"
                                 )
 
+                            elif etype == "token":
+                                agent = event.get("agent", "")
+                                # 새 에이전트의 토큰이면 새 placeholder 생성
+                                if agent != token_agent:
+                                    token_buffer = ""
+                                    token_agent = agent
+                                    token_placeholder = st.empty()
+                                elif token_placeholder is None:
+                                    token_placeholder = st.empty()
+                                token_buffer += event.get("content", "")
+                                if agent == "supervisor":
+                                    token_placeholder.info(f"🔍 {token_buffer}▍")
+                                else:
+                                    token_placeholder.markdown(token_buffer + "▍")
+
                             elif etype == "message":
+                                agent = event.get("agent", "")
+                                content = event.get("content", "")
+                                # 토큰 스트리밍 중이던 placeholder를 최종 내용으로 교체
+                                if token_placeholder is not None and agent == token_agent:
+                                    if agent == "supervisor":
+                                        token_placeholder.info(f"🔍 {content}")
+                                    else:
+                                        token_placeholder.markdown(content)
+                                    token_placeholder = None
+                                    token_agent = None
+                                    token_buffer = ""
                                 collected_messages.append({
-                                    "agent": event.get("agent", ""),
-                                    "content": event.get("content", ""),
+                                    "agent": agent,
+                                    "content": content,
                                 })
 
                             elif etype == "artifact":
@@ -173,17 +204,7 @@ if query:
             st.session_state.chat_history.append({"query": query, "error": str(e)})
             st.stop()
 
-        # ── 수집된 이벤트 순차 렌더링 ─────────────────────
-        for msg in collected_messages:
-            agent = msg.get("agent", "")
-            content = msg.get("content", "")
-            if not content:
-                continue
-            if agent == "supervisor":
-                st.info(f"🔍 {content}")
-            else:
-                st.markdown(content)
-
+        # ── 수집된 아티팩트/서제스천 렌더링 (메시지는 이미 스트리밍됨) ──
         for art in collected_artifacts:
             art_type = art.get("artifact_type", "html")
             data = art.get("data", "")

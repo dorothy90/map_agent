@@ -573,6 +573,7 @@ def _fetch_wafer_scatter(
                     WHERE LOT_CD = :lot_cd AND WEEK IN ({placeholders})
                       AND PROCESS = :process
                     ORDER BY MEASURETIME_START
+                    FETCH FIRST 20000 ROWS ONLY
                 """
                 params: dict = {"lot_cd": lotcd, "process": process}
                 for i, w in enumerate(db_weeks):
@@ -600,6 +601,7 @@ def _fetch_wafer_scatter(
                     FROM {YLD_TABLE}
                     WHERE LOT_CD = :lot_cd AND ({where_ym}) AND PROCESS = :process
                     ORDER BY MEASURETIME_START
+                    FETCH FIRST 20000 ROWS ONLY
                 """
                 cur.execute(sql, bind)
                 for ts, param, value in cur:
@@ -621,6 +623,7 @@ def _fetch_wafer_scatter(
                       AND MEASURETIME_START <  :end_dt
                       AND PROCESS = :process
                     ORDER BY MEASURETIME_START
+                    FETCH FIRST 20000 ROWS ONLY
                 """
                 cur.execute(sql, {"lot_cd": lotcd, "start_dt": start_dt,
                                   "end_dt": end_dt, "process": process})

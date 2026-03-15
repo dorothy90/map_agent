@@ -42,9 +42,11 @@ from models import (  # noqa: E402
     NodeCompleteEvent,
     SessionHistory,
     SessionSummary,
+    StatusEvent,
     StreamEndEvent,
     StreamStartEvent,
     SuggestionEvent,
+    TokenEvent,
 )
 from supervisor import workflow  # noqa: E402
 
@@ -118,6 +120,22 @@ def _detect_artifact_type(data: str) -> ArtifactType:
     if stripped.startswith("data:image") or stripped.endswith((".png", ".jpg", ".svg")):
         return ArtifactType.image
     return ArtifactType.html
+
+
+SIMULATED_STREAM_DELAY = 0.02  # 20ms per chunk
+
+
+def _chunk_text(text: str, min_size: int = 3) -> list[str]:
+    """텍스트를 자연스러운 경계에서 청크로 분할 (토큰 스트리밍 시뮬레이션용)"""
+    chunks, buf = [], []
+    for ch in text:
+        buf.append(ch)
+        if len(buf) >= min_size and ch in (' ', '\n', '.', ',', '!', '?', ':', ';', ')', '」'):
+            chunks.append("".join(buf))
+            buf = []
+    if buf:
+        chunks.append("".join(buf))
+    return chunks
 
 
 # ── 헬스체크 ─────────────────────────────────────────────
@@ -208,7 +226,8 @@ async def get_session_history(session_id: str, request: Request):
 async def chat_stream(request: ChatRequest, req: Request):
     graph = req.app.state.graph
     db = req.app.state.motor_db
-    config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 20}
+    queue: asyncio.Queue = asyncio.Queue()
+    config = {"configurable": {"thread_id": request.session_id, "sse_queue": queue}, "recursion_limit": 20}
 
     # 이번 턴 입력: 새 HumanMessage + 퍼-턴 리셋 필드
     input_state = {
@@ -244,8 +263,6 @@ async def chat_stream(request: ChatRequest, req: Request):
             "yield_lot_ids": "",
             "yield_groupkey": "",
         })
-
-    queue: asyncio.Queue = asyncio.Queue()
 
     @observe(name="yield_agent_request")
     async def _run_graph():
@@ -295,6 +312,10 @@ async def chat_stream(request: ChatRequest, req: Request):
                     pass
                 return
 
+            if kind == "status":
+                yield _sse(data)
+                continue
+
             if kind == "done":
                 break
 
@@ -310,18 +331,24 @@ async def chat_stream(request: ChatRequest, req: Request):
                     elapsed=elapsed,
                 ))
 
-                # 2) AIMessage → message 이벤트 (채팅 패널)
+                # 2) AIMessage → token 스트리밍 + message 이벤트 (채팅 패널)
                 for msg in node_state.get("messages", []):
                     agent_name = getattr(msg, "name", None) or node_name
                     content = msg.content if hasattr(msg, "content") else str(msg)
                     if not content:
                         continue
-                    evt = MessageEvent(
+                    # 토큰 단위 스트리밍
+                    chunks = _chunk_text(content)
+                    delay = min(SIMULATED_STREAM_DELAY, 2.0 / max(len(chunks), 1))
+                    for chunk in chunks:
+                        yield _sse(TokenEvent(content=chunk, agent=agent_name, node=node_name))
+                        await asyncio.sleep(delay)
+                    # 최종 전체 메시지
+                    yield _sse(MessageEvent(
                         agent=agent_name,
                         content=content,
                         step=step_count,
-                    )
-                    yield _sse(evt)
+                    ))
                     turn_messages.append({
                         "agent": agent_name,
                         "content": content,
