@@ -66,6 +66,26 @@ class SuggestionEvent(BaseModel):
     step: int = 0
 
 
+class TokenEvent(BaseModel):
+    type: Literal["token"] = "token"
+    content: str
+    agent: str = ""
+    node: str = ""
+
+
+class ThinkingEvent(BaseModel):
+    type: Literal["thinking"] = "thinking"
+    content: str
+    agent: str = ""
+    node: str = ""
+
+
+class StatusEvent(BaseModel):
+    type: Literal["status"] = "status"
+    message: str
+    node: str = ""
+
+
 class StreamEndEvent(BaseModel):
     type: Literal["stream_end"] = "stream_end"
     total_steps: int = 0

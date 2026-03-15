@@ -120,6 +120,23 @@ CATEGORY_TO_BIN: dict[str, str] = {v: k for k, v in BIN_CATEGORY_MAP.items() if 
 # ============================================================
 # timed 데코레이터
 # ============================================================
+def emit_sse(config: dict | None, kind: str, event) -> None:
+    """sync 노드에서 async sse_queue로 이벤트를 전송하는 공용 헬퍼.
+
+    LangGraph 노드(sync)에서 호출 → asyncio 이벤트 루프의 queue.put_nowait 실행.
+    config["configurable"]["sse_queue"]가 없으면 무시 (테스트/CLI 실행 시).
+    """
+    try:
+        configurable = (config or {}).get("configurable", {})
+        queue = configurable.get("sse_queue")
+        loop = configurable.get("sse_loop")
+        if queue is None or loop is None:
+            return
+        loop.call_soon_threadsafe(queue.put_nowait, (kind, event))
+    except Exception:
+        pass  # 스트리밍 실패가 메인 로직을 중단하면 안 됨
+
+
 def timed(func):
     """함수 실행 시간을 측정하는 데코레이터"""
     @functools.wraps(func)

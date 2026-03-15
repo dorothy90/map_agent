@@ -46,6 +46,7 @@ from models import (  # noqa: E402
     StreamEndEvent,
     StreamStartEvent,
     SuggestionEvent,
+    ThinkingEvent,
     TokenEvent,
 )
 from supervisor import workflow  # noqa: E402
@@ -227,7 +228,8 @@ async def chat_stream(request: ChatRequest, req: Request):
     graph = req.app.state.graph
     db = req.app.state.motor_db
     queue: asyncio.Queue = asyncio.Queue()
-    config = {"configurable": {"thread_id": request.session_id, "sse_queue": queue}, "recursion_limit": 20}
+    loop = asyncio.get_running_loop()
+    config = {"configurable": {"thread_id": request.session_id, "sse_queue": queue, "sse_loop": loop}, "recursion_limit": 20}
 
     # 이번 턴 입력: 새 HumanMessage + 퍼-턴 리셋 필드
     input_state = {
@@ -311,6 +313,14 @@ async def chat_stream(request: ChatRequest, req: Request):
                 except Exception:
                     pass
                 return
+
+            if kind == "thinking":
+                yield _sse(data)
+                continue
+
+            if kind == "token":
+                yield _sse(data)
+                continue
 
             if kind == "status":
                 yield _sse(data)

@@ -22,6 +22,7 @@ from langfuse import observe, get_client
 
 from lf_utils import lf_callbacks as _lf_callbacks
 from common import (
+    emit_sse,
     get_oracle_connection as _get_oracle_connection,
     timed,
     iso_week_str as _iso_week_str,
@@ -33,6 +34,7 @@ from common import (
     GMS_HIGHER_IS_BETTER,
     HIGHER_IS_BETTER,
 )
+from models import TokenEvent
 
 # ── 로깅 설정 ────────────────────────────────────────────
 logger = logging.getLogger("yield_agent")
@@ -1263,14 +1265,21 @@ def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm,
     )
 
     try:
-        response = llm.invoke(
+        result_text = ""
+        for chunk in llm.stream(
             [
                 {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
             config={**(config or {}), "callbacks": _lf_callbacks()},
-        )
-        return response.content
+        ):
+            token = chunk.content or ""
+            if token:
+                result_text += token
+                emit_sse(config, "token", TokenEvent(
+                    content=token, agent="yield_agent", node="yield_agent",
+                ))
+        return result_text
     except Exception as e:
         logger.error("[Yield Agent] LLM 분석 실패: %s", e, exc_info=True)
         return f"LLM 분석 중 오류가 발생했습니다: {e}"

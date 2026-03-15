@@ -127,6 +127,9 @@ if query:
                 token_buffer = ""
                 token_placeholder = None
                 token_agent = None
+                # thinking 스트리밍용 상태
+                thinking_buffer = ""
+                thinking_placeholder = None
 
                 with httpx.Client(timeout=120) as client:
                     with client.stream(
@@ -145,10 +148,21 @@ if query:
                             etype = event.get("type", "")
 
                             if etype == "node_complete":
+                                # thinking placeholder 정리 (노드 전환 시)
+                                if thinking_placeholder is not None:
+                                    thinking_placeholder.empty()
+                                    thinking_placeholder = None
+                                    thinking_buffer = ""
                                 st.write(
                                     f"`[{event.get('elapsed', 0):.1f}s]` "
                                     f"**{event.get('node', '?')}** 노드 완료"
                                 )
+
+                            elif etype == "thinking":
+                                if thinking_placeholder is None:
+                                    thinking_placeholder = st.empty()
+                                thinking_buffer += event.get("content", "")
+                                thinking_placeholder.info(f"💭 {thinking_buffer}▍")
 
                             elif etype == "token":
                                 agent = event.get("agent", "")
@@ -168,6 +182,11 @@ if query:
                             elif etype == "message":
                                 agent = event.get("agent", "")
                                 content = event.get("content", "")
+                                # thinking placeholder 정리 (message 도착 시)
+                                if thinking_placeholder is not None:
+                                    thinking_placeholder.empty()
+                                    thinking_placeholder = None
+                                    thinking_buffer = ""
                                 # 토큰 스트리밍 중이던 placeholder를 최종 내용으로 교체
                                 if token_placeholder is not None and agent == token_agent:
                                     if agent == "supervisor":

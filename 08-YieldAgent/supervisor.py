@@ -29,7 +29,9 @@ from langgraph.graph import StateGraph, START, END, add_messages
 from langgraph.types import Command, RetryPolicy
 from pydantic import BaseModel, Field
 
+from common import emit_sse
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
+from models import ThinkingEvent
 
 load_dotenv(override=True)
 
@@ -313,7 +315,12 @@ Even when you see agent results in the message history, your ONLY job is to outp
   "map_bin_type": "pt1h_bin",
   "yield_lot_ids":  "",
   "yield_groupkey": ""
-}}\
+}}
+
+=== THINKING (REQUIRED) ===
+Before the JSON, output your reasoning in <think>...</think> tags.
+Keep it SHORT (1-2 sentences in Korean).
+Example: <think>사용자가 4SS 수율을 요청했으므로 yield_agent로 라우팅</think>{{"next": ...}}\
 """
 
 
@@ -386,19 +393,63 @@ def supervisor_node(
     # 해결: LLM에게 raw JSON 출력을 요청하고, regex로 추출 후 Pydantic 검증.
     # 참고: with_structured_output 재도입 시 OpenRouter 호환성 먼저 확인할 것.
     try:
-        raw_response = _model.invoke(
+        # ── stream() 루프: <think> 구간은 실시간 전송, 나머지는 누적 ──
+        raw_text = ""
+        thinking_buf = ""
+        in_think = False
+
+        for chunk in _model.stream(
             [{"role": "system", "content": prompt}, *trimmed_messages],
             config={"callbacks": _lf_callbacks()},
-        )
-        raw_text = raw_response.content.strip()
+        ):
+            token = chunk.content or ""
+            if not token:
+                continue
+            raw_text += token
+
+            # <think> 태그 파싱 — 토큰 단위로 처리
+            if not in_think and "<think>" in raw_text and "</think>" not in raw_text:
+                in_think = True
+                # <think> 이후 부분만 thinking_buf에
+                thinking_buf = raw_text.split("<think>", 1)[1]
+                emit_sse(config, "thinking", ThinkingEvent(
+                    content=thinking_buf, agent="supervisor", node="supervisor",
+                ))
+                continue
+
+            if in_think:
+                if "</think>" in raw_text:
+                    # thinking 종료
+                    in_think = False
+                    think_content = raw_text.split("<think>", 1)[1].split("</think>", 1)[0]
+                    # 마지막 thinking 청크 전송
+                    remaining = think_content[len(thinking_buf):]
+                    if remaining:
+                        emit_sse(config, "thinking", ThinkingEvent(
+                            content=remaining, agent="supervisor", node="supervisor",
+                        ))
+                else:
+                    # thinking 진행 중 — 새 토큰만 전송
+                    current_think = raw_text.split("<think>", 1)[1]
+                    new_part = current_think[len(thinking_buf):]
+                    if new_part:
+                        emit_sse(config, "thinking", ThinkingEvent(
+                            content=new_part, agent="supervisor", node="supervisor",
+                        ))
+                        thinking_buf = current_think
+
+        raw_text = raw_text.strip()
         logger.debug("[Supervisor] raw LLM response: %s", raw_text[:500])
 
+        # <think>...</think> 제거 후 JSON 파싱
+        clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+
         # JSON 블록 추출 (```json ... ``` 또는 { ... })
-        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean_text, re.DOTALL)
         if not json_match:
-            json_match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
+            json_match = re.search(r"(\{.*\})", clean_text, re.DOTALL)
         if not json_match:
-            raise ValueError(f"No JSON found in response: {raw_text[:200]}")
+            raise ValueError(f"No JSON found in response: {clean_text[:200]}")
 
         data = json.loads(json_match.group(1))
         decision = RouteResponse(**data)
