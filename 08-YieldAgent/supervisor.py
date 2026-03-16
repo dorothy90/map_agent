@@ -489,7 +489,7 @@ def supervisor_node(
 
     # Langfuse — 라우팅 결정 후 메타데이터 기록
     try:
-        get_client().update_current_trace(
+        get_client().update_current_span(
             metadata={
                 "anomaly_count": configurable.get("anomaly_count", 0),
                 "route": decision.next,

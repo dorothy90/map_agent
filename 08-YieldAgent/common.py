@@ -137,6 +137,21 @@ def emit_sse(config: dict | None, kind: str, event) -> None:
         pass  # 스트리밍 실패가 메인 로직을 중단하면 안 됨
 
 
+def lot_id_variants(lot_id: str) -> list[str]:
+    """첫 글자 4↔T 변환하여 [원본, 변환본] 반환.
+
+    반도체 lot ID가 테이블에 따라 4 또는 T로 저장되므로 양방향 조회 필요.
+    """
+    if not lot_id:
+        return [lot_id]
+    first = lot_id[0]
+    if first == "4":
+        return [lot_id, "T" + lot_id[1:]]
+    elif first == "T":
+        return [lot_id, "4" + lot_id[1:]]
+    return [lot_id]
+
+
 def timed(func):
     """함수 실행 시간을 측정하는 데코레이터"""
     @functools.wraps(func)

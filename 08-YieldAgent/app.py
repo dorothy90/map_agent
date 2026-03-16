@@ -251,3 +251,5 @@ if query:
             "artifacts": collected_artifacts,
             "suggestion": collected_suggestion,
         })
+        # 메모리 제한: 최대 50턴 유지
+        st.session_state.chat_history = st.session_state.chat_history[-50:]

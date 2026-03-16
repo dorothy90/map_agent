@@ -227,7 +227,7 @@ async def get_session_history(session_id: str, request: Request):
 async def chat_stream(request: ChatRequest, req: Request):
     graph = req.app.state.graph
     db = req.app.state.motor_db
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=500)
     loop = asyncio.get_running_loop()
     config = {"configurable": {"thread_id": request.session_id, "sse_queue": queue, "sse_loop": loop}, "recursion_limit": 20}
 
@@ -268,21 +268,24 @@ async def chat_stream(request: ChatRequest, req: Request):
 
     @observe(name="yield_agent_request")
     async def _run_graph():
-        lf = get_client()
-        lf.update_current_trace(
-            session_id=request.session_id,
-            input={"query": request.query},
-            tags=["yield-agent", "v4-multistep"],
-        )
-        routes: list[str] = []
+        try:
+            lf = get_client()
+            lf.set_current_trace_io(
+                input={"query": request.query, "session_id": request.session_id},
+            )
+        except Exception:
+            logger.warning("Langfuse trace init 실패 (무시)")
+
         try:
             async for step in graph.astream(input_state, config=config):
                 await queue.put(("step", step))
-            lf.update_current_trace(output={"routes": routes, "query": request.query})
+            try:
+                get_client().set_current_trace_io(output={"query": request.query})
+            except Exception:
+                pass
             await queue.put(("done", None))
         except Exception as e:
             logger.exception("Graph execution error")
-            lf.update_current_trace(output={"error": str(e)})
             await queue.put(("error", e))
 
     task = asyncio.create_task(_run_graph())

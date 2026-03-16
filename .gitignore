@@ -117,3 +117,10 @@ venv
 08-YieldAgent/test_token_streaming.py
 08-YieldAgent/token_streaming_test_results.json
 RAG_CHATBOT_OS
+08-YieldAgent/generated/yield_scatter_6d66f856.html
+08-YieldAgent/generated/yield_scatter_7b75a679.html
+08-YieldAgent/generated/yield_scatter_32a6aa01.html
+08-YieldAgent/generated/yield_table_3de8f162.html
+08-YieldAgent/generated/yield_table_98bb1d4c.html
+08-YieldAgent/generated/yield_table_b7fbc711.html
+.gitignore

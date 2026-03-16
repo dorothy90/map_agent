@@ -24,6 +24,7 @@ from lf_utils import lf_callbacks as _lf_callbacks
 from common import (
     emit_sse,
     get_oracle_connection as _get_oracle_connection,
+    lot_id_variants,
     timed,
     iso_week_str as _iso_week_str,
     week_monday as _week_monday,
@@ -557,6 +558,7 @@ def _fetch_wafer_scatter(
         [{"ts": "yyyy-mm-dd hh:mm:ss", "param": str, "value": float}, ...]
     """
     n = periods if periods > 0 else DEFAULT_PERIODS.get(unit, 4)
+    per_period_limit = max(10000 // n, 2000)
     rows: list[dict] = []
 
     try:
@@ -568,29 +570,38 @@ def _fetch_wafer_scatter(
                 mondays = _get_n_weeks(ref_date, n)
                 week_strs = [_iso_week_str(m) for m in mondays]
                 db_weeks = [_week_to_db_yld(w) for w in week_strs]
+                # db_week → period label 매핑
+                db_to_period = {dw: ws for dw, ws in zip(db_weeks, week_strs)}
                 placeholders = ", ".join(f":w{i}" for i in range(len(db_weeks)))
                 sql = f"""
-                    SELECT MEASURETIME_START, PARAM, VALUE
-                    FROM {YLD_TABLE}
-                    WHERE LOT_CD = :lot_cd AND WEEK IN ({placeholders})
-                      AND PROCESS = :process
+                    SELECT MEASURETIME_START, PARAM, VALUE, WEEK, LOTID, WFID FROM (
+                        SELECT MEASURETIME_START, PARAM, VALUE, WEEK, LOTID, WFID,
+                               ROW_NUMBER() OVER (PARTITION BY WEEK ORDER BY MEASURETIME_START) AS rn
+                        FROM {YLD_TABLE}
+                        WHERE LOT_CD = :lot_cd AND WEEK IN ({placeholders})
+                          AND PROCESS = :process
+                    ) WHERE rn <= :per_limit
                     ORDER BY MEASURETIME_START
-                    FETCH FIRST 20000 ROWS ONLY
                 """
-                params: dict = {"lot_cd": lotcd, "process": process}
+                params: dict = {"lot_cd": lotcd, "process": process,
+                                "per_limit": per_period_limit}
                 for i, w in enumerate(db_weeks):
                     params[f"w{i}"] = w
                 cur.execute(sql, params)
-                for ts, param, value in cur:
+                for ts, param, value, week_val, lotid, wfid in cur:
                     if value is None:
                         continue
                     ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+                    period = db_to_period.get(str(week_val), str(week_val))
                     rows.append({"ts": ts_str, "param": str(param),
-                                 "value": float(value)})
+                                 "value": float(value), "period": period,
+                                 "lotid": str(lotid) if lotid else "",
+                                 "wfid": str(wfid) if wfid else ""})
 
             elif unit == "monthly":
                 month_strs = _get_n_months(ref_date, n)
-                bind: dict = {"lot_cd": lotcd, "process": process}
+                bind: dict = {"lot_cd": lotcd, "process": process,
+                              "per_limit": per_period_limit}
                 clauses = []
                 for i, ym in enumerate(month_strs):
                     y, m = ym.split("-")
@@ -599,42 +610,53 @@ def _fetch_wafer_scatter(
                     clauses.append(f"(YEAR = :y{i} AND TO_NUMBER(MONTH) = TO_NUMBER(:m{i}))")
                 where_ym = " OR ".join(clauses)
                 sql = f"""
-                    SELECT MEASURETIME_START, PARAM, VALUE
-                    FROM {YLD_TABLE}
-                    WHERE LOT_CD = :lot_cd AND ({where_ym}) AND PROCESS = :process
+                    SELECT MEASURETIME_START, PARAM, VALUE, YEAR, MONTH, LOTID, WFID FROM (
+                        SELECT MEASURETIME_START, PARAM, VALUE, YEAR, MONTH, LOTID, WFID,
+                               ROW_NUMBER() OVER (PARTITION BY YEAR, MONTH ORDER BY MEASURETIME_START) AS rn
+                        FROM {YLD_TABLE}
+                        WHERE LOT_CD = :lot_cd AND ({where_ym}) AND PROCESS = :process
+                    ) WHERE rn <= :per_limit
                     ORDER BY MEASURETIME_START
-                    FETCH FIRST 20000 ROWS ONLY
                 """
                 cur.execute(sql, bind)
-                for ts, param, value in cur:
+                for ts, param, value, yr, mo, lotid, wfid in cur:
                     if value is None:
                         continue
                     ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+                    period = f"{int(yr):04d}-{int(mo):02d}"
                     rows.append({"ts": ts_str, "param": str(param),
-                                 "value": float(value)})
+                                 "value": float(value), "period": period,
+                                 "lotid": str(lotid) if lotid else "",
+                                 "wfid": str(wfid) if wfid else ""})
 
             elif unit == "daily":
                 days = _get_n_days(ref_date, n)
                 start_dt = datetime.combine(min(days), datetime.min.time())
                 end_dt = datetime.combine(max(days) + timedelta(days=1), datetime.min.time())
                 sql = f"""
-                    SELECT MEASURETIME_START, PARAM, VALUE
-                    FROM {YLD_TABLE}
-                    WHERE LOT_CD = :lot_cd
-                      AND MEASURETIME_START >= :start_dt
-                      AND MEASURETIME_START <  :end_dt
-                      AND PROCESS = :process
+                    SELECT MEASURETIME_START, PARAM, VALUE, LOTID, WFID FROM (
+                        SELECT MEASURETIME_START, PARAM, VALUE, LOTID, WFID,
+                               ROW_NUMBER() OVER (PARTITION BY TRUNC(MEASURETIME_START) ORDER BY MEASURETIME_START) AS rn
+                        FROM {YLD_TABLE}
+                        WHERE LOT_CD = :lot_cd
+                          AND MEASURETIME_START >= :start_dt
+                          AND MEASURETIME_START <  :end_dt
+                          AND PROCESS = :process
+                    ) WHERE rn <= :per_limit
                     ORDER BY MEASURETIME_START
-                    FETCH FIRST 20000 ROWS ONLY
                 """
                 cur.execute(sql, {"lot_cd": lotcd, "start_dt": start_dt,
-                                  "end_dt": end_dt, "process": process})
-                for ts, param, value in cur:
+                                  "end_dt": end_dt, "process": process,
+                                  "per_limit": per_period_limit})
+                for ts, param, value, lotid, wfid in cur:
                     if value is None:
                         continue
                     ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+                    period = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else ts_str[:10]
                     rows.append({"ts": ts_str, "param": str(param),
-                                 "value": float(value)})
+                                 "value": float(value), "period": period,
+                                 "lotid": str(lotid) if lotid else "",
+                                 "wfid": str(wfid) if wfid else ""})
         finally:
             conn.close()
     except Exception as e:
@@ -722,8 +744,10 @@ def _build_scatter_html(
 ) -> str:
     """Period 모드 scatter plot HTML — X축 MEASURETIME_START, 모든 wafer 타점.
 
+    각 데이터의 "period" 필드를 기반으로 기간별 색상을 자동 구분합니다.
+
     Args:
-        wafer_rows: _fetch_wafer_scatter 반환값 [{"ts", "param", "value"}, ...]
+        wafer_rows: _fetch_wafer_scatter 반환값 [{"ts", "param", "value", "period"}, ...]
         anomaly_params: _detect_anomalies 반환값
 
     Row 1: VTH + PT1C (고정)
@@ -736,10 +760,20 @@ def _build_scatter_html(
     import json as _json
     from collections import defaultdict
 
-    # param → [{"x": ts_str, "y": value}]
-    param_data: dict[str, list[dict]] = defaultdict(list)
+    # 데이터에서 unique period 추출 (정렬)
+    all_periods = sorted({r.get("period", "") for r in wafer_rows})
+    use_periods = len(all_periods) > 1
+
+    # param → period → [{"x": ts_str, "y": value}]
+    param_period_data: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for r in wafer_rows:
-        param_data[r["param"]].append({"x": r["ts"], "y": round(r["value"], 4)})
+        param_period_data[r["param"]][r.get("period", "")].append(
+            {"x": r["ts"], "y": round(r["value"], 4),
+             "lotid": r.get("lotid", ""), "wfid": r.get("wfid", "")}
+        )
+
+    # period → color 매핑
+    period_color = {p: _PERIOD_COLORS[i % len(_PERIOD_COLORS)] for i, p in enumerate(all_periods)}
 
     improved = [a for a in anomaly_params if a["direction"] == "개선"][:3]
     degraded = [a for a in anomaly_params if a["direction"] == "열화"][:3]
@@ -758,8 +792,35 @@ def _build_scatter_html(
         for label, param_name in charts:
             cid = f"sc_{chart_id}"
             chart_id += 1
-            pts = param_data.get(param_name, [])
-            pts_js = _json.dumps(pts, ensure_ascii=False)
+
+            if use_periods:
+                # 기간별 datasets — 각 period마다 다른 색상
+                datasets = []
+                for pl in all_periods:
+                    color = period_color[pl]
+                    pts = param_period_data.get(param_name, {}).get(pl, [])
+                    if not pts:
+                        continue
+                    datasets.append({
+                        "label": pl,
+                        "data": pts,
+                        "backgroundColor": color,
+                        "borderColor": color,
+                        "pointRadius": 2.5,
+                        "showLine": False,
+                    })
+                datasets_js = _json.dumps(datasets, ensure_ascii=False)
+            else:
+                pts = param_period_data.get(param_name, {}).get(all_periods[0] if all_periods else "", [])
+                datasets_js = _json.dumps([{
+                    "label": label,
+                    "data": pts,
+                    "backgroundColor": row_color,
+                    "borderColor": row_color,
+                    "pointRadius": 2.5,
+                    "showLine": False,
+                }], ensure_ascii=False)
+
             cells.append(f"""
 <div style="flex:1;min-width:320px;max-width:500px;">
   <canvas id="{cid}"></canvas>
@@ -767,24 +828,17 @@ def _build_scatter_html(
   new Chart(document.getElementById('{cid}'), {{
     type: 'scatter',
     data: {{
-      datasets: [{{
-        label: '{label}',
-        data: {pts_js},
-        backgroundColor: '{row_color}',
-        borderColor: '{row_color}',
-        pointRadius: 2.5,
-        showLine: false,
-      }}]
+      datasets: {datasets_js}
     }},
     options: {{
       responsive: true,
       plugins: {{
-        title: {{ display: true, text: '{label}', font: {{ size: 14 }}, color: '{row_color}' }},
+        title: {{ display: true, text: '{label}', font: {{ size: 14 }} }},
         legend: {{ display: false }},
         tooltip: {{
           callbacks: {{
             label: function(ctx) {{
-              return ctx.raw.x + '  →  ' + ctx.raw.y;
+              return 'LOT: ' + ctx.raw.lotid + '  WF: ' + ctx.raw.wfid + '  Value: ' + ctx.raw.y;
             }}
           }}
         }}
@@ -792,7 +846,7 @@ def _build_scatter_html(
       scales: {{
         x: {{
           type: 'time',
-          time: {{ tooltipFormat: 'yyyy-MM-dd HH:mm:ss', displayFormats: {{ day: 'MM-dd', hour: 'MM-dd HH:mm' }} }},
+          time: {{ tooltipFormat: 'yyyy-MM-dd HH:mm:ss', unit: 'day', displayFormats: {{ day: 'MM-dd' }} }},
           title: {{ display: true, text: 'MEASURETIME' }},
           ticks: {{ maxRotation: 45, font: {{ size: 9 }} }}
         }},
@@ -1373,8 +1427,10 @@ def _fetch_lot_sql(lot_specs: list[tuple[str, int | None]], process: str) -> dic
                 bind: dict = {"process": process}
                 clauses = []
                 for idx, (_, lotid) in enumerate(lot_level):
-                    bind[f"l{idx}"] = lotid
-                    clauses.append(f"LOTID = :l{idx}")
+                    variants = lot_id_variants(lotid)
+                    bind[f"l{idx}_a"] = variants[0]
+                    bind[f"l{idx}_b"] = variants[-1]  # 변환 없으면 원본과 동일
+                    clauses.append(f"LOTID IN (:l{idx}_a, :l{idx}_b)")
                 where = " OR ".join(clauses)
                 sql = f"""
                     SELECT LOTID, COUNT(DISTINCT WFID) AS WF_CNT, PARAM, AVG(VALUE) AS AVG_VALUE
@@ -1395,9 +1451,11 @@ def _fetch_lot_sql(lot_specs: list[tuple[str, int | None]], process: str) -> dic
                 bind2: dict = {"process": process}
                 clauses2 = []
                 for idx, (_, lotid, wfid) in enumerate(wf_level):
-                    bind2[f"l{idx}"] = lotid
+                    variants = lot_id_variants(lotid)
+                    bind2[f"l{idx}_a"] = variants[0]
+                    bind2[f"l{idx}_b"] = variants[-1]
                     bind2[f"w{idx}"] = wfid
-                    clauses2.append(f"(LOTID = :l{idx} AND WFID = :w{idx})")
+                    clauses2.append(f"(LOTID IN (:l{idx}_a, :l{idx}_b) AND WFID = :w{idx})")
                 where2 = " OR ".join(clauses2)
                 sql2 = f"""
                     SELECT LOTID, WFID, PARAM, AVG(VALUE) AS AVG_VALUE

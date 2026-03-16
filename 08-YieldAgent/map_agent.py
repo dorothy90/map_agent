@@ -37,6 +37,7 @@ logger = logging.getLogger("yield_agent.map_agent")
 
 from common import (  # noqa: E402
     get_oracle_connection as _get_oracle_connection_common,
+    lot_id_variants,
     timed,
     BIN_CATEGORY_MAP,
     CATEGORY_TO_BIN,
@@ -101,14 +102,21 @@ def _query_wafer_data(
 
         if lot_ids:
             lot_list = [x.strip() for x in lot_ids.split(",")]
-            placeholders = ",".join([f":lot{i}" for i in range(len(lot_list))])
+            # 4↔T 변환: 각 lot_id에 대해 variant 추가
+            expanded = []
+            for lot in lot_list:
+                for v in lot_id_variants(lot):
+                    if v not in expanded:
+                        expanded.append(v)
+            placeholders = ",".join([f":lot{i}" for i in range(len(expanded))])
             sql = f"""
                 SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                 FROM {ORACLE_TABLE}
                 WHERE lot_id IN ({placeholders})
                 ORDER BY lot_id, wf_id
+                FETCH FIRST 10000 ROWS ONLY
             """
-            params = {f"lot{i}": lot for i, lot in enumerate(lot_list)}
+            params = {f"lot{i}": lot for i, lot in enumerate(expanded)}
             cur.execute(sql, params)
             columns = [desc[0].lower() for desc in cur.description]
             for row in cur.fetchall():
@@ -124,20 +132,22 @@ def _query_wafer_data(
                     parts = spec.rsplit(".", 1)
                     spec_lot_id = parts[0]
                     spec_wf_id = int(parts[1])
+                    variants = lot_id_variants(spec_lot_id)
                     sql = f"""
                         SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                         FROM {ORACLE_TABLE}
-                        WHERE lot_id = :lot_id AND wf_id = :wf_id
+                        WHERE lot_id IN (:lot_a, :lot_b) AND wf_id = :wf_id
                     """
-                    cur.execute(sql, {"lot_id": spec_lot_id, "wf_id": spec_wf_id})
+                    cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1], "wf_id": spec_wf_id})
                 else:
+                    variants = lot_id_variants(spec)
                     sql = f"""
                         SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                         FROM {ORACLE_TABLE}
-                        WHERE lot_id = :lot_id
+                        WHERE lot_id IN (:lot_a, :lot_b)
                         ORDER BY wf_id
                     """
-                    cur.execute(sql, {"lot_id": spec})
+                    cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1]})
                 columns = [desc[0].lower() for desc in cur.description]
                 for row in cur.fetchall():
                     record = dict(zip(columns, row))
@@ -150,23 +160,26 @@ def _query_wafer_data(
             if wf_ids:
                 wf_id_list = [int(x.strip()) for x in wf_ids.split(",")]
 
+            variants = lot_id_variants(lot_id)
             if not wf_id_list:
                 sql = f"""
                     SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                     FROM {ORACLE_TABLE}
-                    WHERE lot_id = :lot_id
+                    WHERE lot_id IN (:lot_a, :lot_b)
                     ORDER BY wf_id
+                    FETCH FIRST 10000 ROWS ONLY
                 """
-                cur.execute(sql, {"lot_id": lot_id})
+                cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1]})
             else:
                 placeholders = ",".join([f":wf{i}" for i in range(len(wf_id_list))])
                 sql = f"""
                     SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                     FROM {ORACLE_TABLE}
-                    WHERE lot_id = :lot_id AND wf_id IN ({placeholders})
+                    WHERE lot_id IN (:lot_a, :lot_b) AND wf_id IN ({placeholders})
                     ORDER BY wf_id
+                    FETCH FIRST 10000 ROWS ONLY
                 """
-                params = {"lot_id": lot_id}
+                params = {"lot_a": variants[0], "lot_b": variants[-1]}
                 for i, wf_id in enumerate(wf_id_list):
                     params[f"wf{i}"] = wf_id
                 cur.execute(sql, params)
