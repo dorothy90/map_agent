@@ -124,3 +124,5 @@ RAG_CHATBOT_OS
 08-YieldAgent/generated/yield_table_98bb1d4c.html
 08-YieldAgent/generated/yield_table_b7fbc711.html
 .gitignore
+08-YieldAgent/add_category_column.py
+08-YieldAgent/generated/test_visual_4f4f5fa0.html

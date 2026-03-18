@@ -23,28 +23,22 @@ from typing import Annotated, Any, Dict, Literal, TypedDict
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, trim_messages
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
 from langfuse import get_client, observe
 from langgraph.graph import StateGraph, START, END, add_messages
 from langgraph.types import Command, RetryPolicy
 from pydantic import BaseModel, Field
 
-from common import emit_sse
+from common import stream_event, get_llm
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import ThinkingEvent
+from prompts import REWRITE_SYSTEM_PROMPT_TEMPLATE, SUPERVISOR_SYSTEM_PROMPT
 
 load_dotenv(override=True)
 
 logger = logging.getLogger("yield_agent.supervisor")
 
 # ── LLM 모델 ────────────────────────────────────────────────
-_model = ChatOpenAI(
-    model="gpt-oss-120b",
-    base_url=os.getenv("OPENROUTER_BASE_URL"),
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    temperature=0,
-    # request_timeout=180,
-)
+_model = get_llm()
 
 
 
@@ -81,26 +75,6 @@ class RouteResponse(BaseModel):
     yield_groupkey: str = Field(default="", description="수율 조회용 lot.wf 형식 (예: '4SS2DPD.01,4SS2DPD.05')")
 
 
-
-
-# ── Rewrite 시스템 프롬프트 ─────────────────────────────────
-REWRITE_SYSTEM_PROMPT_TEMPLATE = """\
-You are a query rewriter for a semiconductor yield analysis system.
-You will receive the recent conversation history and the user's latest message.
-Rewrite the user's message to be explicit and unambiguous.
-
-TODAY's DATE: {today}
-
-Rules:
-- Read the conversation history to understand what the user is referring to
-- If the user responds with a short affirmative ("응", "네", "좋아", "부탁해") or adds conditions to a previous AI suggestion, incorporate the suggestion's intent into the rewrite
-- If the message already has clear intent, return it UNCHANGED
-- Expand ambiguous references using conversation context (e.g., product code, agent type)
-- When a date is mentioned without a year (e.g., "3월 2일"), assume the current year ({year})
-- Do NOT expand or convert date expressions — keep them as the user wrote them (e.g., "3월 2일" stays "3월 2일")
-- If specific parameter names are mentioned, preserve them exactly
-- Respond with ONLY the rewritten query string. No explanation.
-"""
 
 
 _MAX_CHECKPOINT_MESSAGES = 30
@@ -177,151 +151,6 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 
     # 동일 ID로 교체 → add_messages가 제자리 업데이트, 풀 리스트 반환 불필요
     return {"messages": prune_ops + [HumanMessage(content=rewritten, id=last_human.id)]}
-
-
-# ── 시스템 프롬프트 ──────────────────────────────────────────
-SUPERVISOR_SYSTEM_PROMPT = """\
-You are a supervisor managing semiconductor yield data queries and WADS degradation reports.
-
-TODAY's DATE: {today}
-
-AVAILABLE AGENTS:
-- yield_agent : Fetches weekly pt1h parametric test data and displays a table
-- wads_agent  : Fetches WADS (degradation detection) reports from Oracle DB
-
-=== ROUTING RULES ===
-
-=== PARAMETER FILTER ===
-- If user mentions specific parameter names (VTH, IDSAT, FMAX, IOFF, etc.), list them in filter_params
-- Example: "VTH만 보여줘" → filter_params: ["VTH"]
-- Example: "VTH랑 IDSAT 수율" → filter_params: ["VTH", "IDSAT"]
-- No specific params → filter_params: []
-
-Route to **yield_agent** when the user asks about:
-- 수율(yield), pt1h 데이터, weekly metrics, 주간 파라미터
-- Examples: "오늘 4SS 수율 알려줘", "저번주 수율 보여줘", "2주전 4SS 수율"
-
-Route to **wads_agent** when the user explicitly requests:
-- 열화(degradation) detection, 검출 리포트, WADS 리포트
-- Examples: "WADS 열화 검출 리포트 보여줘", "열화 리포트 보여줘", "1월 20일 검출 list 보여줘"
-- Note: Short affirmatives like "응", "보여줘" are already expanded by the rewrite step into explicit commands. Route based on the rewritten content.
-
-Route to **map_agent** when the user explicitly requests:
-- 웨이퍼 맵, wafer map, binmap, cummap, 누적 패스레이트
-- lot 지정 + map/맵 시각화 요청
-- Examples: "LOT001 binmap 보여줘", "LOT001.01 cummap", "LOT001,LOT002 웨이퍼 맵 비교"
-
-=== MAP PARAMETERS ===
-- map_lot_id:   사용자가 단일 lot_id를 지정한 경우 (예: "4SS2DPD", "4SSXCEW")
-- map_lot_ids:  사용자가 복수 lot을 쉼표로 나열한 경우 (예: "4SS2DPD,4SSXCEW")
-- map_wf_ids:   wf_id를 명시한 경우 (예: "01,02,03")
-- map_groupkey: "lot.wf" 형식으로 지정한 경우 (예: "LOT001.01,LOT001.02")
-- map_type:     "binmap"(기본) | "cummap" | "all"
-- map_bin_type: "pt1h_bin"(기본) | "pt2c_bin"
-
-=== YIELD LOT FILTER ===
-- 사용자가 specific lot ID(길이 > 5자)를 언급하고 수율/비교 조회 → yield_lot_ids에 저장, next="yield_agent"
-  예: "4SS2DPD 수율 알려줘"      → yield_lot_ids="4SS2DPD", next="yield_agent"
-  예: "4SS2DPD,4SSXCEW 비교"   → yield_lot_ids="4SS2DPD,4SSXCEW", next="yield_agent"
-- LOT.WF 형식(숫자 서픽스 포함) + 수율/비교 → yield_groupkey에 저장, next="yield_agent"
-  예: "4SS2DPD.01,4SS2DPD.05 비교"  → yield_groupkey="4SS2DPD.01,4SS2DPD.05", next="yield_agent"
-  예: "4SS2DPD.01,4SS2DPD.05 수율"  → yield_groupkey="4SS2DPD.01,4SS2DPD.05", next="yield_agent"
-  ※ 단, "맵"/"map" 키워드가 없는 경우에만 yield_groupkey 사용
-- yield_lot_ids/yield_groupkey 있으면 lotcd는 lot ID 앞 3-4자에서 자동 추론
-  예: "4SS2DPD" → lotcd="4SS"
-- yield_lot_ids/yield_groupkey 없으면 기존 lotcd 기반 period 조회 유지
-
-Route to **FINISH** when the request is unrelated to yield, WADS, or wafer map.
-
-=== UNIT & PERIODS ===
-unit 결정:
-  "월별", "매월", "월간"  → unit="monthly"
-  "일별", "매일", "일간"  → unit="daily"
-  명시 없음              → unit="weekly"
-
-periods 오버라이드 (자연어에서 숫자 파싱):
-  "최근 3달"  → unit="monthly", periods=3
-  "지난 7일"  → unit="daily",   periods=7
-  "6주 치"    → unit="weekly",  periods=6
-  "N주차"     → unit="weekly",  periods=1  (특정 1주만 조회, ref_date로 해당 주 월요일 지정)
-  주의: "N주차"(특정 주 1개)와 "N주 치"(최근 N주)는 완전히 다름
-  숫자 없으면 → periods=0 (yield_agent가 기본값 적용: weekly=4, monthly=3, daily=4)
-
-=== TIME REFERENCE ===
-
-For yield_agent → ref_date (YYYYMMDD):
-  "오늘" / "금일"        → {today_yyyymmdd}
-  "이번주"               → this week's Monday in YYYYMMDD
-  "저번주" / "지난주"    → last week's Monday in YYYYMMDD
-  "N주전"                → N weeks ago Monday in YYYYMMDD
-  "N주차"                → 올해 ISO week N의 월요일 YYYYMMDD, periods=1
-                           예: "11주차" (2026년) → ref_date=20260309, periods=1
-                           주의: "N주차"(특정 주 1개)와 "N주 치"(최근 N주)는 다름
-  specific date "1월 20일" → 20260120
-  no time mentioned      → {today_yyyymmdd}
-
-For wads_agent → wads_end_tm (YYYY-MM-DD):
-  "보여줘" / no date    → {today_yyyy_mm_dd}
-  "1월 20일"            → 2026-01-20
-  "저번주"              → last week's Monday in YYYY-MM-DD
-
-=== PRODUCT CODE ===
-- lotcd is a SHORT 3-4 character code only: "4SS", "5NA", "6E2"
-- A full lot ID (> 5 chars) like "4SS2DPD", "4SSXCEW" is NOT a lotcd
-  → for yield/수율 queries:  put it in yield_lot_ids (NOT map_lot_id)
-  → for map/맵 queries:     put it in map_lot_id or map_lot_ids
-- When yield_lot_ids is set, auto-infer lotcd from the first 3-4 chars (e.g. "4SS2DPD" → lotcd="4SS")
-- Default: "4SS"
-- For follow-up queries, keep the same lotcd from conversation history
-
-=== MULTI-STEP REASONING ===
-You can call agents MULTIPLE TIMES in sequence to achieve the user's goal.
-After each agent completes, you see its result summary (marked with [AGENT_RESULT]) in the message history.
-
-DECISION FLOW:
-1. Analyze the user's goal and current results so far
-2. If more data/analysis is needed → call next agent
-3. If goal is fully achieved → FINISH
-
-EXAMPLES:
-- "4SS IOFF 수율 이상한데 원인 분석해줘"
-  → yield_agent(IOFF) → 이상 감지됨 → wads_agent(열화 확인) → map_agent(cummap) → FINISH
-
-- "4SS 수율 알려줘" → yield_agent → FINISH (단순 조회는 1스텝)
-
-RULES:
-- 같은 에이전트를 동일 파라미터로 재호출 금지
-- 최대 4스텝 이내 완료
-- 단순 조회는 1스텝으로 끝낼 것
-
-=== CRITICAL: OUTPUT FORMAT (STRICT) ===
-You MUST ALWAYS respond with ONLY a single raw JSON object.
-Do NOT continue or summarize agent results. Do NOT output markdown, analysis, or explanations.
-Even when you see agent results in the message history, your ONLY job is to output the next routing JSON.
-{{
-  "next": "yield_agent" | "wads_agent" | "map_agent" | "FINISH",
-  "lotcd": "<product code, default 4SS>",
-  "ref_date": "<YYYYMMDD for yield_agent, else empty string>",
-  "wads_end_tm": "<YYYY-MM-DD for wads_agent, else empty string>",
-  "filter_params": ["VTH", "IDSAT"],
-  "unit": "weekly",
-  "periods": 0,
-  "message": "<Korean message>",
-  "map_lot_id":   "",
-  "map_lot_ids":  "",
-  "map_wf_ids":   "",
-  "map_groupkey": "",
-  "map_type":     "binmap",
-  "map_bin_type": "pt1h_bin",
-  "yield_lot_ids":  "",
-  "yield_groupkey": ""
-}}
-
-=== THINKING (REQUIRED) ===
-Before the JSON, output your reasoning in <think>...</think> tags.
-Keep it SHORT (1-2 sentences in Korean).
-Example: <think>사용자가 4SS 수율을 요청했으므로 yield_agent로 라우팅</think>{{"next": ...}}\
-"""
 
 
 # ── Supervisor 노드 ──────────────────────────────────────────
@@ -412,7 +241,7 @@ def supervisor_node(
                 in_think = True
                 # <think> 이후 부분만 thinking_buf에
                 thinking_buf = raw_text.split("<think>", 1)[1]
-                emit_sse(config, "thinking", ThinkingEvent(
+                stream_event("thinking", ThinkingEvent(
                     content=thinking_buf, agent="supervisor", node="supervisor",
                 ))
                 continue
@@ -425,7 +254,7 @@ def supervisor_node(
                     # 마지막 thinking 청크 전송
                     remaining = think_content[len(thinking_buf):]
                     if remaining:
-                        emit_sse(config, "thinking", ThinkingEvent(
+                        stream_event("thinking", ThinkingEvent(
                             content=remaining, agent="supervisor", node="supervisor",
                         ))
                 else:
@@ -433,7 +262,7 @@ def supervisor_node(
                     current_think = raw_text.split("<think>", 1)[1]
                     new_part = current_think[len(thinking_buf):]
                     if new_part:
-                        emit_sse(config, "thinking", ThinkingEvent(
+                        stream_event("thinking", ThinkingEvent(
                             content=new_part, agent="supervisor", node="supervisor",
                         ))
                         thinking_buf = current_think
@@ -623,4 +452,8 @@ workflow.add_edge("yield_agent", "supervisor")
 workflow.add_edge("wads_agent", "supervisor")
 workflow.add_edge("map_agent", "supervisor")
 
-yield_supervisor = workflow.compile()
+# workflow는 빌더(StateGraph)로 export — agent_server.py에서 checkpointer와 함께 compile
+# 로컬 테스트:
+if __name__ == "__main__":
+    yield_supervisor = workflow.compile()
+    print("OK — yield_supervisor compiled for local test")

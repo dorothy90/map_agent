@@ -120,21 +120,37 @@ CATEGORY_TO_BIN: dict[str, str] = {v: k for k, v in BIN_CATEGORY_MAP.items() if 
 # ============================================================
 # timed 데코레이터
 # ============================================================
-def emit_sse(config: dict | None, kind: str, event) -> None:
-    """sync 노드에서 async sse_queue로 이벤트를 전송하는 공용 헬퍼.
+def get_llm(model: str | None = None, temperature: float = 0) -> "ChatOpenAI":
+    """LLM 팩토리 — 모든 에이전트에서 동일 설정으로 ChatOpenAI 생성"""
+    from langchain_openai import ChatOpenAI
 
-    LangGraph 노드(sync)에서 호출 → asyncio 이벤트 루프의 queue.put_nowait 실행.
-    config["configurable"]["sse_queue"]가 없으면 무시 (테스트/CLI 실행 시).
+    return ChatOpenAI(
+        model=model or os.getenv("DEFAULT_MODEL", "gpt-oss-120b"),
+        base_url=os.getenv("OPENROUTER_BASE_URL"),
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        temperature=temperature,
+    )
+
+
+def stream_event(kind: str, event) -> None:
+    """LangGraph stream_mode='custom' 채널로 이벤트 전송.
+
+    get_stream_writer()는 LangGraph 노드 실행 컨텍스트에서 자동 바인딩됩니다.
+    CLI/테스트 등 스트리밍 컨텍스트 없이 실행될 경우 무시합니다.
     """
     try:
-        configurable = (config or {}).get("configurable", {})
-        queue = configurable.get("sse_queue")
-        loop = configurable.get("sse_loop")
-        if queue is None or loop is None:
-            return
-        loop.call_soon_threadsafe(queue.put_nowait, (kind, event))
+        from langgraph.config import get_stream_writer
+
+        writer = get_stream_writer()
+        payload = event.model_dump() if hasattr(event, "model_dump") else event
+        writer({"kind": kind, **payload})
     except Exception:
         pass  # 스트리밍 실패가 메인 로직을 중단하면 안 됨
+
+
+def emit_sse(config: dict | None, kind: str, event) -> None:
+    """[DEPRECATED] stream_event()로 대체됨. 하위 호환용 래퍼."""
+    stream_event(kind, event)
 
 
 def lot_id_variants(lot_id: str) -> list[str]:

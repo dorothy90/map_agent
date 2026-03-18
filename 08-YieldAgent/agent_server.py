@@ -96,12 +96,6 @@ app.add_middleware(
 )
 
 
-def _on_task_error(task: asyncio.Task) -> None:
-    """create_task 예외를 로그에 기록 (fire-and-forget 무음 실패 방지)"""
-    if not task.cancelled() and task.exception():
-        logger.exception("Graph task failed: %s", task.exception())
-
-
 def _sse(event: dict | object) -> str:
     """Pydantic model 또는 dict → SSE data line"""
     if hasattr(event, "model_dump"):
@@ -227,9 +221,7 @@ async def get_session_history(session_id: str, request: Request):
 async def chat_stream(request: ChatRequest, req: Request):
     graph = req.app.state.graph
     db = req.app.state.motor_db
-    queue: asyncio.Queue = asyncio.Queue(maxsize=500)
-    loop = asyncio.get_running_loop()
-    config = {"configurable": {"thread_id": request.session_id, "sse_queue": queue, "sse_loop": loop}, "recursion_limit": 20}
+    config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 20}
 
     # 이번 턴 입력: 새 HumanMessage + 퍼-턴 리셋 필드
     input_state = {
@@ -266,31 +258,6 @@ async def chat_stream(request: ChatRequest, req: Request):
             "yield_groupkey": "",
         })
 
-    @observe(name="yield_agent_request")
-    async def _run_graph():
-        try:
-            lf = get_client()
-            lf.set_current_trace_io(
-                input={"query": request.query, "session_id": request.session_id},
-            )
-        except Exception:
-            logger.warning("Langfuse trace init 실패 (무시)")
-
-        try:
-            async for step in graph.astream(input_state, config=config):
-                await queue.put(("step", step))
-            try:
-                get_client().set_current_trace_io(output={"query": request.query})
-            except Exception:
-                pass
-            await queue.put(("done", None))
-        except Exception as e:
-            logger.exception("Graph execution error")
-            await queue.put(("error", e))
-
-    task = asyncio.create_task(_run_graph())
-    task.add_done_callback(_on_task_error)
-
     async def generate():
         start = time.time()
         step_count = 0
@@ -300,138 +267,157 @@ async def chat_stream(request: ChatRequest, req: Request):
         turn_artifacts: list[dict] = []
         turn_suggestion = ""
 
+        # Langfuse trace 초기화
+        try:
+            lf = get_client()
+            lf.set_current_trace_io(
+                input={"query": request.query, "session_id": request.session_id},
+            )
+        except Exception:
+            logger.warning("Langfuse trace init 실패 (무시)")
+
         # stream_start
         yield _sse(StreamStartEvent(
             session_id=request.session_id,
             query=request.query,
         ))
 
-        while True:
-            kind, data = await queue.get()
+        try:
+            # stream_mode=["updates", "custom"]:
+            #   "updates" → 기존 node state 업데이트 (messages, artifacts 등)
+            #   "custom"  → get_stream_writer()로 전송된 thinking/token/status 이벤트
+            async for chunk in graph.astream(
+                input_state, config=config, stream_mode=["updates", "custom"]
+            ):
+                mode, data = chunk
 
-            if kind == "error":
-                yield _sse(ErrorEvent(message=f"[step {step_count}] {str(data)}"))
-                try:
-                    get_client().flush()
-                except Exception:
-                    pass
-                return
+                # custom 이벤트: thinking/token/status — get_stream_writer()에서 직통
+                if mode == "custom":
+                    kind = data.pop("kind", "")
+                    if kind == "thinking":
+                        yield _sse(ThinkingEvent(**data))
+                    elif kind == "token":
+                        yield _sse(TokenEvent(**data))
+                    elif kind == "status":
+                        yield _sse(StatusEvent(**data))
+                    continue
 
-            if kind == "thinking":
-                yield _sse(data)
-                continue
+                # updates 이벤트: node state 업데이트 — 기존 처리 로직 유지
+                for node_name, node_state in data.items():
+                    elapsed = round(time.time() - start, 1)
+                    if "step_count" in node_state:
+                        step_count = node_state["step_count"]
 
-            if kind == "token":
-                yield _sse(data)
-                continue
-
-            if kind == "status":
-                yield _sse(data)
-                continue
-
-            if kind == "done":
-                break
-
-            for node_name, node_state in data.items():
-                elapsed = round(time.time() - start, 1)
-                if "step_count" in node_state:
-                    step_count = node_state["step_count"]
-
-                # 1) node_complete
-                yield _sse(NodeCompleteEvent(
-                    node=node_name,
-                    step=step_count,
-                    elapsed=elapsed,
-                ))
-
-                # 2) AIMessage → token 스트리밍 + message 이벤트 (채팅 패널)
-                for msg in node_state.get("messages", []):
-                    agent_name = getattr(msg, "name", None) or node_name
-                    content = msg.content if hasattr(msg, "content") else str(msg)
-                    if not content:
-                        continue
-                    # 토큰 단위 스트리밍
-                    chunks = _chunk_text(content)
-                    delay = min(SIMULATED_STREAM_DELAY, 2.0 / max(len(chunks), 1))
-                    for chunk in chunks:
-                        yield _sse(TokenEvent(content=chunk, agent=agent_name, node=node_name))
-                        await asyncio.sleep(delay)
-                    # 최종 전체 메시지
-                    yield _sse(MessageEvent(
-                        agent=agent_name,
-                        content=content,
+                    # 1) node_complete
+                    yield _sse(NodeCompleteEvent(
+                        node=node_name,
                         step=step_count,
+                        elapsed=elapsed,
                     ))
-                    turn_messages.append({
-                        "agent": agent_name,
-                        "content": content,
-                    })
 
-                # 3) artifacts → artifact 이벤트 (오른쪽 패널)
-                artifact_sources = [
-                    ("yield_artifacts", "yield_agent"),
-                    ("wads_artifacts", "wads_agent"),
-                    ("map_artifacts", "map_agent"),
-                ]
-                for key, default_agent in artifact_sources:
-                    for art in node_state.get(key, []):
-                        art_data = art.get("data", "")
-                        if not art_data:
+                    # 2) AIMessage → token 스트리밍 + message 이벤트 (채팅 패널)
+                    for msg in node_state.get("messages", []):
+                        agent_name = getattr(msg, "name", None) or node_name
+                        content = msg.content if hasattr(msg, "content") else str(msg)
+                        if not content:
                             continue
+                        # 토큰 단위 스트리밍
+                        chunks = _chunk_text(content)
+                        delay = min(SIMULATED_STREAM_DELAY, 2.0 / max(len(chunks), 1))
+                        for chunk_text in chunks:
+                            yield _sse(TokenEvent(content=chunk_text, agent=agent_name, node=node_name))
+                            await asyncio.sleep(delay)
+                        # 최종 전체 메시지
+                        yield _sse(MessageEvent(
+                            agent=agent_name,
+                            content=content,
+                            step=step_count,
+                        ))
+                        turn_messages.append({
+                            "agent": agent_name,
+                            "content": content,
+                        })
 
-                        # file:// 참조인 경우 파일에서 읽기
-                        if art_data.startswith("file://"):
-                            file_path = art_data[7:]
-                            try:
-                                with open(file_path, "r", encoding="utf-8") as f:
-                                    art_data = f.read()
-                                # 전송 후 임시 파일 삭제
-                                os.remove(file_path)
-                            except FileNotFoundError:
+                    # 3) artifacts → artifact 이벤트 (오른쪽 패널)
+                    artifact_sources = [
+                        ("yield_artifacts", "yield_agent"),
+                        ("wads_artifacts", "wads_agent"),
+                        ("map_artifacts", "map_agent"),
+                    ]
+                    for key, default_agent in artifact_sources:
+                        for art in node_state.get(key, []):
+                            art_data = art.get("data", "")
+                            if not art_data:
                                 continue
 
-                        art_type = _detect_artifact_type(art_data)
-                        mime = {
-                            ArtifactType.html: "text/html",
-                            ArtifactType.image: "image/png",
-                            ArtifactType.markdown: "text/markdown",
-                        }.get(art_type, "text/html")
+                            # file:// 참조인 경우 파일에서 읽기
+                            if art_data.startswith("file://"):
+                                file_path = art_data[7:]
+                                try:
+                                    with open(file_path, "r", encoding="utf-8") as f:
+                                        art_data = f.read()
+                                    # 전송 후 임시 파일 삭제
+                                    os.remove(file_path)
+                                except FileNotFoundError:
+                                    continue
+
+                            art_type = _detect_artifact_type(art_data)
+                            mime = {
+                                ArtifactType.html: "text/html",
+                                ArtifactType.image: "image/png",
+                                ArtifactType.markdown: "text/markdown",
+                            }.get(art_type, "text/html")
+                            evt = ArtifactEvent(
+                                artifact_type=art_type,
+                                mime=mime,
+                                title=art.get("title", key.replace("_artifacts", "")),
+                                agent=art.get("agent", default_agent),
+                                data=art_data,
+                                step=step_count,
+                            )
+                            yield _sse(evt)
+                            # MongoDB에는 data 제외하여 저장 (크기 절감)
+                            turn_artifact = evt.model_dump()
+                            turn_artifact["data"] = ""
+                            turn_artifacts.append(turn_artifact)
+
+                    # 4) analysis_result → markdown artifact
+                    analysis = node_state.get("analysis_result", "")
+                    if analysis:
                         evt = ArtifactEvent(
-                            artifact_type=art_type,
-                            mime=mime,
-                            title=art.get("title", key.replace("_artifacts", "")),
-                            agent=art.get("agent", default_agent),
-                            data=art_data,
+                            artifact_type=ArtifactType.markdown,
+                            mime="text/markdown",
+                            title="analysis",
+                            agent=node_name,
+                            data=analysis,
                             step=step_count,
                         )
                         yield _sse(evt)
-                        # MongoDB에는 data 제외하여 저장 (크기 절감)
-                        turn_artifact = evt.model_dump()
-                        turn_artifact["data"] = ""
-                        turn_artifacts.append(turn_artifact)
+                        turn_artifacts.append(evt.model_dump())
 
-                # 4) analysis_result → markdown artifact
-                analysis = node_state.get("analysis_result", "")
-                if analysis:
-                    evt = ArtifactEvent(
-                        artifact_type=ArtifactType.markdown,
-                        mime="text/markdown",
-                        title="analysis",
-                        agent=node_name,
-                        data=analysis,
-                        step=step_count,
-                    )
-                    yield _sse(evt)
-                    turn_artifacts.append(evt.model_dump())
+                    # 5) suggestion
+                    suggestion = node_state.get("agent_suggestion", "")
+                    if suggestion:
+                        yield _sse(SuggestionEvent(
+                            content=suggestion,
+                            step=step_count,
+                        ))
+                        turn_suggestion = suggestion
 
-                # 5) suggestion
-                suggestion = node_state.get("agent_suggestion", "")
-                if suggestion:
-                    yield _sse(SuggestionEvent(
-                        content=suggestion,
-                        step=step_count,
-                    ))
-                    turn_suggestion = suggestion
+        except Exception as e:
+            logger.exception("Graph execution error")
+            yield _sse(ErrorEvent(message=f"[step {step_count}] {str(e)}"))
+            try:
+                get_client().flush()
+            except Exception:
+                pass
+            return
+
+        # Langfuse output 기록
+        try:
+            get_client().set_current_trace_io(output={"query": request.query})
+        except Exception:
+            pass
 
         # stream_end
         total_elapsed = round(time.time() - start, 1)
