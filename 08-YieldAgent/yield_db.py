@@ -354,6 +354,45 @@ def _fetch_gms_daily_sql(lotcd: str, days: list[date]) -> dict[str, dict]:
     return result
 
 
+# ── 기간별 날짜 범위 생성 ─────────────────────────────────────
+def _get_period_date_ranges(ref_date: date, unit: str, n: int) -> list[dict]:
+    """기간별 시작/종료 날짜를 반환.
+
+    Returns:
+        [{"label": "2026-W06", "start": "20260202", "end": "20260209"}, ...]
+    """
+    ranges: list[dict] = []
+    if unit == "weekly":
+        mondays = _get_n_weeks(ref_date, n)
+        for mon in mondays:
+            label = _iso_week_str(mon)
+            start = mon.strftime("%Y%m%d")
+            end = (mon + timedelta(days=7)).strftime("%Y%m%d")
+            ranges.append({"label": label, "start": start, "end": end})
+    elif unit == "daily":
+        days = _get_n_days(ref_date, n)
+        for d in days:
+            label = d.strftime("%Y-%m-%d")
+            start = d.strftime("%Y%m%d")
+            end = (d + timedelta(days=1)).strftime("%Y%m%d")
+            ranges.append({"label": label, "start": start, "end": end})
+    elif unit == "monthly":
+        month_strs = _get_n_months(ref_date, n)
+        for ym in month_strs:
+            y, m = map(int, ym.split("-"))
+            start_d = date(y, m, 1)
+            if m == 12:
+                end_d = date(y + 1, 1, 1)
+            else:
+                end_d = date(y, m + 1, 1)
+            ranges.append({
+                "label": ym,
+                "start": start_d.strftime("%Y%m%d"),
+                "end": end_d.strftime("%Y%m%d"),
+            })
+    return ranges
+
+
 # ── 기본 기간 수 ──────────────────────────────────────────────
 DEFAULT_PERIODS = {"weekly": 4, "monthly": 3, "daily": 4}
 

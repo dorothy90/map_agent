@@ -91,7 +91,7 @@ Route to **map_agent** when the user explicitly requests:
 - map_wf_ids:   wf_id를 명시한 경우 (예: "01,02,03")
 - map_groupkey: "lot.wf" 형식으로 지정한 경우 (예: "LOT001.01,LOT001.02")
 - map_type:     "binmap"(기본) | "cummap" | "all"
-- map_bin_type: "pt1h_bin"(기본) | "pt2c_bin"
+- map_bin_type: "left_bin"(기본) | "right_bin"
 
 === YIELD LOT FILTER ===
 - 사용자가 specific lot ID(길이 > 5자)를 언급하고 수율/비교 조회 → yield_lot_ids에 저장, next="yield_agent"
@@ -123,7 +123,13 @@ periods 오버라이드 (자연어에서 숫자 파싱):
 
 === TIME REFERENCE ===
 
+ref_date는 조회 범위의 **마지막 날(끝점)**이다.
+_get_n_days / _get_n_weeks 등은 ref_date로부터 과거 방향으로 periods만큼 조회한다.
+
 For yield_agent → ref_date (YYYYMMDD):
+  날짜 범위 "A부터 B까지" / "A~B" → ref_date=B(종료일), periods=일수차+1, unit=daily
+    예: "3월 1일부터 3일까지" → ref_date=20260303, periods=3, unit=daily
+    예: "2월 20일부터 28일까지" → ref_date=20260228, periods=9, unit=daily
   "오늘" / "금일"        → {today_yyyymmdd}
   "이번주"               → this week's Monday in YYYYMMDD
   "저번주" / "지난주"    → last week's Monday in YYYYMMDD
@@ -186,7 +192,7 @@ Even when you see agent results in the message history, your ONLY job is to outp
   "map_wf_ids":   "",
   "map_groupkey": "",
   "map_type":     "binmap",
-  "map_bin_type": "pt1h_bin",
+  "map_bin_type": "left_bin",
   "yield_lot_ids":  "",
   "yield_groupkey": ""
 }}

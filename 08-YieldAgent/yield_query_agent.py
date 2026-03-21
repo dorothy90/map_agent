@@ -26,7 +26,7 @@ from yield_db import (
 from yield_viz import (
     _build_table, _build_html_table, _build_scatter_html,
     _detect_anomalies, _build_lot_table, _build_lot_html_table,
-    _save_html_to_file,
+    _save_html_to_file, _build_cummap_grid_html,
 )
 
 # ── 로깅 설정 ────────────────────────────────────────────
@@ -246,8 +246,18 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     html_table = _build_html_table(weeks_data, lotcd, filter_params, anomaly_params, unit=unit)
     logger.debug("[Yield Agent] table:\n%s", table_str)
 
-    logger.info("[Yield Agent] LLM 분석 시작 (최근 2주 비교)...")
-    analysis = _analyze_with_llm(weeks_data, table_str, lotcd, model, anomaly_params=anomaly_params, n=n, config=config)
+    # LLM 분석과 cummap grid 생성을 병렬 실행
+    logger.info("[Yield Agent] LLM 분석 + cummap grid 병렬 시작...")
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_analysis = ex.submit(
+            _analyze_with_llm, weeks_data, table_str, lotcd, model,
+            anomaly_params=anomaly_params, n=n, config=config,
+        )
+        f_cummap = ex.submit(
+            _build_cummap_grid_html, lotcd, ref_date, unit, n, anomaly_params,
+        )
+        analysis = f_analysis.result()
+        cummap_html = f_cummap.result()
 
     yield_artifacts = [{
         "type": "html",
@@ -263,6 +273,14 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
             "mime": "text/html",
             "data": _save_html_to_file(scatter_html, "yield_scatter"),
             "title": "yield_scatter",
+        })
+
+    if cummap_html:
+        yield_artifacts.append({
+            "type": "html",
+            "mime": "text/html",
+            "data": _save_html_to_file(cummap_html, "yield_cummap"),
+            "title": "yield_cummap",
         })
 
     unit_label = {"weekly": f"주간 (최근 {n}주)", "monthly": f"월별 (최근 {n}달)", "daily": f"일별 (최근 {n}일)"}.get(unit, f"최근 {n}개")

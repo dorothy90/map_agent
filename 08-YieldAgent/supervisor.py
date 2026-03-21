@@ -69,7 +69,7 @@ class RouteResponse(BaseModel):
     map_wf_ids:   str = Field(default="", description="wafer IDs, 쉼표 구분")
     map_groupkey: str = Field(default="", description="lot_id.wf_id 형식 (예: 'LOT001.01,LOT001.02')")
     map_type:     str = Field(default="binmap", description="binmap | cummap | all")
-    map_bin_type: str = Field(default="pt1h_bin", description="pt1h_bin | pt2c_bin")
+    map_bin_type: str = Field(default="left_bin", description="left_bin | right_bin")
     # Yield lot 비교 파라미터
     yield_lot_ids:  str = Field(default="", description="수율 조회용 lot ID 목록, 쉼표 구분 (예: '4SS2DPD,4SSXCEW')")
     yield_groupkey: str = Field(default="", description="수율 조회용 lot.wf 형식 (예: '4SS2DPD.01,4SS2DPD.05')")
@@ -363,7 +363,7 @@ def supervisor_node(
         "map_wf_ids":   decision.map_wf_ids,
         "map_groupkey": decision.map_groupkey,
         "map_type":     decision.map_type or "binmap",
-        "map_bin_type": decision.map_bin_type or "pt1h_bin",
+        "map_bin_type": decision.map_bin_type or "left_bin",
         "yield_lot_ids":  decision.yield_lot_ids,
         "yield_groupkey": decision.yield_groupkey,
     }

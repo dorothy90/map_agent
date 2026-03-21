@@ -252,7 +252,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             "map_wf_ids": "",
             "map_groupkey": "",
             "map_type": "binmap",
-            "map_bin_type": "pt1h_bin",
+            "map_bin_type": "left_bin",
             "map_result": "",
             "yield_lot_ids": "",
             "yield_groupkey": "",

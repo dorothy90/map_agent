@@ -11,13 +11,27 @@ import uuid
 
 from tabulate import tabulate
 
+import base64
+import io
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
+
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from common import (
     PARA_COLUMNS,
     PT1C_COLUMNS,
     GMS_COLUMNS,
     GMS_HIGHER_IS_BETTER,
     HIGHER_IS_BETTER,
+    CATEGORY_TO_BIN,
 )
+
+logger = logging.getLogger("yield_agent.yield_viz")
 
 
 # ── HTML 파일 저장 ────────────────────────────────────────────
@@ -726,3 +740,194 @@ td.td-gms-sep  { border-left: 3px solid #22c55e !important; }
 
     html += "</tbody></table>\n</body></html>"
     return html
+
+
+# ── Cummap Grid (기간별 × 파라미터별) ────────────────────────
+def _build_cummap_grid_html(
+    lotcd: str,
+    ref_date: date,
+    unit: str,
+    periods: int,
+    anomaly_params: list[dict],
+) -> str:
+    """기간별 × 파라미터별 누적 wafer map 그리드를 HTML(base64 PNG)로 반환.
+
+    열: VTH, PT1C, 개선Top3, 열화Top3 (최대 8개)
+    행: 기간 수 (주차/일별/월별)
+    """
+    from yield_db import _get_period_date_ranges, DEFAULT_PERIODS
+    from map_agent import (
+        _query_wafer_data_by_date,
+        _parse_wafer_for_cummap,
+        _get_map_bounds,
+    )
+    import multiprocessing as mp
+
+    n = periods if periods > 0 else DEFAULT_PERIODS.get(unit, 4)
+    date_ranges = _get_period_date_ranges(ref_date, unit, n)
+    if not date_ranges:
+        return ""
+
+    # ── 컬럼 결정: (label, target_bin, category) ──
+    # category별로 분리 조회하여 각 컬럼에 올바른 데이터 사용
+    PT1C_PARAM_SET = set(PT1C_COLUMNS)  # {"PT1C", "CFTA"}
+
+    columns: list[tuple[str, str | None, str]] = [
+        ("PT1H", None, "PT1H"),       # PT1H 전체 pass rate (A=Pass)
+        ("PT1C", None, "PT1C"),       # PT1C 전체 pass rate (A=Pass)
+    ]
+
+    improved = [a for a in anomaly_params if a["direction"] == "개선"][:3]
+    degraded = [a for a in anomaly_params if a["direction"] == "열화"][:3]
+
+    for prefix, items in [("개선", improved), ("열화", degraded)]:
+        for a in items:
+            param = a["param"]
+            if param in PT1C_PARAM_SET:
+                # PT1C 파라미터 → category="PT1C", target_bin=None
+                columns.append((f"{prefix}_{param}", None, "PT1C"))
+            elif param in CATEGORY_TO_BIN:
+                # PT1H 파라미터 → category="PT1H", target_bin=해당 bin
+                columns.append((f"{prefix}_{param}", CATEGORY_TO_BIN[param], "PT1H"))
+            # 그 외(CATEGORY_TO_BIN에도 PT1C에도 없는 param)는 skip
+
+    if len(columns) < 3:
+        return ""
+
+    n_periods = len(date_ranges)
+    n_cols = len(columns)
+
+    # ── 기간별 wafer 데이터 fetch (병렬) ──
+    # 필요한 category들만 분리 조회
+    needed_cats = {cat for _, _, cat in columns}
+    fetch_tasks: list[tuple[int, str, str | None]] = []
+    for pi in range(n_periods):
+        for cat in needed_cats:
+            fetch_tasks.append((pi, cat, cat))
+
+    period_data: dict[int, dict[str, list]] = {i: {} for i in range(n_periods)}
+
+    def _fetch_one(task):
+        pi, key, cat = task
+        dr = date_ranges[pi]
+        data = _query_wafer_data_by_date(lotcd, dr["start"], dr["end"], category=cat)
+        logger.info("[CummapGrid] period=%s key=%s → %d wafers", dr["label"], key, len(data))
+        return (pi, key, data)
+
+    logger.info("[CummapGrid] %d 쿼리 병렬 시작 (%d periods)", len(fetch_tasks), n_periods)
+    with ThreadPoolExecutor(max_workers=min(len(fetch_tasks), 12)) as ex:
+        for pi, key, data in ex.map(_fetch_one, fetch_tasks):
+            period_data[pi][key] = data
+    logger.info("[CummapGrid] DB fetch 완료")
+
+    # ── 전체 기간 map bounds 계산 (일관된 좌표) ──
+    all_wafers = []
+    for pi_data in period_data.values():
+        for wlist in pi_data.values():
+            all_wafers.extend(wlist)
+    if not all_wafers:
+        return ""
+
+    min_row, max_row, min_col, max_col = _get_map_bounds(all_wafers)
+    height = max_row - min_row + 1
+    width = max_col - min_col + 1
+
+    # ── 기간별 × 컬럼별 cummap 계산 ──
+    grid: list[list[tuple]] = []
+
+    for pi in range(n_periods):
+        row_data = []
+        for _col_label, target_bin, col_cat in columns:
+            wafers = period_data[pi].get(col_cat, [])
+
+            if not wafers:
+                row_data.append((None, 0.0))
+                continue
+
+            n_workers = min(mp.cpu_count(), len(wafers), 8)
+            args_list = [(w["map_val_json"], "left_bin", target_bin) for w in wafers]
+            with ThreadPoolExecutor(max_workers=n_workers) as ex2:
+                parsed = list(ex2.map(_parse_wafer_for_cummap, args_list))
+
+            all_rows_v, all_cols_v, all_pass_v = [], [], []
+            for rows_v, cols_v, passes_v in parsed:
+                all_rows_v.extend(rows_v)
+                all_cols_v.extend(cols_v)
+                all_pass_v.extend(passes_v)
+
+            arr_rows = np.array(all_rows_v) - min_row
+            arr_cols = np.array(all_cols_v) - min_col
+            arr_pass = np.array(all_pass_v)
+
+            pass_sum = np.zeros((height, width))
+            count = np.zeros((height, width))
+            np.add.at(pass_sum, (arr_rows, arr_cols), arr_pass)
+            np.add.at(count, (arr_rows, arr_cols), 1)
+
+            with np.errstate(divide="ignore", invalid="ignore"):
+                pass_rate = np.where(count > 0, pass_sum / count, np.nan)
+
+            valid = pass_rate[~np.isnan(pass_rate)]
+            avg_pct = float(np.mean(valid) * 100) if len(valid) > 0 else 0.0
+            row_data.append((pass_rate, avg_pct))
+
+        grid.append(row_data)
+
+    # ── matplotlib subplot 그리드 ──
+    fig, axes = plt.subplots(
+        n_periods, n_cols,
+        figsize=(3.2 * n_cols, 3.2 * n_periods),
+        squeeze=False,
+    )
+
+    for pi in range(n_periods):
+        for ci in range(n_cols):
+            ax = axes[pi, ci]
+            arr, avg_pct = grid[pi][ci]
+
+            if arr is not None:
+                # TODO: 현재 vmin=0, vmax=1 고정 → die별 상대적 차이가 안 보임
+                # percentile 기반 coloring 필요 시:
+                #   valid = arr[~np.isnan(arr)]
+                #   p5, p95 = np.percentile(valid, [5, 95])
+                #   ax.imshow(arr, cmap="RdYlGn", vmin=p5, vmax=p95, ...)
+                ax.imshow(arr, cmap="RdYlGn", vmin=0, vmax=1, interpolation="nearest")
+                ax.text(
+                    0.5, 0.5, f"{avg_pct:.1f}%",
+                    transform=ax.transAxes, ha="center", va="center",
+                    fontsize=10, fontweight="bold",
+                    color="white" if avg_pct < 50 else "black",
+                    bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.4),
+                )
+            else:
+                blank = np.full((height, width), np.nan)
+                ax.imshow(blank, cmap="RdYlGn", vmin=0, vmax=1, interpolation="nearest")
+                ax.text(0.5, 0.5, "N/A", transform=ax.transAxes,
+                        ha="center", va="center", fontsize=10, color="gray")
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            if ci == 0:
+                ax.set_ylabel(date_ranges[pi]["label"], fontsize=9, fontweight="bold")
+            if pi == 0:
+                col_label = columns[ci][0]
+                ax.set_title(col_label, fontsize=9, fontweight="bold")
+
+    fig.suptitle(f"{lotcd} Cummap Grid", fontsize=13, fontweight="bold")
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    # ── base64 PNG → HTML ──
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode()
+
+    return (
+        f'<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>'
+        f'<div style="margin:8px 0">'
+        f'<p style="font-weight:600">{lotcd} Period × Parameter Cummap Grid</p>'
+        f'<img src="data:image/png;base64,{b64}" style="max-width:100%"/>'
+        f'</div></body></html>'
+    )

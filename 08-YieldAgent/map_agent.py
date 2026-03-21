@@ -204,15 +204,15 @@ def _query_wafer_data(
 
 
 def _parse_map_json(map_val_json) -> dict:
-    """map_val_json → {"x_y": {"pt1h_bin": "A", "pt2c_bin": "B"}}"""
+    """map_val_json → {"x_y": {"left_bin": "A", "right_bin": "B"}}"""
     raw = _fast_json_loads(map_val_json) if isinstance(map_val_json, str) else map_val_json
     result = {}
     for item in raw["MAP"]:
         parts = item.split(",")
         x, y = parts[0], parts[1]
         result[f"{x}_{y}"] = {
-            "pt1h_bin": parts[2] if len(parts) > 2 else "",
-            "pt2c_bin": parts[3] if len(parts) > 3 else "",
+            "left_bin": parts[2] if len(parts) > 2 else "",
+            "right_bin": parts[3] if len(parts) > 3 else "",
         }
     return result
 
@@ -227,7 +227,7 @@ def _parse_wafer_for_cummap(args):
     map_val_json, bin_type, target_bin = args
     raw = _fast_json_loads(map_val_json) if isinstance(map_val_json, str) else map_val_json
     rows, cols, passes = [], [], []
-    bin_idx = 2 if bin_type == "pt1h_bin" else 3
+    bin_idx = 2 if bin_type == "left_bin" else 3
     for item in raw["MAP"]:
         parts = item.split(",")
         rows.append(int(parts[0]))
@@ -248,8 +248,8 @@ def _parse_wafer_for_binmap(map_val_json) -> dict:
         parts = item.split(",")
         x, y = parts[0], parts[1]
         result[f"{x}_{y}"] = {
-            "pt1h_bin": parts[2] if len(parts) > 2 else "",
-            "pt2c_bin": parts[3] if len(parts) > 3 else "",
+            "left_bin": parts[2] if len(parts) > 2 else "",
+            "right_bin": parts[3] if len(parts) > 3 else "",
         }
     return result
 
@@ -268,7 +268,7 @@ def _get_map_bounds(map_data_list: list) -> tuple:
     return min(rows), max(rows), min(cols), max(cols)
 
 
-def _visualize_binmap(map_data_list: list, bin_type: str = "pt1h_bin") -> str:
+def _visualize_binmap(map_data_list: list, bin_type: str = "left_bin") -> str:
     """여러 wafer의 binmap을 개별적으로 시각화 → PNG 파일 경로"""
     if not map_data_list:
         return ""
@@ -346,7 +346,7 @@ def _visualize_binmap_inner(map_data_list: list, bin_type: str) -> str:
 
 def _visualize_cummap(
     map_data_list: list,
-    bin_type: str = "pt1h_bin",
+    bin_type: str = "left_bin",
     target_bin: Optional[str] = None,
     category_name: Optional[str] = None,
     subtitle: Optional[str] = None,
@@ -496,6 +496,56 @@ def _visualize_combined_cummap(
     return filepath
 
 
+def _query_wafer_data_by_date(
+    lotcd: str, start_date: str, end_date: str, category: str | None = None,
+) -> list:
+    """날짜 범위(end_tm 기준)로 wafer 데이터 직접 조회 (lot_ids 2단계 불필요).
+
+    Args:
+        lotcd: 제품코드 (lot_cd)
+        start_date: 시작일 'YYYYMMDD'
+        end_date: 종료일 'YYYYMMDD' (exclusive)
+        category: 'VTH', 'PT1C' 등. None이면 전체 조회.
+    """
+    try:
+        conn = _get_oracle_connection_common()
+    except Exception as e:
+        logger.error("[MapAgent] Oracle 연결 실패 (wafer_by_date): %s", e)
+        return []
+    try:
+        cur = conn.cursor()
+        sql = f"""
+            SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
+            FROM {ORACLE_TABLE}
+            WHERE lot_cd = :lotcd
+              AND end_tm >= TO_DATE(:sd, 'YYYYMMDD')
+              AND end_tm < TO_DATE(:ed, 'YYYYMMDD')
+        """
+        params: dict = {"lotcd": lotcd, "sd": start_date, "ed": end_date}
+        if category:
+            sql += "  AND CATEGORY = :cat"
+            params["cat"] = category
+        sql += "\n            ORDER BY lot_id, wf_id\n            FETCH FIRST 5000 ROWS ONLY"
+        cur.execute(sql, params)
+        columns = [desc[0].lower() for desc in cur.description]
+        results = []
+        for row in cur.fetchall():
+            record = dict(zip(columns, row))
+            if record.get("map_val_json") and hasattr(record["map_val_json"], "read"):
+                record["map_val_json"] = record["map_val_json"].read()
+            results.append(record)
+        return results
+    except Exception as e:
+        logger.error("[MapAgent] wafer_by_date 조회 실패: %s", e)
+        return []
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()
+
+
 def _query_lot_ids_by_date(lotcd: str, start_date: str, end_date: str) -> list[str]:
     """지정 기간(end_tm 기준)의 DISTINCT lot_id 목록 조회"""
     try:
@@ -532,7 +582,7 @@ def _generate_weekly_cummaps(
     Args:
         lotcd: 제품코드
         weeks: [{"week": "2026-W04", "start": "20260119", "end": "20260126"}, ...]
-        bin_type: "pt1h_bin" | "pt2c_bin"
+        bin_type: "left_bin" | "right_bin"
         target_bin: fail bin value (예: "H")
         category_name: category 이름 (예: "IOFF")
 
@@ -621,7 +671,7 @@ def show_wafer_map(
     wf_ids: Optional[str] = None,
     groupkey: Optional[str] = None,
     map_type: str = "binmap",
-    bin_type: str = "pt1h_bin",
+    bin_type: str = "left_bin",
 ) -> str:
     """Wafer map 시각화 (DB 조회 + PNG 생성)
 
@@ -637,8 +687,8 @@ def show_wafer_map(
     n_wafers = len(map_data_list)
     lot_info = map_data_list[0]["lot_id"]
 
-    if bin_type not in ("pt1h_bin", "pt2c_bin"):
-        bin_type = "pt1h_bin"
+    if bin_type not in ("left_bin", "right_bin"):
+        bin_type = "left_bin"
 
     requested_types = {t.strip().lower() for t in map_type.split(",")}
     if "all" in requested_types:
@@ -697,7 +747,7 @@ def _handle_weekly_cummap(state: dict) -> dict:
     cummap_weeks = state.get("cummap_weeks", [])
     target_bin = state.get("cummap_target_bin", "")
     category_name = state.get("cummap_category", "")
-    bin_type = state.get("map_bin_type", "pt1h_bin")
+    bin_type = state.get("map_bin_type", "left_bin")
 
     if not cummap_weeks or not target_bin:
         msg = AIMessage(content="cummap 생성에 필요한 정보가 부족합니다.", name="map_agent")
@@ -757,7 +807,7 @@ def _handle_standard_map(state: dict) -> dict:
     wf_ids   = state.get("map_wf_ids", "")
     groupkey = state.get("map_groupkey", "")
     map_type = state.get("map_type", "binmap")
-    bin_type = state.get("map_bin_type", "pt1h_bin")
+    bin_type = state.get("map_bin_type", "left_bin")
 
     result_str = show_wafer_map(
         lot_id=lot_id or None,
