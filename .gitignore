@@ -141,3 +141,10 @@ RAG_CHATBOT_OS
 08-YieldAgent/seed_map_data.py
 08-YieldAgent/seed_yield_data.py
 08-YieldAgent/update_category_vth_to_pt1h.py
+08-YieldAgent/binmap_4SS0000_20260322_220029.png
+08-YieldAgent/binmap_4SS0000_20260322_220509.png
+08-YieldAgent/cummap_4SS0000_20260322_220032.png
+08-YieldAgent/cummap_4SS0000_20260322_220512.png
+08-YieldAgent/binmap_4SSAPD4_20260322_224053.png
+08-YieldAgent/distort_map_data.py
+tasks/refactoring_plan.md

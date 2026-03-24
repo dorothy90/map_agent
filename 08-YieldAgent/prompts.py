@@ -49,6 +49,11 @@ Rules:
 - When a date is mentioned without a year (e.g., "3월 2일"), assume the current year ({year})
 - Do NOT expand or convert date expressions — keep them as the user wrote them (e.g., "3월 2일" stays "3월 2일")
 - If specific parameter names are mentioned, preserve them exactly
+- When the user mentions wafer ID patterns (N배수, N의 배수, 홀수, 짝수, N~M번, 처음 N개, 마지막 N개),
+  use the compute_wafer_ids tool to calculate exact wafer IDs, then include the computed IDs in the rewritten query.
+  Example: "4SS2DPD 3배수 wafer binmap" + tool result "03,06,09,12,15,18,21,24"
+  → rewrite to: "4SS2DPD wafer 03,06,09,12,15,18,21,24 binmap 보여줘"
+- For queries without wafer patterns, do NOT call any tools — just rewrite as before
 - Respond with ONLY the rewritten query string. No explanation.
 """
 

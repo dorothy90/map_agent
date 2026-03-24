@@ -28,10 +28,13 @@ from langgraph.graph import StateGraph, START, END, add_messages
 from langgraph.types import Command, RetryPolicy
 from pydantic import BaseModel, Field
 
+from langchain_core.messages import ToolMessage
+
 from common import stream_event, get_llm
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import ThinkingEvent
 from prompts import REWRITE_SYSTEM_PROMPT_TEMPLATE, SUPERVISOR_SYSTEM_PROMPT
+from rewrite_tools import REWRITE_TOOLS
 
 load_dotenv(override=True)
 
@@ -39,6 +42,10 @@ logger = logging.getLogger("yield_agent.supervisor")
 
 # ── LLM 모델 ────────────────────────────────────────────────
 _model = get_llm()
+_rewrite_model = _model.bind_tools(REWRITE_TOOLS)
+
+# 도구 이름 → 함수 매핑 (rewrite tool-calling에서 사용)
+_rewrite_tool_map = {t.name: t for t in REWRITE_TOOLS}
 
 
 
@@ -141,12 +148,31 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     invoke_messages.extend(recent)
     invoke_messages.append({"role": "user", "content": f"Rewrite this message: {last_human.content}"})
 
-    response = _model.invoke(
+    response = _rewrite_model.invoke(
         invoke_messages,
         config={"callbacks": _lf_callbacks()},
     )
 
-    rewritten = response.content.strip()
+    # tool call이 있으면 실행 후 결과를 LLM에 다시 전달하여 최종 리라이팅
+    if getattr(response, "tool_calls", None):
+        tool_messages = [response]  # AIMessage with tool_calls
+        for tc in response.tool_calls:
+            tool_fn = _rewrite_tool_map.get(tc["name"])
+            if tool_fn:
+                result = tool_fn.invoke(tc["args"])
+                tool_messages.append(
+                    ToolMessage(content=str(result), tool_call_id=tc["id"])
+                )
+                logger.info("[Rewrite] tool '%s'(%s) → %s", tc["name"], tc["args"], result)
+        # tool 결과를 포함하여 최종 리라이팅 요청
+        final_response = _model.invoke(
+            invoke_messages + tool_messages,
+            config={"callbacks": _lf_callbacks()},
+        )
+        rewritten = final_response.content.strip()
+    else:
+        rewritten = response.content.strip()
+
     logger.info("[Rewrite] '%s' → '%s'", last_human.content, rewritten)
 
     # 동일 ID로 교체 → add_messages가 제자리 업데이트, 풀 리스트 반환 불필요
