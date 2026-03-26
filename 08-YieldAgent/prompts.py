@@ -145,10 +145,13 @@ For yield_agent → ref_date (YYYYMMDD):
   specific date "1월 20일" → 20260120
   no time mentioned      → {today_yyyymmdd}
 
-For wads_agent → wads_end_tm (YYYY-MM-DD):
-  "보여줘" / no date    → {today_yyyy_mm_dd}
-  "1월 20일"            → 2026-01-20
-  "저번주"              → last week's Monday in YYYY-MM-DD
+For wads_agent → wads_start_tm, wads_end_tm (YYYY-MM-DD):
+  단일 날짜 "1월 20일"         → wads_start_tm="", wads_end_tm="2026-01-20"
+  "보여줘" / no date           → wads_start_tm="", wads_end_tm="{today_yyyy_mm_dd}"
+  "최근 일주일" / "지난 7일"   → wads_start_tm=(오늘-6일), wads_end_tm="{today_yyyy_mm_dd}"
+  "이번달" / "3월"             → wads_start_tm="2026-03-01", wads_end_tm="{today_yyyy_mm_dd}"
+  "1월 20일부터 25일까지"      → wads_start_tm="2026-01-20", wads_end_tm="2026-01-25"
+  "저번주"                     → wads_start_tm=지난주 월요일, wads_end_tm=지난주 일요일
 
 === PRODUCT CODE ===
 - lotcd is a SHORT 3-4 character code only: "4SS", "5NA", "6E2"
@@ -156,7 +159,7 @@ For wads_agent → wads_end_tm (YYYY-MM-DD):
   → for yield/수율 queries:  put it in yield_lot_ids (NOT map_lot_id)
   → for map/맵 queries:     put it in map_lot_id or map_lot_ids
 - When yield_lot_ids is set, auto-infer lotcd from the first 3-4 chars (e.g. "4SS2DPD" → lotcd="4SS")
-- Default: "4SS"
+- lotcd를 추론할 수 없으면 빈 문자열("")로 설정
 - For follow-up queries, keep the same lotcd from conversation history
 
 === MULTI-STEP REASONING ===
@@ -185,8 +188,9 @@ Do NOT continue or summarize agent results. Do NOT output markdown, analysis, or
 Even when you see agent results in the message history, your ONLY job is to output the next routing JSON.
 {{
   "next": "yield_agent" | "wads_agent" | "map_agent" | "FINISH",
-  "lotcd": "<product code, default 4SS>",
+  "lotcd": "<product code, empty string if user did not specify>",
   "ref_date": "<YYYYMMDD for yield_agent, else empty string>",
+  "wads_start_tm": "<YYYY-MM-DD range start for wads_agent, empty if single date>",
   "wads_end_tm": "<YYYY-MM-DD for wads_agent, else empty string>",
   "filter_params": ["VTH", "IDSAT"],
   "unit": "weekly",
@@ -219,11 +223,14 @@ WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 
 
 ## 사용 가능한 도구:
 1. **wads_query_data**: WADS 데이터 메타정보 조회
-   - lotcd, end_tm, parameter로 필터링하여 매칭되는 데이터 목록 반환
+   - lotcd, end_tm, start_tm, parameter로 필터링하여 매칭되는 데이터 목록 반환
    - HTML 콘텐츠는 제외하고 메타정보만 반환
+   - 날짜 범위 조회: start_tm과 end_tm을 함께 지정 (예: start_tm="2026-03-19", end_tm="2026-03-25")
+   - 단일 날짜 조회: end_tm만 지정 (기존 방식)
 
 2. **wads_get_html_report**: WADS HTML 리포트 조회
-   - lotcd, end_tm, parameter로 필터링하여 HTML 리포트 반환
+   - lotcd, end_tm, start_tm, parameter로 필터링하여 HTML 리포트 반환
+   - 날짜 범위 조회: start_tm과 end_tm을 함께 지정
    - **여러 리포트 요청 시**: 각 조건별로 도구를 여러 번 호출하세요. 모든 리포트가 누적되어 표시됩니다.
    - 예: step01, step02 리포트 요청 시 → wads_get_html_report(parameter="step01") + wads_get_html_report(parameter="step02")
 
@@ -245,6 +252,8 @@ WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 
 - 전체 데이터 조회: wads_query_data()
 - 특정 로트 조회: wads_query_data(lotcd="5NA")
 - 특정 날짜 조회: wads_query_data(end_tm="2026-01-01")
+- 날짜 범위 조회: wads_query_data(lotcd="5NA", start_tm="2026-03-19", end_tm="2026-03-25")
+- 날짜 범위 리포트: wads_get_html_report(lotcd="5NA", start_tm="2026-03-19", end_tm="2026-03-25")
 - 특정 스텝 리포트: wads_get_html_report(parameter="step01")
 - 복합 조건: wads_get_html_report(lotcd="5NA", parameter="step05")
 

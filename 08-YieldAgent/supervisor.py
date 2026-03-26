@@ -25,7 +25,7 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, trim
 from langchain_core.runnables import RunnableConfig
 from langfuse import get_client, observe
 from langgraph.graph import StateGraph, START, END, add_messages
-from langgraph.types import Command, RetryPolicy
+from langgraph.types import Command, RetryPolicy, interrupt
 from pydantic import BaseModel, Field
 
 from langchain_core.messages import ToolMessage
@@ -56,12 +56,15 @@ class RouteResponse(BaseModel):
     next: Literal["yield_agent", "wads_agent", "map_agent", "FINISH"] = Field(
         description="다음에 실행할 에이전트"
     )
-    lotcd: str = Field(default="4SS", description="3~4자리 제품코드만 (예: 4SS, 5NA, 6E2). 전체 lot ID(예: 4SS2DPD)는 절대 입력하지 말 것")
+    lotcd: str = Field(default="", description="3~4자리 제품코드만 (예: 4SS, 5NA, 6E2). 전체 lot ID(예: 4SS2DPD)는 절대 입력하지 말 것. 사용자가 미지정 시 빈 문자열")
     ref_date: str = Field(
         default="", description="Yield 기준날짜 YYYYMMDD (yield_agent 전용)"
     )
+    wads_start_tm: str = Field(
+        default="", description="WADS 조회 시작 날짜 YYYY-MM-DD (범위 조회 시, 비어있으면 wads_end_tm 단일 날짜 조회)"
+    )
     wads_end_tm: str = Field(
-        default="", description="WADS 조회 날짜 YYYY-MM-DD (wads_agent 전용)"
+        default="", description="WADS 조회 끝 날짜 YYYY-MM-DD (wads_agent 전용)"
     )
     filter_params: list[str] = Field(
         default=[],
@@ -130,10 +133,12 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     # 최근 5턴 대화 히스토리 추출 (마지막 HumanMessage 제외)
     recent = _get_recent_turns(messages, max_turns=5, exclude_last=last_human)
 
-    # state 메타데이터 (lotcd 등 — 대화에 없을 수 있는 정보)
+    # state 메타데이터 (lotcd, agent_suggestion 등 — 대화에 없을 수 있는 정보)
     meta_parts = []
     if state.get("lotcd"):
         meta_parts.append(f"현재 제품: {state['lotcd']}")
+    if state.get("agent_suggestion"):
+        meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
     meta = "\n".join(meta_parts) if meta_parts else ""
 
     # LLM 호출: system + recent messages + user message
@@ -147,6 +152,12 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         invoke_messages.append({"role": "system", "content": f"State metadata:\n{meta}"})
     invoke_messages.extend(recent)
     invoke_messages.append({"role": "user", "content": f"Rewrite this message: {last_human.content}"})
+
+    # 디버깅: rewrite LLM에 전달되는 전체 메시지 로깅
+    logger.info("[Rewrite DEBUG] meta: %s", meta)
+    logger.info("[Rewrite DEBUG] recent turns (%d): %s", len(recent), recent)
+    logger.info("[Rewrite DEBUG] user input: '%s'", last_human.content)
+    logger.info("[Rewrite DEBUG] agent_suggestion state: '%s'", state.get("agent_suggestion", ""))
 
     response = _rewrite_model.invoke(
         invoke_messages,
@@ -314,7 +325,7 @@ def supervisor_node(
         logger.error("Supervisor JSON 파싱 실패: %s", e)
         decision = RouteResponse(
             next="FINISH",
-            lotcd=state.get("lotcd") or "4SS",
+            lotcd=state.get("lotcd", ""),
             ref_date=today_yyyymmdd,
             wads_end_tm="",
             message="요청을 이해하지 못했습니다. 다시 시도해 주세요.",
@@ -340,7 +351,32 @@ def supervisor_node(
 
     # lotcd: 이전 State 값 유지 (follow-up 대화)
     prev_lotcd = state.get("lotcd", "")
-    new_lotcd = decision.lotcd or prev_lotcd or "4SS"
+    new_lotcd = decision.lotcd or prev_lotcd
+
+    # ── 필수 파라미터 검증 + interrupt (HITL) ──
+    if decision.next in ("yield_agent", "wads_agent") and not new_lotcd:
+        user_response = interrupt({
+            "type": "missing_param",
+            "param": "lotcd",
+            "message": "제품코드(lotcd)를 입력해주세요. (예: 4SS, 5NA, 6E2)",
+            "route": decision.next,
+        })
+        new_lotcd = str(user_response).strip()
+
+    if decision.next == "map_agent":
+        has_lot = decision.map_lot_id or decision.map_lot_ids or decision.map_groupkey
+        if not has_lot:
+            user_response = interrupt({
+                "type": "missing_param",
+                "param": "map_lot_id",
+                "message": "맵을 조회할 Lot ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
+                "route": "map_agent",
+            })
+            resp = str(user_response).strip()
+            if "," in resp:
+                decision.map_lot_ids = resp
+            else:
+                decision.map_lot_id = resp
 
     # Langfuse — 라우팅 결정 후 메타데이터 기록
     try:
@@ -380,6 +416,7 @@ def supervisor_node(
         "messages": [result_message],
         "lotcd": new_lotcd,
         "ref_date": ref_date,
+        "wads_start_tm": decision.wads_start_tm or "",
         "wads_end_tm": wads_end_tm,
         "filter_params": decision.filter_params,
         "unit": decision.unit or "weekly",
@@ -426,6 +463,7 @@ class YieldQueryState(TypedDict):
     yield_artifacts: Annotated[list, operator.add]
 
     # WADS 관련
+    wads_start_tm: str
     wads_end_tm: str
     wads_artifacts: Annotated[list, operator.add]
 

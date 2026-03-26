@@ -44,6 +44,7 @@ def _get_tool_payload() -> Dict[str, Any]:
 def _query_wads_data(
     lotcd: Optional[str] = None,
     end_tm: Optional[str] = None,
+    start_tm: Optional[str] = None,
     parameter: Optional[str] = None,
     columns: str = "*",
 ) -> pd.DataFrame:
@@ -54,7 +55,14 @@ def _query_wads_data(
     if lotcd:
         conditions.append("UPPER(LOTCD) LIKE UPPER(:lotcd)")
         bind_vars["lotcd"] = f"%{lotcd}%"
-    if end_tm:
+    if start_tm and end_tm:
+        conditions.append(
+            "TRUNC(TO_DATE(SUBSTR(END_TM, 1, 10), 'YYYY-MM-DD')) "
+            "BETWEEN TO_DATE(:start_tm, 'YYYY-MM-DD') AND TO_DATE(:end_tm_range, 'YYYY-MM-DD')"
+        )
+        bind_vars["start_tm"] = start_tm
+        bind_vars["end_tm_range"] = end_tm
+    elif end_tm:
         conditions.append("END_TM LIKE :end_tm")
         bind_vars["end_tm"] = f"%{end_tm}%"
     if parameter:
@@ -90,6 +98,7 @@ def _query_wads_data(
 def wads_query_data(
     lotcd: Optional[str] = None,
     end_tm: Optional[str] = None,
+    start_tm: Optional[str] = None,
     parameter: Optional[str] = None,
 ) -> str:
     """
@@ -98,6 +107,7 @@ def wads_query_data(
     Args:
         lotcd: 랏코드 필터 (예: "5NA", "4SA"). 부분 일치 검색. 미입력시 전체 조회.
         end_tm: 종료시간 필터 (예: "2026-01-01", "18:07"). 부분 일치 검색. 미입력시 전체 조회.
+        start_tm: 시작 날짜 필터 (예: "2026-03-19"). end_tm과 함께 사용하면 날짜 범위 조회. 미입력시 end_tm 단일 필터.
         parameter: 스텝 설명 필터 (예: "step01", "step02"). 부분 일치 검색. 미입력시 전체 조회.
 
     Returns:
@@ -109,6 +119,7 @@ def wads_query_data(
         filtered_df = _query_wads_data(
             lotcd=lotcd,
             end_tm=end_tm,
+            start_tm=start_tm,
             parameter=parameter,
             columns="LOTCD, END_TM, CTN_DESC AS PARAMETER",
         )
@@ -137,6 +148,7 @@ def wads_query_data(
 def wads_get_html_report(
     lotcd: Optional[str] = None,
     end_tm: Optional[str] = None,
+    start_tm: Optional[str] = None,
     parameter: Optional[str] = None,
     limit: int = 1,
 ) -> str:
@@ -147,6 +159,7 @@ def wads_get_html_report(
     Args:
         lotcd: 로트코드 필터 (예: "5NA", "4SA"). 부분 일치 검색. 미입력시 전체 조회.
         end_tm: 종료시간 필터 (예: "2026-01-01", "18:07"). 부분 일치 검색. 미입력시 전체 조회.
+        start_tm: 시작 날짜 필터 (예: "2026-03-19"). end_tm과 함께 사용하면 날짜 범위 조회. 미입력시 end_tm 단일 필터.
         parameter: 스텝 설명 필터 (예: "step01", "step02"). 부분 일치 검색. 미입력시 전체 조회.
         limit: 하위호환을 위해 받지만, 현재는 무시됩니다. (항상 1개만 반환)
 
@@ -159,6 +172,7 @@ def wads_get_html_report(
         filtered_df = _query_wads_data(
             lotcd=lotcd,
             end_tm=end_tm,
+            start_tm=start_tm,
             parameter=parameter,
             columns="LOTCD, END_TM, CTN_DESC AS PARAMETER, HTML",
         )

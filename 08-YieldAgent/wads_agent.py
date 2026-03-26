@@ -232,16 +232,20 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     """WADS Agent 노드: 열화 검출 리포트를 Oracle DB에서 조회"""
     lotcd = state.get("lotcd", "4SS")
     end_tm = state.get("wads_end_tm", "")
+    start_tm = state.get("wads_start_tm", "")
     if not end_tm:
         end_tm = date.today().strftime("%Y-%m-%d")
 
-    logger.info("[WADS Agent] lotcd=%s, end_tm=%s", lotcd, end_tm)
+    logger.info("[WADS Agent] lotcd=%s, start_tm=%s, end_tm=%s", lotcd, start_tm, end_tm)
 
     # 요청별 격리된 저장소 초기화
     storage: Dict[str, Any] = {"reports": []}
     _tool_payload_var.set(storage)
 
-    query = f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘"
+    if start_tm:
+        query = f"{lotcd} 로트의 {start_tm}부터 {end_tm}까지 WADS 리포트를 보여줘"
+    else:
+        query = f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘"
     logger.info("[WADS Agent] 쿼리: %s", query)
 
     try:

@@ -25,7 +25,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from langfuse import get_client, observe
 from langgraph.checkpoint.mongodb import MongoDBSaver
-from langgraph.types import Overwrite
+from langgraph.types import Command, Overwrite
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # 이 파일의 디렉터리(08-YieldAgent/)를 sys.path에 추가 (로컬 모듈 임포트용)
@@ -38,6 +38,7 @@ from models import (  # noqa: E402
     ChatRequest,
     ErrorEvent,
     HistoryMessage,
+    InterruptEvent,
     MessageEvent,
     NodeCompleteEvent,
     SessionHistory,
@@ -223,40 +224,44 @@ async def chat_stream(request: ChatRequest, req: Request):
     db = req.app.state.motor_db
     config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 20}
 
-    # 이번 턴 입력: 새 HumanMessage + 퍼-턴 리셋 필드
-    input_state = {
-        "messages": [HumanMessage(content=request.query)],
-        "yield_artifacts": Overwrite([]),
-        "wads_artifacts": Overwrite([]),
-        "map_artifacts": Overwrite([]),
-        "weeks_data": [],
-        "table_result": "",
-        "analysis_result": "",
-        "step_count": 0,
-        "anomaly_params": [],
-    }
-
-    # 첫 번째 턴이면 나머지 기본값도 함께 전달
-    prev_state = await graph.aget_state(config)
-    if not (prev_state and prev_state.values):
-        input_state.update({
-            "lotcd": "",
-            "ref_date": "",
-            "unit": "weekly",
-            "periods": 0,
-            "wads_end_tm": "",
+    # resume 요청인 경우: interrupt에서 재개
+    if request.resume_value is not None:
+        stream_input = Command(resume=request.resume_value)
+    else:
+        # 이번 턴 입력: 새 HumanMessage + 퍼-턴 리셋 필드
+        stream_input = {
+            "messages": [HumanMessage(content=request.query)],
+            "yield_artifacts": Overwrite([]),
+            "wads_artifacts": Overwrite([]),
+            "map_artifacts": Overwrite([]),
+            "weeks_data": [],
+            "table_result": "",
+            "analysis_result": "",
+            "step_count": 0,
             "anomaly_params": [],
-            "filter_params": [],
-            "map_lot_id": "",
-            "map_lot_ids": "",
-            "map_wf_ids": "",
-            "map_groupkey": "",
-            "map_type": "binmap",
-            "map_bin_type": "left_bin",
-            "map_result": "",
-            "yield_lot_ids": "",
-            "yield_groupkey": "",
-        })
+        }
+
+        # 첫 번째 턴이면 나머지 기본값도 함께 전달
+        prev_state = await graph.aget_state(config)
+        if not (prev_state and prev_state.values):
+            stream_input.update({
+                "lotcd": "",
+                "ref_date": "",
+                "unit": "weekly",
+                "periods": 0,
+                "wads_end_tm": "",
+                "anomaly_params": [],
+                "filter_params": [],
+                "map_lot_id": "",
+                "map_lot_ids": "",
+                "map_wf_ids": "",
+                "map_groupkey": "",
+                "map_type": "binmap",
+                "map_bin_type": "left_bin",
+                "map_result": "",
+                "yield_lot_ids": "",
+                "yield_groupkey": "",
+            })
 
     async def generate():
         start = time.time()
@@ -287,7 +292,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             #   "updates" → 기존 node state 업데이트 (messages, artifacts 등)
             #   "custom"  → get_stream_writer()로 전송된 thinking/token/status 이벤트
             async for chunk in graph.astream(
-                input_state, config=config, stream_mode=["updates", "custom"]
+                stream_input, config=config, stream_mode=["updates", "custom"]
             ):
                 mode, data = chunk
 
@@ -303,7 +308,13 @@ async def chat_stream(request: ChatRequest, req: Request):
                     continue
 
                 # updates 이벤트: node state 업데이트 — 기존 처리 로직 유지
+                # interrupt() 발생 시 data가 dict가 아닐 수 있음 (tuple 등) → 스킵
+                if not isinstance(data, dict):
+                    continue
                 for node_name, node_state in data.items():
+                    # node_state가 dict가 아닌 경우 (interrupt 등) 스킵
+                    if not isinstance(node_state, dict):
+                        continue
                     elapsed = round(time.time() - start, 1)
                     if "step_count" in node_state:
                         step_count = node_state["step_count"]
@@ -412,6 +423,22 @@ async def chat_stream(request: ChatRequest, req: Request):
             except Exception:
                 pass
             return
+
+        # ── interrupt 감지: 그래프가 일시정지된 경우 SSE로 전달 ──
+        try:
+            final_state = await graph.aget_state(config)
+            if final_state and final_state.tasks:
+                for task in final_state.tasks:
+                    if hasattr(task, "interrupts") and task.interrupts:
+                        for intr in task.interrupts:
+                            interrupt_data = intr.value
+                            yield _sse(InterruptEvent(
+                                param=interrupt_data.get("param", ""),
+                                message=interrupt_data.get("message", ""),
+                                route=interrupt_data.get("route", ""),
+                            ))
+        except Exception as e:
+            logger.warning("Interrupt 감지 실패: %s", e)
 
         # Langfuse output 기록
         try:

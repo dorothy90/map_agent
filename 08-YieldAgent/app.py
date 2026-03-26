@@ -61,6 +61,9 @@ if "chat_history" not in st.session_state:
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
+if "pending_interrupt" not in st.session_state:
+    st.session_state.pending_interrupt = None
+
 
 # ── 히스토리 렌더링 헬퍼 ────────────────────────────────
 def _render_entry(entry):
@@ -121,6 +124,16 @@ if query:
         collected_artifacts: list[dict] = []
         collected_suggestion = ""
 
+        # interrupt resume 처리: pending_interrupt가 있으면 resume_value 전달
+        pending = st.session_state.pending_interrupt
+        st.session_state.pending_interrupt = None
+        request_body = {
+            "query": query,
+            "session_id": st.session_state.session_id,
+        }
+        if pending:
+            request_body["resume_value"] = query
+
         try:
             with st.status("에이전트 처리 중...", expanded=True) as status:
                 # 토큰 스트리밍용 상태
@@ -135,10 +148,7 @@ if query:
                     with client.stream(
                         "POST",
                         f"{AGENT_BASE_URL}/chat/stream",
-                        json={
-                            "query": query,
-                            "session_id": st.session_state.session_id,
-                        },
+                        json=request_body,
                     ) as resp:
                         resp.raise_for_status()
                         for line in resp.iter_lines():
@@ -212,6 +222,14 @@ if query:
 
                             elif etype == "suggestion":
                                 collected_suggestion = event.get("content", "")
+
+                            elif etype == "interrupt":
+                                st.session_state.pending_interrupt = {
+                                    "param": event.get("param", ""),
+                                    "message": event.get("message", ""),
+                                    "route": event.get("route", ""),
+                                }
+                                st.warning(f"⚠️ {event.get('message', '추가 정보가 필요합니다.')}")
 
                             elif etype == "error":
                                 raise RuntimeError(event.get("message", "알 수 없는 오류"))

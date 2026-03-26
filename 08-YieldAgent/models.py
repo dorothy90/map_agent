@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     query: str
     session_id: str
+    resume_value: str | None = None  # interrupt resume용
 
 
 # ── SSE Event Types ──────────────────────────────────────
@@ -96,6 +97,13 @@ class ErrorEvent(BaseModel):
     type: Literal["error"] = "error"
     message: str
     node: str = ""
+
+
+class InterruptEvent(BaseModel):
+    type: Literal["interrupt"] = "interrupt"
+    param: str          # 누락된 파라미터명
+    message: str        # 사용자에게 보여줄 한국어 메시지
+    route: str = ""     # 대상 에이전트
 
 
 # ── REST Response Models (session history) ───────────────
