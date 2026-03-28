@@ -108,15 +108,25 @@ def _query_wafer_data(
                 for v in lot_id_variants(lot):
                     if v not in expanded:
                         expanded.append(v)
-            placeholders = ",".join([f":lot{i}" for i in range(len(expanded))])
+            lot_placeholders = ",".join([f":lot{i}" for i in range(len(expanded))])
+            params = {f"lot{i}": lot for i, lot in enumerate(expanded)}
+
+            # wf_ids 필터가 있으면 WHERE 절에 추가
+            wf_filter = ""
+            if wf_ids:
+                wf_id_list = [int(x.strip()) for x in wf_ids.split(",")]
+                wf_placeholders = ",".join([f":wf{i}" for i in range(len(wf_id_list))])
+                wf_filter = f" AND wf_id IN ({wf_placeholders})"
+                for i, wf_id in enumerate(wf_id_list):
+                    params[f"wf{i}"] = wf_id
+
             sql = f"""
                 SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                 FROM {ORACLE_TABLE}
-                WHERE lot_id IN ({placeholders})
+                WHERE lot_id IN ({lot_placeholders}){wf_filter}
                 ORDER BY lot_id, wf_id
                 FETCH FIRST 10000 ROWS ONLY
             """
-            params = {f"lot{i}": lot for i, lot in enumerate(expanded)}
             cur.execute(sql, params)
             columns = [desc[0].lower() for desc in cur.description]
             for row in cur.fetchall():

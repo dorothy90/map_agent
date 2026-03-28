@@ -131,7 +131,7 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         return {}
 
     # 최근 5턴 대화 히스토리 추출 (마지막 HumanMessage 제외)
-    recent = _get_recent_turns(messages, max_turns=5, exclude_last=last_human)
+    recent = _get_recent_turns(messages, max_turns=30, exclude_last=last_human)
 
     # state 메타데이터 (lotcd, agent_suggestion 등 — 대화에 없을 수 있는 정보)
     meta_parts = []
@@ -400,7 +400,7 @@ def supervisor_node(
     result_message = AIMessage(content=decision.message, name="supervisor")
 
     logger.info(
-        "[Supervisor] step=%d next=%-12s lotcd=%-6s ref_date=%s wads_end_tm=%s periods=%s unit=%s filter_params=%s",
+        "[Supervisor] step=%d next=%-12s lotcd=%-6s ref_date=%s wads_end_tm=%s periods=%s unit=%s filter_params=%s map_lot_ids=%s map_wf_ids=%s",
         step_count,
         decision.next,
         new_lotcd,
@@ -409,6 +409,8 @@ def supervisor_node(
         decision.periods,
         decision.unit,
         decision.filter_params,
+        decision.map_lot_ids,
+        decision.map_wf_ids,
     )
 
     update_dict = {

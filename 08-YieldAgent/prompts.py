@@ -54,6 +54,11 @@ Rules:
   Example: "4SS2DPD 3배수 wafer binmap" + tool result "03,06,09,12,15,18,21,24"
   → rewrite to: "4SS2DPD wafer 03,06,09,12,15,18,21,24 binmap 보여줘"
 - For queries without wafer patterns, do NOT call any tools — just rewrite as before
+- IMPORTANT: tool(compute_wafer_ids) 사용 후 최종 리라이팅 시, 대화 히스토리에 있는 lot ID, map 유형 등 이전 맥락을 반드시 유지하여 결합할 것.
+  예: 이전 대화에서 "4SAFMUG,4SSEBLP 맵 보여줘"를 처리했고 사용자가 "3배수만 보여줘"라고 하면
+  → tool result "03,06,09,12,15,18,21,24"와 이전 lot ID를 결합하여
+  → "4SAFMUG,4SSEBLP wafer 03,06,09,12,15,18,21,24 binmap 보여줘"로 리라이팅
+- follow-up 질의에서 사용자가 새 lot을 명시하지 않으면, 직전 조회의 lot ID를 그대로 사용
 - Respond with ONLY the rewritten query string. No explanation.
 """
 
