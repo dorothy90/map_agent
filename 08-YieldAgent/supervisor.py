@@ -13,6 +13,7 @@ Supervisor Node — Yield/WADS/Map 라우팅 담당
 from __future__ import annotations
 
 import json
+from json_repair import repair_json
 import operator
 import os
 import logging
@@ -115,6 +116,7 @@ def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMes
 def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     messages = state.get("messages", [])
     if not messages:
+        logger.warning("[Rewrite] early return: no messages in state")
         return {}
 
     # 체크포인트 메시지 pruning: 오래된 메시지 제거하여 체크포인트 크기 제한
@@ -123,11 +125,17 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         excess = messages[: len(messages) - _MAX_CHECKPOINT_MESSAGES]
         prune_ops = [RemoveMessage(id=m.id) for m in excess if getattr(m, "id", None)]
 
-    # 마지막 HumanMessage 추출
+    # 마지막 HumanMessage 추출 (MongoDBSaver 역직렬화 후 isinstance 실패 방어)
     last_human = next(
-        (m for m in reversed(messages) if isinstance(m, HumanMessage)), None
+        (m for m in reversed(messages)
+         if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
+        None,
     )
     if not last_human:
+        logger.warning(
+            "[Rewrite] early return: no HumanMessage found (last 5 types: %s)",
+            [type(m).__name__ for m in messages[-5:]],
+        )
         return {}
 
     # 최근 5턴 대화 히스토리 추출 (마지막 HumanMessage 제외)
@@ -159,30 +167,35 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     logger.info("[Rewrite DEBUG] user input: '%s'", last_human.content)
     logger.info("[Rewrite DEBUG] agent_suggestion state: '%s'", state.get("agent_suggestion", ""))
 
-    response = _rewrite_model.invoke(
-        invoke_messages,
-        config={"callbacks": _lf_callbacks()},
-    )
-
-    # tool call이 있으면 실행 후 결과를 LLM에 다시 전달하여 최종 리라이팅
-    if getattr(response, "tool_calls", None):
-        tool_messages = [response]  # AIMessage with tool_calls
-        for tc in response.tool_calls:
-            tool_fn = _rewrite_tool_map.get(tc["name"])
-            if tool_fn:
-                result = tool_fn.invoke(tc["args"])
-                tool_messages.append(
-                    ToolMessage(content=str(result), tool_call_id=tc["id"])
-                )
-                logger.info("[Rewrite] tool '%s'(%s) → %s", tc["name"], tc["args"], result)
-        # tool 결과를 포함하여 최종 리라이팅 요청
-        final_response = _model.invoke(
-            invoke_messages + tool_messages,
+    try:
+        response = _rewrite_model.invoke(
+            invoke_messages,
             config={"callbacks": _lf_callbacks()},
         )
-        rewritten = final_response.content.strip()
-    else:
-        rewritten = response.content.strip()
+
+        # tool call이 있으면 실행 후 결과를 LLM에 다시 전달하여 최종 리라이팅
+        if getattr(response, "tool_calls", None):
+            tool_messages = [response]  # AIMessage with tool_calls
+            for tc in response.tool_calls:
+                tool_fn = _rewrite_tool_map.get(tc["name"])
+                if tool_fn:
+                    result = tool_fn.invoke(tc["args"])
+                    tool_messages.append(
+                        ToolMessage(content=str(result), tool_call_id=tc["id"])
+                    )
+                    logger.info("[Rewrite] tool '%s'(%s) → %s", tc["name"], tc["args"], result)
+            # tool 결과를 포함하여 최종 리라이팅 요청
+            final_response = _model.invoke(
+                invoke_messages + tool_messages,
+                config={"callbacks": _lf_callbacks()},
+            )
+            rewritten = final_response.content.strip()
+        else:
+            rewritten = response.content.strip()
+    except Exception as e:
+        logger.error("[Rewrite] LLM 호출 실패: %s", e, exc_info=True)
+        # 원본 메시지 유지 (rewrite 실패 시 원문으로 진행)
+        return {"messages": prune_ops}
 
     logger.info("[Rewrite] '%s' → '%s'", last_human.content, rewritten)
 
@@ -233,15 +246,22 @@ def supervisor_node(
             f"\n\n[이전 분석 결과] 이상 감지된 파라미터 ({len(anomaly_params)}개): {param_names}"
         )
 
-    # 에이전트 메시지를 짧은 요약으로 교체 (LLM이 분석 텍스트를 이어쓰지 않도록)
+    # 에이전트 메시지 요약 — 최근 2턴은 full 유지 (멀티스텝 lot ID 전달용)
     _AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent"}
-    _MAX_AGENT_MSG_LEN = 200
+    _RECENT_FULL_TURNS = 2
+    _MAX_OLD_MSG_LEN = 300
+
+    agent_indices = [i for i, m in enumerate(messages)
+                     if isinstance(m, AIMessage) and getattr(m, "name", "") in _AGENT_NAMES]
+    full_keep = set(agent_indices[-_RECENT_FULL_TURNS:])
 
     condensed = []
-    for m in messages:
+    for i, m in enumerate(messages):
         agent_name = getattr(m, "name", "")
-        if isinstance(m, AIMessage) and agent_name in _AGENT_NAMES and len(m.content) > _MAX_AGENT_MSG_LEN:
-            summary = m.content[:_MAX_AGENT_MSG_LEN].rsplit("\n", 1)[0]
+        if i in full_keep:
+            condensed.append(m)  # 최근 2턴: full 유지
+        elif isinstance(m, AIMessage) and agent_name in _AGENT_NAMES and len(m.content) > _MAX_OLD_MSG_LEN:
+            summary = m.content[:_MAX_OLD_MSG_LEN].rsplit("\n", 1)[0]
             condensed.append(AIMessage(
                 content=f"[AGENT_RESULT:{agent_name}] {summary}...(결과 생략)",
                 name=agent_name,
@@ -267,6 +287,7 @@ def supervisor_node(
         for chunk in _model.stream(
             [{"role": "system", "content": prompt}, *trimmed_messages],
             config={"callbacks": _lf_callbacks()},
+            max_tokens=2048,
         ):
             token = chunk.content or ""
             if not token:
@@ -308,16 +329,23 @@ def supervisor_node(
         logger.debug("[Supervisor] raw LLM response: %s", raw_text[:500])
 
         # <think>...</think> 제거 후 JSON 파싱
+        # 닫는 태그가 없는 경우도 처리: <think>...끝 → 전부 제거
         clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+        clean_text = re.sub(r"<think>.*", "", clean_text, flags=re.DOTALL).strip()
 
         # JSON 블록 추출 (```json ... ``` 또는 { ... })
         json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean_text, re.DOTALL)
         if not json_match:
             json_match = re.search(r"(\{.*\})", clean_text, re.DOTALL)
-        if not json_match:
-            raise ValueError(f"No JSON found in response: {clean_text[:200]}")
 
-        data = json.loads(json_match.group(1))
+        # clean_text에서 못 찾으면 raw_text 전체에서 JSON 추출 시도 (think 안에 JSON이 있는 경우)
+        if not json_match:
+            json_match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
+        if not json_match:
+            raise ValueError(f"No JSON found in response: {raw_text[:300]}")
+
+        json_str = json_match.group(1)
+        data = json.loads(repair_json(json_str))
         decision = RouteResponse(**data)
     except (ConnectionError, TimeoutError, OSError):
         raise  # Tier 1: RetryPolicy가 재시도
@@ -331,7 +359,7 @@ def supervisor_node(
             message="요청을 이해하지 못했습니다. 다시 시도해 주세요.",
         )
 
-    # 동일 에이전트 재호출 방지: 같은 턴 내 직전 에이전트와 같으면 FINISH
+    # 동일 에이전트 + 동일 파라미터 재호출 방지: 파라미터가 바뀌면 허용
     # step_count > 1 조건: 첫 스텝은 새 질의이므로 이전 대화 히스토리의 에이전트와 겹쳐도 허용
     if step_count > 1 and decision.next not in ("FINISH",):
         last_agent = next(
@@ -340,14 +368,25 @@ def supervisor_node(
             None,
         )
         if last_agent == decision.next:
-            logger.info("[Supervisor] 동일 에이전트(%s) 재호출 방지 → FINISH", last_agent)
-            decision = RouteResponse(
-                next="FINISH",
-                lotcd=decision.lotcd,
-                ref_date=decision.ref_date,
-                wads_end_tm=decision.wads_end_tm,
-                message=decision.message or "분석을 완료했습니다.",
-            )
+            prev_params = state.get("_last_agent_params", {})
+            curr_params = {
+                "lot_id": decision.map_lot_id, "lot_ids": decision.map_lot_ids,
+                "wf_ids": decision.map_wf_ids, "groupkey": decision.map_groupkey,
+                "ref_date": decision.ref_date, "filter_params": decision.filter_params,
+                "yield_lot_ids": decision.yield_lot_ids,
+                "yield_groupkey": decision.yield_groupkey,
+            }
+            if prev_params == curr_params:
+                logger.info("[Supervisor] 동일 에이전트+파라미터(%s) 재호출 방지 → FINISH", last_agent)
+                decision = RouteResponse(
+                    next="FINISH",
+                    lotcd=decision.lotcd,
+                    ref_date=decision.ref_date,
+                    wads_end_tm=decision.wads_end_tm,
+                    message=decision.message or "분석을 완료했습니다.",
+                )
+            else:
+                logger.info("[Supervisor] 동일 에이전트(%s) 파라미터 변경 → 재호출 허용", last_agent)
 
     # lotcd: 이전 State 값 유지 (follow-up 대화)
     prev_lotcd = state.get("lotcd", "")
@@ -400,7 +439,7 @@ def supervisor_node(
     result_message = AIMessage(content=decision.message, name="supervisor")
 
     logger.info(
-        "[Supervisor] step=%d next=%-12s lotcd=%-6s ref_date=%s wads_end_tm=%s periods=%s unit=%s filter_params=%s map_lot_ids=%s map_wf_ids=%s",
+        "[Supervisor] step=%d next=%-12s lotcd=%-6s ref_date=%s wads_end_tm=%s periods=%s unit=%s filter_params=%s map_lot_id=%r map_lot_ids=%r map_wf_ids=%r map_groupkey=%r yield_lot_ids=%r",
         step_count,
         decision.next,
         new_lotcd,
@@ -409,8 +448,11 @@ def supervisor_node(
         decision.periods,
         decision.unit,
         decision.filter_params,
+        decision.map_lot_id,
         decision.map_lot_ids,
         decision.map_wf_ids,
+        decision.map_groupkey,
+        decision.yield_lot_ids,
     )
 
     update_dict = {
@@ -431,6 +473,13 @@ def supervisor_node(
         "map_bin_type": decision.map_bin_type or "left_bin",
         "yield_lot_ids":  decision.yield_lot_ids,
         "yield_groupkey": decision.yield_groupkey,
+        "_last_agent_params": {
+            "lot_id": decision.map_lot_id, "lot_ids": decision.map_lot_ids,
+            "wf_ids": decision.map_wf_ids, "groupkey": decision.map_groupkey,
+            "ref_date": decision.ref_date, "filter_params": decision.filter_params,
+            "yield_lot_ids": decision.yield_lot_ids,
+            "yield_groupkey": decision.yield_groupkey,
+        },
     }
 
     if decision.next == "FINISH":
@@ -493,6 +542,9 @@ class YieldQueryState(TypedDict):
 
     # 에이전트 제안 (UI 렌더링용)
     agent_suggestion: str
+
+    # 동일 에이전트 재호출 방지용 파라미터 스냅샷
+    _last_agent_params: dict
 
 
 # ── 그래프 조립 (순환 import 방지: yield_query_agent/wads_agent/map_agent는 supervisor를 import하지 않음)

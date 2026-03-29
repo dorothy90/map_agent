@@ -261,6 +261,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "map_result": "",
                 "yield_lot_ids": "",
                 "yield_groupkey": "",
+                "_last_agent_params": {},
             })
 
     async def generate():

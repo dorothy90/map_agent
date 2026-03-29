@@ -150,6 +150,10 @@ For yield_agent → ref_date (YYYYMMDD):
   specific date "1월 20일" → 20260120
   no time mentioned      → {today_yyyymmdd}
 
+For map_agent → ref_date (YYYYMMDD):
+  사용자가 날짜를 지정한 경우 → 해당 날짜 YYYYMMDD (예: "3월 6일" → 20260306)
+  날짜 미지정 → 빈 문자열 "" (map_agent가 전체 데이터 조회)
+
 For wads_agent → wads_start_tm, wads_end_tm (YYYY-MM-DD):
   단일 날짜 "1월 20일"         → wads_start_tm="", wads_end_tm="2026-01-20"
   "보여줘" / no date           → wads_start_tm="", wads_end_tm="{today_yyyy_mm_dd}"
@@ -188,9 +192,17 @@ RULES:
 - 단순 조회는 1스텝으로 끝낼 것
 
 === CRITICAL: OUTPUT FORMAT (STRICT) ===
-You MUST ALWAYS respond with ONLY a single raw JSON object.
+Your response must contain exactly TWO parts in this order:
+1. <think>short reasoning in Korean (1-2 sentences)</think>
+2. A single raw JSON object (no markdown, no explanation)
+
+IMPORTANT: JSON must be OUTSIDE <think> tags. Never put JSON inside <think>.
 Do NOT continue or summarize agent results. Do NOT output markdown, analysis, or explanations.
 Even when you see agent results in the message history, your ONLY job is to output the next routing JSON.
+
+Example: <think>사용자가 4SS 수율을 요청했으므로 yield_agent로 라우팅</think>{{"next": "yield_agent", "lotcd": "4SS", ...}}
+
+JSON schema:
 {{
   "next": "yield_agent" | "wads_agent" | "map_agent" | "FINISH",
   "lotcd": "<product code, empty string if user did not specify>",
@@ -209,12 +221,7 @@ Even when you see agent results in the message history, your ONLY job is to outp
   "map_bin_type": "left_bin",
   "yield_lot_ids":  "",
   "yield_groupkey": ""
-}}
-
-=== THINKING (REQUIRED) ===
-Before the JSON, output your reasoning in <think>...</think> tags.
-Keep it SHORT (1-2 sentences in Korean).
-Example: <think>사용자가 4SS 수율을 요청했으므로 yield_agent로 라우팅</think>{{"next": ...}}\
+}}\
 """ + _VERBATIM_RULES + _SAFETY_RULES
 
 # ── WADS 시스템 프롬프트 ────────────────────────────────────────
@@ -239,6 +246,14 @@ WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 
    - **여러 리포트 요청 시**: 각 조건별로 도구를 여러 번 호출하세요. 모든 리포트가 누적되어 표시됩니다.
    - 예: step01, step02 리포트 요청 시 → wads_get_html_report(parameter="step01") + wads_get_html_report(parameter="step02")
 
+3. **wads_query_sql**: 복잡한 조건의 WADS SQL 쿼리 실행
+   - wads_query_data/wads_get_html_report로 표현할 수 없는 복잡한 조건에만 사용
+   - GROUP BY 집계, COUNT, 여러 step 동시 필터, NOT LIKE 조건, OR 조건 등
+   - query_description에 자연어로 조회 내용을 설명
+   - 예: wads_query_sql(query_description="4SS의 3월 step01, step02 건수를 step별 집계")
+   - **주의**: 내부 LLM 호출이 추가되어 다른 도구보다 느립니다. 단순 조건은 wads_query_data를 먼저 사용하세요.
+   - wads_query_sql 실패 시 1회만 query_description을 수정하여 재시도하세요. 그래도 실패하면 wads_query_data로 전환하세요.
+
 ## 데이터 구조:
 - lotcd: 로트코드 (예: 5NA, 4SA, 6E2)
 - end_tm: 종료 시간 (예: 2026-01-01 18:07:01)
@@ -253,6 +268,13 @@ WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 
 - 조회 결과가 없으면 명확하게 안내합니다.
 - 응답은 한국어로 친절하게 제공합니다.
 
+## 도구 선택 가이드:
+- 단순 필터(lotcd + 날짜 + step 1개) → wads_query_data 또는 wads_get_html_report
+- HTML 리포트 필요 → wads_get_html_report
+- 복잡한 조건(여러 step OR/AND, GROUP BY, COUNT, NOT LIKE, 서브쿼리) → wads_query_sql
+- "모든 날짜" 요청 → 날짜 필터 없이 wads_query_data(lotcd="...")
+- 우선순위: wads_query_data/wads_get_html_report > wads_query_sql (단순한 도구를 먼저 시도)
+
 ## 사용 예시:
 - 전체 데이터 조회: wads_query_data()
 - 특정 로트 조회: wads_query_data(lotcd="5NA")
@@ -261,6 +283,8 @@ WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 
 - 날짜 범위 리포트: wads_get_html_report(lotcd="5NA", start_tm="2026-03-19", end_tm="2026-03-25")
 - 특정 스텝 리포트: wads_get_html_report(parameter="step01")
 - 복합 조건: wads_get_html_report(lotcd="5NA", parameter="step05")
+- step별 건수 집계: wads_query_sql(query_description="5NA의 3월 step별 건수 집계")
+- 특정 step 제외: wads_query_sql(query_description="step03 제외한 전체 스텝 목록")
 
 ## 중요: 응답 형식
 - 도구 호출 결과(데이터/리포트)는 별도의 HTML 카드로 자동 표시됩니다.

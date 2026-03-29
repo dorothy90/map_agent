@@ -30,11 +30,24 @@ _wads_model = get_llm(model=os.getenv("RETRIEVE_CHAIN_MODEL"))
 # create_react_agent로 WADS 그래프 생성 — 수동 StateGraph 대체
 # prompt를 callable로 전달: 호출 시 현재 날짜를 SystemMessage로 주입
 def _wads_prompt(state: dict) -> list:
-    """호출 시점의 날짜를 포함한 system prompt 생성"""
+    """호출 시점의 날짜 + supervisor 파싱 컨텍스트를 포함한 system prompt 생성"""
     from datetime import datetime
 
     current_date = datetime.now().strftime("%Y년 %m월 %d일")
     system_prompt = WADS_SYSTEM_PROMPT_TEMPLATE.format(current_date=current_date)
+
+    # supervisor가 파싱한 날짜/lotcd 컨텍스트 주입 (A-4: 시스템 프롬프트 방식)
+    lotcd = state.get("_lotcd", "")
+    start_tm = state.get("_start_tm", "")
+    end_tm = state.get("_end_tm", "")
+    if lotcd or end_tm:
+        ctx = f"\n\n[조회 컨텍스트] lotcd={lotcd}"
+        if start_tm:
+            ctx += f", 기간: {start_tm} ~ {end_tm}"
+        elif end_tm:
+            ctx += f", 날짜: {end_tm}"
+        system_prompt += ctx
+
     return [SystemMessage(content=system_prompt)] + list(state.get("messages", []))
 
 
@@ -103,6 +116,62 @@ def _render_wads_query_html(payload: List[Dict[str, Any]]) -> str:
     table = (
         "<table class='wads-table'>"
         "<thead><tr><th>LOT코드</th><th>종료시간</th><th>스텝</th></tr></thead>"
+        f"<tbody>{rows_html}</tbody></table>"
+    )
+
+    return style + header + sub + table + footer
+
+
+def _render_wads_sql_html(payload: List[Dict[str, Any]]) -> str:
+    """wads_query_sql 결과를 동적 컬럼 HTML로 렌더링 (I-2)"""
+    if not payload:
+        return "<div class='wads-empty'>SQL 쿼리 결과가 없습니다.</div>"
+
+    first = payload[0]
+    is_error = bool(first.get("error"))
+
+    style = """<style>
+.wads-card{border:1px solid #e5e7eb;border-radius:12px;padding:12px;background:#fff}
+.wads-title{font-weight:700;margin-bottom:8px;color:#1a1a2e}
+.wads-sub{color:#6b7280;font-size:12px;margin-bottom:10px}
+.wads-table{width:100%;border-collapse:collapse;font-size:13px}
+.wads-table th,.wads-table td{border:1px solid #e5e7eb;padding:8px;text-align:left;vertical-align:top}
+.wads-table th{background:#f8f9fa}
+.wads-badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#e0f2fe;color:#0369a1;font-size:12px}
+.wads-empty{color:#6b7280}
+</style>"""
+
+    header = (
+        "<div class='wads-card'><div class='wads-title'>WADS: SQL 쿼리 결과</div>"
+    )
+    footer = "</div>"
+
+    if is_error:
+        msg = first.get("detail") or first.get("error") or "오류가 발생했습니다."
+        body = f"<div class='wads-empty'>{_html_escape(msg)}</div>"
+        return style + header + body + footer
+
+    sub = f"<div class='wads-sub'>총 <span class='wads-badge'>{len(payload)}건</span> 조회됨</div>"
+
+    # 동적 컬럼 헤더 생성
+    col_names = list(first.keys())
+    th_html = "".join(f"<th>{_html_escape(c.upper())}</th>" for c in col_names)
+
+    rows_html = ""
+    for row in payload:
+        cells = ""
+        for c in col_names:
+            val = row.get(c, "")
+            # 숫자 포맷팅
+            if isinstance(val, (int, float)):
+                cells += f"<td style='text-align:right'>{val:,}</td>"
+            else:
+                cells += f"<td>{_html_escape(val)}</td>"
+        rows_html += f"<tr>{cells}</tr>"
+
+    table = (
+        "<table class='wads-table'>"
+        f"<thead><tr>{th_html}</tr></thead>"
         f"<tbody>{rows_html}</tbody></table>"
     )
 
@@ -242,21 +311,59 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     storage: Dict[str, Any] = {"reports": []}
     _tool_payload_var.set(storage)
 
-    if start_tm:
-        query = f"{lotcd} 로트의 {start_tm}부터 {end_tm}까지 WADS 리포트를 보여줘"
-    else:
-        query = f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘"
+    # 변경1: messages에서 rewrite된 원본 쿼리 추출 (사용자 의도 보존)
+    messages = state.get("messages", [])
+    last_human = next(
+        (m for m in reversed(messages) if isinstance(m, HumanMessage)),
+        None,
+    )
+    query = last_human.content if last_human else f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘"
     logger.info("[WADS Agent] 쿼리: %s", query)
 
+    # S-3: 선택적 히스토리 필터링 — WADS 관련 메시지만 최근 3턴
+    wads_history: List[Any] = []
+    turn_count = 0
+    for m in reversed(messages):
+        if turn_count >= 3:
+            break
+        if isinstance(m, HumanMessage):
+            wads_history.insert(0, m)
+            turn_count += 1
+        elif isinstance(m, AIMessage) and getattr(m, "name", "") == "wads_agent":
+            wads_history.insert(0, m)
+
+    # 현재 쿼리가 히스토리 마지막과 다르면 추가
+    if not wads_history or wads_history[-1].content != query:
+        wads_history.append(HumanMessage(content=query))
+
+    logger.info("[WADS Agent] ReAct 그래프 invoke 시작 (history=%d msgs, recursion_limit=20)", len(wads_history))
     try:
-        sub_config = {"callbacks": _lf_callbacks(), "recursion_limit": 10}
+        sub_config = {"callbacks": _lf_callbacks(), "recursion_limit": 20}
         # prompt callable이 SystemMessage를 자동 주입하므로 HumanMessage만 전달
+        # A-4: _lotcd, _start_tm, _end_tm을 state에 포함하여 _wads_prompt가 읽을 수 있게 함
         result = _wads_graph.invoke(
-            {"messages": [HumanMessage(content=query)]},
+            {
+                "messages": wads_history,
+                "_lotcd": lotcd,
+                "_start_tm": start_tm,
+                "_end_tm": end_tm,
+            },
             config=sub_config,
         )
+        # ReAct 결과 메시지 요약 로깅
+        all_msgs = result.get("messages", [])
+        for i, m in enumerate(all_msgs):
+            mtype = type(m).__name__
+            name = getattr(m, "name", "")
+            tool_calls = getattr(m, "tool_calls", [])
+            content_preview = (m.content[:200] if isinstance(m.content, str) else str(m.content)[:200])
+            if tool_calls:
+                tc_summary = ", ".join(f"{tc['name']}({tc.get('args',{})})" for tc in tool_calls)
+                logger.info("[WADS Agent] ReAct msg[%d] %s(name=%s) tool_calls=[%s]", i, mtype, name, tc_summary)
+            else:
+                logger.info("[WADS Agent] ReAct msg[%d] %s(name=%s): %s", i, mtype, name, content_preview)
     except Exception as e:
-        logger.error("[WADS Agent] 실행 실패: %s", e)
+        logger.error("[WADS Agent] 실행 실패: %s", e, exc_info=True)
         error_message = AIMessage(
             content=f"WADS 리포트 조회 중 오류가 발생했습니다: {e}",
             name="wads_agent",
@@ -268,9 +375,14 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     query_payload = storage.get("query")
     reports_payload = storage.get("reports", [])
+    sql_result_payload = storage.get("sql_result")
 
-    logger.debug("[WADS Agent] query_payload: %s, reports_payload count: %d", query_payload is not None, len(reports_payload))
+    logger.debug(
+        "[WADS Agent] query_payload: %s, reports_payload count: %d, sql_result: %s",
+        query_payload is not None, len(reports_payload), sql_result_payload is not None,
+    )
 
+    # 렌더링 우선순위: reports > sql_result > query (S-1, I-2)
     artifacts = []
     if reports_payload:
         html = _render_wads_report_html(reports_payload)
@@ -280,6 +392,16 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
                 "mime": "text/html",
                 "data": html,
                 "title": "wads_report",
+            }
+        )
+    elif sql_result_payload:
+        html = _render_wads_sql_html(sql_result_payload)
+        artifacts.append(
+            {
+                "type": "html",
+                "mime": "text/html",
+                "data": html,
+                "title": "wads_sql_result",
             }
         )
     elif query_payload:

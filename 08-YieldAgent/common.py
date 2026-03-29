@@ -53,7 +53,11 @@ def _get_oracle_pool() -> oracledb.ConnectionPool:
 
 def get_oracle_connection() -> oracledb.Connection:
     """풀에서 커넥션 획득 (conn.close() 시 풀에 반환)"""
-    return _get_oracle_pool().acquire()
+    pool = _get_oracle_pool()
+    logger.info("Oracle 커넥션 획득 시도 (pool: busy=%d, open=%d, max=%d)", pool.busy, pool.opened, pool.max)
+    conn = pool.acquire()
+    logger.info("Oracle 커넥션 획득 완료")
+    return conn
 
 
 # ============================================================

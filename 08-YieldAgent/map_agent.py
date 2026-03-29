@@ -90,6 +90,7 @@ def _query_wafer_data(
     3. lot_id + wf_ids: 단일 lot의 특정 wafer 조회
     4. lot_id only: 단일 lot의 모든 wafer 조회
     """
+    logger.info("[MapAgent] _query_wafer_data: lot_id=%r, lot_ids=%r, wf_ids=%r, groupkey=%r", lot_id, lot_ids, wf_ids, groupkey)
     try:
         conn = _get_oracle_connection_common()
     except Exception as e:
@@ -201,9 +202,10 @@ def _query_wafer_data(
                     record["map_val_json"] = record["map_val_json"].read()
                 results.append(record)
 
+        logger.info("[MapAgent] _query_wafer_data 완료: %d rows", len(results))
         return results
     except Exception as e:
-        logger.error("[MapAgent] wafer 데이터 조회 실패: %s", e)
+        logger.error("[MapAgent] wafer 데이터 조회 실패: %s", e, exc_info=True)
         return []
     finally:
         try:
@@ -818,6 +820,11 @@ def _handle_standard_map(state: dict) -> dict:
     groupkey = state.get("map_groupkey", "")
     map_type = state.get("map_type", "binmap")
     bin_type = state.get("map_bin_type", "left_bin")
+
+    logger.info(
+        "[MapAgent] _handle_standard_map: lot_id=%r, lot_ids=%r, wf_ids=%r, groupkey=%r, map_type=%s, bin_type=%s",
+        lot_id, lot_ids, wf_ids, groupkey, map_type, bin_type,
+    )
 
     result_str = show_wafer_map(
         lot_id=lot_id or None,
