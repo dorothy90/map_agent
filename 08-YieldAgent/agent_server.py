@@ -234,6 +234,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             "yield_artifacts": Overwrite([]),
             "wads_artifacts": Overwrite([]),
             "map_artifacts": Overwrite([]),
+            "fail_history_artifacts": Overwrite([]),
             "weeks_data": [],
             "table_result": "",
             "analysis_result": "",
@@ -261,6 +262,9 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "map_result": "",
                 "yield_lot_ids": "",
                 "yield_groupkey": "",
+                "dh_query": "",
+                "dh_fail_type": "",
+                "dh_cause_oper": "",
                 "_last_agent_params": {},
             })
 
@@ -355,6 +359,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                         ("yield_artifacts", "yield_agent"),
                         ("wads_artifacts", "wads_agent"),
                         ("map_artifacts", "map_agent"),
+                        ("fail_history_artifacts", "fail_history_agent"),
                     ]
                     for key, default_agent in artifact_sources:
                         for art in node_state.get(key, []):

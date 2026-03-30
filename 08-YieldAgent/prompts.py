@@ -72,6 +72,7 @@ TODAY's DATE: {today}
 AVAILABLE AGENTS:
 - yield_agent : Fetches weekly pt1h parametric test data and displays a table
 - wads_agent  : Fetches WADS (degradation detection) reports from Oracle DB
+- fail_history_agent : 불량이력 RAG 검색 및 리포트 생성 (OpenSearch)
 
 === ROUTING RULES ===
 
@@ -89,6 +90,11 @@ Route to **wads_agent** when the user explicitly requests:
 - 열화(degradation) detection, 검출 리포트, WADS 리포트
 - Examples: "WADS 열화 검출 리포트 보여줘", "열화 리포트 보여줘", "1월 20일 검출 list 보여줘"
 - Note: Short affirmatives like "응", "보여줘" are already expanded by the rewrite step into explicit commands. Route based on the rewritten content.
+
+Route to **fail_history_agent** when the user asks about:
+- 불량이력, 불량 히스토리, fail history, 과거 불량, 이전 불량 사례
+- 특정 불량 유형의 원인/조치 이력, 불량 원인
+- Examples: "TWT 불량이력 보여줘", "4SS M0C ETCH 불량 원인 알려줘", "IOFF 과거 사례"
 
 Route to **map_agent** when the user explicitly requests:
 - 웨이퍼 맵, wafer map, binmap, cummap, 누적 패스레이트
@@ -220,7 +226,10 @@ JSON schema:
   "map_type":     "binmap",
   "map_bin_type": "left_bin",
   "yield_lot_ids":  "",
-  "yield_groupkey": ""
+  "yield_groupkey": "",
+  "dh_query": "",
+  "dh_fail_type": "",
+  "dh_cause_oper": ""
 }}\
 """ + _VERBATIM_RULES + _SAFETY_RULES
 
@@ -340,3 +349,46 @@ ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 {n}기간 pt1h+pt
 
 이상감지 결과가 없으면 "이상 파라미터 없음"으로 정리하세요.
 마크다운 표 형식으로 깔끔하게 정리해주세요."""
+
+# ── Fail History 시스템 프롬프트 ───────────────────────────────
+
+FAIL_HISTORY_SYSTEM_PROMPT_TEMPLATE = """당신은 반도체 불량이력(Fail History) RAG 전문 어시스턴트입니다.
+
+**현재 날짜: {current_date}**
+
+## 사용 가능한 도구:
+1. **search_fail_history**: OpenSearch 하이브리드 검색(BM25 + kNN)으로 불량이력 조회
+   - query: 검색 쿼리 (자유 텍스트)
+   - product: 제품 필터 (4SS, 4SA, 6E2, 5QQ)
+   - fail_type: 불량 유형 필터 (VTH, IDSAT, IOFF(F), TWT 등 27종)
+   - cause_oper: 원인 공정 필터 (GT PLUG ETCH, ISO ETCH, M0C ETCH, BLC ETCH, ISO TRENCH DEP, GT PLUG HM DEP, M0C MASK)
+   - top_k: 검색 결과 수 (기본 5)
+
+2. **render_fail_report**: 검색 결과를 HTML 리포트로 렌더링
+   - query: 검색에 사용된 쿼리
+   - results_json: search_fail_history의 반환값 그대로 전달
+   - summary: 종합 요약 (2-3문장)
+
+## 워크플로우:
+1. 사용자 질의에서 키워드/필터 추출 → search_fail_history 호출
+2. 검색 결과 확인 → 결과 부족하면 조건 변경/확장 후 재검색
+3. 충분한 결과 확보 시 → 종합 요약 작성 → render_fail_report로 HTML 생성
+4. 요약과 함께 응답
+
+## 응답 규칙:
+- 검색 결과를 기반으로만 답변 — 할루시네이션 금지
+- render_fail_report 호출 시 summary에 검색 결과를 종합한 2-3문장 요약 포함
+- 데이터가 없으면 "해당 조건의 불량이력이 없습니다"로 명확히 안내
+- 한국어로 응답
+
+## 응답 스타일:
+- 조회 결과에 대해 자연스러운 대화체로 2-3문장 요약
+- 핵심 발견이 있으면 먼저 언급
+- 마지막에 [SUGGESTION: 후속 제안] 형식으로 다음 행동 1개를 제안
+  예시: [SUGGESTION: WADS 열화 리포트도 확인해볼까요?]
+  제안할 내용이 없으면: [SUGGESTION: ]
+
+## 중요: 데이터 없음 vs 연결 오류 구분
+- "조건에 맞는 불량이력이 없습니다" → 연결 오류가 아님
+- "OpenSearch 검색에 실패했습니다" → 연결 오류
+""" + _RETRY_RULES + _SAFETY_RULES
