@@ -352,15 +352,14 @@ def _render_fail_history_html(
         <div class="card match-card">
             <div class="match-accent {accent_classes[idx]}"></div>
             <div class="match-body">
-                <div class="file-info">
-                    <span class="file-name">{_html_escape(r.get("source_file", ""))}</span>
-                    <span class="file-loc">P.{r.get("page_num", "")}</span>
-                    <span class="file-date">{_html_escape(r.get("date", ""))}</span>
-                </div>
+                <a class="file-icon" title="다운로드"><svg width="20" height="24" viewBox="0 0 20 24" fill="none"><path d="M12 1H3a2 2 0 0 0-2 2v18a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8l-7-7z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 1v7h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 13l-3 3 3 3M10 13l3 3-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" opacity="0"/></svg></a>
                 <div class="match-content">
                     <div class="match-header">
                         <div class="match-title-group">
-                            <span class="match-rank {rank_classes[idx]}">RANK #{idx+1:02d}</span>
+                            <div class="match-rank-row">
+                                <span class="match-rank {rank_classes[idx]}">RANK #{idx+1:02d}</span>
+                                <span class="match-date">{_html_escape(r.get("date", ""))}</span>
+                            </div>
                             <span class="match-title">{title}</span>
                         </div>
                         <div class="score-ring-wrapper">
@@ -487,10 +486,10 @@ def _render_fail_history_html(
         .accent-3 {{ background: linear-gradient(180deg,var(--purple),#ec4899); }}
         .match-body {{ display: flex; gap: 20px; padding: 24px; flex: 1; align-items: stretch; }}
         @media (max-width: 640px) {{ .match-body {{ flex-direction: column; }} }}
-        .file-info {{ width: 116px; background: linear-gradient(145deg,#f8fafc,#edf2f7); border-radius: var(--radius-md); padding: 14px; display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; border: 1px solid #e2e8f0; }}
-        .file-name {{ font-size: 11px; color: var(--text-muted); word-break: break-all; line-height: 1.5; font-weight: 600; }}
-        .file-loc {{ font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--primary); font-weight: 700; background: rgba(0,204,217,0.08); padding: 4px 10px; border-radius: 6px; display: inline-block; align-self: flex-start; }}
-        .file-date {{ font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); margin-top: auto; font-weight: 600; }}
+        .file-icon {{ width: 36px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; text-decoration: none; transition: var(--transition); border-radius: 8px; color: var(--text-dim); }}
+        .file-icon:hover {{ color: var(--primary); transform: scale(1.1); }}
+        .match-rank-row {{ display: flex; align-items: center; gap: 8px; }}
+        .match-date {{ font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); font-weight: 600; letter-spacing: 0.3px; }}
         .match-content {{ flex: 1; display: flex; flex-direction: column; gap: 16px; justify-content: center; }}
         .match-header {{ display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }}
         .match-title-group {{ display: flex; flex-direction: column; gap: 8px; }}
