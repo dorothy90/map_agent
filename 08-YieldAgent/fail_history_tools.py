@@ -154,10 +154,13 @@ def _search_opensearch(
     if filters:
         bm25_query = {"bool": {"must": [bm25_query], "filter": filters}}
 
-    # kNN 쿼리
+    # kNN 쿼리 (메타데이터 필터 포함)
+    knn_body: Dict[str, Any] = {"vector": embedding, "k": top_k}
+    if filters:
+        knn_body["filter"] = {"bool": {"filter": filters}}
     knn_query: Dict[str, Any] = {
         "knn": {
-            "embedding": {"vector": embedding, "k": top_k}
+            "embedding": knn_body
         }
     }
 
