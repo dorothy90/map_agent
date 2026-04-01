@@ -120,7 +120,7 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     logger.info("[FH Agent] ReAct 그래프 invoke 시작 (history=%d msgs)", len(fh_history))
     try:
-        sub_config = {"callbacks": _lf_callbacks(), "recursion_limit": 20}
+        sub_config = {**config, "callbacks": _lf_callbacks(), "recursion_limit": 10}
         result = _fh_graph.invoke(
             {
                 "messages": fh_history,
@@ -134,7 +134,7 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     except Exception as e:
         logger.error("[FH Agent] 실행 실패: %s", e, exc_info=True)
         error_message = AIMessage(
-            content=f"불량이력 검색 중 오류가 발생했습니다: {e}",
+            content="불량이력 검색 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
             name="fail_history_agent",
         )
         return {"messages": [error_message], "fail_history_artifacts": []}
