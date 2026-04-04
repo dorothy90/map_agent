@@ -21,7 +21,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from langchain_core.messages import HumanMessage
 from langfuse import get_client, observe
 from langgraph.checkpoint.mongodb import MongoDBSaver
@@ -140,6 +140,22 @@ def health():
     return {"status": "ok"}
 
 
+# ── PPTX 파일 다운로드 ───────────────────────────────────
+@app.get("/download/pptx/{filename}")
+async def download_pptx(filename: str):
+    """생성된 PPTX 파일 다운로드 엔드포인트"""
+    generated_dir = Path(__file__).resolve().parent / "generated"
+    file_path = generated_dir / filename
+    if not file_path.exists():
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=404, content={"error": "파일을 찾을 수 없습니다."})
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    )
+
+
 # ── 세션 삭제 ─────────────────────────────────────────────
 @app.delete("/session/{session_id}")
 async def delete_session(session_id: str, request: Request):
@@ -235,6 +251,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             "wads_artifacts": Overwrite([]),
             "map_artifacts": Overwrite([]),
             "fail_history_artifacts": Overwrite([]),
+            "ppt_artifacts": Overwrite([]),
             "weeks_data": [],
             "table_result": "",
             "analysis_result": "",
@@ -360,6 +377,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                         ("wads_artifacts", "wads_agent"),
                         ("map_artifacts", "map_agent"),
                         ("fail_history_artifacts", "fail_history_agent"),
+                        ("ppt_artifacts", "ppt_export"),
                     ]
                     for key, default_agent in artifact_sources:
                         for art in node_state.get(key, []):
@@ -377,6 +395,27 @@ async def chat_stream(request: ChatRequest, req: Request):
                                     os.remove(file_path)
                                 except FileNotFoundError:
                                     continue
+
+                            # PPTX artifact 특수 처리: file:// → 다운로드 URL
+                            if art.get("type") == "pptx" or art.get("mime", "").startswith("application/vnd.openxmlformats"):
+                                # art_data는 file:// 경로이거나 이미 읽힌 경로
+                                pptx_path = art_data
+                                if pptx_path.startswith("file://"):
+                                    pptx_path = pptx_path[7:]
+                                pptx_fname = os.path.basename(pptx_path)
+                                download_url = f"/download/pptx/{pptx_fname}"
+                                evt = ArtifactEvent(
+                                    artifact_type=ArtifactType.pptx,
+                                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                    title=art.get("title", "yield_report"),
+                                    agent=art.get("agent", "ppt_export"),
+                                    data=download_url,
+                                    step=step_count,
+                                )
+                                yield _sse(evt)
+                                turn_artifact = evt.model_dump()
+                                turn_artifacts.append(turn_artifact)
+                                continue
 
                             art_type = _detect_artifact_type(art_data)
                             mime = {

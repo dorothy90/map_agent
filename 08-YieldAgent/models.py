@@ -27,6 +27,7 @@ class ArtifactType(str, Enum):
     html = "html"
     image = "image"
     markdown = "markdown"
+    pptx = "pptx"
 
 
 class StreamStartEvent(BaseModel):

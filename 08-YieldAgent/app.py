@@ -87,7 +87,11 @@ def _render_entry(entry):
         data = art.get("data", "")
         if not data:
             continue
-        if art_type == "html":
+        if art_type == "pptx":
+            # PPTX 다운로드 링크
+            download_url = f"{AGENT_BASE_URL}{data}"
+            st.markdown(f"📊 **[PPT 다운로드]({download_url})**")
+        elif art_type == "html":
             components.html(data, height=600, scrolling=True)
         elif art_type == "image":
             st.image(data, caption=art.get("title", ""))
@@ -247,7 +251,23 @@ if query:
             data = art.get("data", "")
             if not data:
                 continue
-            if art_type == "html":
+            if art_type == "pptx":
+                # PPTX 다운로드 버튼 — httpx로 파일 가져와서 Streamlit 다운로드
+                try:
+                    download_url = f"{AGENT_BASE_URL}{data}"
+                    pptx_resp = httpx.get(download_url, timeout=30)
+                    pptx_resp.raise_for_status()
+                    fname = data.split("/")[-1] if "/" in data else "yield_report.pptx"
+                    st.download_button(
+                        label="📊 PPT 리포트 다운로드",
+                        data=pptx_resp.content,
+                        file_name=fname,
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    )
+                except Exception as e:
+                    st.warning(f"PPT 다운로드 실패: {e}")
+                    st.markdown(f"[직접 다운로드]({AGENT_BASE_URL}{data})")
+            elif art_type == "html":
                 components.html(data, height=600, scrolling=True)
             elif art_type == "image":
                 st.image(data, caption=art.get("title", ""))

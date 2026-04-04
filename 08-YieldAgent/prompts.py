@@ -121,6 +121,12 @@ Route to **map_agent** when the user explicitly requests:
   예: "4SS2DPD" → lotcd="4SS"
 - yield_lot_ids/yield_groupkey 없으면 기존 lotcd 기반 period 조회 유지
 
+Route to **ppt_export** when the user explicitly requests:
+- PPT 생성, PPT 다운로드, 리포트 내보내기, 프레젠테이션 만들기
+- Examples: "PPT로 만들어줘", "리포트 PPT로 저장해줘", "분석 결과 PPT로 내보내줘", "프레젠테이션 생성"
+- Note: ppt_export는 이전 분석 결과(yield_artifacts, map_artifacts 등)가 state에 있어야 의미 있음
+- 분석 결과 없이 PPT 요청 시 → message에 "먼저 수율 조회를 해주세요"로 안내하고 FINISH
+
 Route to **FINISH** when the request is unrelated to yield, WADS, or wafer map.
 
 === UNIT & PERIODS ===
@@ -210,7 +216,7 @@ Example: <think>사용자가 4SS 수율을 요청했으므로 yield_agent로 라
 
 JSON schema:
 {{
-  "next": "yield_agent" | "wads_agent" | "map_agent" | "FINISH",
+  "next": "yield_agent" | "wads_agent" | "map_agent" | "ppt_export" | "FINISH",
   "lotcd": "<product code, empty string if user did not specify>",
   "ref_date": "<YYYYMMDD for yield_agent, else empty string>",
   "wads_start_tm": "<YYYY-MM-DD range start for wads_agent, empty if single date>",

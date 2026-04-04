@@ -54,7 +54,7 @@ _rewrite_tool_map = {t.name: t for t in REWRITE_TOOLS}
 class RouteResponse(BaseModel):
     """Supervisor의 라우팅 결정 — with_structured_output으로 타입 보장"""
 
-    next: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "FINISH"] = Field(
+    next: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "FINISH"] = Field(
         description="다음에 실행할 에이전트"
     )
     lotcd: str = Field(default="", description="3~4자리 제품코드만 (예: 4SS, 5NA, 6E2). 전체 lot ID(예: 4SS2DPD)는 절대 입력하지 말 것. 사용자가 미지정 시 빈 문자열")
@@ -211,7 +211,7 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 @observe(name="supervisor_node")
 def supervisor_node(
     state: Dict[str, Any], config: RunnableConfig
-) -> Command[Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "__end__"]]:
+) -> Command[Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "__end__"]]:
     """Supervisor 노드: ReAct 스타일 멀티스텝 루프.
 
     각 스텝마다 에이전트 결과를 확인하고 다음 행동을 결정합니다.
@@ -251,7 +251,7 @@ def supervisor_node(
         )
 
     # 에이전트 메시지 요약 — 최근 2턴은 full 유지 (멀티스텝 lot ID 전달용)
-    _AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent", "fail_history_agent"}
+    _AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export"}
     _RECENT_FULL_TURNS = 2
     _MAX_OLD_MSG_LEN = 300
 
@@ -562,6 +562,9 @@ class YieldQueryState(TypedDict):
     map_result:    str
     map_artifacts: Annotated[list, operator.add]
 
+    # PPT Export 결과
+    ppt_artifacts: Annotated[list, operator.add]
+
     # 에이전트 제안 (UI 렌더링용)
     agent_suggestion: str
 
@@ -574,6 +577,7 @@ from yield_query_agent import yield_agent_node  # noqa: E402
 from wads_agent import wads_agent_node  # noqa: E402
 from map_agent import map_agent_node  # noqa: E402
 from fail_history_agent import fail_history_agent_node  # noqa: E402
+from ppt_export_agent import ppt_export_node  # noqa: E402
 
 # 에이전트 노드 재시도 정책 (Oracle/LLM 일시적 오류 자동 재시도)
 _retry = RetryPolicy(max_attempts=3, initial_interval=1.0)
@@ -585,6 +589,7 @@ workflow.add_node("yield_agent", yield_agent_node, retry_policy=_retry)
 workflow.add_node("wads_agent", wads_agent_node, retry_policy=_retry)
 workflow.add_node("map_agent", map_agent_node, retry_policy=_retry)
 workflow.add_node("fail_history_agent", fail_history_agent_node, retry_policy=_retry)
+workflow.add_node("ppt_export", ppt_export_node, retry_policy=_retry)
 
 workflow.add_edge(START, "rewrite")
 workflow.add_edge("rewrite", "supervisor")
@@ -594,6 +599,8 @@ workflow.add_edge("yield_agent", "supervisor")
 workflow.add_edge("wads_agent", "supervisor")
 workflow.add_edge("map_agent", "supervisor")
 workflow.add_edge("fail_history_agent", "supervisor")
+# ppt_export → END (PPT 생성 후 바로 종료, supervisor 루프 불필요)
+workflow.add_edge("ppt_export", END)
 
 # workflow는 빌더(StateGraph)로 export — agent_server.py에서 checkpointer와 함께 compile
 # 로컬 테스트:
