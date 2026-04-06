@@ -34,7 +34,7 @@ from langchain_core.messages import ToolMessage
 from common import stream_event, get_llm
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import ThinkingEvent
-from prompts import REWRITE_SYSTEM_PROMPT_TEMPLATE, SUPERVISOR_SYSTEM_PROMPT
+from prompts import PLANNER_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT_TEMPLATE, SUPERVISOR_SYSTEM_PROMPT
 from rewrite_tools import REWRITE_TOOLS
 
 load_dotenv(override=True)
@@ -51,6 +51,21 @@ _rewrite_tool_map = {t.name: t for t in REWRITE_TOOLS}
 
 
 # ── Pydantic 라우팅 결정 모델 ────────────────────────────────
+class TaskItem(BaseModel):
+    """planner가 생성하는 개별 작업 단위"""
+    task_id: str = Field(description="고유 ID (예: 'task_1')")
+    agent: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export"] = Field(
+        description="실행할 에이전트"
+    )
+    params: dict = Field(default={}, description="에이전트별 파라미터 (map_lot_ids, map_type 등)")
+    goal: str = Field(description="이 작업의 목표 (한국어, 예: 'lot 3,4번 cummap 생성')")
+
+
+class PlanResponse(BaseModel):
+    """planner LLM의 출력 스키마"""
+    tasks: list[TaskItem] = Field(description="실행할 작업 목록")
+
+
 class RouteResponse(BaseModel):
     """Supervisor의 라우팅 결정 — with_structured_output으로 타입 보장"""
 
@@ -207,6 +222,82 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     return {"messages": prune_ops + [HumanMessage(content=rewritten, id=last_human.id)]}
 
 
+# ── Planner 노드 ────────────────────────────────────────────
+_MAX_TASKS = 5
+
+
+@observe(name="planner_node")
+def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
+    """사용자 질문을 TaskItem 리스트로 분해.
+
+    단순 질문이면 task 1개, 복합이면 N개 생성.
+    task_plan은 디버깅용, pending_tasks는 실행 큐.
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return {}
+
+    last_human = next(
+        (m for m in reversed(messages)
+         if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
+        None,
+    )
+    if not last_human:
+        return {}
+
+    today = date.today()
+    prompt = PLANNER_SYSTEM_PROMPT.format(
+        today=today.strftime("%Y년 %m월 %d일 (%A)"),
+        today_yyyymmdd=today.strftime("%Y%m%d"),
+        today_yyyy_mm_dd=today.strftime("%Y-%m-%d"),
+    )
+
+    # 수동 JSON 파싱 (with_structured_output은 OpenRouter 호환성 문제)
+    try:
+        response = _model.invoke(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": last_human.content},
+            ],
+            config={"callbacks": _lf_callbacks()},
+        )
+        raw_text = response.content.strip()
+
+        # <think> 태그 제거
+        clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+        clean_text = re.sub(r"<think>.*", "", clean_text, flags=re.DOTALL).strip()
+
+        # JSON 추출
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean_text, re.DOTALL)
+        if not json_match:
+            json_match = re.search(r"(\{.*\})", clean_text, re.DOTALL)
+        if not json_match:
+            json_match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
+        if not json_match:
+            raise ValueError(f"No JSON found in planner response: {raw_text[:300]}")
+
+        data = json.loads(repair_json(json_match.group(1)))
+        plan = PlanResponse(**data)
+    except Exception as e:
+        logger.error("[Planner] 파싱 실패: %s — 단일 task fallback", e)
+        # fallback: 단일 task 없이 supervisor에게 위임
+        return {"task_plan": [], "pending_tasks": []}
+
+    # task 수 상한 제한
+    if len(plan.tasks) > _MAX_TASKS:
+        logger.warning("[Planner] task 수 %d → %d로 제한", len(plan.tasks), _MAX_TASKS)
+        plan.tasks = plan.tasks[:_MAX_TASKS]
+
+    tasks_dicts = [t.model_dump() for t in plan.tasks]
+    logger.info("[Planner] %d task(s) 생성: %s", len(tasks_dicts),
+                [(t["task_id"], t["agent"]) for t in tasks_dicts])
+
+    return {
+        "task_plan": tasks_dicts,
+        "pending_tasks": tasks_dicts,
+    }
+
+
 # ── Supervisor 노드 ──────────────────────────────────────────
 @observe(name="supervisor_node")
 def supervisor_node(
@@ -219,9 +310,10 @@ def supervisor_node(
     """
     step_count = state.get("step_count", 0) + 1
 
-    # 최대 스텝 강제 종료 (무한루프 방지)
-    if step_count > 4:
-        logger.warning("[Supervisor] 최대 스텝(%d) 초과 → 강제 종료", step_count)
+    # 최대 스텝 강제 종료 (무한루프 방지) — planner task 수에 맞게 동적 조정
+    max_steps = min(len(state.get("task_plan", [])) + 3, 10) or 4
+    if step_count > max_steps:
+        logger.warning("[Supervisor] 최대 스텝(%d/%d) 초과 → 강제 종료", step_count, max_steps)
         return Command(
             update={
                 "step_count": step_count,
@@ -229,6 +321,53 @@ def supervisor_node(
             },
             goto=END,
         )
+
+    # ── pending_tasks 큐 기반 dispatch (planner가 생성한 작업 큐) ──
+    pending = state.get("pending_tasks", [])
+    if pending:
+        current_task = pending[0]
+        remaining = pending[1:]
+        task_params = current_task.get("params", {})
+
+        task_message = AIMessage(
+            content=f"[Task {current_task.get('task_id', '?')}] {current_task.get('goal', '')}",
+            name="supervisor",
+        )
+        logger.info(
+            "[Supervisor] queued task dispatch: %s → %s (remaining=%d)",
+            current_task.get("task_id"), current_task.get("agent"), len(remaining),
+        )
+
+        # task params를 state 필드로 projection
+        update_dict = {
+            "step_count": step_count,
+            "current_task_id": current_task.get("task_id", ""),
+            "pending_tasks": remaining,
+            "messages": [task_message],
+            # Map 파라미터
+            "map_lot_id":   task_params.get("map_lot_id", ""),
+            "map_lot_ids":  task_params.get("map_lot_ids", ""),
+            "map_wf_ids":   task_params.get("map_wf_ids", ""),
+            "map_groupkey": task_params.get("map_groupkey", ""),
+            "map_type":     task_params.get("map_type", "binmap"),
+            "map_bin_type": task_params.get("map_bin_type", "left_bin"),
+            # Yield 파라미터
+            "lotcd":          task_params.get("lotcd", state.get("lotcd", "")),
+            "ref_date":       task_params.get("ref_date", state.get("ref_date", "")),
+            "unit":           task_params.get("unit", state.get("unit", "weekly")),
+            "periods":        task_params.get("periods", state.get("periods", 0)),
+            "filter_params":  task_params.get("filter_params", []),
+            "yield_lot_ids":  task_params.get("yield_lot_ids", ""),
+            "yield_groupkey": task_params.get("yield_groupkey", ""),
+            # WADS 파라미터
+            "wads_start_tm": task_params.get("wads_start_tm", ""),
+            "wads_end_tm":   task_params.get("wads_end_tm", ""),
+            # Fail History 파라미터
+            "dh_query":      task_params.get("dh_query", ""),
+            "dh_fail_type":  task_params.get("dh_fail_type", ""),
+            "dh_cause_oper": task_params.get("dh_cause_oper", ""),
+        }
+        return Command(update=update_dict, goto=current_task["agent"])
 
     configurable = config.get("configurable", {}) if config else {}
     messages = state.get("messages", [])
@@ -571,6 +710,11 @@ class YieldQueryState(TypedDict):
     # 동일 에이전트 재호출 방지용 파라미터 스냅샷
     _last_agent_params: dict
 
+    # Planner 관련
+    task_plan: list[dict]           # planner가 생성한 전체 계획 (overwrite)
+    pending_tasks: list[dict]       # 아직 실행 안 된 TaskItem들 (overwrite)
+    current_task_id: str            # 현재 실행 중인 task의 ID
+
 
 # ── 그래프 조립 (순환 import 방지: yield_query_agent/wads_agent/map_agent는 supervisor를 import하지 않음)
 from yield_query_agent import yield_agent_node  # noqa: E402
@@ -584,6 +728,7 @@ _retry = RetryPolicy(max_attempts=3, initial_interval=1.0)
 
 workflow = StateGraph(YieldQueryState)
 workflow.add_node("rewrite", rewrite_node, retry_policy=_retry)
+workflow.add_node("planner", planner_node, retry_policy=_retry)
 workflow.add_node("supervisor", supervisor_node, retry_policy=_retry)
 workflow.add_node("yield_agent", yield_agent_node, retry_policy=_retry)
 workflow.add_node("wads_agent", wads_agent_node, retry_policy=_retry)
@@ -592,15 +737,16 @@ workflow.add_node("fail_history_agent", fail_history_agent_node, retry_policy=_r
 workflow.add_node("ppt_export", ppt_export_node, retry_policy=_retry)
 
 workflow.add_edge(START, "rewrite")
-workflow.add_edge("rewrite", "supervisor")
+workflow.add_edge("rewrite", "planner")        # rewrite → planner
+workflow.add_edge("planner", "supervisor")      # planner → supervisor
 # supervisor → agent: Command(goto=...)가 처리 (conditional_edges 불필요)
 # agent → supervisor: 정적 엣지로 루프 복귀
 workflow.add_edge("yield_agent", "supervisor")
 workflow.add_edge("wads_agent", "supervisor")
 workflow.add_edge("map_agent", "supervisor")
 workflow.add_edge("fail_history_agent", "supervisor")
-# ppt_export → END (PPT 생성 후 바로 종료, supervisor 루프 불필요)
-workflow.add_edge("ppt_export", END)
+# ppt_export → supervisor (planner 큐의 후속 task 실행을 위해 supervisor로 복귀)
+workflow.add_edge("ppt_export", "supervisor")
 
 # workflow는 빌더(StateGraph)로 export — agent_server.py에서 checkpointer와 함께 compile
 # 로컬 테스트:

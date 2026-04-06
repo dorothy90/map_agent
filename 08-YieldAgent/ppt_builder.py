@@ -105,36 +105,65 @@ class YieldReportPPTBuilder:
 
     # ── Public API ───────────────────────────────────────
     def build_compact(self, state: dict[str, Any]) -> tuple[bytes, str]:
-        """3장짜리 요약 PPT를 생성하고 (bytes, file_path)를 반환."""
+        """compact 베이스 + 동적 추가 슬라이드 PPT 생성.
+
+        파이프라인:
+        1. state → GLM-4.7 (디자인 JSON) → ppt_renderer (베이스 3슬라이드)
+        2. state에 WADS/불량이력/AI분석 데이터가 있으면 각각 1장씩 추가
+        LLM 호출 실패 시 기본 디자인으로 fallback합니다.
+        """
         lotcd = state.get("lotcd", "Unknown")
         ref_date = state.get("ref_date", date.today().strftime("%Y%m%d"))
-        unit = state.get("unit", "weekly")
         weeks_data = state.get("weeks_data", [])
-        anomaly_params = state.get("anomaly_params", [])
-        filter_params = state.get("filter_params") or None
 
-        # 1) 타이틀
-        self._add_title_slide(lotcd, ref_date, unit)
+        if not weeks_data:
+            raise ValueError(f"[PPT compact] weeks_data가 비어있어 리포트를 생성할 수 없습니다. (lotcd={lotcd})")
 
-        # 2) 슬라이드 1: 테이블 + scatter
-        if weeks_data:
-            self._add_compact_slide1(lotcd, weeks_data, anomaly_params,
-                                     filter_params, unit)
+        from ppt_llm_designer import generate_slide_design, generate_extra_slide
+        from ppt_renderer import render_presentation
 
-        # 3) 엔딩
-        self._add_ending_slide()
+        # 1) 베이스 디자인 (title + data_overview + ending)
+        design = generate_slide_design(state)
+
+        # 2) 추가 섹션: state에 데이터가 있는 섹션만 ending 앞에 삽입
+        extra_sections = [
+            ("wads", state.get("wads_artifacts", [])),
+            ("fail_history", state.get("fail_history_artifacts", [])),
+            ("analysis", state.get("analysis_result", "")),
+        ]
+        extra_slides = []
+        for section_type, data in extra_sections:
+            if data:  # 비어있지 않은 경우만
+                slide_design = generate_extra_slide(state, section_type, None)
+                extra_slides.append(slide_design)
+
+        # ending 슬라이드 앞에 추가 슬라이드 삽입
+        if extra_slides:
+            ending = design.slides[-1]  # 마지막 = ending
+            design.slides = design.slides[:-1] + extra_slides + [ending]
+
+        # 3) 렌더링 — extra_content를 state에 임시 주입하여 전달
+        for slide_design in design.slides:
+            if slide_design.extra_content:
+                state["_current_extra_content"] = slide_design.extra_content
+            render_presentation(self.prs,
+                              type(design)(color_scheme=design.color_scheme,
+                                           font_family=design.font_family,
+                                           slides=[slide_design]),
+                              state)
+            state.pop("_current_extra_content", None)
 
         # 저장
         buf = io.BytesIO()
         self.prs.save(buf)
         pptx_bytes = buf.getvalue()
 
-        fname = f"yield_report_{lotcd}_{ref_date}_{uuid.uuid4().hex[:6]}_compact.pptx"
+        fname = f"yield_report_{lotcd}_{ref_date}_{uuid.uuid4().hex[:6]}.pptx"
         fpath = os.path.join(OUTPUT_DIR, fname)
         with open(fpath, "wb") as f:
             f.write(pptx_bytes)
 
-        logger.info("[PPT Builder] compact 생성 완료: %s (%d bytes, %d slides)",
+        logger.info("[PPT Builder] compact+동적 생성 완료: %s (%d bytes, %d slides)",
                      fname, len(pptx_bytes), len(self.prs.slides))
         return pptx_bytes, fpath
 
@@ -394,9 +423,11 @@ class YieldReportPPTBuilder:
                         values.append(None)
                 x_valid = [i for i, v in enumerate(values) if v is not None]
                 y_valid = [values[i] for i in x_valid]
-                color = MPL_RED if a["direction"] == "열화" else MPL_GREEN
-                marker = "v" if a["direction"] == "열화" else "^"
-                label = f"{param} ({a['direction']} {a['change_pct']:+.1f}%)"
+                color = MPL_RED if a.get("direction") == "열화" else MPL_GREEN
+                marker = "v" if a.get("direction") == "열화" else "^"
+                direction = a.get('direction', '?')
+                pct = a.get('change_pct', 0.0)
+                label = f"{param} ({direction} {pct:+.1f}%)"
                 ax.scatter(x_valid, y_valid, marker=marker, color=color,
                            s=40, zorder=3, label=label)
                 ax.plot(x_valid, y_valid, color=color, linewidth=1, alpha=0.4)

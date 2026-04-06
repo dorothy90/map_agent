@@ -65,11 +65,7 @@ def ppt_export_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         from ppt_builder import YieldReportPPTBuilder
 
         builder = YieldReportPPTBuilder()
-        ppt_mode = state.get("ppt_mode", "full")
-        if ppt_mode == "compact":
-            pptx_bytes, fpath = builder.build_compact(resolved_state)
-        else:
-            pptx_bytes, fpath = builder.build(resolved_state)
+        pptx_bytes, fpath = builder.build_compact(resolved_state)
 
         lotcd = state.get("lotcd", "Unknown")
         ref_date = state.get("ref_date", "")

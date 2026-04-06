@@ -17,7 +17,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from datetime import date
 
-AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "http://127.0.0.1:6153")
+AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8001")
 
 # ── 페이지 설정 ──────────────────────────────────────────
 st.set_page_config(
@@ -148,7 +148,7 @@ if query:
                 thinking_buffer = ""
                 thinking_placeholder = None
 
-                with httpx.Client(timeout=120) as client:
+                with httpx.Client(timeout=httpx.Timeout(connect=10, read=600, write=10, pool=10)) as client:
                     with client.stream(
                         "POST",
                         f"{AGENT_BASE_URL}/chat/stream",

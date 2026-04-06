@@ -247,16 +247,16 @@ async def chat_stream(request: ChatRequest, req: Request):
         # 이번 턴 입력: 새 HumanMessage + 퍼-턴 리셋 필드
         stream_input = {
             "messages": [HumanMessage(content=request.query)],
+            # artifacts는 operator.add reducer → Overwrite로 퍼-턴 리셋
             "yield_artifacts": Overwrite([]),
             "wads_artifacts": Overwrite([]),
             "map_artifacts": Overwrite([]),
             "fail_history_artifacts": Overwrite([]),
             "ppt_artifacts": Overwrite([]),
-            "weeks_data": [],
-            "table_result": "",
-            "analysis_result": "",
+            # step_count만 리셋 (퍼-턴 루프 카운터)
             "step_count": 0,
-            "anomaly_params": [],
+            # weeks_data, anomaly_params, table_result, analysis_result는
+            # 리셋하지 않음 — follow-up 턴(PPT 생성 등)에서 이전 데이터 필요
         }
 
         # 첫 번째 턴이면 나머지 기본값도 함께 전달
@@ -385,20 +385,8 @@ async def chat_stream(request: ChatRequest, req: Request):
                             if not art_data:
                                 continue
 
-                            # file:// 참조인 경우 파일에서 읽기
-                            if art_data.startswith("file://"):
-                                file_path = art_data[7:]
-                                try:
-                                    with open(file_path, "r", encoding="utf-8") as f:
-                                        art_data = f.read()
-                                    # 전송 후 임시 파일 삭제
-                                    os.remove(file_path)
-                                except FileNotFoundError:
-                                    continue
-
-                            # PPTX artifact 특수 처리: file:// → 다운로드 URL
+                            # PPTX artifact 특수 처리: file:// → 다운로드 URL (바이너리이므로 텍스트 읽기 전에 처리)
                             if art.get("type") == "pptx" or art.get("mime", "").startswith("application/vnd.openxmlformats"):
-                                # art_data는 file:// 경로이거나 이미 읽힌 경로
                                 pptx_path = art_data
                                 if pptx_path.startswith("file://"):
                                     pptx_path = pptx_path[7:]
@@ -416,6 +404,16 @@ async def chat_stream(request: ChatRequest, req: Request):
                                 turn_artifact = evt.model_dump()
                                 turn_artifacts.append(turn_artifact)
                                 continue
+
+                            # file:// 참조인 경우 파일에서 읽기 (텍스트 artifact만)
+                            if art_data.startswith("file://"):
+                                file_path = art_data[7:]
+                                try:
+                                    with open(file_path, "r", encoding="utf-8") as f:
+                                        art_data = f.read()
+                                    os.remove(file_path)
+                                except FileNotFoundError:
+                                    continue
 
                             art_type = _detect_artifact_type(art_data)
                             mime = {
