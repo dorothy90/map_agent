@@ -58,8 +58,13 @@ def render_presentation(prs: Presentation, design: PresentationDesign,
     cs = design.color_scheme
     font = design.font_family or "맑은 고딕"
 
+    from ppt_builder import _get_layout, _clear_placeholders
+
     for slide_design in design.slides:
-        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        purpose = "title" if slide_design.layout in ("title", "ending") else "blank"
+        layout = _get_layout(prs, purpose)
+        slide = prs.slides.add_slide(layout)
+        _clear_placeholders(slide)
 
         # 배경색
         if slide_design.background_color:

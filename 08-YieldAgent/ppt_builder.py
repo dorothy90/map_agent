@@ -94,14 +94,86 @@ KEY_PT1H_PARAMS = ["VTH", "IDSAT", "IDLIN", "IOFF", "ION", "IGATE", "IDDQ",
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "generated")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# ── 템플릿 경로 ──
+TEMPLATE_PATH = os.environ.get(
+    "YIELD_TPL_PATH",
+    os.path.join(os.path.dirname(__file__), "template.pptx"),
+)
+
+
+def _remove_all_slides(prs):
+    """프레젠테이션의 모든 슬라이드를 제거 (마스터/레이아웃 유지)."""
+    sldIdLst = prs.part._element.find(
+        "{http://schemas.openxmlformats.org/presentationml/2006/main}sldIdLst"
+    )
+    if sldIdLst is None:
+        return
+    ns_r = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    for sldId in list(sldIdLst):
+        rId = sldId.get(f"{ns_r}id")
+        if rId:
+            prs.part.drop_rel(rId)
+        sldIdLst.remove(sldId)
+
+
+def _clean_master_placeholders(prs):
+    """마스터/레이아웃의 제목/본문 placeholder 제거 (푸터 영역은 유지)."""
+    # 마스터 슬라이드
+    for master in prs.slide_masters:
+        for shape in list(master.shapes):
+            if shape.is_placeholder and shape.placeholder_format.idx in (0, 1):
+                sp = shape._element
+                sp.getparent().remove(sp)
+    # 모든 레이아웃: placeholder + ghost text shape 제거
+    _ghost_keywords = ("마스터", "편집", "스타일")
+    for layout in prs.slide_layouts:
+        for shape in list(layout.shapes):
+            remove = False
+            if shape.is_placeholder and shape.placeholder_format.idx in (0, 1):
+                remove = True
+            elif shape.has_text_frame:
+                txt = shape.text_frame.text
+                if any(kw in txt for kw in _ghost_keywords):
+                    remove = True
+            if remove:
+                sp = shape._element
+                sp.getparent().remove(sp)
+
+
+def _clear_placeholders(slide):
+    """슬라이드의 레이아웃 placeholder를 모두 제거."""
+    for ph in list(slide.placeholders):
+        sp = ph._element
+        sp.getparent().remove(sp)
+
+
+def _get_layout(prs, purpose="blank"):
+    """레이아웃을 이름으로 탐색. fallback: placeholder 수가 가장 적은 것."""
+    name_map = {
+        "title": ("title slide",),
+        "blank": ("blank", "빈 화면", "제목 및 내용"),
+    }
+    targets = name_map.get(purpose, name_map["blank"])
+    for layout in prs.slide_layouts:
+        if layout.name.lower() in targets:
+            return layout
+    return min(prs.slide_layouts, key=lambda l: len(l.placeholders))
+
 
 class YieldReportPPTBuilder:
     """Yield Agent state로부터 PPTX 파일을 생성하는 빌더."""
 
     def __init__(self):
-        self.prs = Presentation()
-        self.prs.slide_width = SLIDE_WIDTH
-        self.prs.slide_height = SLIDE_HEIGHT
+        if os.path.exists(TEMPLATE_PATH):
+            self.prs = Presentation(TEMPLATE_PATH)
+            _remove_all_slides(self.prs)
+            _clean_master_placeholders(self.prs)
+            self._using_template = True
+        else:
+            self.prs = Presentation()
+            self.prs.slide_width = SLIDE_WIDTH
+            self.prs.slide_height = SLIDE_HEIGHT
+            self._using_template = False
 
     # ── Public API ───────────────────────────────────────
     def build_compact(self, state: dict[str, Any]) -> tuple[bytes, str]:
@@ -743,7 +815,7 @@ class YieldReportPPTBuilder:
     # 타이틀 / 요약 / 분석 / 엔딩 슬라이드
     # ================================================================
     def _add_title_slide(self, lotcd: str, ref_date: str, unit: str):
-        slide = self._add_blank_slide()
+        slide = self._add_title_layout_slide()
         self._fill_background(slide, COLOR_PRIMARY)
 
         self._add_textbox(
@@ -833,7 +905,7 @@ class YieldReportPPTBuilder:
         self._add_analysis_slide_v2(analysis, [])
 
     def _add_ending_slide(self):
-        slide = self._add_blank_slide()
+        slide = self._add_title_layout_slide()
         self._fill_background(slide, COLOR_PRIMARY)
         self._add_textbox(
             slide, "Thank You",
@@ -853,7 +925,7 @@ class YieldReportPPTBuilder:
     # ================================================================
     def _add_section_divider(self, title: str, subtitle: str = ""):
         """시각적 섹션 구분 슬라이드 (다크 배경 + 액센트 라인)."""
-        slide = self._add_blank_slide()
+        slide = self._add_title_layout_slide()
         self._fill_background(slide, COLOR_PRIMARY)
 
         # 왼쪽 액센트 바
@@ -1400,7 +1472,17 @@ class YieldReportPPTBuilder:
     # 유틸리티 메서드
     # ================================================================
     def _add_blank_slide(self):
-        return self.prs.slides.add_slide(self.prs.slide_layouts[6])
+        layout = _get_layout(self.prs, "blank")
+        slide = self.prs.slides.add_slide(layout)
+        _clear_placeholders(slide)
+        return slide
+
+    def _add_title_layout_slide(self):
+        """Title Slide 레이아웃으로 슬라이드 추가 (타이틀/엔딩/섹션용)."""
+        layout = _get_layout(self.prs, "title")
+        slide = self.prs.slides.add_slide(layout)
+        _clear_placeholders(slide)
+        return slide
 
     def _fill_background(self, slide, color: RGBColor):
         fill = slide.background.fill
