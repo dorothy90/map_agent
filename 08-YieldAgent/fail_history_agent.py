@@ -18,7 +18,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import create_react_agent
 from langfuse import observe
 
-from common import timed, get_llm
+from common import timed, get_llm, extract_suggestion
 from lf_utils import lf_callbacks as _lf_callbacks
 from prompts import FAIL_HISTORY_SYSTEM_PROMPT_TEMPLATE
 from fail_history_tools import FAIL_HISTORY_TOOLS, _tool_payload_var, _get_tool_payload
@@ -159,9 +159,7 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             })
 
     # SUGGESTION 추출
-    suggestion_match = re.search(r'\[SUGGESTION:\s*(.*?)\]', answer)
-    agent_suggestion = suggestion_match.group(1).strip() if suggestion_match else ""
-    answer = re.sub(r'\[SUGGESTION:.*?\]', '', answer).strip()
+    answer, agent_suggestion = extract_suggestion(answer)
 
     result_message = AIMessage(content=answer, name="fail_history_agent")
 

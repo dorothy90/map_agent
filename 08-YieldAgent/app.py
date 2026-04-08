@@ -17,7 +17,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from datetime import date
 
-AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8001")
+AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8000")
 
 # ── 페이지 설정 ──────────────────────────────────────────
 st.set_page_config(

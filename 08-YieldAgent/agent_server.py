@@ -253,6 +253,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             "map_artifacts": Overwrite([]),
             "fail_history_artifacts": Overwrite([]),
             "ppt_artifacts": Overwrite([]),
+            "lot_history_artifacts": Overwrite([]),
             # step_count만 리셋 (퍼-턴 루프 카운터)
             "step_count": 0,
             # weeks_data, anomaly_params, table_result, analysis_result는
@@ -275,7 +276,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "map_wf_ids": "",
                 "map_groupkey": "",
                 "map_type": "binmap",
-                "map_bin_type": "left_bin",
+                "map_oper": "",
                 "map_result": "",
                 "yield_lot_ids": "",
                 "yield_groupkey": "",
@@ -378,6 +379,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                         ("map_artifacts", "map_agent"),
                         ("fail_history_artifacts", "fail_history_agent"),
                         ("ppt_artifacts", "ppt_export"),
+                        ("lot_history_artifacts", "lot_history_agent"),
                     ]
                     for key, default_agent in artifact_sources:
                         for art in node_state.get(key, []):

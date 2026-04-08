@@ -16,7 +16,7 @@ from langchain_core.runnables import RunnableConfig
 from langfuse import observe, get_client
 
 from lf_utils import lf_callbacks as _lf_callbacks
-from common import stream_event, timed, get_llm
+from common import stream_event, timed, get_llm, extract_suggestion
 from models import TokenEvent
 from prompts import ANALYSIS_SYSTEM_PROMPT, ANALYSIS_USER_PROMPT
 from yield_db import (
@@ -299,9 +299,7 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     result_message = AIMessage(content=result_msg, name="yield_agent")
 
-    suggestion_match = re.search(r'\[SUGGESTION:\s*(.*?)\]', analysis)
-    agent_suggestion = suggestion_match.group(1).strip() if suggestion_match else ""
-    analysis = re.sub(r'\[SUGGESTION:.*?\]', '', analysis).strip()
+    analysis, agent_suggestion = extract_suggestion(analysis)
 
     return {
         "messages": [result_message],

@@ -81,6 +81,7 @@ def _query_wafer_data(
     lot_ids: Optional[str] = None,
     wf_ids: Optional[str] = None,
     groupkey: Optional[str] = None,
+    oper: Optional[str] = None,
 ) -> list:
     """Oracle DB에서 wafer 데이터 조회
 
@@ -90,7 +91,12 @@ def _query_wafer_data(
     3. lot_id + wf_ids: 단일 lot의 특정 wafer 조회
     4. lot_id only: 단일 lot의 모든 wafer 조회
     """
-    logger.info("[MapAgent] _query_wafer_data: lot_id=%r, lot_ids=%r, wf_ids=%r, groupkey=%r", lot_id, lot_ids, wf_ids, groupkey)
+    logger.info("[MapAgent] _query_wafer_data: lot_id=%r, lot_ids=%r, wf_ids=%r, groupkey=%r, oper=%r", lot_id, lot_ids, wf_ids, groupkey, oper)
+    oper_filter = ""
+    oper_param = {}
+    if oper:
+        oper_filter = " AND OPER_DET_DESC = :oper"
+        oper_param = {"oper": f"{oper} TEST"}
     try:
         conn = _get_oracle_connection_common()
     except Exception as e:
@@ -124,10 +130,11 @@ def _query_wafer_data(
             sql = f"""
                 SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                 FROM {ORACLE_TABLE}
-                WHERE lot_id IN ({lot_placeholders}){wf_filter}
+                WHERE lot_id IN ({lot_placeholders}){wf_filter}{oper_filter}
                 ORDER BY lot_id, wf_id
                 FETCH FIRST 10000 ROWS ONLY
             """
+            params.update(oper_param)
             cur.execute(sql, params)
             columns = [desc[0].lower() for desc in cur.description]
             for row in cur.fetchall():
@@ -147,18 +154,18 @@ def _query_wafer_data(
                     sql = f"""
                         SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                         FROM {ORACLE_TABLE}
-                        WHERE lot_id IN (:lot_a, :lot_b) AND wf_id = :wf_id
+                        WHERE lot_id IN (:lot_a, :lot_b) AND wf_id = :wf_id{oper_filter}
                     """
-                    cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1], "wf_id": spec_wf_id})
+                    cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1], "wf_id": spec_wf_id, **oper_param})
                 else:
                     variants = lot_id_variants(spec)
                     sql = f"""
                         SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                         FROM {ORACLE_TABLE}
-                        WHERE lot_id IN (:lot_a, :lot_b)
+                        WHERE lot_id IN (:lot_a, :lot_b){oper_filter}
                         ORDER BY wf_id
                     """
-                    cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1]})
+                    cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1], **oper_param})
                 columns = [desc[0].lower() for desc in cur.description]
                 for row in cur.fetchall():
                     record = dict(zip(columns, row))
@@ -176,21 +183,21 @@ def _query_wafer_data(
                 sql = f"""
                     SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                     FROM {ORACLE_TABLE}
-                    WHERE lot_id IN (:lot_a, :lot_b)
+                    WHERE lot_id IN (:lot_a, :lot_b){oper_filter}
                     ORDER BY wf_id
                     FETCH FIRST 10000 ROWS ONLY
                 """
-                cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1]})
+                cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1], **oper_param})
             else:
                 placeholders = ",".join([f":wf{i}" for i in range(len(wf_id_list))])
                 sql = f"""
                     SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                     FROM {ORACLE_TABLE}
-                    WHERE lot_id IN (:lot_a, :lot_b) AND wf_id IN ({placeholders})
+                    WHERE lot_id IN (:lot_a, :lot_b) AND wf_id IN ({placeholders}){oper_filter}
                     ORDER BY wf_id
                     FETCH FIRST 10000 ROWS ONLY
                 """
-                params = {"lot_a": variants[0], "lot_b": variants[-1]}
+                params = {"lot_a": variants[0], "lot_b": variants[-1], **oper_param}
                 for i, wf_id in enumerate(wf_id_list):
                     params[f"wf{i}"] = wf_id
                 cur.execute(sql, params)
@@ -535,7 +542,7 @@ def _query_wafer_data_by_date(
         """
         params: dict = {"lotcd": lotcd, "sd": start_date, "ed": end_date}
         if category:
-            sql += "  AND CATEGORY = :cat"
+            sql += "  AND OPER_DET_DESC = :cat"
             params["cat"] = category
         sql += "\n            ORDER BY lot_id, wf_id\n            FETCH FIRST 5000 ROWS ONLY"
         cur.execute(sql, params)
@@ -683,7 +690,7 @@ def show_wafer_map(
     wf_ids: Optional[str] = None,
     groupkey: Optional[str] = None,
     map_type: str = "binmap",
-    bin_type: str = "left_bin",
+    oper: Optional[str] = None,
 ) -> str:
     """Wafer map 시각화 (DB 조회 + PNG 생성)
 
@@ -691,16 +698,14 @@ def show_wafer_map(
         str: 결과 메시지 (PNG 파일 경로 포함)
     """
     map_data_list = _query_wafer_data(
-        lot_id=lot_id, lot_ids=lot_ids, wf_ids=wf_ids, groupkey=groupkey
+        lot_id=lot_id, lot_ids=lot_ids, wf_ids=wf_ids, groupkey=groupkey, oper=oper
     )
     if not map_data_list:
         return "조회된 데이터가 없습니다. lot_id와 wf_id를 확인해주세요."
 
     n_wafers = len(map_data_list)
     lot_info = map_data_list[0]["lot_id"]
-
-    if bin_type not in ("left_bin", "right_bin"):
-        bin_type = "left_bin"
+    bin_type = "left_bin"
 
     requested_types = {t.strip().lower() for t in map_type.split(",")}
     if "all" in requested_types:
@@ -724,7 +729,7 @@ def show_wafer_map(
 
     result_msg = "이미지가 생성되었습니다:\n"
     result_msg += "\n".join(f"  - {r}" for r in results)
-    result_msg += f"\n\n- Lot: {lot_info}\n- Wafer 수: {n_wafers}개\n- Bin Type: {bin_type}"
+    result_msg += f"\n\n- Lot: {lot_info}\n- Wafer 수: {n_wafers}개\n- Oper: {oper}"
     return result_msg
 
 
@@ -732,9 +737,13 @@ def show_wafer_map(
 # HTML 변환 헬퍼
 # ============================================================
 def _png_to_html(png_path: str, title: str) -> str:
-    """PNG 파일을 base64 인코딩하여 <img> 태그 HTML로 반환"""
+    """PNG 파일을 base64 인코딩하여 <img> 태그 HTML로 반환 후 파일 삭제"""
     with open(png_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode()
+    try:
+        os.remove(png_path)
+    except OSError:
+        logger.debug("PNG 임시 파일 삭제 실패: %s", png_path)
     return (
         f'<div style="margin:8px 0">'
         f'<p style="font-weight:600">{title}</p>'
@@ -759,7 +768,7 @@ def _handle_weekly_cummap(state: dict) -> dict:
     cummap_weeks = state.get("cummap_weeks", [])
     target_bin = state.get("cummap_target_bin", "")
     category_name = state.get("cummap_category", "")
-    bin_type = state.get("map_bin_type", "left_bin")
+    bin_type = "left_bin"
 
     if not cummap_weeks or not target_bin:
         msg = AIMessage(content="cummap 생성에 필요한 정보가 부족합니다.", name="map_agent")
@@ -819,11 +828,11 @@ def _handle_standard_map(state: dict) -> dict:
     wf_ids   = state.get("map_wf_ids", "")
     groupkey = state.get("map_groupkey", "")
     map_type = state.get("map_type", "binmap")
-    bin_type = state.get("map_bin_type", "left_bin")
+    oper     = state.get("map_oper", "")
 
     logger.info(
-        "[MapAgent] _handle_standard_map: lot_id=%r, lot_ids=%r, wf_ids=%r, groupkey=%r, map_type=%s, bin_type=%s",
-        lot_id, lot_ids, wf_ids, groupkey, map_type, bin_type,
+        "[MapAgent] _handle_standard_map: lot_id=%r, lot_ids=%r, wf_ids=%r, groupkey=%r, map_type=%s, oper=%s",
+        lot_id, lot_ids, wf_ids, groupkey, map_type, oper,
     )
 
     result_str = show_wafer_map(
@@ -832,7 +841,7 @@ def _handle_standard_map(state: dict) -> dict:
         wf_ids=wf_ids or None,
         groupkey=groupkey or None,
         map_type=map_type,
-        bin_type=bin_type,
+        oper=oper or None,
     )
 
     png_paths = re.findall(r'[\w./\-]+\.png', result_str)
@@ -851,7 +860,7 @@ def _handle_standard_map(state: dict) -> dict:
             "map_result": result_str,
             "png_count": len(png_paths),
             "map_type": map_type,
-            "bin_type": bin_type,
+            "oper": oper,
         })
     except Exception:
         pass

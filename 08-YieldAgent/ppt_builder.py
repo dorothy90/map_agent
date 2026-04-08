@@ -58,6 +58,7 @@ from pptx.enum.shapes import MSO_SHAPE
 from common import (
     PARA_COLUMNS, PT1C_COLUMNS, GMS_COLUMNS,
     HIGHER_IS_BETTER, GMS_HIGHER_IS_BETTER,
+    extract_suggestion,
 )
 
 logger = logging.getLogger("yield_agent.ppt_builder")
@@ -1210,7 +1211,7 @@ class YieldReportPPTBuilder:
     # ================================================================
     def _add_analysis_slide_v2(self, analysis: str, anomaly_params: list[dict]):
         """AI 분석 결과를 섹션별로 나눠 시각적으로 표현."""
-        clean = re.sub(r'\[SUGGESTION:.*?\]', '', analysis).strip()
+        clean, _ = extract_suggestion(analysis)
 
         # 분석 내용을 섹션으로 분리
         sections = self._split_analysis_sections(clean)

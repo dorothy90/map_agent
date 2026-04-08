@@ -14,7 +14,7 @@ from langgraph.prebuilt import create_react_agent
 from langfuse import observe
 
 from lf_utils import lf_callbacks as _lf_callbacks
-from common import timed, get_llm
+from common import timed, get_llm, html_escape as _html_escape, extract_suggestion
 from prompts import WADS_SYSTEM_PROMPT_TEMPLATE
 from wads_tools import WADS_TOOLS, _tool_payload_var, _get_tool_payload
 
@@ -58,21 +58,8 @@ _wads_graph = create_react_agent(
 )
 
 
-def _create_wads_agent():
-    """호환성 유지용 래퍼 — 싱글턴 그래프 반환"""
-    return _wads_graph
-
 
 # -------------------- HTML 렌더링 --------------------
-def _html_escape(s: Any) -> str:
-    txt = "" if s is None else str(s)
-    return (
-        txt.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
 
 
 def _render_wads_query_html(payload: List[Dict[str, Any]]) -> str:
@@ -227,73 +214,6 @@ def _render_wads_report_html(payload: Any) -> str:
     return "<div>HTML 콘텐츠가 없습니다.</div>"
 
 
-# -------------------- LangGraph 노드용 래퍼 함수 --------------------
-def wads_agent(state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    naive_rag.py의 LangGraph 노드로 연결되는 WADS 처리 함수.
-    """
-    logger.info("[WADS Agent] 시작")
-
-    q = state["question"]
-    wads_ctx = state.get("wads_ctx") or {}
-    logger.debug("question: %s, wads_ctx: %s", q, wads_ctx)
-
-    messages = state.get("messages", [])
-
-    # 요청별 격리된 저장소 초기화
-    storage: Dict[str, Any] = {"reports": []}
-    _tool_payload_var.set(storage)
-
-    agent = _create_wads_agent()
-    result = agent.invoke(
-        {"messages": messages + [HumanMessage(content=q)]},
-        config={"callbacks": _lf_callbacks()},
-    )
-
-    logger.debug("result messages count: %d", len(result.get("messages", [])))
-
-    ai_messages = [m for m in result.get("messages", []) if isinstance(m, AIMessage)]
-    answer = ai_messages[-1].content if ai_messages else "WADS 조회에 실패했습니다."
-
-    query_payload = storage.get("query")
-    reports_payload = storage.get("reports", [])
-
-    logger.debug("query_payload: %s, reports_payload count: %d", query_payload is not None, len(reports_payload))
-
-    artifacts = []
-    kind = None
-
-    if reports_payload:
-        kind = "report"
-        html = _render_wads_report_html(reports_payload)
-    elif query_payload:
-        kind = "query"
-        html = _render_wads_query_html(query_payload)
-    else:
-        html = None
-
-    if html:
-        artifacts = [
-            {
-                "type": "html",
-                "mime": "text/html",
-                "data": html,
-                "title": f"wads_{kind}",
-            }
-        ]
-
-    result_dict = {
-        "answer": answer,
-        "artifacts": artifacts,
-        "messages": [HumanMessage(content=q), AIMessage(content=answer)],
-        "wads_ctx": {
-            "active": True,
-            "last_kind": kind,
-        },
-    }
-    return result_dict
-
-
 # -------------------- WADS Agent Node (LangGraph 노드용) --------------------
 @observe(name="wads_agent_node")
 @timed
@@ -415,9 +335,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             }
         )
 
-    suggestion_match = re.search(r'\[SUGGESTION:\s*(.*?)\]', answer)
-    agent_suggestion = suggestion_match.group(1).strip() if suggestion_match else ""
-    answer = re.sub(r'\[SUGGESTION:.*?\]', '', answer).strip()
+    answer, agent_suggestion = extract_suggestion(answer)
 
     result_message = AIMessage(content=answer, name="wads_agent")
 
@@ -428,28 +346,3 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     }
 
 
-# -------------------- 직접 실행 테스트 --------------------
-if __name__ == "__main__":
-    from langchain_teddynote.messages import stream_graph
-
-    print("=== WADS Agent 테스트 (StateGraph 패턴) ===\n")
-    print("도구 결과는 LLM context에 포함되지 않고, 요약만 전달됩니다.\n")
-
-    stream_graph(
-        _create_wads_agent(),
-        inputs={
-            "messages": [HumanMessage(content="4SS 로트의 2월28일 리포트를 보여줘")]
-        },
-    )
-
-    storage = _get_tool_payload()
-    print("\n" + "=" * 60)
-    print("[DEBUG] tool payload 내용:")
-    print(f"  query: {storage.get('query') is not None}")
-    reports = storage.get("reports", [])
-    print(f"  reports count: {len(reports)}")
-
-    for idx, report in enumerate(reports):
-        print(f"  report[{idx}] lotcd: {report.get('lotcd')}")
-        print(f"  report[{idx}] parameter: {report.get('parameter')}")
-        print(f"  report[{idx}] html 길이: {len(report.get('html', ''))} 글자")

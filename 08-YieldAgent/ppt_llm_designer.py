@@ -8,15 +8,12 @@ GLM-4.7 (OpenRouter 경유) 을 사용하여 수율 분석 PPT의
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any
-
-from json_repair import repair_json
 from pydantic import BaseModel, Field
 
-from common import get_llm
+from common import get_llm, extract_json_from_llm
 
 logger = logging.getLogger("yield_agent.ppt_llm_designer")
 
@@ -161,24 +158,11 @@ def generate_slide_design(state: dict[str, Any]) -> PresentationDesign:
     raw_text = response.content or ""
     logger.debug("[PPT Designer] LLM 응답: %s", raw_text[:500])
 
-    # JSON 추출 (```json ... ``` 또는 { ... })
-    clean = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
-    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean, re.DOTALL)
-    if not json_match:
-        json_match = re.search(r"(\{.*\})", clean, re.DOTALL)
-    if not json_match:
-        json_match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
-    if not json_match:
-        logger.warning("[PPT Designer] JSON 파싱 실패, 기본 디자인 사용")
-        return _default_design(state)
-
-    json_str = json_match.group(1)
     try:
-        data = json.loads(repair_json(json_str))
-        design = PresentationDesign(**data)
+        design = extract_json_from_llm(raw_text, PresentationDesign)
         logger.info("[PPT Designer] 디자인 생성 완료: %d slides", len(design.slides))
         return design
-    except Exception as e:
+    except (ValueError, Exception) as e:
         logger.warning("[PPT Designer] 파싱 실패 (%s), 기본 디자인 사용", e)
         return _default_design(state)
 

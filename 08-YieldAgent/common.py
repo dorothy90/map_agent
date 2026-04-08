@@ -9,11 +9,16 @@
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import date, timedelta
+from typing import Any, Type
+
+from pydantic import BaseModel
 
 import oracledb
 from dotenv import load_dotenv
@@ -152,9 +157,54 @@ def stream_event(kind: str, event) -> None:
         pass  # 스트리밍 실패가 메인 로직을 중단하면 안 됨
 
 
-def emit_sse(config: dict | None, kind: str, event) -> None:
-    """[DEPRECATED] stream_event()로 대체됨. 하위 호환용 래퍼."""
-    stream_event(kind, event)
+def html_escape(s: Any) -> str:
+    """HTML 특수문자 이스케이프"""
+    txt = "" if s is None else str(s)
+    return (
+        txt.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def extract_suggestion(text: str) -> tuple[str, str]:
+    """[SUGGESTION: ...] 패턴을 추출하고 본문에서 제거.
+
+    Returns:
+        (cleaned_text, suggestion)
+    """
+    match = re.search(r'\[SUGGESTION:\s*(.*?)\]', text)
+    suggestion = match.group(1).strip() if match else ""
+    cleaned = re.sub(r'\[SUGGESTION:.*?\]', '', text).strip()
+    return cleaned, suggestion
+
+
+def extract_json_from_llm(raw_text: str, model_class: Type[BaseModel]) -> BaseModel:
+    """LLM 응답에서 <think> 태그 제거 후 JSON 추출 → Pydantic 모델 파싱.
+
+    Raises:
+        ValueError: JSON을 찾을 수 없는 경우
+    """
+    from json_repair import repair_json
+
+    # <think> 태그 제거 (닫는 태그 없는 경우도 처리)
+    clean = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
+    clean = re.sub(r"<think>.*", "", clean, flags=re.DOTALL).strip()
+
+    # JSON 블록 추출 (```json ... ``` 또는 { ... })
+    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean, re.DOTALL)
+    if not json_match:
+        json_match = re.search(r"(\{.*\})", clean, re.DOTALL)
+    # clean에서 못 찾으면 raw_text 전체에서 시도 (think 안에 JSON이 있는 경우)
+    if not json_match:
+        json_match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
+    if not json_match:
+        raise ValueError(f"No JSON found in LLM response: {raw_text[:300]}")
+
+    data = json.loads(repair_json(json_match.group(1)))
+    return model_class(**data)
 
 
 def lot_id_variants(lot_id: str) -> list[str]:

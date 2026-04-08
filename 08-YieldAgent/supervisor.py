@@ -12,8 +12,6 @@ Supervisor Node — Yield/WADS/Map 라우팅 담당
 
 from __future__ import annotations
 
-import json
-from json_repair import repair_json
 import operator
 import os
 import logging
@@ -31,7 +29,7 @@ from pydantic import BaseModel, Field
 
 from langchain_core.messages import ToolMessage
 
-from common import stream_event, get_llm
+from common import stream_event, get_llm, extract_json_from_llm
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import ThinkingEvent
 from prompts import PLANNER_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT_TEMPLATE, SUPERVISOR_SYSTEM_PROMPT
@@ -54,7 +52,7 @@ _rewrite_tool_map = {t.name: t for t in REWRITE_TOOLS}
 class TaskItem(BaseModel):
     """planner가 생성하는 개별 작업 단위"""
     task_id: str = Field(description="고유 ID (예: 'task_1')")
-    agent: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export"] = Field(
+    agent: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent"] = Field(
         description="실행할 에이전트"
     )
     params: dict = Field(default={}, description="에이전트별 파라미터 (map_lot_ids, map_type 등)")
@@ -69,7 +67,7 @@ class PlanResponse(BaseModel):
 class RouteResponse(BaseModel):
     """Supervisor의 라우팅 결정 — with_structured_output으로 타입 보장"""
 
-    next: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "FINISH"] = Field(
+    next: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "FINISH"] = Field(
         description="다음에 실행할 에이전트"
     )
     lotcd: str = Field(default="", description="3~4자리 제품코드만 (예: 4SS, 5NA, 6E2). 전체 lot ID(예: 4SS2DPD)는 절대 입력하지 말 것. 사용자가 미지정 시 빈 문자열")
@@ -95,7 +93,7 @@ class RouteResponse(BaseModel):
     map_wf_ids:   str = Field(default="", description="wafer IDs, 쉼표 구분")
     map_groupkey: str = Field(default="", description="lot_id.wf_id 형식 (예: 'LOT001.01,LOT001.02')")
     map_type:     str = Field(default="binmap", description="binmap | cummap | all")
-    map_bin_type: str = Field(default="left_bin", description="left_bin | right_bin")
+    map_oper:     str = Field(default="", description="PT1H | PT1C (필수)")
     # Yield lot 비교 파라미터
     yield_lot_ids:  str = Field(default="", description="수율 조회용 lot ID 목록, 쉼표 구분 (예: '4SS2DPD,4SSXCEW')")
     yield_groupkey: str = Field(default="", description="수율 조회용 lot.wf 형식 (예: '4SS2DPD.01,4SS2DPD.05')")
@@ -103,6 +101,8 @@ class RouteResponse(BaseModel):
     dh_query: str = Field(default="", description="불량이력 검색 쿼리 (자유 텍스트)")
     dh_fail_type: str = Field(default="", description="불량 유형 필터 (예: TWT, IOFF)")
     dh_cause_oper: str = Field(default="", description="원인 공정 필터 (예: M0C ETCH)")
+    # Lot History 파라미터
+    lh_lot_ids: str = Field(default="", description="LOT 이력 조회용 lot ID, 쉼표 구분 (예: '4SS2DPD,4SSXCEW')")
 
 
 
@@ -129,6 +129,18 @@ def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMes
                 filtered.append({"role": "assistant", "content": content})
     # 최근 max_turns * 2개 (Human+AI 각 1개 = 1턴)
     return filtered[-(max_turns * 2):]
+
+
+def _normalize_map_oper(raw: str) -> str:
+    """interrupt 응답을 정규화: '1h'→'PT1H', 'pt1c'→'PT1C' 등"""
+    v = raw.strip().upper()
+    if v in ("PT1H", "PT1C"):
+        return v
+    if v in ("1H", "1C"):
+        return f"PT{v}"
+    if v.startswith("PT1") and len(v) > 3 and v[3] in ("H", "C"):
+        return v[:4]
+    return ""
 
 
 @observe(name="rewrite_node")
@@ -262,22 +274,7 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             config={"callbacks": _lf_callbacks()},
         )
         raw_text = response.content.strip()
-
-        # <think> 태그 제거
-        clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
-        clean_text = re.sub(r"<think>.*", "", clean_text, flags=re.DOTALL).strip()
-
-        # JSON 추출
-        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean_text, re.DOTALL)
-        if not json_match:
-            json_match = re.search(r"(\{.*\})", clean_text, re.DOTALL)
-        if not json_match:
-            json_match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
-        if not json_match:
-            raise ValueError(f"No JSON found in planner response: {raw_text[:300]}")
-
-        data = json.loads(repair_json(json_match.group(1)))
-        plan = PlanResponse(**data)
+        plan = extract_json_from_llm(raw_text, PlanResponse)
     except Exception as e:
         logger.error("[Planner] 파싱 실패: %s — 단일 task fallback", e)
         # fallback: 단일 task 없이 supervisor에게 위임
@@ -350,7 +347,7 @@ def supervisor_node(
             "map_wf_ids":   task_params.get("map_wf_ids", ""),
             "map_groupkey": task_params.get("map_groupkey", ""),
             "map_type":     task_params.get("map_type", "binmap"),
-            "map_bin_type": task_params.get("map_bin_type", "left_bin"),
+            "map_oper":     task_params.get("map_oper", ""),
             # Yield 파라미터
             "lotcd":          task_params.get("lotcd", state.get("lotcd", "")),
             "ref_date":       task_params.get("ref_date", state.get("ref_date", "")),
@@ -366,7 +363,24 @@ def supervisor_node(
             "dh_query":      task_params.get("dh_query", ""),
             "dh_fail_type":  task_params.get("dh_fail_type", ""),
             "dh_cause_oper": task_params.get("dh_cause_oper", ""),
+            # Lot History 파라미터
+            "lh_lot_ids":    task_params.get("lh_lot_ids", ""),
         }
+
+        # map_agent 필수 파라미터 검증 (planner 경로)
+        if current_task["agent"] == "map_agent":
+            # task_params에서 먼저 정규화 시도
+            normalized = _normalize_map_oper(update_dict.get("map_oper", ""))
+            if not normalized:
+                user_response = interrupt({
+                    "type": "missing_param",
+                    "param": "map_oper",
+                    "message": "PT1H / PT1C 중 어떤 공정의 맵을 조회할까요?",
+                    "route": "map_agent",
+                })
+                normalized = _normalize_map_oper(str(user_response))
+            update_dict["map_oper"] = normalized or "PT1H"
+
         return Command(update=update_dict, goto=current_task["agent"])
 
     configurable = config.get("configurable", {}) if config else {}
@@ -390,7 +404,7 @@ def supervisor_node(
         )
 
     # 에이전트 메시지 요약 — 최근 2턴은 full 유지 (멀티스텝 lot ID 전달용)
-    _AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export"}
+    _AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent"}
     _RECENT_FULL_TURNS = 2
     _MAX_OLD_MSG_LEN = 300
 
@@ -471,25 +485,7 @@ def supervisor_node(
         raw_text = raw_text.strip()
         logger.debug("[Supervisor] raw LLM response: %s", raw_text[:500])
 
-        # <think>...</think> 제거 후 JSON 파싱
-        # 닫는 태그가 없는 경우도 처리: <think>...끝 → 전부 제거
-        clean_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
-        clean_text = re.sub(r"<think>.*", "", clean_text, flags=re.DOTALL).strip()
-
-        # JSON 블록 추출 (```json ... ``` 또는 { ... })
-        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean_text, re.DOTALL)
-        if not json_match:
-            json_match = re.search(r"(\{.*\})", clean_text, re.DOTALL)
-
-        # clean_text에서 못 찾으면 raw_text 전체에서 JSON 추출 시도 (think 안에 JSON이 있는 경우)
-        if not json_match:
-            json_match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
-        if not json_match:
-            raise ValueError(f"No JSON found in response: {raw_text[:300]}")
-
-        json_str = json_match.group(1)
-        data = json.loads(repair_json(json_str))
-        decision = RouteResponse(**data)
+        decision = extract_json_from_llm(raw_text, RouteResponse)
     except (ConnectionError, TimeoutError, OSError):
         raise  # Tier 1: RetryPolicy가 재시도
     except Exception as e:
@@ -563,6 +559,15 @@ def supervisor_node(
             else:
                 decision.map_lot_id = resp
 
+        if not decision.map_oper:
+            user_response = interrupt({
+                "type": "missing_param",
+                "param": "map_oper",
+                "message": "PT1H / PT1C 중 어떤 공정의 맵을 조회할까요?",
+                "route": "map_agent",
+            })
+            decision.map_oper = _normalize_map_oper(str(user_response)) or "PT1H"
+
     # Langfuse — 라우팅 결정 후 메타데이터 기록
     try:
         get_client().update_current_span(
@@ -585,7 +590,7 @@ def supervisor_node(
     result_message = AIMessage(content=decision.message, name="supervisor")
 
     logger.info(
-        "[Supervisor] step=%d next=%-18s lotcd=%-6s ref_date=%s wads_end_tm=%s periods=%s unit=%s filter_params=%s map_lot_id=%r map_lot_ids=%r map_wf_ids=%r map_groupkey=%r yield_lot_ids=%r dh_query=%r",
+        "[Supervisor] step=%d next=%-18s lotcd=%-6s ref_date=%s wads_end_tm=%s periods=%s unit=%s filter_params=%s map_lot_id=%r map_lot_ids=%r map_wf_ids=%r map_groupkey=%r yield_lot_ids=%r dh_query=%r lh_lot_ids=%r",
         step_count,
         decision.next,
         new_lotcd,
@@ -600,6 +605,7 @@ def supervisor_node(
         decision.map_groupkey,
         decision.yield_lot_ids,
         decision.dh_query,
+        decision.lh_lot_ids,
     )
 
     update_dict = {
@@ -617,12 +623,13 @@ def supervisor_node(
         "map_wf_ids":   decision.map_wf_ids,
         "map_groupkey": decision.map_groupkey,
         "map_type":     decision.map_type or "binmap",
-        "map_bin_type": decision.map_bin_type or "left_bin",
+        "map_oper":     decision.map_oper,
         "yield_lot_ids":  decision.yield_lot_ids,
         "yield_groupkey": decision.yield_groupkey,
         "dh_query":      decision.dh_query,
         "dh_fail_type":  decision.dh_fail_type,
         "dh_cause_oper": decision.dh_cause_oper,
+        "lh_lot_ids":    decision.lh_lot_ids,
         "_last_agent_params": {
             "lot_id": decision.map_lot_id, "lot_ids": decision.map_lot_ids,
             "wf_ids": decision.map_wf_ids, "groupkey": decision.map_groupkey,
@@ -632,6 +639,7 @@ def supervisor_node(
             "dh_query": decision.dh_query,
             "dh_fail_type": decision.dh_fail_type,
             "dh_cause_oper": decision.dh_cause_oper,
+            "lh_lot_ids": decision.lh_lot_ids,
         },
     }
 
@@ -683,7 +691,7 @@ class YieldQueryState(TypedDict):
     map_wf_ids:   str
     map_groupkey: str
     map_type:     str
-    map_bin_type: str
+    map_oper:     str
 
     # Yield lot 비교 파라미터
     yield_lot_ids:  str
@@ -696,6 +704,10 @@ class YieldQueryState(TypedDict):
 
     # Fail History 결과
     fail_history_artifacts: Annotated[list, operator.add]
+
+    # Lot History 파라미터 & 결과
+    lh_lot_ids: str
+    lot_history_artifacts: Annotated[list, operator.add]
 
     # Map 결과
     map_result:    str
@@ -722,6 +734,7 @@ from wads_agent import wads_agent_node  # noqa: E402
 from map_agent import map_agent_node  # noqa: E402
 from fail_history_agent import fail_history_agent_node  # noqa: E402
 from ppt_export_agent import ppt_export_node  # noqa: E402
+from lot_history_agent import lot_history_agent_node  # noqa: E402
 
 # 에이전트 노드 재시도 정책 (Oracle/LLM 일시적 오류 자동 재시도)
 _retry = RetryPolicy(max_attempts=3, initial_interval=1.0)
@@ -735,6 +748,7 @@ workflow.add_node("wads_agent", wads_agent_node, retry_policy=_retry)
 workflow.add_node("map_agent", map_agent_node, retry_policy=_retry)
 workflow.add_node("fail_history_agent", fail_history_agent_node, retry_policy=_retry)
 workflow.add_node("ppt_export", ppt_export_node, retry_policy=_retry)
+workflow.add_node("lot_history_agent", lot_history_agent_node, retry_policy=_retry)
 
 workflow.add_edge(START, "rewrite")
 workflow.add_edge("rewrite", "planner")        # rewrite → planner
@@ -747,6 +761,7 @@ workflow.add_edge("map_agent", "supervisor")
 workflow.add_edge("fail_history_agent", "supervisor")
 # ppt_export → supervisor (planner 큐의 후속 task 실행을 위해 supervisor로 복귀)
 workflow.add_edge("ppt_export", "supervisor")
+workflow.add_edge("lot_history_agent", "supervisor")
 
 # workflow는 빌더(StateGraph)로 export — agent_server.py에서 checkpointer와 함께 compile
 # 로컬 테스트:

@@ -6,7 +6,7 @@ React 프론트엔드가 채팅/아티팩트를 분리 렌더링할 수 있도�
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
@@ -124,7 +124,7 @@ class HistoryMessage(BaseModel):
     content: str = ""
     artifacts: list[ArtifactData] = []
     suggestion: str = ""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class SessionHistory(BaseModel):
@@ -136,4 +136,4 @@ class SessionSummary(BaseModel):
     session_id: str
     last_query: str = ""
     turn_count: int = 0
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -53,12 +53,15 @@ TODAY's DATE: {today}
 3. map_agent: 웨이퍼 맵 (binmap/cummap) 시각화
    params: map_lot_id(단일 lot, 예: "4SS2DPD"), map_lot_ids(복수 lot, 쉼표구분),
            map_wf_ids(wafer IDs, 쉼표구분), map_groupkey("lot.wf" 형식),
-           map_type("binmap"|"cummap"|"all"), map_bin_type("left_bin"|"right_bin")
+           map_type("binmap"|"cummap"|"all"), map_oper("PT1H"|"PT1C")
 
 4. fail_history_agent: 불량이력 RAG 검색
    params: dh_query(검색 쿼리), dh_fail_type(불량유형, 예: "TWT"), dh_cause_oper(원인공정), lotcd
 
 5. ppt_export: PPT 내보내기 (이전 분석 결과를 PPT로 변환, params 불필요)
+
+6. lot_history_agent: LOT 종합 이력 조회 (FDC알람, Q-TIME초과, Trouble, Future Action, Sample Split)
+   params: lh_lot_ids(LOT ID, 쉼표구분, 예: "4SS2DPD,4SSXCEW")
 
 === KEY RULES ===
 - lotcd는 3-4자리 제품코드만 (예: 4SS, 5NA). 전체 lot ID(예: 4SS2DPD)는 map_lot_id 또는 yield_lot_ids에 사용
@@ -83,8 +86,8 @@ TODAY's DATE: {today}
   → task_1: yield_agent, params={{lotcd:"4SS"}}, goal:"4SS 수율 조회"
   → task_2: wads_agent, params={{lotcd:"4SS"}}, goal:"4SS WADS 열화 리포트 조회"
 
-- "4SS2DPD binmap이랑 cummap 둘 다 보여줘"
-  → task_1: map_agent, params={{map_lot_id:"4SS2DPD", map_type:"all"}}, goal:"4SS2DPD binmap+cummap 전체 조회"
+- "4SS2DPD PT1H binmap이랑 cummap 둘 다 보여줘"
+  → task_1: map_agent, params={{map_lot_id:"4SS2DPD", map_type:"all", map_oper:"PT1H"}}, goal:"4SS2DPD PT1H binmap+cummap 전체 조회"
 
 - "4SS 수율 보고 이상 있으면 WADS도 확인해줘"
   → task_1: yield_agent, params={{lotcd:"4SS"}}, goal:"4SS 수율 조회 (이상 시 WADS 확인 필요)"
@@ -96,9 +99,15 @@ TODAY's DATE: {today}
 - "TWT 불량이력 검색해줘"
   → task_1: fail_history_agent, params={{dh_fail_type:"TWT"}}, goal:"TWT 불량이력 검색"
 
-- "4SS2DPD,4SSXCEW wafer 03,06,09 binmap 각각 보여줘"
-  → task_1: map_agent, params={{map_lot_id:"4SS2DPD", map_wf_ids:"03,06,09", map_type:"binmap"}}, goal:"4SS2DPD wafer 03,06,09 binmap"
-  → task_2: map_agent, params={{map_lot_id:"4SSXCEW", map_wf_ids:"03,06,09", map_type:"binmap"}}, goal:"4SSXCEW wafer 03,06,09 binmap"
+- "4SS2DPD lot 이력 알려줘"
+  → task_1: lot_history_agent, params={{lh_lot_ids:"4SS2DPD"}}, goal:"4SS2DPD LOT 종합 이력 조회"
+
+- "4SS2DPD,4SSXCEW lot 이력 비교해줘"
+  → task_1: lot_history_agent, params={{lh_lot_ids:"4SS2DPD,4SSXCEW"}}, goal:"4SS2DPD,4SSXCEW LOT 종합 이력 조회"
+
+- "4SS2DPD,4SSXCEW wafer 03,06,09 PT1C binmap 각각 보여줘"
+  → task_1: map_agent, params={{map_lot_id:"4SS2DPD", map_wf_ids:"03,06,09", map_type:"binmap", map_oper:"PT1C"}}, goal:"4SS2DPD wafer 03,06,09 PT1C binmap"
+  → task_2: map_agent, params={{map_lot_id:"4SSXCEW", map_wf_ids:"03,06,09", map_type:"binmap", map_oper:"PT1C"}}, goal:"4SSXCEW wafer 03,06,09 PT1C binmap"
 
 === OUTPUT FORMAT ===
 Output a single JSON object with a "tasks" array. No markdown, no explanation.
@@ -123,6 +132,8 @@ Rules:
 - When a date is mentioned without a year (e.g., "3월 2일"), assume the current year ({year})
 - Do NOT expand or convert date expressions — keep them as the user wrote them (e.g., "3월 2일" stays "3월 2일")
 - If specific parameter names are mentioned, preserve them exactly
+- PT1H, PT1C 등은 반도체 공정명(oper)이다. ISO 8601 duration이 아니므로 절대 변환하지 마라.
+  예: "PT1H binmap" → 그대로 유지 (절대 "1시간"으로 변환하지 말 것)
 - When the user mentions wafer ID patterns (N배수, N의 배수, 홀수, 짝수, N~M번, 처음 N개, 마지막 N개),
   use the compute_wafer_ids tool to calculate exact wafer IDs, then include the computed IDs in the rewritten query.
   Example: "4SS2DPD 3배수 wafer binmap" + tool result "03,06,09,12,15,18,21,24"
@@ -147,6 +158,7 @@ AVAILABLE AGENTS:
 - yield_agent : Fetches weekly pt1h parametric test data and displays a table
 - wads_agent  : Fetches WADS (degradation detection) reports from Oracle DB
 - fail_history_agent : 불량이력 RAG 검색 및 리포트 생성 (OpenSearch)
+- lot_history_agent : LOT 종합 이력 (FDC알람, Q-TIME초과, Trouble, Future Action, Sample Split)
 
 === ROUTING RULES ===
 
@@ -181,7 +193,7 @@ Route to **map_agent** when the user explicitly requests:
 - map_wf_ids:   wf_id를 명시한 경우 (예: "01,02,03")
 - map_groupkey: "lot.wf" 형식으로 지정한 경우 (예: "LOT001.01,LOT001.02")
 - map_type:     "binmap"(기본) | "cummap" | "all"
-- map_bin_type: "left_bin"(기본) | "right_bin"
+- map_oper:     "PT1H" | "PT1C" (필수 — 사용자에게 반드시 확인)
 
 === YIELD LOT FILTER ===
 - 사용자가 specific lot ID(길이 > 5자)를 언급하고 수율/비교 조회 → yield_lot_ids에 저장, next="yield_agent"
@@ -195,13 +207,19 @@ Route to **map_agent** when the user explicitly requests:
   예: "4SS2DPD" → lotcd="4SS"
 - yield_lot_ids/yield_groupkey 없으면 기존 lotcd 기반 period 조회 유지
 
+Route to **lot_history_agent** when the user asks about:
+- lot 이력, lot history, FDC 알람, Q-TIME 초과, trouble lot, future action, sample split
+- "이 lot 뭐가 문제야?", "lot 이력 보여줘", "이 lot 조사해줘", "lot 이력 조회"
+- Examples: "4SS2DPD 이력 알려줘", "4SS2DPD,4SSXCEW lot 이력 조회"
+- lh_lot_ids: LOT ID, 쉼표 구분 (예: "4SS2DPD" 또는 "4SS2DPD,4SSXCEW")
+
 Route to **ppt_export** when the user explicitly requests:
 - PPT 생성, PPT 다운로드, 리포트 내보내기, 프레젠테이션 만들기
 - Examples: "PPT로 만들어줘", "리포트 PPT로 저장해줘", "분석 결과 PPT로 내보내줘", "프레젠테이션 생성"
 - Note: ppt_export는 이전 분석 결과(yield_artifacts, map_artifacts 등)가 state에 있어야 의미 있음
 - 분석 결과 없이 PPT 요청 시 → message에 "먼저 수율 조회를 해주세요"로 안내하고 FINISH
 
-Route to **FINISH** when the request is unrelated to yield, WADS, or wafer map.
+Route to **FINISH** when the request is unrelated to yield, WADS, wafer map, lot history, or fail history.
 
 === UNIT & PERIODS ===
 unit 결정:
@@ -304,7 +322,7 @@ JSON schema:
   "map_wf_ids":   "",
   "map_groupkey": "",
   "map_type":     "binmap",
-  "map_bin_type": "left_bin",
+  "map_oper":     "",
   "yield_lot_ids":  "",
   "yield_groupkey": "",
   "dh_query": "",

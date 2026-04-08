@@ -773,8 +773,8 @@ def _build_cummap_grid_html(
     PT1C_PARAM_SET = set(PT1C_COLUMNS)  # {"PT1C", "CFTA"}
 
     columns: list[tuple[str, str | None, str]] = [
-        ("PT1H", None, "PT1H"),       # PT1H 전체 pass rate (A=Pass)
-        ("PT1C", None, "PT1C"),       # PT1C 전체 pass rate (A=Pass)
+        ("PT1H", None, "PT1H TEST"),   # PT1H 전체 pass rate (A=Pass)
+        ("PT1C", None, "PT1C TEST"),  # PT1C 전체 pass rate (A=Pass)
     ]
 
     improved = [a for a in anomaly_params if a["direction"] == "개선"][:3]
@@ -784,11 +784,11 @@ def _build_cummap_grid_html(
         for a in items:
             param = a["param"]
             if param in PT1C_PARAM_SET:
-                # PT1C 파라미터 → category="PT1C", target_bin=None
-                columns.append((f"{prefix}_{param}", None, "PT1C"))
+                # PT1C 파라미터 → oper_det_desc="PT1C TEST", target_bin=None
+                columns.append((f"{prefix}_{param}", None, "PT1C TEST"))
             elif param in CATEGORY_TO_BIN:
-                # PT1H 파라미터 → category="PT1H", target_bin=해당 bin
-                columns.append((f"{prefix}_{param}", CATEGORY_TO_BIN[param], "PT1H"))
+                # PT1H 파라미터 → oper_det_desc="PT1H TEST", target_bin=해당 bin
+                columns.append((f"{prefix}_{param}", CATEGORY_TO_BIN[param], "PT1H TEST"))
             # 그 외(CATEGORY_TO_BIN에도 PT1C에도 없는 param)는 skip
 
     if len(columns) < 3:
