@@ -47,8 +47,9 @@ TODAY's DATE: {today}
            periods(조회 기간 수), filter_params(파라미터 목록, 예: ["VTH","IDSAT"]),
            yield_lot_ids(특정 lot ID, 예: "4SS2DPD,4SSXCEW"), yield_groupkey("lot.wf" 형식)
 
-2. wads_agent: WADS 열화 검출 리포트
-   params: lotcd(3-4자), wads_start_tm(YYYY-MM-DD), wads_end_tm(YYYY-MM-DD)
+2. wads_agent: WADS 열화 검출 리포트 / 검출 lot list 조회
+   params: lotcd(3-4자), wads_start_tm(YYYY-MM-DD), wads_end_tm(YYYY-MM-DD), parameter(step코드, 예: "step07")
+   ※ "검출", "검출된 lot", "step별 검출", "불량 검출" → 반드시 wads_agent
 
 3. map_agent: 웨이퍼 맵 (binmap/cummap) 시각화
    params: map_lot_id(단일 lot, 예: "4SS2DPD"), map_lot_ids(복수 lot, 쉼표구분),
@@ -108,6 +109,14 @@ TODAY's DATE: {today}
 - "4SS2DPD,4SSXCEW wafer 03,06,09 PT1C binmap 각각 보여줘"
   → task_1: map_agent, params={{map_lot_id:"4SS2DPD", map_wf_ids:"03,06,09", map_type:"binmap", map_oper:"PT1C"}}, goal:"4SS2DPD wafer 03,06,09 PT1C binmap"
   → task_2: map_agent, params={{map_lot_id:"4SSXCEW", map_wf_ids:"03,06,09", map_type:"binmap", map_oper:"PT1C"}}, goal:"4SSXCEW wafer 03,06,09 PT1C binmap"
+
+- "최근 1주일 4SS step07 검출 lot list 알려주고 pt1c map으로 보여줘"
+  → task_1: wads_agent, params={{lotcd:"4SS", wads_start_tm:"최근 1주일", parameter:"step07"}}, goal:"4SS step07 검출 lot list 조회"
+  → task_2: map_agent, params={{map_type:"binmap", map_oper:"PT1C"}}, goal:"검출된 lot pt1c map 시각화 (lot ID는 task_1 결과에서 획득)"
+
+- "4SS 검출된 lot cummap 보여줘"
+  → task_1: wads_agent, params={{lotcd:"4SS"}}, goal:"4SS 검출 lot list 조회"
+  → task_2: map_agent, params={{map_type:"cummap"}}, goal:"검출된 lot cummap (lot ID는 task_1 결과에서 획득)"
 
 === OUTPUT FORMAT ===
 Output a single JSON object with a "tasks" array. No markdown, no explanation.
@@ -174,13 +183,28 @@ Route to **yield_agent** when the user asks about:
 
 Route to **wads_agent** when the user explicitly requests:
 - 열화(degradation) detection, 검출 리포트, WADS 리포트
-- Examples: "WADS 열화 검출 리포트 보여줘", "열화 리포트 보여줘", "1월 20일 검출 list 보여줘"
+- 검출된 lot, 검출 lot list, step별 검출 결과, 불량 검출
+- "step"(공정 스텝) + "검출" 조합은 항상 wads_agent
+- Examples: "WADS 열화 검출 리포트 보여줘", "열화 리포트 보여줘", "1월 20일 검출 list 보여줘",
+            "step07 검출 lot list 보여줘", "최근 검출된 lot 알려줘", "검출 lot pt1c map 보여줘"
 - Note: Short affirmatives like "응", "보여줘" are already expanded by the rewrite step into explicit commands. Route based on the rewritten content.
 
 Route to **fail_history_agent** when the user asks about:
 - 불량이력, 불량 히스토리, fail history, 과거 불량, 이전 불량 사례
 - 특정 불량 유형의 원인/조치 이력, 불량 원인
 - Examples: "TWT 불량이력 보여줘", "4SS M0C ETCH 불량 원인 알려줘", "IOFF 과거 사례"
+
+=== FAIL HISTORY PARAMETERS ===
+- dh_fail_type: 사용자가 언급한 불량 유형 키워드를 추출
+  예: "TWT 불량이력" → dh_fail_type="TWT"
+  예: "IOFF 과거 사례" → dh_fail_type="IOFF"
+  예: "VTH 불량 원인" → dh_fail_type="VTH"
+  불량 유형 미지정 → dh_fail_type=""
+- dh_cause_oper: 사용자가 언급한 원인 공정명을 추출
+  예: "M0C ETCH 불량 원인" → dh_cause_oper="M0C ETCH"
+  예: "DEP 공정 불량" → dh_cause_oper="DEP"
+  공정 미지정 → dh_cause_oper=""
+- dh_query: 불량 유형/공정 외 자유텍스트 검색어 (보통 사용자 질의 전체 또는 핵심 키워드)
 
 Route to **map_agent** when the user explicitly requests:
 - 웨이퍼 맵, wafer map, binmap, cummap, 누적 패스레이트
@@ -210,8 +234,15 @@ Route to **map_agent** when the user explicitly requests:
 Route to **lot_history_agent** when the user asks about:
 - lot 이력, lot history, FDC 알람, Q-TIME 초과, trouble lot, future action, sample split
 - "이 lot 뭐가 문제야?", "lot 이력 보여줘", "이 lot 조사해줘", "lot 이력 조회"
-- Examples: "4SS2DPD 이력 알려줘", "4SS2DPD,4SSXCEW lot 이력 조회"
-- lh_lot_ids: LOT ID, 쉼표 구분 (예: "4SS2DPD" 또는 "4SS2DPD,4SSXCEW")
+- "FDC 알람 확인", "문제 있는 lot 조사"
+- Examples: "4SS2DPD 이력 알려줘", "4SS2DPD,4SSXCEW lot 이력 조회", "이 lot 뭐가 문제야? 4SS2DPD FDC 알람 확인해줘"
+
+=== LOT HISTORY PARAMETERS ===
+- lh_lot_ids: 사용자가 언급한 lot ID(들)를 반드시 추출, 쉼표 구분
+  예: "4SS2DPD 이력 조회" → lh_lot_ids="4SS2DPD"
+  예: "4SS2DPD,4SSXCEW lot 이력" → lh_lot_ids="4SS2DPD,4SSXCEW"
+  예: "이 lot 뭐가 문제야? 4SS2DPD" → lh_lot_ids="4SS2DPD"
+  ※ lot_history_agent는 lh_lot_ids가 필수 — 사용자 질의에서 lot ID를 반드시 추출할 것
 
 Route to **ppt_export** when the user explicitly requests:
 - PPT 생성, PPT 다운로드, 리포트 내보내기, 프레젠테이션 만들기
@@ -290,6 +321,9 @@ EXAMPLES:
 
 - "4SS 수율 알려줘" → yield_agent → FINISH (단순 조회는 1스텝)
 
+- "검출 lot list 알려주고 pt1c map으로 보여줘"
+  → wads_agent(검출 lot list) → 결과에서 lot ID 추출 → map_agent(PT1C binmap, lot IDs) → FINISH
+
 RULES:
 - 같은 에이전트를 동일 파라미터로 재호출 금지
 - 최대 4스텝 이내 완료
@@ -327,7 +361,8 @@ JSON schema:
   "yield_groupkey": "",
   "dh_query": "",
   "dh_fail_type": "",
-  "dh_cause_oper": ""
+  "dh_cause_oper": "",
+  "lh_lot_ids": ""
 }}\
 """ + _VERBATIM_RULES + _SAFETY_RULES
 

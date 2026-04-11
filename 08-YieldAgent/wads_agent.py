@@ -94,6 +94,7 @@ def _render_wads_query_html(payload: List[Dict[str, Any]]) -> str:
     for row in payload:
         rows_html += (
             "<tr>"
+            f"<td>{_html_escape(row.get('lotid'))}</td>"
             f"<td>{_html_escape(row.get('lotcd'))}</td>"
             f"<td>{_html_escape(row.get('end_tm'))}</td>"
             f"<td>{_html_escape(row.get('parameter'))}</td>"
@@ -102,7 +103,7 @@ def _render_wads_query_html(payload: List[Dict[str, Any]]) -> str:
 
     table = (
         "<table class='wads-table'>"
-        "<thead><tr><th>LOT코드</th><th>종료시간</th><th>스텝</th></tr></thead>"
+        "<thead><tr><th>LOT ID</th><th>LOT코드</th><th>종료시간</th><th>스텝</th></tr></thead>"
         f"<tbody>{rows_html}</tbody></table>"
     )
 

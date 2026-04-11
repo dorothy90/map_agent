@@ -134,7 +134,7 @@ def wads_query_data(
             end_tm=end_tm,
             start_tm=start_tm,
             parameter=parameter,
-            columns="LOTCD, END_TM, CTN_DESC AS PARAMETER",
+            columns="LOTID, LOTCD, END_TM, CTN_DESC AS PARAMETER",
         )
     except Exception as e:
         logger.error("[wads_query_data] Oracle 오류: %s", e, exc_info=True)
@@ -153,11 +153,15 @@ def wads_query_data(
         ]
         return "조건에 맞는 WADS 데이터가 없습니다."
 
-    result = filtered_df[["lotcd", "end_tm", "parameter"]].to_dict(orient="records")
+    result = filtered_df[["lotid", "lotcd", "end_tm", "parameter"]].to_dict(orient="records")
     storage["query"] = result
     logger.info("[wads_query_data] 완료: %d건", len(result))
 
-    return f"WADS 데이터 조회 완료: 총 {len(result)}건의 데이터가 조회되었습니다. (데이터는 화면에 별도 표시됩니다)"
+    # LLM에게 실제 데이터(LOTID 포함)를 반환하여 lot list 질문에 답변 가능하게 함
+    lines = [f"WADS 데이터 조회 완료: 총 {len(result)}건 (데이터는 화면에 별도 표시됩니다)"]
+    for r in result[:50]:
+        lines.append(f"- LOTID={r.get('lotid')}, LOTCD={r.get('lotcd')}, END_TM={r.get('end_tm')}, STEP={r.get('parameter')}")
+    return "\n".join(lines)
 
 
 @tool
@@ -279,7 +283,8 @@ def _ensure_row_limit(sql: str, limit: int = 500) -> str:
 _SQL_GEN_PROMPT = """You are an Oracle SQL generator for the {table_name} table.
 
 Schema:
-  LOTCD     VARCHAR2  -- lot code (e.g., "4SS", "5NA")
+  LOTID     VARCHAR2  -- individual lot ID (e.g., "4SS7TB2", "4SSMBL9")
+  LOTCD     VARCHAR2  -- product code (e.g., "4SS", "5NA")
   END_TM    VARCHAR2  -- end time "YYYY-MM-DD HH:MM:SS"
   CTN_DESC  VARCHAR2  -- step description (e.g., "step01", "step02")
   HTML      CLOB      -- report HTML (do NOT select unless explicitly requested)

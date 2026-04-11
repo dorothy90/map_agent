@@ -1,0 +1,421 @@
+[
+  {
+    "id": "route_001",
+    "category": "yield_simple",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "오늘 4SS 수율 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "yield_agent",
+      "lotcd": "4SS",
+      "ref_date": "20260411",
+      "unit": "weekly",
+      "periods": 0,
+      "filter_params": []
+    }
+  },
+  {
+    "id": "route_002",
+    "category": "yield_filtered",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS VTH만 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "yield_agent",
+      "lotcd": "4SS",
+      "filter_params": ["VTH"]
+    }
+  },
+  {
+    "id": "route_003",
+    "category": "yield_filtered",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS VTH랑 IDSAT 수율 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "yield_agent",
+      "lotcd": "4SS",
+      "filter_params": ["VTH", "IDSAT"]
+    }
+  },
+  {
+    "id": "route_004",
+    "category": "yield_mixed_lang",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS PT1H VTH yield 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "yield_agent",
+      "lotcd": "4SS",
+      "filter_params": ["VTH"]
+    }
+  },
+  {
+    "id": "route_005",
+    "category": "yield_lot_compare",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS2DPD,4SSXCEW 수율 비교해줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "yield_agent",
+      "lotcd": "4SS",
+      "yield_lot_ids": "4SS2DPD,4SSXCEW"
+    }
+  },
+  {
+    "id": "route_006",
+    "category": "yield_lot_single",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS2DPD 수율 알려줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "yield_agent",
+      "lotcd": "4SS",
+      "yield_lot_ids": "4SS2DPD"
+    }
+  },
+  {
+    "id": "route_007",
+    "category": "yield_date_weekly",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "저번주 4SS 수율 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "yield_agent",
+      "lotcd": "4SS",
+      "unit": "weekly"
+    }
+  },
+  {
+    "id": "route_008",
+    "category": "yield_date_weekly",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "11주차 4SS 수율",
+    "conversation_history": [],
+    "expected": {
+      "next": "yield_agent",
+      "lotcd": "4SS",
+      "ref_date": "20260309",
+      "unit": "weekly",
+      "periods": 1
+    }
+  },
+  {
+    "id": "route_009",
+    "category": "yield_date_range",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "3월 2일부터 5일까지 4SS daily 수율",
+    "conversation_history": [],
+    "expected": {
+      "next": "yield_agent",
+      "lotcd": "4SS",
+      "ref_date": "20260305",
+      "unit": "daily",
+      "periods": 4
+    }
+  },
+  {
+    "id": "route_010",
+    "category": "yield_date_monthly",
+    "scenario_type": "single-turn",
+    "criticality": "normal",
+    "oracle_type": "exact",
+    "input_query": "최근 3달 4SS 월별 수율",
+    "conversation_history": [],
+    "expected": {
+      "next": "yield_agent",
+      "lotcd": "4SS",
+      "unit": "monthly",
+      "periods": 3
+    }
+  },
+  {
+    "id": "route_011",
+    "category": "yield_groupkey",
+    "scenario_type": "single-turn",
+    "criticality": "normal",
+    "oracle_type": "exact",
+    "input_query": "4SS2DPD.01,4SS2DPD.05 수율 비교",
+    "conversation_history": [],
+    "expected": {
+      "next": "yield_agent",
+      "lotcd": "4SS",
+      "yield_groupkey": "4SS2DPD.01,4SS2DPD.05"
+    }
+  },
+  {
+    "id": "route_012",
+    "category": "wads_simple",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS WADS 열화 검출 리포트 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "wads_agent",
+      "lotcd": "4SS"
+    }
+  },
+  {
+    "id": "route_013",
+    "category": "wads_date",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SA 열화 리포트 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "wads_agent",
+      "lotcd": "4SA"
+    }
+  },
+  {
+    "id": "route_014",
+    "category": "wads_date_range",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "지난달 4SS WADS 검출 리포트",
+    "conversation_history": [],
+    "expected": {
+      "next": "wads_agent",
+      "lotcd": "4SS",
+      "wads_start_tm": "2026-03-01",
+      "wads_end_tm": "2026-03-31"
+    }
+  },
+  {
+    "id": "route_015",
+    "category": "wads_step",
+    "scenario_type": "single-turn",
+    "criticality": "normal",
+    "oracle_type": "exact",
+    "input_query": "step07 검출 lot list 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "wads_agent"
+    }
+  },
+  {
+    "id": "route_016",
+    "category": "wads_recent",
+    "scenario_type": "single-turn",
+    "criticality": "normal",
+    "oracle_type": "exact",
+    "input_query": "최근 검출된 lot 알려줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "wads_agent"
+    }
+  },
+  {
+    "id": "route_017",
+    "category": "map_binmap",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS2DPD PT1H binmap 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "map_agent",
+      "map_lot_id": "4SS2DPD",
+      "map_oper": "PT1H",
+      "map_type": "binmap"
+    }
+  },
+  {
+    "id": "route_018",
+    "category": "map_cummap",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS2DPD PT1C cummap 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "map_agent",
+      "map_lot_id": "4SS2DPD",
+      "map_oper": "PT1C",
+      "map_type": "cummap"
+    }
+  },
+  {
+    "id": "route_019",
+    "category": "map_multi",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS2DPD,4SSXCEW PT1H cummap 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "map_agent",
+      "map_lot_ids": "4SS2DPD,4SSXCEW",
+      "map_oper": "PT1H",
+      "map_type": "cummap"
+    }
+  },
+  {
+    "id": "route_020",
+    "category": "map_groupkey",
+    "scenario_type": "single-turn",
+    "criticality": "normal",
+    "oracle_type": "exact",
+    "input_query": "4SS2DPD.01,4SS2DPD.05 PT1H binmap",
+    "conversation_history": [],
+    "expected": {
+      "next": "map_agent",
+      "map_groupkey": "4SS2DPD.01,4SS2DPD.05",
+      "map_oper": "PT1H",
+      "map_type": "binmap"
+    }
+  },
+  {
+    "id": "route_021",
+    "category": "map_pt1c_iso_guard",
+    "scenario_type": "single-turn",
+    "criticality": "blocker",
+    "oracle_type": "exact",
+    "input_query": "4SS2DPD PT1C binmap",
+    "conversation_history": [],
+    "expected": {
+      "next": "map_agent",
+      "map_lot_id": "4SS2DPD",
+      "map_oper": "PT1C"
+    },
+    "_note": "PT1C가 ISO 8601 duration으로 변환되지 않아야 함"
+  },
+  {
+    "id": "route_022",
+    "category": "fail_history",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "TWT 불량이력 보여줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "fail_history_agent",
+      "dh_fail_type": "TWT"
+    }
+  },
+  {
+    "id": "route_023",
+    "category": "fail_history",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS M0C ETCH 불량 원인 알려줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "fail_history_agent",
+      "lotcd": "4SS",
+      "dh_cause_oper": "M0C ETCH"
+    }
+  },
+  {
+    "id": "route_024",
+    "category": "fail_history",
+    "scenario_type": "single-turn",
+    "criticality": "normal",
+    "oracle_type": "exact",
+    "input_query": "IOFF 과거 사례 검색해줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "fail_history_agent",
+      "dh_fail_type": "IOFF"
+    }
+  },
+  {
+    "id": "route_025",
+    "category": "lot_history",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS2DPD 이력 조회해줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "lot_history_agent",
+      "lh_lot_ids": "4SS2DPD"
+    }
+  },
+  {
+    "id": "route_026",
+    "category": "lot_history",
+    "scenario_type": "single-turn",
+    "criticality": "high",
+    "oracle_type": "exact",
+    "input_query": "4SS2DPD,4SSXCEW lot 이력 조회",
+    "conversation_history": [],
+    "expected": {
+      "next": "lot_history_agent",
+      "lh_lot_ids": "4SS2DPD,4SSXCEW"
+    }
+  },
+  {
+    "id": "route_027",
+    "category": "lot_history",
+    "scenario_type": "single-turn",
+    "criticality": "normal",
+    "oracle_type": "exact",
+    "input_query": "이 lot 뭐가 문제야? 4SS2DPD FDC 알람 확인해줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "lot_history_agent",
+      "lh_lot_ids": "4SS2DPD"
+    }
+  },
+  {
+    "id": "route_028",
+    "category": "ppt_no_context",
+    "scenario_type": "single-turn",
+    "criticality": "normal",
+    "oracle_type": "exact",
+    "input_query": "PPT로 만들어줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "FINISH"
+    },
+    "_note": "이전 분석 결과 없이 PPT 요청 → FINISH가 올바른 동작 (프롬프트 규칙)"
+  },
+  {
+    "id": "route_029",
+    "category": "ppt_no_context",
+    "scenario_type": "single-turn",
+    "criticality": "normal",
+    "oracle_type": "exact",
+    "input_query": "분석 결과 PPT로 내보내줘",
+    "conversation_history": [],
+    "expected": {
+      "next": "FINISH"
+    },
+    "_note": "이전 분석 결과 없이 PPT 요청 → FINISH가 올바른 동작 (프롬프트 규칙)"
+  },
+  {
+    "id": "route_030",
+    "category": "finish_out_of_scope",
+    "scenario_type": "single-turn",
+    "criticality": "normal",
+    "oracle_type": "exact",
+    "input_query": "오늘 날씨 어때?",
+    "conversation_history": [],
+    "expected": {
+      "next": "FINISH"
+    }
+  }
+]

@@ -517,6 +517,7 @@ def supervisor_node(
                 "dh_query": decision.dh_query,
                 "dh_fail_type": decision.dh_fail_type,
                 "dh_cause_oper": decision.dh_cause_oper,
+                "lh_lot_ids": decision.lh_lot_ids,
             }
             if prev_params == curr_params:
                 logger.info("[Supervisor] 동일 에이전트+파라미터(%s) 재호출 방지 → FINISH", last_agent)

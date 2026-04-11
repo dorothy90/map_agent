@@ -152,7 +152,7 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     ref_date_str = state.get("ref_date", date.today().strftime("%Y%m%d"))
     filter_params = state.get("filter_params") or None
     unit    = state.get("unit", "weekly")
-    periods = state.get("periods", 0)
+    periods = int(state.get("periods", 0) or 0)
     yield_lot_ids  = state.get("yield_lot_ids", "")
     yield_groupkey = state.get("yield_groupkey", "")
 
