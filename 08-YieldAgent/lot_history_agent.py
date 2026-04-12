@@ -18,7 +18,7 @@ from langgraph.prebuilt import create_react_agent
 from langfuse import observe
 
 from lf_utils import lf_callbacks as _lf_callbacks
-from common import timed, get_llm, html_escape as _h, extract_suggestion
+from common import timed, get_llm, html_escape as _h, extract_suggestion, is_transient_error
 from lot_history_tools import LOT_HISTORY_TOOLS, _tool_payload_var, _get_tool_payload
 
 load_dotenv(override=True)
@@ -280,13 +280,14 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     storage: Dict[str, Any] = {}
     _tool_payload_var.set(storage)
 
-    # messages에서 원본 쿼리 추출
+    # query 우선순위: planner task goal > 사용자 last_human (#12 fix)
     messages = state.get("messages", [])
     last_human = next(
         (m for m in reversed(messages) if isinstance(m, HumanMessage)),
         None,
     )
-    query = last_human.content if last_human else f"{lh_lot_ids} lot 이력을 조회해줘"
+    task_goal = state.get("current_task_goal", "")
+    query = task_goal or (last_human.content if last_human else f"{lh_lot_ids} lot 이력을 조회해줘")
 
     # 히스토리 필터링 — 최근 3턴
     lh_history: list = []
@@ -314,12 +315,19 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             config=sub_config,
         )
     except Exception as e:
-        logger.error("[LOT History Agent] 실행 실패: %s", e, exc_info=True)
+        if is_transient_error(e):
+            logger.warning("[LOT History Agent] transient 오류, retry 위임: %s", e)
+            raise
+        logger.error("[LOT History Agent] 영구 오류: %s", e, exc_info=True)
         error_message = AIMessage(
             content=f"LOT 이력 조회 중 오류가 발생했습니다: {e}",
             name="lot_history_agent",
         )
-        return {"messages": [error_message], "lot_history_artifacts": []}
+        return {
+            "messages": [error_message],
+            "lot_history_artifacts": [],
+            "past_steps": [(state.get("current_task_id", ""), f"LOT 이력 영구 오류: {e}")],
+        }
 
     ai_messages = [m for m in result.get("messages", []) if isinstance(m, AIMessage)]
     answer = ai_messages[-1].content if ai_messages else "LOT 이력 조회에 실패했습니다."
@@ -344,4 +352,5 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         "messages": [result_message],
         "lot_history_artifacts": artifacts,
         "agent_suggestion": agent_suggestion,
+        "past_steps": [(state.get("current_task_id", ""), answer[:300])],
     }

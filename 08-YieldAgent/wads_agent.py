@@ -14,7 +14,7 @@ from langgraph.prebuilt import create_react_agent
 from langfuse import observe
 
 from lf_utils import lf_callbacks as _lf_callbacks
-from common import timed, get_llm, html_escape as _html_escape, extract_suggestion
+from common import timed, get_llm, html_escape as _html_escape, extract_suggestion, is_transient_error
 from prompts import WADS_SYSTEM_PROMPT_TEMPLATE
 from wads_tools import WADS_TOOLS, _tool_payload_var, _get_tool_payload
 
@@ -232,14 +232,17 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     storage: Dict[str, Any] = {"reports": []}
     _tool_payload_var.set(storage)
 
-    # 변경1: messages에서 rewrite된 원본 쿼리 추출 (사용자 의도 보존)
+    # query 우선순위: planner가 만든 task goal > 사용자 last_human (#12 fix)
+    # task goal은 planner가 task별로 분해한 명확한 의도를 담고 있어 멀티 task plan에서
+    # worker가 어느 task인지 구분 가능. 큐 dispatch가 아닌 LLM-routed 분기에서는 빈 string.
     messages = state.get("messages", [])
     last_human = next(
         (m for m in reversed(messages) if isinstance(m, HumanMessage)),
         None,
     )
-    query = last_human.content if last_human else f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘"
-    logger.info("[WADS Agent] 쿼리: %s", query)
+    task_goal = state.get("current_task_goal", "")
+    query = task_goal or (last_human.content if last_human else f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘")
+    logger.info("[WADS Agent] 쿼리: %s (task_goal=%r)", query, task_goal)
 
     # S-3: 선택적 히스토리 필터링 — WADS 관련 메시지만 최근 3턴
     wads_history: List[Any] = []
@@ -284,12 +287,20 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             else:
                 logger.info("[WADS Agent] ReAct msg[%d] %s(name=%s): %s", i, mtype, name, content_preview)
     except Exception as e:
-        logger.error("[WADS Agent] 실행 실패: %s", e, exc_info=True)
+        if is_transient_error(e):
+            # transient: RetryPolicy(retry_on=is_transient_error)가 자동 재시도
+            logger.warning("[WADS Agent] transient 오류, retry 위임: %s", e)
+            raise
+        logger.error("[WADS Agent] 영구 오류: %s", e, exc_info=True)
         error_message = AIMessage(
             content=f"WADS 리포트 조회 중 오류가 발생했습니다: {e}",
             name="wads_agent",
         )
-        return {"messages": [error_message], "wads_artifacts": []}
+        return {
+            "messages": [error_message],
+            "wads_artifacts": [],
+            "past_steps": [(state.get("current_task_id", ""), f"WADS 영구 오류: {e}")],
+        }
 
     ai_messages = [m for m in result.get("messages", []) if isinstance(m, AIMessage)]
     answer = ai_messages[-1].content if ai_messages else "WADS 조회에 실패했습니다."
@@ -344,6 +355,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         "messages": [result_message],
         "wads_artifacts": artifacts,
         "agent_suggestion": agent_suggestion,
+        "past_steps": [(state.get("current_task_id", ""), answer[:300])],
     }
 
 

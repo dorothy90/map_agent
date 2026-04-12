@@ -180,6 +180,11 @@ _EXTRA_SECTION_CONFIG = {
         "data_key": "fail_history_artifacts",
         "prompt": "불량이력(Fail History) 검색 결과를 요약하세요. 주요 불량 유형, 발생 빈도, 최근 추세, 조치 현황을 포함하세요.",
     },
+    "lot_history": {
+        "title": "LOT 종합 이력 요약",
+        "data_key": "lot_history_artifacts",
+        "prompt": "LOT 종합 이력(FDC 알람, Q-TIME 초과, Trouble Lot, Future Action, Sample Split) 결과를 요약하세요. 위험 LOT, HALT/Warning 알람 건수, Q-TIME 초과 사례, 주요 trouble 원인을 포함하세요.",
+    },
     "analysis": {
         "title": "AI 종합 분석",
         "data_key": "analysis_result",
@@ -264,6 +269,7 @@ def _default_extra_slide(section_type: str, content: str,
     section_titles = {
         "wads": "WADS 이상 탐지 요약",
         "fail_history": "불량 이력 요약",
+        "lot_history": "LOT 종합 이력 요약",
         "analysis": "AI 종합 분석",
     }
     slide_title = title or section_titles.get(section_type, section_type)

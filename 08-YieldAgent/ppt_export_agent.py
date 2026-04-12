@@ -55,7 +55,7 @@ def ppt_export_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 
     # artifact file:// 참조 해소
     resolved_state = dict(state)
-    for key in ("yield_artifacts", "wads_artifacts", "map_artifacts", "fail_history_artifacts"):
+    for key in ("yield_artifacts", "wads_artifacts", "map_artifacts", "fail_history_artifacts", "lot_history_artifacts"):
         raw = state.get(key, [])
         if raw:
             resolved_state[key] = _resolve_artifact_data(raw)

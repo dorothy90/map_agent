@@ -18,6 +18,7 @@ import time
 from datetime import date, timedelta
 from typing import Any, Type
 
+import httpx
 from pydantic import BaseModel
 
 import oracledb
@@ -26,6 +27,20 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 logger = logging.getLogger("yield_agent.common")
+
+
+def is_transient_error(exc: Exception) -> bool:
+    """LangGraph RetryPolicy가 재시도해야 할 일시 장애 분류.
+
+    OpenRouter LLM 호출과 Oracle/OpenSearch 연결에서 흔한 socket/timeout 및
+    HTTP 5xx를 transient로 표시. ValueError·TypeError 등 코드 버그는 False.
+    supervisor RetryPolicy(retry_on=...)와 worker try/except 양쪽에서 공유한다.
+    """
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+        return 500 <= exc.response.status_code < 600
+    return False
 
 # ============================================================
 # Oracle 연결 설정

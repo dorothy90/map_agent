@@ -238,7 +238,9 @@ async def get_session_history(session_id: str, request: Request):
 async def chat_stream(request: ChatRequest, req: Request):
     graph = req.app.state.graph
     db = req.app.state.motor_db
-    config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 20}
+    # #23 fix: 5-task plan 처리 시 노드 호출 횟수가 ~12회 (rewrite + planner + supervisor×6 + agents×5)
+    # → limit 20은 빠듯. interrupt resume이나 미래 replanner 추가 여유까지 30으로 상향.
+    config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 30}
 
     # resume 요청인 경우: interrupt에서 재개
     if request.resume_value is not None:
@@ -254,13 +256,24 @@ async def chat_stream(request: ChatRequest, req: Request):
             "fail_history_artifacts": Overwrite([]),
             "ppt_artifacts": Overwrite([]),
             "lot_history_artifacts": Overwrite([]),
+            # past_steps도 매 turn reset (#8 phase 1) — 이전 turn의 task 결과는 다음 turn 라우팅에 무의미
+            "past_steps": Overwrite([]),
             # step_count만 리셋 (퍼-턴 루프 카운터)
             "step_count": 0,
-            # weeks_data, anomaly_params, table_result, analysis_result는
-            # 리셋하지 않음 — follow-up 턴(PPT 생성 등)에서 이전 데이터 필요
+            # anomaly_params는 매 새 사용자 turn 시 리셋 (#11 fix).
+            # 동기: 이전 turn의 anomaly가 supervisor 라우팅 프롬프트(supervisor.py:409-414)에
+            #       매번 "[이전 분석 결과]"로 주입되어 다른 product 분석에까지 stale 컨텍스트가
+            #       누적되는 cross-product 오염을 차단.
+            # Trade-off: 같은 product의 same-turn follow-up(예: T1 "4SS 수율(IOFF anomaly)" →
+            #            T2 "WADS도")에서 supervisor 라우팅 LLM은 IOFF 힌트를 못 받음.
+            #            그러나 yield_artifacts 내 anomaly 표시는 그대로 유지되고, wads_agent
+            #            자체는 message history(IOFF가 포함된 yield 결과)를 보고 동작하므로
+            #            최종 결과 영향은 미미함.
+            # weeks_data, table_result, analysis_result는 리셋 안 함 — PPT follow-up에서 필요.
+            "anomaly_params": [],
         }
 
-        # 첫 번째 턴이면 나머지 기본값도 함께 전달
+        # 첫 번째 턴이면 나머지 기본값도 함께 전달 (#18 fix: YieldQueryState 전체 키 명시 init)
         prev_state = await graph.aget_state(config)
         if not (prev_state and prev_state.values):
             stream_input.update({
@@ -268,6 +281,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "ref_date": "",
                 "unit": "weekly",
                 "periods": 0,
+                "wads_start_tm": "",
                 "wads_end_tm": "",
                 "anomaly_params": [],
                 "filter_params": [],
@@ -283,6 +297,15 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "dh_query": "",
                 "dh_fail_type": "",
                 "dh_cause_oper": "",
+                "lh_lot_ids": "",
+                "weeks_data": [],
+                "table_result": "",
+                "analysis_result": "",
+                "agent_suggestion": "",
+                "task_plan": [],
+                "pending_tasks": [],
+                "current_task_id": "",
+                "current_task_goal": "",
                 "_last_agent_params": {},
             })
 

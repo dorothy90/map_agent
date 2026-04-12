@@ -73,6 +73,7 @@ TODAY's DATE: {today}
 - 각 task의 params에는 해당 agent가 필요로 하는 파라미터만 포함
 - 날짜는 자연어 그대로 params에 포함 (변환하지 말 것)
 - task_id는 "task_1", "task_2" 형식으로 순번 부여
+- 사용자 메시지가 짧거나 모호한 follow-up이면 직전 대화 히스토리와 [State context]를 활용하여 lot ID·제품코드·필터 등을 task params에 명시 채워라
 
 === EXAMPLES ===
 
@@ -353,7 +354,7 @@ Example: <think>사용자가 4SS 수율을 요청했으므로 yield_agent로 라
 
 JSON schema:
 {{
-  "next": "yield_agent" | "wads_agent" | "map_agent" | "ppt_export" | "FINISH",
+  "next": "yield_agent" | "wads_agent" | "map_agent" | "fail_history_agent" | "lot_history_agent" | "ppt_export" | "FINISH",
   "lotcd": "<product code, empty string if user did not specify>",
   "ref_date": "<YYYYMMDD for yield_agent, else empty string>",
   "wads_start_tm": "<YYYY-MM-DD range start for wads_agent, empty if single date>",

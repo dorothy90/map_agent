@@ -13,9 +13,7 @@ Supervisor Node — Yield/WADS/Map 라우팅 담당
 from __future__ import annotations
 
 import operator
-import os
 import logging
-import re
 from datetime import date
 from typing import Annotated, Any, Dict, Literal, TypedDict
 
@@ -29,9 +27,9 @@ from pydantic import BaseModel, Field
 
 from langchain_core.messages import ToolMessage
 
-from common import stream_event, get_llm, extract_json_from_llm
+from common import stream_event, get_llm, extract_json_from_llm, is_transient_error
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
-from models import ThinkingEvent
+from models import StatusEvent, ThinkingEvent
 from prompts import PLANNER_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT_TEMPLATE, SUPERVISOR_SYSTEM_PROMPT
 from rewrite_tools import REWRITE_TOOLS
 
@@ -108,6 +106,36 @@ class RouteResponse(BaseModel):
 
 
 _MAX_CHECKPOINT_MESSAGES = 30
+
+
+def _params_signature(d: dict) -> dict:
+    """dup guard 비교용 파라미터 signature.
+
+    LLM-routed 분기와 큐 dispatch 분기 양쪽에서 동일 헬퍼로 추출하여
+    저장(`_last_agent_params`)·비교가 일관되게 작동하도록 한다.
+    누락 필드는 RouteResponse 기본값과 동일하게 채운다.
+    """
+    return {
+        "map_lot_id":    d.get("map_lot_id", ""),
+        "map_lot_ids":   d.get("map_lot_ids", ""),
+        "map_wf_ids":    d.get("map_wf_ids", ""),
+        "map_groupkey":  d.get("map_groupkey", ""),
+        "map_type":      d.get("map_type", "binmap"),
+        "map_oper":      d.get("map_oper", ""),
+        "lotcd":         d.get("lotcd", ""),
+        "ref_date":      d.get("ref_date", ""),
+        "unit":          d.get("unit", "weekly"),
+        "periods":       d.get("periods", 0),
+        "filter_params": tuple(d.get("filter_params") or ()),
+        "yield_lot_ids":  d.get("yield_lot_ids", ""),
+        "yield_groupkey": d.get("yield_groupkey", ""),
+        "wads_start_tm": d.get("wads_start_tm", ""),
+        "wads_end_tm":   d.get("wads_end_tm", ""),
+        "dh_query":      d.get("dh_query", ""),
+        "dh_fail_type":  d.get("dh_fail_type", ""),
+        "dh_cause_oper": d.get("dh_cause_oper", ""),
+        "lh_lot_ids":    d.get("lh_lot_ids", ""),
+    }
 
 
 def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMessage | None = None) -> list[dict]:
@@ -273,13 +301,31 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         today_yyyy_mm_dd=today.strftime("%Y-%m-%d"),
     )
 
+    # #14 fix — planner context-blind 해소: 최근 3턴 + state metadata 주입
+    # rewrite_node가 follow-up 컨텍스트를 놓쳤을 때 planner가 직접 복구할 수 있도록.
+    recent = _get_recent_turns(messages, max_turns=3, exclude_last=last_human)
+    meta_parts: list[str] = []
+    if state.get("lotcd"):
+        meta_parts.append(f"현재 제품: {state['lotcd']}")
+    prev_lot = state.get("map_lot_id") or state.get("map_lot_ids")
+    if prev_lot:
+        meta_parts.append(f"이전 map lot: {prev_lot}")
+    if state.get("yield_lot_ids"):
+        meta_parts.append(f"이전 yield lot: {state['yield_lot_ids']}")
+    if state.get("agent_suggestion"):
+        meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
+    meta = "\n".join(meta_parts)
+
+    invoke_messages: list[dict] = [{"role": "system", "content": prompt}]
+    if meta:
+        invoke_messages.append({"role": "system", "content": f"State context:\n{meta}"})
+    invoke_messages.extend(recent)
+    invoke_messages.append({"role": "user", "content": last_human.content})
+
     # 수동 JSON 파싱 (with_structured_output은 OpenRouter 호환성 문제)
     try:
         response = _model.invoke(
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": last_human.content},
-            ],
+            invoke_messages,
             config={"callbacks": _lf_callbacks()},
         )
         raw_text = response.content.strip()
@@ -289,9 +335,14 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         # fallback: 단일 task 없이 supervisor에게 위임
         return {"task_plan": [], "pending_tasks": []}
 
-    # task 수 상한 제한
+    # task 수 상한 제한 — 초과 시 사용자에게 명시적으로 알림 (#22 fix)
     if len(plan.tasks) > _MAX_TASKS:
-        logger.warning("[Planner] task 수 %d → %d로 제한", len(plan.tasks), _MAX_TASKS)
+        dropped = len(plan.tasks) - _MAX_TASKS
+        logger.warning("[Planner] task 수 %d → %d로 제한 (%d개 dropped)", len(plan.tasks), _MAX_TASKS, dropped)
+        stream_event("status", StatusEvent(
+            message=f"⚠ 요청하신 작업이 너무 많아 처음 {_MAX_TASKS}개만 처리합니다 ({dropped}개 생략).",
+            node="planner",
+        ))
         plan.tasks = plan.tasks[:_MAX_TASKS]
 
     tasks_dicts = [t.model_dump() for t in plan.tasks]
@@ -308,7 +359,7 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 @observe(name="supervisor_node")
 def supervisor_node(
     state: Dict[str, Any], config: RunnableConfig
-) -> Command[Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "__end__"]]:
+) -> Command[Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "lot_history_agent", "ppt_export", "__end__"]]:
     """Supervisor 노드: ReAct 스타일 멀티스텝 루프.
 
     각 스텝마다 에이전트 결과를 확인하고 다음 행동을 결정합니다.
@@ -317,7 +368,9 @@ def supervisor_node(
     step_count = state.get("step_count", 0) + 1
 
     # 최대 스텝 강제 종료 (무한루프 방지) — planner task 수에 맞게 동적 조정
-    max_steps = min(len(state.get("task_plan", [])) + 3, 10) or 4
+    # n task 처리 = 2n-1 step (dispatch n번 + agent 복귀 후 LLM-routed FINISH n번, 마지막 합쳐짐)
+    # _MAX_TASKS=5까지 안전하게 통과시키려면 최소 2n+3 여유 필요
+    max_steps = min(2 * len(state.get("task_plan", [])) + 3, 15) or 4
     if step_count > max_steps:
         logger.warning("[Supervisor] 최대 스텝(%d/%d) 초과 → 강제 종료", step_count, max_steps)
         return Command(
@@ -348,6 +401,7 @@ def supervisor_node(
         update_dict = {
             "step_count": step_count,
             "current_task_id": current_task.get("task_id", ""),
+            "current_task_goal": current_task.get("goal", ""),
             "pending_tasks": remaining,
             "messages": [task_message],
             # Map 파라미터
@@ -375,7 +429,12 @@ def supervisor_node(
             "dh_cause_oper": task_params.get("dh_cause_oper", ""),
             # Lot History 파라미터
             "lh_lot_ids":    task_params.get("lh_lot_ids", ""),
+            # 이전 task가 남긴 stateful 필드 정리 — 다음 task에 stale로 영향 차단 (#19 fix).
+            # worker가 정상 종료 시 자체 agent_suggestion을 다시 set하므로 빈 string은 안전.
+            "agent_suggestion": "",
         }
+        # 큐 dispatch 후에도 dup guard가 stale 비교를 하지 않도록 signature 갱신
+        update_dict["_last_agent_params"] = _params_signature(update_dict)
 
         # map_agent 필수 파라미터 검증 (planner 경로)
         if current_task["agent"] == "map_agent":
@@ -436,8 +495,12 @@ def supervisor_node(
         else:
             condensed.append(m)
 
-    # token_counter=len → 메시지 개수 기준 (문자수 아님). 최근 20개 메시지만 전달.
-    trimmed_messages = trim_messages(condensed, max_tokens=20, strategy="last", token_counter=len)
+    # token_counter=len → 메시지 개수 기준 (문자수 아님). 최근 50개 메시지만 전달.
+    # #21 fix: 위 condensation(_RECENT_FULL_TURNS=2, _MAX_OLD_MSG_LEN=300)이 이미 오래된
+    # agent 메시지를 축약하므로 trim limit이 너무 작으면 condensation 작업이 무의미.
+    # _MAX_TASKS=5 plan 처리 시 task_message + agent_result + supervisor_decision이
+    # 빠르게 20개를 초과하므로 50으로 상향. follow-up 다중 turn에서도 컨텍스트 보존.
+    trimmed_messages = trim_messages(condensed, max_tokens=50, strategy="last", token_counter=len)
     # ── 수동 JSON 파싱 방식 (with_structured_output 사용 금지) ──
     # 이유: gpt-oss-120b는 function calling을 지원하지만, OpenRouter 프록시가
     #       structured output 파라미터를 제대로 전달하지 못함.
@@ -446,10 +509,20 @@ def supervisor_node(
     # 해결: LLM에게 raw JSON 출력을 요청하고, regex로 추출 후 Pydantic 검증.
     # 참고: with_structured_output 재도입 시 OpenRouter 호환성 먼저 확인할 것.
     try:
-        # ── stream() 루프: <think> 구간은 실시간 전송, 나머지는 누적 ──
+        # ── stream() 루프: <think> 구간은 실시간 전송, 나머지는 누적 (#20 fix) ──
+        # 견고성: ① 닫는 </think> 누락 시 post-loop fallback emit, ② 다중 <think> 블록 지원
+        # (search_offset으로 처리된 블록 이후만 검색), ③ 같은 chunk 안 open+close 처리.
+        # raw_text 자체는 가공 안 함 — extract_json_from_llm이 자체적으로 think 태그 제거.
         raw_text = ""
-        thinking_buf = ""
-        in_think = False
+        search_offset = 0    # 이미 처리된 think 블록 이후 검색 시작 위치
+        think_open_idx = -1  # 현재 열린 <think>의 raw_text 내 위치 (-1 = 없음)
+        think_emit_len = 0   # 현재 open 블록에서 emit한 char 수
+
+        def _emit_thinking(content: str) -> None:
+            if content:
+                stream_event("thinking", ThinkingEvent(
+                    content=content, agent="supervisor", node="supervisor",
+                ))
 
         for chunk in _model.stream(
             [{"role": "system", "content": prompt}, *trimmed_messages],
@@ -460,36 +533,41 @@ def supervisor_node(
                 continue
             raw_text += token
 
-            # <think> 태그 파싱 — 토큰 단위로 처리
-            if not in_think and "<think>" in raw_text and "</think>" not in raw_text:
-                in_think = True
-                # <think> 이후 부분만 thinking_buf에
-                thinking_buf = raw_text.split("<think>", 1)[1]
-                stream_event("thinking", ThinkingEvent(
-                    content=thinking_buf, agent="supervisor", node="supervisor",
-                ))
-                continue
+            # 누적된 raw_text에서 처리 가능한 만큼의 think 블록을 처리
+            while True:
+                if think_open_idx == -1:
+                    idx = raw_text.find("<think>", search_offset)
+                    if idx == -1:
+                        break
+                    think_open_idx = idx
+                    think_emit_len = 0
 
-            if in_think:
-                if "</think>" in raw_text:
-                    # thinking 종료
-                    in_think = False
-                    think_content = raw_text.split("<think>", 1)[1].split("</think>", 1)[0]
-                    # 마지막 thinking 청크 전송
-                    remaining = think_content[len(thinking_buf):]
-                    if remaining:
-                        stream_event("thinking", ThinkingEvent(
-                            content=remaining, agent="supervisor", node="supervisor",
-                        ))
+                content_start = think_open_idx + len("<think>")
+                close_idx = raw_text.find("</think>", content_start)
+                if close_idx >= 0:
+                    # 완전한 think 블록: 미전송 부분만 emit, 다음 블록 검색 준비
+                    full = raw_text[content_start:close_idx]
+                    _emit_thinking(full[think_emit_len:])
+                    search_offset = close_idx + len("</think>")
+                    think_open_idx = -1
+                    think_emit_len = 0
+                    # while loop 계속 — 같은 chunk에 다음 <think>가 있을 수 있음
                 else:
-                    # thinking 진행 중 — 새 토큰만 전송
-                    current_think = raw_text.split("<think>", 1)[1]
-                    new_part = current_think[len(thinking_buf):]
-                    if new_part:
-                        stream_event("thinking", ThinkingEvent(
-                            content=new_part, agent="supervisor", node="supervisor",
-                        ))
-                        thinking_buf = current_think
+                    # 아직 닫히지 않음 — 새로 추가된 부분만 emit하되, 마지막 7글자는 보류
+                    # (다음 chunk에서 '</think>'(8자)의 시작 조각으로 판명될 수 있음)
+                    current = raw_text[content_start:]
+                    safe_len = max(0, len(current) - (len("</think>") - 1))
+                    if safe_len > think_emit_len:
+                        _emit_thinking(current[think_emit_len:safe_len])
+                        think_emit_len = safe_len
+                    break
+
+        # stream 종료 후 fallback: 닫는 </think> 없이 끝났으면 남은 thinking emit
+        if think_open_idx >= 0:
+            content_start = think_open_idx + len("<think>")
+            full = raw_text[content_start:]
+            _emit_thinking(full[think_emit_len:])
+            logger.warning("[Supervisor] <think> 닫는 태그 누락 — fallback emit (len=%d)", len(full))
 
         raw_text = raw_text.strip()
         logger.debug("[Supervisor] raw LLM response: %s", raw_text[:500])
@@ -523,17 +601,7 @@ def supervisor_node(
         )
         if last_agent == decision.next:
             prev_params = state.get("_last_agent_params", {})
-            curr_params = {
-                "lot_id": decision.map_lot_id, "lot_ids": decision.map_lot_ids,
-                "wf_ids": decision.map_wf_ids, "groupkey": decision.map_groupkey,
-                "ref_date": decision.ref_date, "filter_params": decision.filter_params,
-                "yield_lot_ids": decision.yield_lot_ids,
-                "yield_groupkey": decision.yield_groupkey,
-                "dh_query": decision.dh_query,
-                "dh_fail_type": decision.dh_fail_type,
-                "dh_cause_oper": decision.dh_cause_oper,
-                "lh_lot_ids": decision.lh_lot_ids,
-            }
+            curr_params = _params_signature(decision.model_dump())
             if prev_params == curr_params:
                 logger.info("[Supervisor] 동일 에이전트+파라미터(%s) 재호출 방지 → FINISH", last_agent)
                 decision = RouteResponse(
@@ -646,17 +714,9 @@ def supervisor_node(
         "dh_fail_type":  decision.dh_fail_type,
         "dh_cause_oper": decision.dh_cause_oper,
         "lh_lot_ids":    decision.lh_lot_ids,
-        "_last_agent_params": {
-            "lot_id": decision.map_lot_id, "lot_ids": decision.map_lot_ids,
-            "wf_ids": decision.map_wf_ids, "groupkey": decision.map_groupkey,
-            "ref_date": decision.ref_date, "filter_params": decision.filter_params,
-            "yield_lot_ids": decision.yield_lot_ids,
-            "yield_groupkey": decision.yield_groupkey,
-            "dh_query": decision.dh_query,
-            "dh_fail_type": decision.dh_fail_type,
-            "dh_cause_oper": decision.dh_cause_oper,
-            "lh_lot_ids": decision.lh_lot_ids,
-        },
+        # LLM-routed 분기는 planner task가 아니므로 task goal 없음 (#12 fix)
+        "current_task_goal": "",
+        "_last_agent_params": _params_signature(decision.model_dump()),
     }
 
     if decision.next == "FINISH":
@@ -742,6 +802,12 @@ class YieldQueryState(TypedDict):
     task_plan: list[dict]           # planner가 생성한 전체 계획 (overwrite)
     pending_tasks: list[dict]       # 아직 실행 안 된 TaskItem들 (overwrite)
     current_task_id: str            # 현재 실행 중인 task의 ID
+    current_task_goal: str          # 현재 실행 중인 task의 한국어 goal — worker가 query 우선순위로 사용 (#12 fix)
+
+    # 워커 task별 결과 누적 (#8 phase 1, replanner 사전작업)
+    # 각 worker가 정상/에러 종료 시 [(task_id, summary)]를 append.
+    # 향후 replanner_node가 plan 갱신·chained input 해소에 사용.
+    past_steps: Annotated[list, operator.add]
 
 
 # ── 그래프 조립 (순환 import 방지: yield_query_agent/wads_agent/map_agent는 supervisor를 import하지 않음)
@@ -753,7 +819,10 @@ from ppt_export_agent import ppt_export_node  # noqa: E402
 from lot_history_agent import lot_history_agent_node  # noqa: E402
 
 # 에이전트 노드 재시도 정책 (Oracle/LLM 일시적 오류 자동 재시도)
-_retry = RetryPolicy(max_attempts=3, initial_interval=1.0)
+# LangGraph 기본(default_retry_on)은 OSError/TimeoutError를 거부하므로
+# common.is_transient_error를 명시적으로 위임 — supervisor 노드와 worker 노드의
+# transient 분류 로직을 한 곳에서 일관 관리.
+_retry = RetryPolicy(max_attempts=3, initial_interval=1.0, retry_on=is_transient_error)
 
 workflow = StateGraph(YieldQueryState)
 workflow.add_node("rewrite", rewrite_node, retry_policy=_retry)

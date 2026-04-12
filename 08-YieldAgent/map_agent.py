@@ -39,8 +39,6 @@ from common import (  # noqa: E402
     get_oracle_connection as _get_oracle_connection_common,
     lot_id_variants,
     timed,
-    BIN_CATEGORY_MAP,
-    CATEGORY_TO_BIN,
 )
 
 ORACLE_TABLE = os.getenv("ORACLE_TABLE", "LANGGRAPH_DATA")
@@ -448,73 +446,6 @@ def _visualize_cummap_inner(
     return filepath, avg_pass_rate
 
 
-def _visualize_combined_cummap(
-    weekly_data: list[dict],
-    category_name: str,
-    lotcd: str,
-) -> str | None:
-    """N주치 cummap을 하나의 figure에 subplot으로 합쳐 단일 PNG로 저장
-
-    Args:
-        weekly_data: [{"week", "pass_rate_array", "avg_pass_rate", "lot_count", "wafer_count"}, ...]
-                     pass_rate_array가 None인 항목은 '데이터 없음'으로 표시
-        category_name: "IOFF" 등
-        lotcd: "4SS" 등
-    Returns:
-        filepath or None
-    """
-    if not weekly_data:
-        return None
-
-    ref_shape = None
-    for d in weekly_data:
-        arr = d.get("pass_rate_array")
-        if arr is not None:
-            ref_shape = arr.shape
-            break
-    if ref_shape is None:
-        return None
-
-    n = len(weekly_data)
-    fig, axes = plt.subplots(1, n, figsize=(5 * n, 6), squeeze=False)
-    axes = axes[0]
-
-    im = None
-    for ax, d in zip(axes, weekly_data):
-        arr = d.get("pass_rate_array")
-        if arr is not None:
-            im = ax.imshow(arr, cmap="RdYlGn", vmin=0, vmax=1, interpolation="nearest")
-            ax.set_title(
-                f"{d['week']}\n"
-                f"Pass {d['avg_pass_rate']:.1f}%\n"
-                f"({d['lot_count']}L / {d['wafer_count']}W)",
-                fontsize=10,
-            )
-        else:
-            blank = np.full(ref_shape, np.nan)
-            ax.imshow(blank, cmap="RdYlGn", vmin=0, vmax=1, interpolation="nearest")
-            ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
-                    transform=ax.transAxes, fontsize=12, color="gray")
-            ax.set_title(f"{d['week']}\n(no data)", fontsize=10)
-        ax.set_xlabel("Col")
-        ax.set_ylabel("Row")
-
-    if im is not None:
-        cbar = fig.colorbar(im, ax=list(axes), shrink=0.75, pad=0.02)
-        cbar.set_label("Pass Rate")
-        cbar.set_ticks([0, 0.25, 0.5, 0.75, 1.0])
-        cbar.set_ticklabels(["0%", "25%", "50%", "75%", "100%"])
-
-    fig.suptitle(f"{lotcd}  {category_name} Weekly Cummap", fontsize=14)
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = f"cummap_weekly_{category_name}_{timestamp}.png"
-    plt.savefig(filepath, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    return filepath
-
-
 def _query_wafer_data_by_date(
     lotcd: str, start_date: str, end_date: str, category: str | None = None,
 ) -> list:
@@ -563,125 +494,6 @@ def _query_wafer_data_by_date(
         except Exception:
             pass
         conn.close()
-
-
-def _query_lot_ids_by_date(lotcd: str, start_date: str, end_date: str) -> list[str]:
-    """지정 기간(end_tm 기준)의 DISTINCT lot_id 목록 조회"""
-    try:
-        conn = _get_oracle_connection_common()
-    except Exception as e:
-        logger.error("[MapAgent] Oracle 연결 실패 (lot_ids_by_date): %s", e)
-        return []
-    try:
-        cur = conn.cursor()
-        sql = f"""
-            SELECT DISTINCT lot_id FROM {ORACLE_TABLE}
-            WHERE lot_cd = :lotcd
-              AND end_tm >= TO_DATE(:sd, 'YYYYMMDD')
-              AND end_tm < TO_DATE(:ed, 'YYYYMMDD')
-            ORDER BY lot_id
-        """
-        cur.execute(sql, {"lotcd": lotcd, "sd": start_date, "ed": end_date})
-        return [row[0] for row in cur.fetchall()]
-    finally:
-        cur.close()
-        conn.close()
-
-
-@timed
-def _generate_weekly_cummaps(
-    lotcd: str,
-    weeks: list[dict],
-    bin_type: str,
-    target_bin: str,
-    category_name: str,
-) -> list[dict]:
-    """4주치 cummap 생성 — 각 주차별 pass_rate array 수집 후 단일 combined PNG 생성
-
-    Args:
-        lotcd: 제품코드
-        weeks: [{"week": "2026-W04", "start": "20260119", "end": "20260126"}, ...]
-        bin_type: "left_bin" | "right_bin"
-        target_bin: fail bin value (예: "H")
-        category_name: category 이름 (예: "IOFF")
-
-    Returns:
-        dict: {"filepath": str|None, "weekly_summary": list[dict]}
-    """
-    MAX_LOTS_PER_WEEK = 200
-
-    weekly_viz_data = []
-    weekly_summary = []
-
-    for w in weeks:
-        week_label = w["week"]
-        lot_ids = _query_lot_ids_by_date(lotcd, w["start"], w["end"])
-        if len(lot_ids) > MAX_LOTS_PER_WEEK:
-            import random
-            random.seed(w["start"])
-            lot_ids = sorted(random.sample(lot_ids, MAX_LOTS_PER_WEEK))
-            logger.info("[CummapWeekly] %s: %d lots → %d lots (sampled)", week_label, len(lot_ids), MAX_LOTS_PER_WEEK)
-        if not lot_ids:
-            logger.info("[CummapWeekly] %s: lot 없음 (skip)", week_label)
-            weekly_viz_data.append({"week": week_label, "pass_rate_array": None, "avg_pass_rate": 0, "lot_count": 0, "wafer_count": 0})
-            weekly_summary.append({"week": week_label, "pass_rate": 0, "lot_count": 0, "wafer_count": 0})
-            continue
-
-        lot_ids_str = ",".join(lot_ids)
-        map_data = _query_wafer_data(lot_ids=lot_ids_str)
-        if not map_data:
-            weekly_viz_data.append({"week": week_label, "pass_rate_array": None, "avg_pass_rate": 0, "lot_count": len(lot_ids), "wafer_count": 0})
-            weekly_summary.append({"week": week_label, "pass_rate": 0, "lot_count": len(lot_ids), "wafer_count": 0})
-            continue
-
-        min_row, max_row, min_col, max_col = _get_map_bounds(map_data)
-        height = max_row - min_row + 1
-        width = max_col - min_col + 1
-
-        n_workers = min(mp.cpu_count(), len(map_data), 8)
-        args_list = [(d["map_val_json"], bin_type, target_bin) for d in map_data]
-        with ThreadPoolExecutor(max_workers=n_workers) as executor:
-            parsed = list(executor.map(_parse_wafer_for_cummap, args_list))
-
-        all_rows, all_cols, all_pass = [], [], []
-        for rows, cols, passes in parsed:
-            all_rows.extend(rows)
-            all_cols.extend(cols)
-            all_pass.extend(passes)
-
-        arr_rows = np.array(all_rows) - min_row
-        arr_cols = np.array(all_cols) - min_col
-        arr_pass = np.array(all_pass)
-
-        pass_sum = np.zeros((height, width))
-        count = np.zeros((height, width))
-        np.add.at(pass_sum, (arr_rows, arr_cols), arr_pass)
-        np.add.at(count, (arr_rows, arr_cols), 1)
-
-        with np.errstate(divide="ignore", invalid="ignore"):
-            pass_rate_arr = np.where(count > 0, pass_sum / count, np.nan)
-
-        valid_rates = pass_rate_arr[~np.isnan(pass_rate_arr)]
-        avg_pr = float(np.mean(valid_rates) * 100) if len(valid_rates) > 0 else 0.0
-
-        weekly_viz_data.append({
-            "week": week_label,
-            "pass_rate_array": pass_rate_arr,
-            "avg_pass_rate": avg_pr,
-            "lot_count": len(lot_ids),
-            "wafer_count": len(map_data),
-        })
-        weekly_summary.append({
-            "week": week_label,
-            "pass_rate": avg_pr,
-            "lot_count": len(lot_ids),
-            "wafer_count": len(map_data),
-        })
-        logger.info("[CummapWeekly] %s: %d lots, %d wafers, pass_rate=%.1f%%",
-                     week_label, len(lot_ids), len(map_data), avg_pr)
-
-    filepath = _visualize_combined_cummap(weekly_viz_data, category_name, lotcd)
-    return {"filepath": filepath, "weekly_summary": weekly_summary}
 
 
 def show_wafer_map(
@@ -772,65 +584,6 @@ def map_agent_node(state: dict, config: RunnableConfig) -> dict:
     return _handle_standard_map(state)
 
 
-def _handle_weekly_cummap(state: dict) -> dict:
-    """4주치 category별 cummap 생성 (yield_agent → map_agent 순차 흐름)"""
-    lotcd = state.get("lotcd", "4SS")
-    cummap_weeks = state.get("cummap_weeks", [])
-    target_bin = state.get("cummap_target_bin", "")
-    category_name = state.get("cummap_category", "")
-    bin_type = "left_bin"
-
-    if not cummap_weeks or not target_bin:
-        msg = AIMessage(content="cummap 생성에 필요한 정보가 부족합니다.", name="map_agent")
-        return {"messages": [msg], "map_result": "", "map_artifacts": [], "agent_suggestion": ""}
-
-    logger.info("[MapAgent] 4주치 %s cummap 생성 시작 (target_bin=%s)", category_name, target_bin)
-    gen_result = _generate_weekly_cummaps(
-        lotcd=lotcd,
-        weeks=cummap_weeks,
-        bin_type=bin_type,
-        target_bin=target_bin,
-        category_name=category_name,
-    )
-
-    filepath = gen_result["filepath"]
-    weekly_summary = gen_result["weekly_summary"]
-
-    summary_lines = []
-    for ws in weekly_summary:
-        if ws["wafer_count"] > 0:
-            summary_lines.append(f"  - {ws['week']}: {ws['pass_rate']:.1f}% ({ws['lot_count']} lots, {ws['wafer_count']} wafers)")
-        else:
-            summary_lines.append(f"  - {ws['week']}: 데이터 없음")
-
-    map_html = ""
-    artifacts = []
-    if filepath and os.path.exists(filepath):
-        title = f"{lotcd} {category_name} Weekly Cummap"
-        map_html = _png_to_html(filepath, title)
-        artifacts.append({"type": "html", "mime": "text/html", "data": map_html, "title": "weekly_cummap"})
-
-    result_str = f"[{lotcd}] {category_name} 4주치 Cummap:\n" + "\n".join(summary_lines)
-
-    try:
-        get_client().update_current_span(output={
-            "map_result": result_str,
-            "png_count": 1 if filepath else 0,
-            "category": category_name,
-            "target_bin": target_bin,
-        })
-    except Exception:
-        pass
-
-    result_message = AIMessage(content=result_str, name="map_agent")
-    return {
-        "messages": [result_message],
-        "map_result": result_str,
-        "map_artifacts": artifacts,
-        "agent_suggestion": "",
-    }
-
-
 def _handle_standard_map(state: dict) -> dict:
     """기존 binmap/cummap 생성 로직"""
     lot_id   = state.get("map_lot_id", "")
@@ -881,4 +634,5 @@ def _handle_standard_map(state: dict) -> dict:
         "map_result": result_str,
         "map_artifacts": artifacts,
         "agent_suggestion": "",
+        "past_steps": [(state.get("current_task_id", ""), result_str[:300])],
     }

@@ -18,7 +18,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import create_react_agent
 from langfuse import observe
 
-from common import timed, get_llm, extract_suggestion
+from common import timed, get_llm, extract_suggestion, is_transient_error
 from lf_utils import lf_callbacks as _lf_callbacks
 from prompts import FAIL_HISTORY_SYSTEM_PROMPT_TEMPLATE
 from fail_history_tools import FAIL_HISTORY_TOOLS, _tool_payload_var, _get_tool_payload
@@ -94,14 +94,15 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     storage: Dict[str, Any] = {"reports": []}
     _tool_payload_var.set(storage)
 
-    # messages에서 rewrite된 원본 쿼리 추출
+    # query 우선순위: planner task goal > 사용자 last_human (#12 fix)
     messages = state.get("messages", [])
     last_human = next(
         (m for m in reversed(messages) if isinstance(m, HumanMessage)),
         None,
     )
-    query = last_human.content if last_human else f"{lotcd} 불량이력 조회"
-    logger.info("[FH Agent] 쿼리: %s", query)
+    task_goal = state.get("current_task_goal", "")
+    query = task_goal or (last_human.content if last_human else f"{lotcd} 불량이력 조회")
+    logger.info("[FH Agent] 쿼리: %s (task_goal=%r)", query, task_goal)
 
     # 선택적 히스토리 필터링 — 최근 3턴
     fh_history: List[Any] = []
@@ -132,12 +133,19 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             config=sub_config,
         )
     except Exception as e:
-        logger.error("[FH Agent] 실행 실패: %s", e, exc_info=True)
+        if is_transient_error(e):
+            logger.warning("[FH Agent] transient 오류, retry 위임: %s", e)
+            raise
+        logger.error("[FH Agent] 영구 오류: %s", e, exc_info=True)
         error_message = AIMessage(
             content="불량이력 검색 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
             name="fail_history_agent",
         )
-        return {"messages": [error_message], "fail_history_artifacts": []}
+        return {
+            "messages": [error_message],
+            "fail_history_artifacts": [],
+            "past_steps": [(state.get("current_task_id", ""), f"불량이력 영구 오류: {e}")],
+        }
 
     ai_messages = [m for m in result.get("messages", []) if isinstance(m, AIMessage)]
     answer = ai_messages[-1].content if ai_messages else "불량이력 검색에 실패했습니다."
@@ -167,4 +175,5 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         "messages": [result_message],
         "fail_history_artifacts": artifacts,
         "agent_suggestion": agent_suggestion,
+        "past_steps": [(state.get("current_task_id", ""), answer[:300])],
     }

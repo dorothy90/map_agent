@@ -177,7 +177,11 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
                 content="해당 lot 데이터를 조회할 수 없습니다. lot ID와 process를 확인해주세요.",
                 name="yield_agent",
             )
-            return {"messages": [error_message], "weeks_data": [], "table_result": ""}
+            return {
+                "messages": [error_message],
+                "weeks_data": [], "table_result": "", "anomaly_params": [],
+                "past_steps": [(state.get("current_task_id", ""), "lot 데이터 조회 실패")],
+            }
 
         table_str  = _build_lot_table(merged, mode=lot_mode, filter_params=filter_params)
         html_table = _build_lot_html_table(merged, mode=lot_mode, filter_params=filter_params)
@@ -202,6 +206,7 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
             "yield_artifacts": yield_artifacts,
             "anomaly_params": [],
             "agent_suggestion": "",
+            "past_steps": [(state.get("current_task_id", ""), result_msg[:300])],
         }
 
     # ── 기존 period 모드 ────────────────────────────────────
@@ -237,7 +242,11 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
             content="데이터를 조회할 수 없습니다. Oracle DB 연결 또는 해당 기간 데이터를 확인해주세요.",
             name="yield_agent",
         )
-        return {"messages": [error_message], "weeks_data": [], "table_result": ""}
+        return {
+            "messages": [error_message],
+            "weeks_data": [], "table_result": "", "anomaly_params": [],
+            "past_steps": [(state.get("current_task_id", ""), "주간 데이터 조회 실패")],
+        }
 
     anomaly_params = _detect_anomalies(weeks_data)
     logger.info("[Yield Agent] 이상 감지: %d개 파라미터", len(anomaly_params))
@@ -309,4 +318,5 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         "yield_artifacts": yield_artifacts,
         "anomaly_params": anomaly_params,
         "agent_suggestion": agent_suggestion,
+        "past_steps": [(state.get("current_task_id", ""), result_msg[:300])],
     }
