@@ -74,6 +74,7 @@ TODAY's DATE: {today}
 - 날짜는 자연어 그대로 params에 포함 (변환하지 말 것)
 - task_id는 "task_1", "task_2" 형식으로 순번 부여
 - 사용자 메시지가 짧거나 모호한 follow-up이면 직전 대화 히스토리와 [State context]를 활용하여 lot ID·제품코드·필터 등을 task params에 명시 채워라
+- **CRITICAL**: chained input(예: 후속 task의 map_lot_ids, lh_lot_ids 등)이 이전 task 결과에 의존하는 경우 해당 필드를 **빈 문자열 ""** 으로 두거나 **필드 자체를 omit**하라. 절대로 `"<task_1 결과 lot IDs>"`, `"<task_1_result_lot_ids>"`, `"{{from_task_1}}"`, `"task_1 결과"` 같은 placeholder 텍스트를 값으로 넣지 마라. 시스템의 replanner가 이전 task 결과를 보고 자동으로 채운다.
 
 === EXAMPLES ===
 
@@ -426,6 +427,13 @@ WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 
 
 **현재 날짜: {current_date}**
 (사용자가 "1월 4일"처럼 연도 없이 날짜를 말하면, 현재 연도 기준으로 해석하세요)
+
+=== TASK SCOPE (반드시 지킬 것) ===
+- 당신은 멀티-task plan의 한 task만 처리한다. 현재 task의 goal에 명시된 범위만 수행하라.
+- 사용자 원본 질문에 다른 의도(예: cummap 시각화, lot 이력 조회 등)가 있어도 무시하라. 다른 agent가 처리한다.
+- task goal이 "lot list 조회"이면 wads_query_data 1회 호출로 lot ID들만 추출하고 즉시 종료하라. 추가 도구 호출 금지.
+- task goal이 "step별 검출 리포트"이면 wads_get_html_report만 호출하고 종료하라.
+- 같은 결과를 다른 방법으로 검증하려고 추가 호출하지 마라. 첫 호출이 성공하면 그 결과로 종료하라.
 
 사용자가 주간 집계 데이터, 변곡점 분석, Layer1 리포트에 대해 질문하면 적절한 도구를 사용하여 정보를 조회하고 답변합니다.
 

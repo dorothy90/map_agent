@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"python -m pytest 08-YieldAgent/eval/test_routing.py -v -m slow -k \\\"route_001 or route_012 or route_017\\\" --tb=short 2>&1\",\"timeout\":120000,\"description\":\"Run 3 sample routing tests with a...",
-  "error": "Exit code 1\n============================= test session starts ==============================\nplatform darwin -- Python 3.13.5, pytest-8.3.4, pluggy-1.5.0 -- /opt/anaconda3/bin/python\ncachedir: .pytest_cache\nrootdir: /Users/daehwankim/yield-agent/map_agent\nconfigfile: pyproject.toml\nplugins: anyio-4.11.0, langsmith-0.4.40\ncollecting ... collected 31 items / 28 deselected / 3 selected\n\n08-YieldAgent/eval/test_routing.py::test_routing_next[route_001] PASSED  [ 33%]\n08-YieldAgent/eval/test_routing.p...",
-  "timestamp": "2026-04-11T14:39:43.806Z",
-  "retry_count": 1
-}

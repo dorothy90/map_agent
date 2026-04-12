@@ -248,21 +248,25 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     query = task_goal or (last_human.content if last_human else f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘")
     logger.info("[WADS Agent] 쿼리: %s (task_goal=%r)", query, task_goal)
 
-    # S-3: 선택적 히스토리 필터링 — WADS 관련 메시지만 최근 3턴
-    wads_history: List[Any] = []
-    turn_count = 0
-    for m in reversed(messages):
-        if turn_count >= 3:
-            break
-        if isinstance(m, HumanMessage):
-            wads_history.insert(0, m)
-            turn_count += 1
-        elif isinstance(m, AIMessage) and getattr(m, "name", "") == "wads_agent":
-            wads_history.insert(0, m)
-
-    # 현재 쿼리가 히스토리 마지막과 다르면 추가
-    if not wads_history or wads_history[-1].content != query:
-        wads_history.append(HumanMessage(content=query))
+    # task_goal이 있으면 ReAct에 task_goal만 단일 user message로 전달 (L2 fix).
+    # 사용자 원본 메시지 전체를 보여주면 ReAct LLM이 다른 task 영역까지 시도하여
+    # recursion_limit 도달 위험. task scope를 좁히기 위해 wads_history 우회.
+    # task_goal이 없는 LLM-routed 경로에서는 기존 wads_history 패턴 유지.
+    if task_goal:
+        wads_history: List[Any] = [HumanMessage(content=query)]
+    else:
+        wads_history = []
+        turn_count = 0
+        for m in reversed(messages):
+            if turn_count >= 3:
+                break
+            if isinstance(m, HumanMessage):
+                wads_history.insert(0, m)
+                turn_count += 1
+            elif isinstance(m, AIMessage) and getattr(m, "name", "") == "wads_agent":
+                wads_history.insert(0, m)
+        if not wads_history or wads_history[-1].content != query:
+            wads_history.append(HumanMessage(content=query))
 
     logger.info("[WADS Agent] ReAct 그래프 invoke 시작 (history=%d msgs, recursion_limit=20)", len(wads_history))
     try:

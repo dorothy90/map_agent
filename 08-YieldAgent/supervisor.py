@@ -366,8 +366,34 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 # DO NOT 추가/삭제/순서변경 — 단순 input 채우기. Phase 3b에서 plan 전체 재구성 추가 예정.
 # 그래프 wiring: agent → replanner → supervisor (#8 phase 2에서 이미 wiring 완료).
 
+def _is_placeholder_or_empty(val) -> bool:
+    """빈 값 + LLM이 흔히 출력하는 placeholder 패턴 감지 (#L1+L2 fix).
+
+    Planner LLM이 chained input에 narrative placeholder를 박는 경우가 있음:
+      - "<task_1 결과 lot IDs>", "<task_1_result_lot_ids>"
+      - "{{from_task_1}}", "__from_task__"
+      - "task_1 결과", "result of task_1"
+    이 모든 경우를 빈 input으로 간주하여 replanner LLM이 채우도록 한다.
+    """
+    if val is None:
+        return True
+    if not isinstance(val, str):
+        return not val
+    v = val.strip()
+    if not v:
+        return True
+    if (v.startswith("<") and v.endswith(">")) or \
+       (v.startswith("{{") and v.endswith("}}")) or \
+       (v.startswith("__") and v.endswith("__")):
+        return True
+    lower = v.lower()
+    if any(k in lower for k in ("task_1", "task_2", "task_3", "결과", "from_task", "result of", "from task")):
+        return True
+    return False
+
+
 def _needs_replan(pending: list[dict]) -> bool:
-    """Phase 3a 휴리스틱: 어떤 pending task가 빈 chained-input을 가지면 LLM 호출 필요.
+    """Phase 3a 휴리스틱: 어떤 pending task가 빈/placeholder chained-input을 가지면 LLM 호출 필요.
 
     독립 task만 남았으면 LLM 호출 생략 — 불필요한 latency·비용 절감.
     """
@@ -375,13 +401,13 @@ def _needs_replan(pending: list[dict]) -> bool:
         agent = task.get("agent", "")
         params = task.get("params", {}) or {}
         if agent == "map_agent":
-            if not (params.get("map_lot_id") or params.get("map_lot_ids") or params.get("map_groupkey")):
+            if all(_is_placeholder_or_empty(params.get(k)) for k in ("map_lot_id", "map_lot_ids", "map_groupkey")):
                 return True
         elif agent == "lot_history_agent":
-            if not params.get("lh_lot_ids"):
+            if _is_placeholder_or_empty(params.get("lh_lot_ids")):
                 return True
         elif agent == "fail_history_agent":
-            if not (params.get("dh_query") or params.get("dh_fail_type") or params.get("dh_cause_oper")):
+            if all(_is_placeholder_or_empty(params.get(k)) for k in ("dh_query", "dh_fail_type", "dh_cause_oper")):
                 return True
         elif agent == "yield_agent":
             # yield는 lotcd만 있어도 동작하므로 chained input 의존도 낮음 — 패스
