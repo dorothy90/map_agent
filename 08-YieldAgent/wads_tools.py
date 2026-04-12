@@ -244,10 +244,12 @@ def _validate_sql(sql: str) -> Tuple[bool, str]:
     계층1: 주석 제거, 계층2: SELECT 확인, 계층3: 테이블 허용목록, 금지 키워드
     """
     cleaned = _strip_sql_comments(sql).strip()
+    # E3 fix: trailing 단일 세미콜론은 LLM의 흔한 습관이므로 자동 제거 (multi-statement 검사는 유지)
+    cleaned = cleaned.rstrip(";").strip()
     if not cleaned:
         return False, "빈 SQL"
 
-    # 세미콜론 금지 (multi-statement 방지)
+    # 세미콜론 금지 (multi-statement 방지) — trailing은 위에서 strip 했으므로 여기 ;는 multi-statement
     if ";" in cleaned:
         return False, "세미콜론(;)은 허용되지 않습니다"
 
@@ -331,7 +333,8 @@ def wads_query_sql(query_description: str) -> str:
         if raw_sql.startswith("```"):
             raw_sql = re.sub(r"^```\w*\n?", "", raw_sql)
             raw_sql = re.sub(r"\n?```$", "", raw_sql)
-        raw_sql = raw_sql.strip()
+        # E3 fix: trailing 단일 세미콜론 제거 — LLM이 SQL 끝에 ;를 자동으로 붙이는 습관 대응
+        raw_sql = raw_sql.strip().rstrip(";").strip()
     except Exception as e:
         logger.error("[wads_query_sql] SQL 생성 실패: %s", e)
         return f"SQL 생성 실패: {e}. wads_query_data 도구를 대신 사용하세요."

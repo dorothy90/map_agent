@@ -30,7 +30,7 @@ from langchain_core.messages import ToolMessage
 from common import stream_event, get_llm, extract_json_from_llm, is_transient_error
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import StatusEvent, ThinkingEvent
-from prompts import PLANNER_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT_TEMPLATE, SUPERVISOR_SYSTEM_PROMPT
+from prompts import PLANNER_SYSTEM_PROMPT, REPLANNER_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT_TEMPLATE, SUPERVISOR_SYSTEM_PROMPT
 from rewrite_tools import REWRITE_TOOLS
 
 load_dotenv(override=True)
@@ -359,27 +359,123 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     }
 
 
-# ── Replanner 노드 (#8 phase 2) ──────────────────────────────
-# 공식 LangGraph plan-and-execute 패턴의 replan 단계를 도입한다.
-# Phase 2는 pass-through — past_steps 누적 결과만 로깅하고 plan/state는 변경하지 않는다.
-# Phase 3에서 LLM 기반 dynamic replanning(plan 갱신 + chained input 해소)을 추가할 예정.
-# 그래프 wiring: agent → replanner → supervisor (이전: agent → supervisor 직결).
+# ── Replanner 노드 (#8 phase 3a) ──────────────────────────────
+# 공식 LangGraph plan-and-execute 패턴의 replan 단계.
+# Phase 3a: past_steps 결과를 LLM에게 보여주고 남은 pending_tasks의 빈 chained-input을 채운다.
+# (예: task_1 wads 결과의 lot ID들을 task_2 map_agent의 map_lot_ids에 채움)
+# DO NOT 추가/삭제/순서변경 — 단순 input 채우기. Phase 3b에서 plan 전체 재구성 추가 예정.
+# 그래프 wiring: agent → replanner → supervisor (#8 phase 2에서 이미 wiring 완료).
+
+def _needs_replan(pending: list[dict]) -> bool:
+    """Phase 3a 휴리스틱: 어떤 pending task가 빈 chained-input을 가지면 LLM 호출 필요.
+
+    독립 task만 남았으면 LLM 호출 생략 — 불필요한 latency·비용 절감.
+    """
+    for task in pending:
+        agent = task.get("agent", "")
+        params = task.get("params", {}) or {}
+        if agent == "map_agent":
+            if not (params.get("map_lot_id") or params.get("map_lot_ids") or params.get("map_groupkey")):
+                return True
+        elif agent == "lot_history_agent":
+            if not params.get("lh_lot_ids"):
+                return True
+        elif agent == "fail_history_agent":
+            if not (params.get("dh_query") or params.get("dh_fail_type") or params.get("dh_cause_oper")):
+                return True
+        elif agent == "yield_agent":
+            # yield는 lotcd만 있어도 동작하므로 chained input 의존도 낮음 — 패스
+            pass
+    return False
+
+
 @observe(name="replanner_node")
 def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
-    """phase 2 pass-through replanner.
+    """phase 3a replanner: past_steps 기반 LLM dynamic input 채우기.
 
-    각 worker 종료 후 호출되어 past_steps를 관측한다.
-    state 변경 없음 — supervisor의 큐 dispatch / LLM-routed 분기가 그대로 동작.
+    호출 조건:
+    - past_steps와 pending_tasks 둘 다 존재
+    - pending_tasks 중 어느 하나라도 빈 chained-input을 가짐 (`_needs_replan`)
+
+    호출 결과:
+    - LLM이 갱신한 새 pending_tasks 반환 (state.pending_tasks overwrite)
+    - LLM 실패 시 pass-through (phase 2 동작 유지)
     """
     past = state.get("past_steps", [])
     pending = state.get("pending_tasks", [])
+
+    # 항상 마지막 task 결과 로깅 (관측성)
     if past:
         last_task_id, last_summary = past[-1]
         logger.info(
             "[Replanner] last_task=%s pending=%d summary=%s",
             last_task_id, len(pending), str(last_summary)[:120],
         )
-    return {}
+
+    # Fast path: 큐 비었거나 past 비었거나 chained-input 의존이 없으면 LLM 호출 생략
+    if not pending or not past:
+        return {}
+    if not _needs_replan(pending):
+        logger.info("[Replanner] 빈 chained-input 없음 → LLM 호출 생략 (pass-through)")
+        return {}
+
+    # 사용자 원본 query (rewrite 결과)
+    messages = state.get("messages", [])
+    last_human = next(
+        (m for m in reversed(messages)
+         if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
+        None,
+    )
+    if not last_human:
+        return {}
+
+    # past + pending을 LLM 입력으로 직렬화
+    past_str = "\n".join(
+        f"- {tid}: {str(summary)[:400]}" for tid, summary in past
+    )
+    pending_str = "\n".join(
+        f"- {t.get('task_id','?')}({t.get('agent','?')}): goal={t.get('goal','')!r} params={t.get('params',{})}"
+        for t in pending
+    )
+
+    today = date.today()
+    prompt = REPLANNER_SYSTEM_PROMPT.format(
+        today=today.strftime("%Y년 %m월 %d일 (%A)"),
+    )
+    user_msg = (
+        f"원본 사용자 요청: {last_human.content}\n\n"
+        f"이미 실행된 task와 결과:\n{past_str}\n\n"
+        f"남은 task (params에 빈 값이 있으면 위 결과에서 추출하여 채워라):\n{pending_str}\n\n"
+        f"업데이트된 남은 task 목록을 PlanResponse JSON 형식으로 반환:"
+    )
+
+    try:
+        response = _model.invoke(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            config={"callbacks": _lf_callbacks()},
+        )
+        raw = (response.content or "").strip()
+        plan = extract_json_from_llm(raw, PlanResponse)
+    except Exception as e:
+        logger.warning("[Replanner] LLM 호출 실패 — pass-through: %s", e)
+        return {}
+
+    new_tasks = [t.model_dump() for t in plan.tasks]
+    if not new_tasks:
+        logger.warning("[Replanner] LLM이 빈 tasks 반환 — pass-through")
+        return {}
+    if new_tasks == pending:
+        logger.info("[Replanner] LLM 결과 변경 없음 (pass-through)")
+        return {}
+
+    logger.info(
+        "[Replanner] plan 갱신: %d → %d tasks (chained input filled)",
+        len(pending), len(new_tasks),
+    )
+    return {"pending_tasks": new_tasks}
 
 
 # ── Supervisor 노드 ──────────────────────────────────────────

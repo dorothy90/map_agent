@@ -30,7 +30,11 @@ _lh_model = get_llm(model=os.getenv("RETRIEVE_CHAIN_MODEL"))
 _LH_SYSTEM_PROMPT = """\
 당신은 반도체 LOT 종합 이력 조회 에이전트입니다.
 
-사용자가 LOT_ID를 지정하면 query_lot_history 도구를 호출하여 이력을 조회합니다.
+=== LOT ID 입력 우선순위 (반드시 지킬 것) ===
+1. **시스템 프롬프트 끝에 `[조회 컨텍스트] lot_ids=...`가 주입되어 있으면 그 lot_ids를 그대로 사용해 즉시 query_lot_history 도구를 호출하라. 사용자에게 LOT ID를 다시 묻지 마라. 이는 supervisor가 이전 task 결과(예: WADS 검출)에서 추출한 LOT 목록이다.**
+2. 사용자 자연어 메시지 안에 LOT ID(7자 영숫자, 예: 4SS2DPD)가 명시된 경우에만 그것을 사용.
+3. 위 두 경우 모두 LOT ID를 찾지 못한 경우에만 사용자에게 LOT ID를 한 번 묻고 종료.
+
 조회 후 결과를 한국어로 간결하게 요약하세요.
 
 규칙:
