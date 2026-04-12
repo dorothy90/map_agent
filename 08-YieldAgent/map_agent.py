@@ -718,7 +718,17 @@ def show_wafer_map(
             results.append(f"Binmap: {filepath}")
 
     if "cummap" in requested_types:
-        filepath, avg_pass_rate = _visualize_cummap(map_data_list, bin_type=bin_type)
+        subtitle_parts = []
+        if lot_ids:
+            subtitle_parts.append(f"Lots: {lot_ids}")
+        if wf_ids:
+            subtitle_parts.append(f"Wafers: {wf_ids}")
+        if groupkey:
+            subtitle_parts.append(f"Groupkey: {groupkey}")
+        cummap_subtitle = " | ".join(subtitle_parts) if subtitle_parts else None
+        filepath, avg_pass_rate = _visualize_cummap(
+            map_data_list, bin_type=bin_type, subtitle=cummap_subtitle,
+        )
         if filepath:
             results.append(f"Cummap: {filepath} (평균 Pass Rate: {avg_pass_rate:.1f}%)")
         else:

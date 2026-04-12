@@ -110,6 +110,10 @@ TODAY's DATE: {today}
   → task_1: map_agent, params={{map_lot_id:"4SS2DPD", map_wf_ids:"03,06,09", map_type:"binmap", map_oper:"PT1C"}}, goal:"4SS2DPD wafer 03,06,09 PT1C binmap"
   → task_2: map_agent, params={{map_lot_id:"4SSXCEW", map_wf_ids:"03,06,09", map_type:"binmap", map_oper:"PT1C"}}, goal:"4SSXCEW wafer 03,06,09 PT1C binmap"
 
+- "4SSQ6H6,4SA2NNR wafer 02,04,06,08,10,12,14,16,18,20,22,24 cummap와 wafer 01,03,05,07,09,11,13,15,17,19,21,23,25 cummap 각각 보여줘"
+  → task_1: map_agent, params={{map_lot_ids:"4SSQ6H6,4SA2NNR", map_wf_ids:"02,04,06,08,10,12,14,16,18,20,22,24", map_type:"cummap"}}, goal:"4SSQ6H6,4SA2NNR 짝수 wafer cummap"
+  → task_2: map_agent, params={{map_lot_ids:"4SSQ6H6,4SA2NNR", map_wf_ids:"01,03,05,07,09,11,13,15,17,19,21,23,25", map_type:"cummap"}}, goal:"4SSQ6H6,4SA2NNR 홀수 wafer cummap"
+
 - "최근 1주일 4SS step07 검출 lot list 알려주고 pt1c map으로 보여줘"
   → task_1: wads_agent, params={{lotcd:"4SS", wads_start_tm:"최근 1주일", parameter:"step07"}}, goal:"4SS step07 검출 lot list 조회"
   → task_2: map_agent, params={{map_type:"binmap", map_oper:"PT1C"}}, goal:"검출된 lot pt1c map 시각화 (lot ID는 task_1 결과에서 획득)"
@@ -147,6 +151,13 @@ Rules:
   use the compute_wafer_ids tool to calculate exact wafer IDs, then include the computed IDs in the rewritten query.
   Example: "4SS2DPD 3배수 wafer binmap" + tool result "03,06,09,12,15,18,21,24"
   → rewrite to: "4SS2DPD wafer 03,06,09,12,15,18,21,24 binmap 보여줘"
+- MULTI-PATTERN: 한 쿼리에서 여러 wafer 패턴(예: 짝수와 홀수, 3배수와 5배수)을 동시에 언급하면,
+  compute_wafer_ids 도구를 **각 패턴마다 별도로 호출**하고, 각 결과를 명시적 숫자 목록으로 치환한 뒤
+  원문의 연결어("각각", "와/과", "/")를 유지하여 병합할 것. 절대 한글 패턴어("짝수"/"홀수")를 그대로 남기지 말 것.
+  Example: "4SSQ6H6,4SA2NNR 짝수/홀수 cummap 각각 보여줘"
+  + compute_wafer_ids(pattern_type="even") → "02,04,06,08,10,12,14,16,18,20,22,24"
+  + compute_wafer_ids(pattern_type="odd")  → "01,03,05,07,09,11,13,15,17,19,21,23,25"
+  → rewrite to: "4SSQ6H6,4SA2NNR wafer 02,04,06,08,10,12,14,16,18,20,22,24 cummap와 wafer 01,03,05,07,09,11,13,15,17,19,21,23,25 cummap 각각 보여줘"
 - For queries without wafer patterns, do NOT call any tools — just rewrite as before
 - IMPORTANT: tool(compute_wafer_ids) 사용 후 최종 리라이팅 시, 대화 히스토리에 있는 lot ID, map 유형 등 이전 맥락을 반드시 유지하여 결합할 것.
   예: 이전 대화에서 "4SAFMUG,4SSEBLP 맵 보여줘"를 처리했고 사용자가 "3배수만 보여줘"라고 하면

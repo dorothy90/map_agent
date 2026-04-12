@@ -201,7 +201,9 @@ def extract_json_from_llm(raw_text: str, model_class: Type[BaseModel]) -> BaseMo
     if not json_match:
         json_match = re.search(r"(\{.*\})", raw_text, re.DOTALL)
     if not json_match:
-        raise ValueError(f"No JSON found in LLM response: {raw_text[:300]}")
+        raise ValueError(
+            f"No JSON found in LLM response (len={len(raw_text)}): {raw_text[:300]}"
+        )
 
     data = json.loads(repair_json(json_match.group(1)))
     return model_class(**data)

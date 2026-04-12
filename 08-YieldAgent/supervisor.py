@@ -199,30 +199,39 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     logger.info("[Rewrite DEBUG] agent_suggestion state: '%s'", state.get("agent_suggestion", ""))
 
     try:
+        # Multi-round tool calling loop: LLM이 여러 tool을 순차/병렬로 호출할 수 있으므로
+        # tool_calls가 나오지 않을 때까지 반복. max_rounds로 무한루프 방지.
+        max_rounds = 4
+        conversation = list(invoke_messages)
         response = _rewrite_model.invoke(
-            invoke_messages,
+            conversation,
             config={"callbacks": _lf_callbacks()},
         )
-
-        # tool call이 있으면 실행 후 결과를 LLM에 다시 전달하여 최종 리라이팅
-        if getattr(response, "tool_calls", None):
-            tool_messages = [response]  # AIMessage with tool_calls
-            for tc in response.tool_calls:
+        for _ in range(max_rounds):
+            tool_calls = getattr(response, "tool_calls", None)
+            if not tool_calls:
+                break
+            conversation.append(response)  # AIMessage with tool_calls
+            for tc in tool_calls:
                 tool_fn = _rewrite_tool_map.get(tc["name"])
                 if tool_fn:
                     result = tool_fn.invoke(tc["args"])
-                    tool_messages.append(
+                    conversation.append(
                         ToolMessage(content=str(result), tool_call_id=tc["id"])
                     )
                     logger.info("[Rewrite] tool '%s'(%s) → %s", tc["name"], tc["args"], result)
-            # tool 결과를 포함하여 최종 리라이팅 요청
-            final_response = _model.invoke(
-                invoke_messages + tool_messages,
+                else:
+                    conversation.append(
+                        ToolMessage(content="unknown tool", tool_call_id=tc["id"])
+                    )
+            response = _rewrite_model.invoke(
+                conversation,
                 config={"callbacks": _lf_callbacks()},
             )
-            rewritten = final_response.content.strip()
-        else:
-            rewritten = response.content.strip()
+        rewritten = (response.content or "").strip()
+        if not rewritten:
+            logger.warning("[Rewrite] 최종 content 비어있음 — 원문 유지")
+            rewritten = last_human.content
     except Exception as e:
         logger.error("[Rewrite] LLM 호출 실패: %s", e, exc_info=True)
         # 원본 메시지 유지 (rewrite 실패 시 원문으로 진행)
@@ -347,7 +356,8 @@ def supervisor_node(
             "map_wf_ids":   task_params.get("map_wf_ids", ""),
             "map_groupkey": task_params.get("map_groupkey", ""),
             "map_type":     task_params.get("map_type", "binmap"),
-            "map_oper":     task_params.get("map_oper", ""),
+            # task_params가 비면 state 기존 값 재사용 — 같은 plan 내 task 간 map_oper 계승
+            "map_oper":     task_params.get("map_oper") or state.get("map_oper", ""),
             # Yield 파라미터
             "lotcd":          task_params.get("lotcd", state.get("lotcd", "")),
             "ref_date":       task_params.get("ref_date", state.get("ref_date", "")),
@@ -444,7 +454,6 @@ def supervisor_node(
         for chunk in _model.stream(
             [{"role": "system", "content": prompt}, *trimmed_messages],
             config={"callbacks": _lf_callbacks()},
-            max_tokens=2048,
         ):
             token = chunk.content or ""
             if not token:
@@ -489,7 +498,13 @@ def supervisor_node(
     except (ConnectionError, TimeoutError, OSError):
         raise  # Tier 1: RetryPolicy가 재시도
     except Exception as e:
-        logger.error("Supervisor JSON 파싱 실패: %s", e)
+        logger.error(
+            "Supervisor JSON 파싱 실패: %s | raw_len=%d has_think_open=%s "
+            "has_think_close=%s has_open_brace=%s has_close_brace=%s",
+            e, len(raw_text), "<think>" in raw_text, "</think>" in raw_text,
+            "{" in raw_text, "}" in raw_text,
+        )
+        logger.error("[Supervisor] raw LLM response (full): %r", raw_text)
         decision = RouteResponse(
             next="FINISH",
             lotcd=state.get("lotcd", ""),
