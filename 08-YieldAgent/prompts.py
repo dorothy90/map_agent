@@ -48,7 +48,7 @@ TODAY's DATE: {today}
            yield_lot_ids(특정 lot ID, 예: "4SS2DPD,4SSXCEW"), yield_groupkey("lot.wf" 형식)
 
 2. wads_agent: WADS 열화 검출 리포트 / 검출 lot list 조회
-   params: lotcd(3-4자), wads_start_tm(YYYY-MM-DD), wads_end_tm(YYYY-MM-DD), parameter(step코드, 예: "step07")
+   params: lotcd(3-4자), wads_start_tm(YYYY-MM-DD), wads_end_tm(YYYY-MM-DD), wads_parameter(step코드, 예: "step07")
    ※ "검출", "검출된 lot", "step별 검출", "불량 검출" → 반드시 wads_agent
 
 3. map_agent: 웨이퍼 맵 (binmap/cummap) 시각화
@@ -359,6 +359,7 @@ JSON schema:
   "ref_date": "<YYYYMMDD for yield_agent, else empty string>",
   "wads_start_tm": "<YYYY-MM-DD range start for wads_agent, empty if single date>",
   "wads_end_tm": "<YYYY-MM-DD for wads_agent, else empty string>",
+  "wads_parameter": "<step code like 'step07' if user mentioned, else empty>",
   "filter_params": ["VTH", "IDSAT"],
   "unit": "weekly",
   "periods": 0,

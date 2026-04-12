@@ -36,16 +36,19 @@ def _wads_prompt(state: dict) -> list:
     current_date = datetime.now().strftime("%Y년 %m월 %d일")
     system_prompt = WADS_SYSTEM_PROMPT_TEMPLATE.format(current_date=current_date)
 
-    # supervisor가 파싱한 날짜/lotcd 컨텍스트 주입 (A-4: 시스템 프롬프트 방식)
+    # supervisor가 파싱한 날짜/lotcd/parameter 컨텍스트 주입 (A-4: 시스템 프롬프트 방식)
     lotcd = state.get("_lotcd", "")
     start_tm = state.get("_start_tm", "")
     end_tm = state.get("_end_tm", "")
-    if lotcd or end_tm:
+    parameter = state.get("_parameter", "")
+    if lotcd or end_tm or parameter:
         ctx = f"\n\n[조회 컨텍스트] lotcd={lotcd}"
         if start_tm:
             ctx += f", 기간: {start_tm} ~ {end_tm}"
         elif end_tm:
             ctx += f", 날짜: {end_tm}"
+        if parameter:
+            ctx += f", parameter={parameter}"
         system_prompt += ctx
 
     return [SystemMessage(content=system_prompt)] + list(state.get("messages", []))
@@ -223,10 +226,11 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     lotcd = state.get("lotcd", "4SS")
     end_tm = state.get("wads_end_tm", "")
     start_tm = state.get("wads_start_tm", "")
+    parameter = state.get("wads_parameter", "")
     if not end_tm:
         end_tm = date.today().strftime("%Y-%m-%d")
 
-    logger.info("[WADS Agent] lotcd=%s, start_tm=%s, end_tm=%s", lotcd, start_tm, end_tm)
+    logger.info("[WADS Agent] lotcd=%s, start_tm=%s, end_tm=%s, parameter=%r", lotcd, start_tm, end_tm, parameter)
 
     # 요청별 격리된 저장소 초기화
     storage: Dict[str, Any] = {"reports": []}
@@ -264,13 +268,14 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     try:
         sub_config = {"callbacks": _lf_callbacks(), "recursion_limit": 20}
         # prompt callable이 SystemMessage를 자동 주입하므로 HumanMessage만 전달
-        # A-4: _lotcd, _start_tm, _end_tm을 state에 포함하여 _wads_prompt가 읽을 수 있게 함
+        # A-4: _lotcd, _start_tm, _end_tm, _parameter을 state에 포함하여 _wads_prompt가 읽을 수 있게 함
         result = _wads_graph.invoke(
             {
                 "messages": wads_history,
                 "_lotcd": lotcd,
                 "_start_tm": start_tm,
                 "_end_tm": end_tm,
+                "_parameter": parameter,
             },
             config=sub_config,
         )

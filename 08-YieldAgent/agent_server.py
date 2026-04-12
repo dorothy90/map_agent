@@ -283,6 +283,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "periods": 0,
                 "wads_start_tm": "",
                 "wads_end_tm": "",
+                "wads_parameter": "",
                 "anomaly_params": [],
                 "filter_params": [],
                 "map_lot_id": "",

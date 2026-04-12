@@ -78,6 +78,9 @@ class RouteResponse(BaseModel):
     wads_end_tm: str = Field(
         default="", description="WADS 조회 끝 날짜 YYYY-MM-DD (wads_agent 전용)"
     )
+    wads_parameter: str = Field(
+        default="", description='WADS step 코드 필터 (예: "step07"). 사용자가 특정 step을 지정한 경우만'
+    )
     filter_params: list[str] = Field(
         default=[],
         description="표시할 파라미터 목록 (비어있으면 전체 표시). 예: ['VTH', 'IDSAT']"
@@ -129,9 +132,10 @@ def _params_signature(d: dict) -> dict:
         "filter_params": tuple(d.get("filter_params") or ()),
         "yield_lot_ids":  d.get("yield_lot_ids", ""),
         "yield_groupkey": d.get("yield_groupkey", ""),
-        "wads_start_tm": d.get("wads_start_tm", ""),
-        "wads_end_tm":   d.get("wads_end_tm", ""),
-        "dh_query":      d.get("dh_query", ""),
+        "wads_start_tm":  d.get("wads_start_tm", ""),
+        "wads_end_tm":    d.get("wads_end_tm", ""),
+        "wads_parameter": d.get("wads_parameter", ""),
+        "dh_query":       d.get("dh_query", ""),
         "dh_fail_type":  d.get("dh_fail_type", ""),
         "dh_cause_oper": d.get("dh_cause_oper", ""),
         "lh_lot_ids":    d.get("lh_lot_ids", ""),
@@ -355,6 +359,29 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     }
 
 
+# ── Replanner 노드 (#8 phase 2) ──────────────────────────────
+# 공식 LangGraph plan-and-execute 패턴의 replan 단계를 도입한다.
+# Phase 2는 pass-through — past_steps 누적 결과만 로깅하고 plan/state는 변경하지 않는다.
+# Phase 3에서 LLM 기반 dynamic replanning(plan 갱신 + chained input 해소)을 추가할 예정.
+# 그래프 wiring: agent → replanner → supervisor (이전: agent → supervisor 직결).
+@observe(name="replanner_node")
+def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
+    """phase 2 pass-through replanner.
+
+    각 worker 종료 후 호출되어 past_steps를 관측한다.
+    state 변경 없음 — supervisor의 큐 dispatch / LLM-routed 분기가 그대로 동작.
+    """
+    past = state.get("past_steps", [])
+    pending = state.get("pending_tasks", [])
+    if past:
+        last_task_id, last_summary = past[-1]
+        logger.info(
+            "[Replanner] last_task=%s pending=%d summary=%s",
+            last_task_id, len(pending), str(last_summary)[:120],
+        )
+    return {}
+
+
 # ── Supervisor 노드 ──────────────────────────────────────────
 @observe(name="supervisor_node")
 def supervisor_node(
@@ -421,8 +448,9 @@ def supervisor_node(
             "yield_lot_ids":  task_params.get("yield_lot_ids", ""),
             "yield_groupkey": task_params.get("yield_groupkey", ""),
             # WADS 파라미터
-            "wads_start_tm": task_params.get("wads_start_tm", ""),
-            "wads_end_tm":   task_params.get("wads_end_tm", ""),
+            "wads_start_tm":  task_params.get("wads_start_tm", ""),
+            "wads_end_tm":    task_params.get("wads_end_tm", ""),
+            "wads_parameter": task_params.get("wads_parameter") or task_params.get("parameter", ""),
             # Fail History 파라미터
             "dh_query":      task_params.get("dh_query", ""),
             "dh_fail_type":  task_params.get("dh_fail_type", ""),
@@ -699,6 +727,7 @@ def supervisor_node(
         "ref_date": ref_date,
         "wads_start_tm": decision.wads_start_tm or "",
         "wads_end_tm": wads_end_tm,
+        "wads_parameter": decision.wads_parameter,
         "filter_params": decision.filter_params,
         "unit": decision.unit or "weekly",
         "periods": decision.periods,
@@ -753,6 +782,7 @@ class YieldQueryState(TypedDict):
     # WADS 관련
     wads_start_tm: str
     wads_end_tm: str
+    wads_parameter: str   # WADS step code 필터 (#13 fix)
     wads_artifacts: Annotated[list, operator.add]
 
     # 이상감지
@@ -828,6 +858,7 @@ workflow = StateGraph(YieldQueryState)
 workflow.add_node("rewrite", rewrite_node, retry_policy=_retry)
 workflow.add_node("planner", planner_node, retry_policy=_retry)
 workflow.add_node("supervisor", supervisor_node, retry_policy=_retry)
+workflow.add_node("replanner", replanner_node, retry_policy=_retry)
 workflow.add_node("yield_agent", yield_agent_node, retry_policy=_retry)
 workflow.add_node("wads_agent", wads_agent_node, retry_policy=_retry)
 workflow.add_node("map_agent", map_agent_node, retry_policy=_retry)
@@ -837,16 +868,16 @@ workflow.add_node("lot_history_agent", lot_history_agent_node, retry_policy=_ret
 
 workflow.add_edge(START, "rewrite")
 workflow.add_edge("rewrite", "planner")        # rewrite → planner
-workflow.add_edge("planner", "supervisor")      # planner → supervisor
+workflow.add_edge("planner", "supervisor")     # planner → supervisor
 # supervisor → agent: Command(goto=...)가 처리 (conditional_edges 불필요)
-# agent → supervisor: 정적 엣지로 루프 복귀
-workflow.add_edge("yield_agent", "supervisor")
-workflow.add_edge("wads_agent", "supervisor")
-workflow.add_edge("map_agent", "supervisor")
-workflow.add_edge("fail_history_agent", "supervisor")
-# ppt_export → supervisor (planner 큐의 후속 task 실행을 위해 supervisor로 복귀)
-workflow.add_edge("ppt_export", "supervisor")
-workflow.add_edge("lot_history_agent", "supervisor")
+# agent → replanner → supervisor: 공식 plan-and-execute 패턴 (#8 phase 2)
+workflow.add_edge("yield_agent", "replanner")
+workflow.add_edge("wads_agent", "replanner")
+workflow.add_edge("map_agent", "replanner")
+workflow.add_edge("fail_history_agent", "replanner")
+workflow.add_edge("ppt_export", "replanner")
+workflow.add_edge("lot_history_agent", "replanner")
+workflow.add_edge("replanner", "supervisor")
 
 # workflow는 빌더(StateGraph)로 export — agent_server.py에서 checkpointer와 함께 compile
 # 로컬 테스트:

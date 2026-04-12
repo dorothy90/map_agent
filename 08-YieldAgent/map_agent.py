@@ -285,19 +285,23 @@ def _get_map_bounds(map_data_list: list) -> tuple:
     return min(rows), max(rows), min(cols), max(cols)
 
 
-def _visualize_binmap(map_data_list: list, bin_type: str = "left_bin") -> str:
+def _visualize_binmap(
+    map_data_list: list,
+    bin_type: str = "left_bin",
+    oper: Optional[str] = None,
+) -> str:
     """여러 wafer의 binmap을 개별적으로 시각화 → PNG 파일 경로"""
     if not map_data_list:
         return ""
 
     try:
-        return _visualize_binmap_inner(map_data_list, bin_type)
+        return _visualize_binmap_inner(map_data_list, bin_type, oper)
     except Exception as e:
         logger.error("[MapAgent] binmap 시각화 실패: %s", e)
         return ""
 
 
-def _visualize_binmap_inner(map_data_list: list, bin_type: str) -> str:
+def _visualize_binmap_inner(map_data_list: list, bin_type: str, oper: Optional[str] = None) -> str:
     n_wafers = len(map_data_list)
     n_cols = min(4, n_wafers)
     n_rows = (n_wafers + n_cols - 1) // n_cols
@@ -328,10 +332,11 @@ def _visualize_binmap_inner(map_data_list: list, bin_type: str) -> str:
         axes = axes.reshape(-1, 1)
 
     unique_lots = list(set(d["lot_id"] for d in map_data_list))
+    oper_label = f"[{oper}] " if oper else ""
     if len(unique_lots) == 1:
-        title = f"Binmap ({bin_type}) - Lot: {unique_lots[0]} ({n_wafers} wafers)"
+        title = f"{oper_label}Binmap ({bin_type}) - Lot: {unique_lots[0]} ({n_wafers} wafers)"
     else:
-        title = f"Binmap ({bin_type}) - {len(unique_lots)} Lots ({n_wafers} wafers)"
+        title = f"{oper_label}Binmap ({bin_type}) - {len(unique_lots)} Lots ({n_wafers} wafers)"
     fig.suptitle(title, fontsize=14)
 
     for idx, (data, map_json) in enumerate(zip(map_data_list, parsed_maps)):
@@ -355,7 +360,8 @@ def _visualize_binmap_inner(map_data_list: list, bin_type: str) -> str:
     plt.tight_layout()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_lot = unique_lots[0] if len(unique_lots) == 1 else "multi"
-    filepath = f"binmap_{file_lot}_{timestamp}.png"
+    oper_tag = f"_{oper}" if oper else ""
+    filepath = f"binmap_{file_lot}{oper_tag}_{timestamp}.png"
     plt.savefig(filepath, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return filepath
@@ -367,13 +373,14 @@ def _visualize_cummap(
     target_bin: Optional[str] = None,
     category_name: Optional[str] = None,
     subtitle: Optional[str] = None,
+    oper: Optional[str] = None,
 ) -> tuple:
     """여러 wafer를 Pass Rate 기반 cummap으로 시각화 → (filepath, avg_pass_rate)"""
     if not map_data_list:
         return None, 0
 
     try:
-        return _visualize_cummap_inner(map_data_list, bin_type, target_bin, category_name, subtitle)
+        return _visualize_cummap_inner(map_data_list, bin_type, target_bin, category_name, subtitle, oper)
     except Exception as e:
         logger.error("[MapAgent] cummap 시각화 실패: %s", e)
         return None, 0
@@ -385,6 +392,7 @@ def _visualize_cummap_inner(
     target_bin: Optional[str],
     category_name: Optional[str],
     subtitle: Optional[str],
+    oper: Optional[str] = None,
 ) -> tuple:
     n_wafers = len(map_data_list)
     min_row, max_row, min_col, max_col = _get_map_bounds(map_data_list)
@@ -420,10 +428,11 @@ def _visualize_cummap_inner(
     fig, ax = plt.subplots(figsize=(10, 8))
     unique_lots = list(set(d["lot_id"] for d in map_data_list))
     cat_label = f" [{category_name}]" if category_name else ""
+    oper_label = f"[{oper}] " if oper else ""
     if len(unique_lots) == 1:
-        title = f"Cummap{cat_label} ({bin_type}) - Lot: {unique_lots[0]}\n({n_wafers} wafers, Avg Pass Rate: {avg_pass_rate:.1f}%)"
+        title = f"{oper_label}Cummap{cat_label} ({bin_type}) - Lot: {unique_lots[0]}\n({n_wafers} wafers, Avg Pass Rate: {avg_pass_rate:.1f}%)"
     else:
-        title = f"Cummap{cat_label} ({bin_type}) - {len(unique_lots)} Lots\n({n_wafers} wafers, Avg Pass Rate: {avg_pass_rate:.1f}%)"
+        title = f"{oper_label}Cummap{cat_label} ({bin_type}) - {len(unique_lots)} Lots\n({n_wafers} wafers, Avg Pass Rate: {avg_pass_rate:.1f}%)"
     if subtitle:
         title += f"\n{subtitle}"
     ax.set_title(title, fontsize=14)
@@ -440,7 +449,8 @@ def _visualize_cummap_inner(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_lot = unique_lots[0] if len(unique_lots) == 1 else "multi"
     cat_suffix = f"_{category_name}" if category_name else ""
-    filepath = f"cummap_{file_lot}{cat_suffix}_{timestamp}.png"
+    oper_tag = f"_{oper}" if oper else ""
+    filepath = f"cummap_{file_lot}{cat_suffix}{oper_tag}_{timestamp}.png"
     plt.savefig(filepath, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return filepath, avg_pass_rate
@@ -525,7 +535,7 @@ def show_wafer_map(
 
     results = []
     if "binmap" in requested_types:
-        filepath = _visualize_binmap(map_data_list, bin_type=bin_type)
+        filepath = _visualize_binmap(map_data_list, bin_type=bin_type, oper=oper)
         if filepath:
             results.append(f"Binmap: {filepath}")
 
@@ -539,7 +549,7 @@ def show_wafer_map(
             subtitle_parts.append(f"Groupkey: {groupkey}")
         cummap_subtitle = " | ".join(subtitle_parts) if subtitle_parts else None
         filepath, avg_pass_rate = _visualize_cummap(
-            map_data_list, bin_type=bin_type, subtitle=cummap_subtitle,
+            map_data_list, bin_type=bin_type, subtitle=cummap_subtitle, oper=oper,
         )
         if filepath:
             results.append(f"Cummap: {filepath} (평균 Pass Rate: {avg_pass_rate:.1f}%)")
@@ -611,7 +621,9 @@ def _handle_standard_map(state: dict) -> dict:
     html_parts = []
     for p in png_paths:
         if os.path.exists(p):
-            html_parts.append(_png_to_html(p, os.path.basename(p)))
+            kind = "Cummap" if "cummap" in os.path.basename(p).lower() else "Binmap"
+            caption = f"[{oper}] {kind}" if oper else kind
+            html_parts.append(_png_to_html(p, caption))
     map_html = "\n".join(html_parts) if html_parts else ""
 
     artifacts = []
