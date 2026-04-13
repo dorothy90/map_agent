@@ -246,6 +246,20 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     )
     task_goal = state.get("current_task_goal", "")
     query = task_goal or (last_human.content if last_human else f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘")
+    # task_goal 단독 사용 시 lotcd/date/parameter 같은 컨텍스트가 손실되어 ReAct가 넓게 조회함 (#X1 fix).
+    # query에 state의 구체적 context를 embed하여 ReAct가 정확한 조건으로 tool 호출하도록 보강.
+    if task_goal:
+        ctx_parts = []
+        if lotcd:
+            ctx_parts.append(f"lotcd={lotcd}")
+        if start_tm and end_tm and start_tm != end_tm:
+            ctx_parts.append(f"기간={start_tm}~{end_tm}")
+        elif end_tm:
+            ctx_parts.append(f"날짜={end_tm}")
+        if parameter:
+            ctx_parts.append(f"parameter={parameter}")
+        if ctx_parts:
+            query = f"{query} ({', '.join(ctx_parts)})"
     logger.info("[WADS Agent] 쿼리: %s (task_goal=%r)", query, task_goal)
 
     # task_goal이 있으면 ReAct에 task_goal만 단일 user message로 전달 (L2 fix).
@@ -360,8 +374,35 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     result_message = AIMessage(content=answer, name="wads_agent")
 
+    # C1 (#카테고리 3): SQL 결과를 structured AIMessage로 messages에 push.
+    # LangGraph native 패턴 — 새 state field 없이 additional_kwargs로 downstream에 structured data 전달.
+    # `_resolve_chained_params`가 state.messages에서 이 메시지를 찾아 chained input 해소.
+    out_messages: list = [result_message]
+    wads_lot_ids: list[str] = []
+    if query_payload:
+        wads_lot_ids = [r.get("lotid", "") for r in query_payload if r.get("lotid")]
+    elif sql_result_payload:
+        wads_lot_ids = [r.get("lotid", "") for r in sql_result_payload if r.get("lotid")]
+    if wads_lot_ids:
+        sql_result_msg = AIMessage(
+            content=(
+                f"[WADS SQL 결과] LOT ID {len(wads_lot_ids)}건: {','.join(wads_lot_ids)}"
+                f" | 기간 {start_tm or '전체'}~{end_tm or '전체'} | step={parameter or '전체'}"
+            ),
+            name="wads_sql_result",  # supervisor LLM 호출 전 filter 대상 (내부 전달용)
+            additional_kwargs={
+                "wads_result": {
+                    "lot_ids": wads_lot_ids,
+                    "step_filter": parameter or "",
+                    "date_range": [start_tm or "", end_tm or ""],
+                    "detected_count": len(wads_lot_ids),
+                },
+            },
+        )
+        out_messages.insert(0, sql_result_msg)
+
     return {
-        "messages": [result_message],
+        "messages": out_messages,
         "wads_artifacts": artifacts,
         "agent_suggestion": agent_suggestion,
         "past_steps": [(state.get("current_task_id", ""), answer[:300])],

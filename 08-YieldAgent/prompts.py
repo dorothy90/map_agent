@@ -71,7 +71,13 @@ TODAY's DATE: {today}
 - 복합 질문 (여러 agent 또는 같은 agent 다른 파라미터) → 여러 task 생성
 - 조건부 작업 ("~하면 ~해줘", "이상 있으면") → 첫 번째 작업만 task로 생성, goal에 조건 기록
 - 각 task의 params에는 해당 agent가 필요로 하는 파라미터만 포함
-- 날짜는 자연어 그대로 params에 포함 (변환하지 말 것)
+- **날짜는 YYYY-MM-DD 또는 YYYYMMDD 형식으로 변환**하여 task params에 넣어라. 자연어 literal("최근 일주일" 등)을 그대로 넣으면 worker가 해석하지 못함.
+  - yield_agent.ref_date: YYYYMMDD (예: "{today_yyyymmdd}")
+  - wads_agent.wads_start_tm / wads_end_tm: YYYY-MM-DD (예: "{today_yyyy_mm_dd}")
+  - "최근 1주일" / "지난 7일" → wads_start_tm=(오늘-6일 YYYY-MM-DD), wads_end_tm="{today_yyyy_mm_dd}"
+  - "오늘" → end_tm="{today_yyyy_mm_dd}"
+  - "1월 20일" → "{year}-01-20"
+  - 해석 불가능한 패턴이면 해당 필드를 빈 문자열 ""로 두어라 (worker가 default 처리)
 - task_id는 "task_1", "task_2" 형식으로 순번 부여
 - 사용자 메시지가 짧거나 모호한 follow-up이면 직전 대화 히스토리와 [State context]를 활용하여 lot ID·제품코드·필터 등을 task params에 명시 채워라
 - **CRITICAL**: chained input(예: 후속 task의 map_lot_ids, lh_lot_ids 등)이 이전 task 결과에 의존하는 경우 해당 필드를 **빈 문자열 ""** 으로 두거나 **필드 자체를 omit**하라. 절대로 `"<task_1 결과 lot IDs>"`, `"<task_1_result_lot_ids>"`, `"{{from_task_1}}"`, `"task_1 결과"` 같은 placeholder 텍스트를 값으로 넣지 마라. 시스템의 replanner가 이전 task 결과를 보고 자동으로 채운다.
@@ -305,6 +311,11 @@ Route to **ppt_export** when the user explicitly requests:
 - 분석 결과 없이 PPT 요청 시 → message에 "먼저 수율 조회를 해주세요"로 안내하고 FINISH
 
 Route to **FINISH** when the request is unrelated to yield, WADS, wafer map, lot history, or fail history.
+
+=== FINISH MESSAGE RULE (반드시 지킬 것) ===
+- 직전 worker의 응답이 "데이터가 없습니다", "조회된 데이터가 없습니다", "오류가 발생했습니다" 같은 실패 메시지라면 그 메시지를 **그대로** message 필드에 복사하여 사용자에게 전달하라.
+- 실패 원인을 자체 추론하여 새 질문("PT1H/PT1C 선택해주세요" 등)을 생성하지 마라. 이미 interrupt 단계에서 사용자에게 물어본 파라미터는 이미 채워져 있다.
+- worker가 빈 결과를 반환했다면 "lot ID를 확인해주세요" 같은 안내는 worker 메시지에 이미 포함되어 있으므로 그대로 relay.
 
 === UNIT & PERIODS ===
 unit 결정:

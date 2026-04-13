@@ -303,6 +303,7 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         today=today.strftime("%Y년 %m월 %d일 (%A)"),
         today_yyyymmdd=today.strftime("%Y%m%d"),
         today_yyyy_mm_dd=today.strftime("%Y-%m-%d"),
+        year=today.year,
     )
 
     # #14 fix — planner context-blind 해소: 최근 3턴 + state metadata 주입
@@ -392,6 +393,42 @@ def _is_placeholder_or_empty(val) -> bool:
     return False
 
 
+def _resolve_chained_params(task: dict, state: dict) -> dict:
+    """task.params의 빈 chained 필드를 state.messages의 structured tool result에서 코드로 자동 채움.
+
+    LangGraph native 패턴 (C1 / 카테고리 3): state.messages 안의
+    `AIMessage(name='wads_sql_result', additional_kwargs={'wads_result': {...}})`을 찾아
+    lot_ids를 downstream task(map/lot_history)의 빈 input에 주입.
+
+    LLM 없이 결정적 코드 해소. replanner LLM은 코드 해소 실패 시 fallback으로 여전히 실행.
+    """
+    agent = task.get("agent", "")
+    params = dict(task.get("params") or {})
+    messages = state.get("messages", [])
+
+    # 최신 wads_sql_result 메시지의 structured data 추출
+    wads_data: dict = {}
+    for m in reversed(messages):
+        if isinstance(m, AIMessage) and getattr(m, "name", "") == "wads_sql_result":
+            wads_data = (getattr(m, "additional_kwargs", None) or {}).get("wads_result") or {}
+            if wads_data:
+                break
+
+    lot_ids = wads_data.get("lot_ids") or []
+
+    if agent == "map_agent":
+        if all(_is_placeholder_or_empty(params.get(k)) for k in ("map_lot_id", "map_lot_ids", "map_groupkey")):
+            if lot_ids:
+                params["map_lot_ids"] = ",".join(lot_ids)
+                logger.info("[ResolveChained] map_agent.map_lot_ids ← wads_sql_result (%d lots)", len(lot_ids))
+    elif agent == "lot_history_agent":
+        if _is_placeholder_or_empty(params.get("lh_lot_ids")) and lot_ids:
+            params["lh_lot_ids"] = ",".join(lot_ids)
+            logger.info("[ResolveChained] lot_history_agent.lh_lot_ids ← wads_sql_result (%d lots)", len(lot_ids))
+
+    return params
+
+
 def _needs_replan(pending: list[dict]) -> bool:
     """Phase 3a 휴리스틱: 어떤 pending task가 빈/placeholder chained-input을 가지면 LLM 호출 필요.
 
@@ -441,8 +478,12 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     # Fast path: 큐 비었거나 past 비었거나 chained-input 의존이 없으면 LLM 호출 생략
     if not pending or not past:
         return {}
-    if not _needs_replan(pending):
-        logger.info("[Replanner] 빈 chained-input 없음 → LLM 호출 생략 (pass-through)")
+    # C1: 코드 해소 시뮬레이션 — _resolve_chained_params가 모든 pending을 해소할 수 있으면 LLM 호출 생략
+    simulated_pending = [
+        {**t, "params": _resolve_chained_params(t, state)} for t in pending
+    ]
+    if not _needs_replan(simulated_pending):
+        logger.info("[Replanner] 코드 해소로 chained input 충족 → LLM 호출 생략 (pass-through)")
         return {}
 
     # 사용자 원본 query (rewrite 결과)
@@ -493,6 +534,21 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     if not new_tasks:
         logger.warning("[Replanner] LLM이 빈 tasks 반환 — pass-through")
         return {}
+    # R2 fix: LLM이 phase 3a 룰("DO NOT add tasks")을 어기고 task 추가/대체하는 경우 거부
+    if len(new_tasks) > len(pending):
+        logger.warning(
+            "[Replanner] LLM이 task 수 증가 (%d → %d) — 거부, 기존 plan 유지",
+            len(pending), len(new_tasks),
+        )
+        return {}
+    orig_ids = {t.get("task_id") for t in pending}
+    new_ids = {t.get("task_id") for t in new_tasks}
+    if not new_ids.issubset(orig_ids):
+        logger.warning(
+            "[Replanner] LLM이 새 task_id 추가 %s — 거부, 기존 plan 유지",
+            sorted(new_ids - orig_ids),
+        )
+        return {}
     if new_tasks == pending:
         logger.info("[Replanner] LLM 결과 변경 없음 (pass-through)")
         return {}
@@ -516,10 +572,11 @@ def supervisor_node(
     """
     step_count = state.get("step_count", 0) + 1
 
-    # 최대 스텝 강제 종료 (무한루프 방지) — planner task 수에 맞게 동적 조정
-    # n task 처리 = 2n-1 step (dispatch n번 + agent 복귀 후 LLM-routed FINISH n번, 마지막 합쳐짐)
-    # _MAX_TASKS=5까지 안전하게 통과시키려면 최소 2n+3 여유 필요
-    max_steps = min(2 * len(state.get("task_plan", [])) + 3, 15) or 4
+    # 최대 스텝 강제 종료 (무한루프 방지) — recursion_limit=30과 정합 맞춤 (#R1 fix).
+    # 사이클당 3노드(supervisor + agent + replanner) + setup 3노드 = 3n+3.
+    # recursion_limit 30 안전 margin 유지를 위해 n+3 (cap 8)로 제한.
+    # n=5 → max_steps=8 → 8 supervisor 진입 × 3노드 + setup 3 = 27 ≤ 30 ✅
+    max_steps = min(len(state.get("task_plan", [])) + 3, 8) or 4
     if step_count > max_steps:
         logger.warning("[Supervisor] 최대 스텝(%d/%d) 초과 → 강제 종료", step_count, max_steps)
         return Command(
@@ -535,7 +592,8 @@ def supervisor_node(
     if pending:
         current_task = pending[0]
         remaining = pending[1:]
-        task_params = current_task.get("params", {})
+        # C1: 코드 기반 chained input 해소 — wads_sql_result 메시지에서 lot_ids 자동 주입 (LLM 불필요)
+        task_params = _resolve_chained_params(current_task, state)
 
         task_message = AIMessage(
             content=f"[Task {current_task.get('task_id', '?')}] {current_task.get('goal', '')}",
@@ -651,6 +709,14 @@ def supervisor_node(
     # _MAX_TASKS=5 plan 처리 시 task_message + agent_result + supervisor_decision이
     # 빠르게 20개를 초과하므로 50으로 상향. follow-up 다중 turn에서도 컨텍스트 보존.
     trimmed_messages = trim_messages(condensed, max_tokens=50, strategy="last", token_counter=len)
+    # C1: supervisor LLM 호출 직전에 내부 전달용 메시지(name="wads_sql_result" 등)를 제거.
+    # state.messages와 _resolve_chained_params 접근에는 유지되지만 LLM API에는 전달하지 않음
+    # ('name' 필드가 OpenAI-호환 provider에서 노이즈/경고를 유발할 수 있음 — LangGraph docs 확인).
+    _INTERNAL_MSG_NAMES = {"wads_sql_result"}
+    trimmed_messages = [
+        m for m in trimmed_messages
+        if not (isinstance(m, AIMessage) and getattr(m, "name", "") in _INTERNAL_MSG_NAMES)
+    ]
     # ── 수동 JSON 파싱 방식 (with_structured_output 사용 금지) ──
     # 이유: gpt-oss-120b는 function calling을 지원하지만, OpenRouter 프록시가
     #       structured output 파라미터를 제대로 전달하지 못함.
@@ -820,6 +886,24 @@ def supervisor_node(
     wads_end_tm = decision.wads_end_tm or (
         today_yyyy_mm_dd if decision.next == "wads_agent" else ""
     )
+
+    # FINISH 메시지 relay (#X1 fix): supervisor LLM이 worker의 에러 결과를 보고도
+    # 엉뚱한 메시지(예: "PT1H/PT1C 선택해주세요")를 hallucinate하는 경우가 있다.
+    # FINISH 결정 + 직전 worker가 "데이터 없음" 류 응답이면 worker 메시지를 그대로 사용자에게 전달.
+    if decision.next == "FINISH":
+        last_agent_msg = next(
+            (m.content for m in reversed(messages)
+             if isinstance(m, AIMessage) and getattr(m, "name", "") in _AGENT_NAMES
+             and isinstance(m.content, str)),
+            None,
+        )
+        _NO_DATA_KEYWORDS = (
+            "데이터가 없습니다", "데이터 없음", "조회된 데이터", "조회할 수 없습니다",
+            "오류가 발생했습니다", "실행 실패", "조회 실패",
+        )
+        if last_agent_msg and any(kw in last_agent_msg for kw in _NO_DATA_KEYWORDS):
+            logger.info("[Supervisor] FINISH 메시지 relay: LLM 메시지 대신 worker 마지막 응답 사용")
+            decision.message = last_agent_msg
 
     result_message = AIMessage(content=decision.message, name="supervisor")
 

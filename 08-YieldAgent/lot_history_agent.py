@@ -291,7 +291,14 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         None,
     )
     task_goal = state.get("current_task_goal", "")
-    query = task_goal or (last_human.content if last_human else f"{lh_lot_ids} lot 이력을 조회해줘")
+    query_base = task_goal or (last_human.content if last_human else f"{lh_lot_ids} lot 이력을 조회해줘")
+    # Option A fix (L1): state.lh_lot_ids가 query에 없으면 직접 embed.
+    # system prompt 컨텍스트만으로는 ReAct LLM이 LOT ID를 인식 못 하는 경우가 있음 — query 본문에
+    # LOT ID를 명시 주입해야 확실히 query_lot_history 도구를 호출.
+    if lh_lot_ids and lh_lot_ids not in query_base:
+        query = f"{query_base}\n\n조회 대상 LOT ID: {lh_lot_ids}"
+    else:
+        query = query_base
 
     # 히스토리 필터링 — 최근 3턴
     lh_history: list = []

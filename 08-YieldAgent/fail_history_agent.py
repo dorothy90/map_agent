@@ -101,7 +101,22 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         None,
     )
     task_goal = state.get("current_task_goal", "")
-    query = task_goal or (last_human.content if last_human else f"{lotcd} 불량이력 조회")
+    query_base = task_goal or (last_human.content if last_human else f"{lotcd} 불량이력 조회")
+    # Option A fix: defense in depth — state의 fail 검색 파라미터를 query에 직접 embed.
+    if task_goal:
+        ctx_parts = []
+        if dh_fail_type:
+            ctx_parts.append(f"불량유형={dh_fail_type}")
+        if dh_cause_oper:
+            ctx_parts.append(f"원인공정={dh_cause_oper}")
+        if lotcd:
+            ctx_parts.append(f"lotcd={lotcd}")
+        if ctx_parts:
+            query = f"{query_base} ({', '.join(ctx_parts)})"
+        else:
+            query = query_base
+    else:
+        query = query_base
     logger.info("[FH Agent] 쿼리: %s (task_goal=%r)", query, task_goal)
 
     # 선택적 히스토리 필터링 — 최근 3턴
