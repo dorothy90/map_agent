@@ -731,20 +731,24 @@ def supervisor_node(
         else:
             condensed.append(m)
 
+    # C1: supervisor LLM 호출 직전에 내부 전달용 메시지(name="wads_sql_result" 등)를 제거.
+    # state.messages와 _resolve_chained_params 접근에는 유지되지만 LLM API에는 전달하지 않음
+    # ('name' 필드가 OpenAI-호환 provider에서 노이즈/경고를 유발할 수 있음 — LangGraph docs 확인).
+    # SM-10 fix: trim **이전**에 filter 적용. internal relay 메시지가 50-message cap
+    # 경쟁에 참여하지 않도록 함. long multi-turn session(turn 8+)에서 `wads_sql_result`가
+    # FIFO drop으로 사라지는 것을 방지. 단 `_resolve_chained_params`는 여전히 state.messages
+    # 원본을 읽으므로 동작에는 영향 없음 — 순수 LLM 컨텍스트 window 최적화.
+    _INTERNAL_MSG_NAMES = {"wads_sql_result", "lot_history_sql_result"}
+    filtered_condensed = [
+        m for m in condensed
+        if not (isinstance(m, AIMessage) and getattr(m, "name", "") in _INTERNAL_MSG_NAMES)
+    ]
     # token_counter=len → 메시지 개수 기준 (문자수 아님). 최근 50개 메시지만 전달.
     # #21 fix: 위 condensation(_RECENT_FULL_TURNS=2, _MAX_OLD_MSG_LEN=300)이 이미 오래된
     # agent 메시지를 축약하므로 trim limit이 너무 작으면 condensation 작업이 무의미.
     # _MAX_TASKS=5 plan 처리 시 task_message + agent_result + supervisor_decision이
     # 빠르게 20개를 초과하므로 50으로 상향. follow-up 다중 turn에서도 컨텍스트 보존.
-    trimmed_messages = trim_messages(condensed, max_tokens=50, strategy="last", token_counter=len)
-    # C1: supervisor LLM 호출 직전에 내부 전달용 메시지(name="wads_sql_result" 등)를 제거.
-    # state.messages와 _resolve_chained_params 접근에는 유지되지만 LLM API에는 전달하지 않음
-    # ('name' 필드가 OpenAI-호환 provider에서 노이즈/경고를 유발할 수 있음 — LangGraph docs 확인).
-    _INTERNAL_MSG_NAMES = {"wads_sql_result", "lot_history_sql_result"}
-    trimmed_messages = [
-        m for m in trimmed_messages
-        if not (isinstance(m, AIMessage) and getattr(m, "name", "") in _INTERNAL_MSG_NAMES)
-    ]
+    trimmed_messages = trim_messages(filtered_condensed, max_tokens=50, strategy="last", token_counter=len)
     # ── 수동 JSON 파싱 방식 (with_structured_output 사용 금지) ──
     # 이유: gpt-oss-120b는 function calling을 지원하지만, OpenRouter 프록시가
     #       structured output 파라미터를 제대로 전달하지 못함.
@@ -979,6 +983,11 @@ def supervisor_node(
         "lh_lot_ids":    decision.lh_lot_ids,
         # LLM-routed 분기는 planner task가 아니므로 task goal 없음 (#12 fix)
         "current_task_goal": "",
+        # SM-2 fix: planner turn 이후 LLM-routed turn에서 이전 task_id 누수 방지
+        "current_task_id": "",
+        # SM-4 fix: #19 fix(큐 dispatch line 671)를 LLM-routed에도 대칭 적용 —
+        # 이전 worker의 agent_suggestion이 이번 turn SSE에 그대로 emit되는 것을 차단
+        "agent_suggestion": "",
         "_last_agent_params": _params_signature(decision.model_dump()),
     }
 
