@@ -246,20 +246,8 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     )
     task_goal = state.get("current_task_goal", "")
     query = task_goal or (last_human.content if last_human else f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘")
-    # task_goal 단독 사용 시 lotcd/date/parameter 같은 컨텍스트가 손실되어 ReAct가 넓게 조회함 (#X1 fix).
-    # query에 state의 구체적 context를 embed하여 ReAct가 정확한 조건으로 tool 호출하도록 보강.
-    if task_goal:
-        ctx_parts = []
-        if lotcd:
-            ctx_parts.append(f"lotcd={lotcd}")
-        if start_tm and end_tm and start_tm != end_tm:
-            ctx_parts.append(f"기간={start_tm}~{end_tm}")
-        elif end_tm:
-            ctx_parts.append(f"날짜={end_tm}")
-        if parameter:
-            ctx_parts.append(f"parameter={parameter}")
-        if ctx_parts:
-            query = f"{query} ({', '.join(ctx_parts)})"
+    # _wads_prompt가 시스템 프롬프트에 [조회 컨텍스트] lotcd/기간/parameter를 자동 주입하므로
+    # query에 별도 embed 불필요. WADS_SYSTEM_PROMPT의 TASK SCOPE 룰이 ReAct 1회 호출 종료를 강제.
     logger.info("[WADS Agent] 쿼리: %s (task_goal=%r)", query, task_goal)
 
     # task_goal이 있으면 ReAct에 task_goal만 단일 user message로 전달 (L2 fix).

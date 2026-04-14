@@ -292,9 +292,11 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     )
     task_goal = state.get("current_task_goal", "")
     query_base = task_goal or (last_human.content if last_human else f"{lh_lot_ids} lot 이력을 조회해줘")
-    # Option A fix (L1): state.lh_lot_ids가 query에 없으면 직접 embed.
-    # system prompt 컨텍스트만으로는 ReAct LLM이 LOT ID를 인식 못 하는 경우가 있음 — query 본문에
-    # LOT ID를 명시 주입해야 확실히 query_lot_history 도구를 호출.
+    # Option A (#L1, B1 revert 2026-04-14): C1 + Option B 만으로는 ReAct LLM이 system prompt
+    # [조회 컨텍스트] lot_ids를 무시하고 사용자에게 LOT ID 되묻는 현상 재현됨. query body에 직접
+    # embed해야 ReAct가 query_lot_history 도구를 호출. system context는 약한 신호, query body가 강함.
+    # TODO: lot_history는 ReAct 대신 deterministic Python (state.lh_lot_ids → query_lot_history 직접 호출)이
+    # 더 깔끔. 향후 Phase C2 또는 별도 fix로 ReAct 의존 제거 검토.
     if lh_lot_ids and lh_lot_ids not in query_base:
         query = f"{query_base}\n\n조회 대상 LOT ID: {lh_lot_ids}"
     else:
