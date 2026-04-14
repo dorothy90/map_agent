@@ -260,6 +260,8 @@ async def chat_stream(request: ChatRequest, req: Request):
             "past_steps": Overwrite([]),
             # step_count만 리셋 (퍼-턴 루프 카운터)
             "step_count": 0,
+            # canonical plan-and-execute: 이전 턴의 종료 신호가 다음 턴으로 새지 않도록 리셋
+            "response": "",
             # anomaly_params는 매 새 사용자 turn 시 리셋 (#11 fix).
             # 동기: 이전 turn의 anomaly가 supervisor 라우팅 프롬프트(supervisor.py:409-414)에
             #       매번 "[이전 분석 결과]"로 주입되어 다른 product 분석에까지 stale 컨텍스트가
@@ -308,6 +310,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "current_task_id": "",
                 "current_task_goal": "",
                 "_last_agent_params": {},
+                "response": "",
             })
 
     async def generate():

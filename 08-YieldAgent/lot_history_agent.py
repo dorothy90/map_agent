@@ -8,57 +8,19 @@ from __future__ import annotations
 
 import logging
 import re
-import os
 from typing import Any, Dict, List
 
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.prebuilt import create_react_agent
 from langfuse import observe
 
-from lf_utils import lf_callbacks as _lf_callbacks
-from common import timed, get_llm, html_escape as _h, extract_suggestion, is_transient_error
-from lot_history_tools import LOT_HISTORY_TOOLS, _tool_payload_var, _get_tool_payload
+from common import timed, html_escape as _h, is_transient_error
+from lot_history_tools import _tool_payload_var, query_lot_history
 
 load_dotenv(override=True)
 
 logger = logging.getLogger("yield_agent.lot_history_agent")
-
-_lh_model = get_llm(model=os.getenv("RETRIEVE_CHAIN_MODEL"))
-
-_LH_SYSTEM_PROMPT = """\
-당신은 반도체 LOT 종합 이력 조회 에이전트입니다.
-
-=== LOT ID 입력 우선순위 (반드시 지킬 것) ===
-1. **시스템 프롬프트 끝에 `[조회 컨텍스트] lot_ids=...`가 주입되어 있으면 그 lot_ids를 그대로 사용해 즉시 query_lot_history 도구를 호출하라. 사용자에게 LOT ID를 다시 묻지 마라. 이는 supervisor가 이전 task 결과(예: WADS 검출)에서 추출한 LOT 목록이다.**
-2. 사용자 자연어 메시지 안에 LOT ID(7자 영숫자, 예: 4SS2DPD)가 명시된 경우에만 그것을 사용.
-3. 위 두 경우 모두 LOT ID를 찾지 못한 경우에만 사용자에게 LOT ID를 한 번 묻고 종료.
-
-조회 후 결과를 한국어로 간결하게 요약하세요.
-
-규칙:
-- LOT_ID가 여러 개면 콤마로 구분하여 한 번에 조회
-- 조회 결과 중 위험 항목(HALT, Q-TIME 큰 초과, 장시간 Hold)을 우선 언급
-- 데이터가 0건인 항목은 "해당 없음"으로 간단히 처리
-- 도구 호출 실패 시 최대 2회 재시도, 3회 실패 시 사용자에게 오류 보고
-"""
-
-
-def _lh_prompt(state: dict) -> list:
-    """system prompt + 조회 컨텍스트 주입"""
-    system_prompt = _LH_SYSTEM_PROMPT
-    lot_ids = state.get("_lot_ids", "")
-    if lot_ids:
-        system_prompt += f"\n\n[조회 컨텍스트] lot_ids={lot_ids}"
-    return [SystemMessage(content=system_prompt)] + list(state.get("messages", []))
-
-
-_lh_graph = create_react_agent(
-    model=_lh_model,
-    tools=LOT_HISTORY_TOOLS,
-    prompt=_lh_prompt,
-)
 
 
 # ── HTML 렌더링 ──────────────────────────────────────────────
@@ -276,57 +238,34 @@ def _render_lot_history_html(all_results: Dict[str, Dict[str, List[Dict]]]) -> s
 @observe(name="lot_history_agent_node")
 @timed
 def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
-    """LOT History Agent 노드: 5개 테이블에서 LOT 종합 이력 조회"""
+    """LOT History deterministic 노드 — ReAct 없이 query_lot_history 직접 호출.
+
+    LangGraph canonical pattern (custom-workflow "Deterministic node"): LLM reasoning/
+    tool-selection 불필요한 단일 도구 worker는 plain function node가 최적. create_react_agent는
+    langgraph v1에서 deprecated이고, lot_history는 reasoning 자체가 불필요 → deterministic
+    function 전환. C1 패턴(lot_history_sql_result AIMessage)으로 downstream chained 확장 지원.
+    """
     lh_lot_ids = state.get("lh_lot_ids", "")
+    current_task_id = state.get("current_task_id", "")
     logger.info("[LOT History Agent] lot_ids=%s", lh_lot_ids)
 
-    # 요청별 격리된 저장소 초기화
+    if not lh_lot_ids:
+        msg = AIMessage(
+            content="LOT ID가 제공되지 않았습니다. 조회하려면 LOT ID를 알려주세요.",
+            name="lot_history_agent",
+        )
+        return {
+            "messages": [msg],
+            "lot_history_artifacts": [],
+            "past_steps": [(current_task_id, "LOT ID 없음 — 조회 스킵")],
+        }
+
+    # 요청별 격리된 저장소 초기화 + @tool decorated 함수 직접 호출 (LLM 불필요)
     storage: Dict[str, Any] = {}
     _tool_payload_var.set(storage)
 
-    # query 우선순위: planner task goal > 사용자 last_human (#12 fix)
-    messages = state.get("messages", [])
-    last_human = next(
-        (m for m in reversed(messages) if isinstance(m, HumanMessage)),
-        None,
-    )
-    task_goal = state.get("current_task_goal", "")
-    query_base = task_goal or (last_human.content if last_human else f"{lh_lot_ids} lot 이력을 조회해줘")
-    # Option A (#L1, B1 revert 2026-04-14): C1 + Option B 만으로는 ReAct LLM이 system prompt
-    # [조회 컨텍스트] lot_ids를 무시하고 사용자에게 LOT ID 되묻는 현상 재현됨. query body에 직접
-    # embed해야 ReAct가 query_lot_history 도구를 호출. system context는 약한 신호, query body가 강함.
-    # TODO: lot_history는 ReAct 대신 deterministic Python (state.lh_lot_ids → query_lot_history 직접 호출)이
-    # 더 깔끔. 향후 Phase C2 또는 별도 fix로 ReAct 의존 제거 검토.
-    if lh_lot_ids and lh_lot_ids not in query_base:
-        query = f"{query_base}\n\n조회 대상 LOT ID: {lh_lot_ids}"
-    else:
-        query = query_base
-
-    # 히스토리 필터링 — 최근 3턴
-    lh_history: list = []
-    turn_count = 0
-    for m in reversed(messages):
-        if turn_count >= 3:
-            break
-        if isinstance(m, HumanMessage):
-            lh_history.insert(0, m)
-            turn_count += 1
-        elif isinstance(m, AIMessage) and getattr(m, "name", "") == "lot_history_agent":
-            lh_history.insert(0, m)
-
-    if not lh_history or lh_history[-1].content != query:
-        lh_history.append(HumanMessage(content=query))
-
-    logger.info("[LOT History Agent] ReAct invoke 시작 (history=%d msgs)", len(lh_history))
     try:
-        sub_config = {"callbacks": _lf_callbacks(), "recursion_limit": 20}
-        result = _lh_graph.invoke(
-            {
-                "messages": lh_history,
-                "_lot_ids": lh_lot_ids,
-            },
-            config=sub_config,
-        )
+        tool_summary = query_lot_history.invoke({"lot_ids": lh_lot_ids})
     except Exception as e:
         if is_transient_error(e):
             logger.warning("[LOT History Agent] transient 오류, retry 위임: %s", e)
@@ -339,13 +278,10 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         return {
             "messages": [error_message],
             "lot_history_artifacts": [],
-            "past_steps": [(state.get("current_task_id", ""), f"LOT 이력 영구 오류: {e}")],
+            "past_steps": [(current_task_id, f"LOT 이력 영구 오류: {e}")],
         }
 
-    ai_messages = [m for m in result.get("messages", []) if isinstance(m, AIMessage)]
-    answer = ai_messages[-1].content if ai_messages else "LOT 이력 조회에 실패했습니다."
-
-    # ContextVar에서 결과 추출 → HTML 렌더링
+    # ContextVar에서 structured 결과 추출 → HTML 렌더링
     lot_history_data = storage.get("lot_history")
     artifacts = []
     if isinstance(lot_history_data, dict) and "error" not in lot_history_data and lot_history_data:
@@ -357,13 +293,39 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             "title": "lot_history_report",
         })
 
-    answer, agent_suggestion = extract_suggestion(answer)
-
+    # query_lot_history tool의 한국어 요약을 사용자 메시지로 사용
+    answer = tool_summary if isinstance(tool_summary, str) else str(tool_summary)
     result_message = AIMessage(content=answer, name="lot_history_agent")
 
+    # C1 패턴 확장: lot_history_sql_result structured AIMessage 발행.
+    # downstream chained task가 per-lot 위험도에 접근할 수 있도록 additional_kwargs에 dict 저장.
+    out_messages: list = [result_message]
+    if isinstance(lot_history_data, dict) and "error" not in lot_history_data and lot_history_data:
+        per_lot_summary = {
+            lid: {
+                "fdc_alarm_count": len(data.get("fdc_alarm", [])),
+                "qtime_over_count": len(data.get("qtime_over", [])),
+                "trouble_lot_count": len(data.get("trouble_lot", [])),
+                "future_action_count": len(data.get("future_action", [])),
+                "sample_split_count": len(data.get("sample_split", [])),
+            }
+            for lid, data in lot_history_data.items()
+        }
+        sql_result_msg = AIMessage(
+            content=f"[LOT History 결과] {len(per_lot_summary)}개 LOT 이력 조회 완료",
+            name="lot_history_sql_result",
+            additional_kwargs={
+                "lot_history_result": {
+                    "lot_ids": list(per_lot_summary.keys()),
+                    "per_lot_summary": per_lot_summary,
+                },
+            },
+        )
+        out_messages.insert(0, sql_result_msg)
+
     return {
-        "messages": [result_message],
+        "messages": out_messages,
         "lot_history_artifacts": artifacts,
-        "agent_suggestion": agent_suggestion,
-        "past_steps": [(state.get("current_task_id", ""), answer[:300])],
+        "agent_suggestion": "",
+        "past_steps": [(current_task_id, answer[:300])],
     }

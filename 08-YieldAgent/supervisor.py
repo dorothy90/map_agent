@@ -110,6 +110,9 @@ class RouteResponse(BaseModel):
 
 _MAX_CHECKPOINT_MESSAGES = 30
 
+# worker AIMessage 판별용 name 집합 — supervisor_node/replanner_node 양쪽에서 사용.
+_AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent"}
+
 
 def _params_signature(d: dict) -> dict:
     """dup guard 비교용 파라미터 signature.
@@ -466,6 +469,7 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     """
     past = state.get("past_steps", [])
     pending = state.get("pending_tasks", [])
+    task_plan = state.get("task_plan", [])
 
     # 항상 마지막 task 결과 로깅 (관측성)
     if past:
@@ -474,6 +478,31 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "[Replanner] last_task=%s pending=%d summary=%s",
             last_task_id, len(pending), str(last_summary)[:120],
         )
+
+    # ── canonical plan-and-execute 종료 판정 ──
+    # 모든 planned task가 실행되었고 남은 pending이 없으면 plan 완료.
+    # past_steps는 per-turn reset(`agent_server.py`)이라 턴 내 실행 기록만 반영.
+    # should_end conditional edge가 `state["response"]`를 보고 END 분기.
+    # TODO(phase 3b): replanner가 pending_tasks를 확장하는 단계 도입 시 이 조건을 ID 기반으로 교체.
+    #   현재는 plan 크기 고정 가정. ID 기반 예: {t["task_id"] for t in task_plan} <= {tid for tid, _ in past}
+    if not pending and task_plan and len(past) >= len(task_plan):
+        messages = state.get("messages", [])
+        last_agent_msg = next(
+            (m.content for m in reversed(messages)
+             if isinstance(m, AIMessage)
+             and getattr(m, "name", "") in _AGENT_NAMES
+             and isinstance(m.content, str)
+             and m.content.strip()),
+            "분석을 완료했습니다.",
+        )
+        logger.info(
+            "[Replanner] plan 완료 감지 (tasks=%d) → response set, should_end → END",
+            len(task_plan),
+        )
+        return {
+            "response": last_agent_msg,
+            "messages": [AIMessage(content=last_agent_msg, name="supervisor")],
+        }
 
     # Fast path: 큐 비었거나 past 비었거나 chained-input 의존이 없으면 LLM 호출 생략
     if not pending or not past:
@@ -681,7 +710,6 @@ def supervisor_node(
         )
 
     # 에이전트 메시지 요약 — 최근 2턴은 full 유지 (멀티스텝 lot ID 전달용)
-    _AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent"}
     _RECENT_FULL_TURNS = 2
     _MAX_OLD_MSG_LEN = 300
 
@@ -712,7 +740,7 @@ def supervisor_node(
     # C1: supervisor LLM 호출 직전에 내부 전달용 메시지(name="wads_sql_result" 등)를 제거.
     # state.messages와 _resolve_chained_params 접근에는 유지되지만 LLM API에는 전달하지 않음
     # ('name' 필드가 OpenAI-호환 provider에서 노이즈/경고를 유발할 수 있음 — LangGraph docs 확인).
-    _INTERNAL_MSG_NAMES = {"wads_sql_result"}
+    _INTERNAL_MSG_NAMES = {"wads_sql_result", "lot_history_sql_result"}
     trimmed_messages = [
         m for m in trimmed_messages
         if not (isinstance(m, AIMessage) and getattr(m, "name", "") in _INTERNAL_MSG_NAMES)
@@ -1045,6 +1073,10 @@ class YieldQueryState(TypedDict):
     # 향후 replanner_node가 plan 갱신·chained input 해소에 사용.
     past_steps: Annotated[list, operator.add]
 
+    # canonical plan-and-execute 종료 신호 (LangChain OpenTutorial Act = Union[Response, Plan] 대응).
+    # replanner_node가 plan 완료 감지 시 최종 응답 문자열을 set → should_end conditional edge가 END 분기.
+    response: str
+
 
 # ── 그래프 조립 (순환 import 방지: yield_query_agent/wads_agent/map_agent는 supervisor를 import하지 않음)
 from yield_query_agent import yield_agent_node  # noqa: E402
@@ -1083,7 +1115,21 @@ workflow.add_edge("map_agent", "replanner")
 workflow.add_edge("fail_history_agent", "replanner")
 workflow.add_edge("ppt_export", "replanner")
 workflow.add_edge("lot_history_agent", "replanner")
-workflow.add_edge("replanner", "supervisor")
+
+
+# canonical plan-and-execute should_end: replanner가 set한 response로 END 분기 결정.
+# LangChain OpenTutorial `{END: END, "agent": "agent"}` 패턴 그대로, "agent" 자리는 "supervisor".
+def should_end(state: Dict[str, Any]) -> str:
+    if state.get("response"):
+        return END
+    return "supervisor"
+
+
+workflow.add_conditional_edges(
+    "replanner",
+    should_end,
+    {END: END, "supervisor": "supervisor"},
+)
 
 # workflow는 빌더(StateGraph)로 export — agent_server.py에서 checkpointer와 함께 compile
 # 로컬 테스트:
