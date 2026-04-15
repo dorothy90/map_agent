@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"curl -sfI http://localhost:5174/repl/health 2>&1 | head -3; echo ---; curl -sf -o /dev/null -w \\\"proxy->backend /repl/health: %{http_code}\\\\n\\\" http://localhost:5174/repl/health\",\"descript...",
+  "error": "Exit code 22\nHTTP/1.1 404 Not Found\r\nVary: Origin\r\ndate: Wed, 15 Apr 2026 13:09:58 GMT\r\n---\nproxy->backend /repl/health: 404\n[rerun: b73]",
+  "timestamp": "2026-04-15T13:09:58.707Z",
+  "retry_count": 3
+}

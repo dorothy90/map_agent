@@ -51,6 +51,7 @@ from models import (  # noqa: E402
     TokenEvent,
 )
 from supervisor import workflow  # noqa: E402
+from repl_agent.router import router as repl_router  # noqa: E402
 
 _handler = logging.StreamHandler()
 _handler.setFormatter(logging.Formatter(
@@ -95,6 +96,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── REPL 검증 agent 라우터 마운트 (yield-agent 와 독립) ────
+# plan: ~/.claude/plans/reactive-shimmying-lake.md — "단일 서버 확장" 원칙.
+# repl_agent 패키지는 기존 supervisor/graph 와 import 의존이 없다.
+app.include_router(repl_router, prefix="/repl", tags=["repl"])
 
 
 def _sse(event: dict | object) -> str:
