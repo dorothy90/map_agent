@@ -185,6 +185,11 @@ _EXTRA_SECTION_CONFIG = {
         "data_key": "lot_history_artifacts",
         "prompt": "LOT 종합 이력(FDC 알람, Q-TIME 초과, Trouble Lot, Future Action, Sample Split) 결과를 요약하세요. 위험 LOT, HALT/Warning 알람 건수, Q-TIME 초과 사례, 주요 trouble 원인을 포함하세요.",
     },
+    "relation_tree": {
+        "title": "Inline-WT 연관 분석",
+        "data_key": "relation_tree_artifacts",
+        "prompt": "main 공정과 연관된 inline 계측 step의 trend·상관분석 결과를 요약하세요. 분석 대상 LOT·공정명, 핵심 상관 step, trend 시사점을 포함하세요.",
+    },
     "analysis": {
         "title": "AI 종합 분석",
         "data_key": "analysis_result",

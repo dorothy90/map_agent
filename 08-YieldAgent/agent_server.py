@@ -262,6 +262,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             "fail_history_artifacts": Overwrite([]),
             "ppt_artifacts": Overwrite([]),
             "lot_history_artifacts": Overwrite([]),
+            "relation_tree_artifacts": Overwrite([]),
             # past_steps도 매 turn reset (#8 phase 1) — 이전 turn의 task 결과는 다음 turn 라우팅에 무의미
             "past_steps": Overwrite([]),
             # step_count만 리셋 (퍼-턴 루프 카운터)
@@ -307,6 +308,8 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "dh_fail_type": "",
                 "dh_cause_oper": "",
                 "lh_lot_ids": "",
+                "rt_lot_code": "",
+                "rt_main_oper_det_desc": "",
                 "weeks_data": [],
                 "table_result": "",
                 "analysis_result": "",
@@ -413,6 +416,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                         ("fail_history_artifacts", "fail_history_agent"),
                         ("ppt_artifacts", "ppt_export"),
                         ("lot_history_artifacts", "lot_history_agent"),
+                        ("relation_tree_artifacts", "relation_tree_agent"),
                     ]
                     for key, default_agent in artifact_sources:
                         for art in node_state.get(key, []):

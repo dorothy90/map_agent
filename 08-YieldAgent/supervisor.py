@@ -50,7 +50,7 @@ _rewrite_tool_map = {t.name: t for t in REWRITE_TOOLS}
 class TaskItem(BaseModel):
     """planner가 생성하는 개별 작업 단위"""
     task_id: str = Field(description="고유 ID (예: 'task_1')")
-    agent: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent"] = Field(
+    agent: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "relation_tree_agent"] = Field(
         description="실행할 에이전트"
     )
     params: dict = Field(default={}, description="에이전트별 파라미터 (map_lot_ids, map_type 등)")
@@ -65,7 +65,7 @@ class PlanResponse(BaseModel):
 class RouteResponse(BaseModel):
     """Supervisor의 라우팅 결정 — with_structured_output으로 타입 보장"""
 
-    next: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "FINISH"] = Field(
+    next: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "relation_tree_agent", "FINISH"] = Field(
         description="다음에 실행할 에이전트"
     )
     lotcd: str = Field(default="", description="3~4자리 제품코드만 (예: 4SS, 5NA, 6E2). 전체 lot ID(예: 4SS2DPD)는 절대 입력하지 말 것. 사용자가 미지정 시 빈 문자열")
@@ -104,6 +104,9 @@ class RouteResponse(BaseModel):
     dh_cause_oper: str = Field(default="", description="원인 공정 필터 (예: M0C ETCH)")
     # Lot History 파라미터
     lh_lot_ids: str = Field(default="", description="LOT 이력 조회용 lot ID, 쉼표 구분 (예: '4SS2DPD,4SSXCEW')")
+    # Relation Tree 파라미터 (Inline-WT 연관 분석)
+    rt_lot_code: str = Field(default="", description="연관 분석용 LOT 코드 (예: '4SS2DPD')")
+    rt_main_oper_det_desc: str = Field(default="", description="연관 분석용 메인 공정명, 쉼표 구분 (예: 'STEP07,STEP08')")
 
 
 
@@ -111,7 +114,7 @@ class RouteResponse(BaseModel):
 _MAX_CHECKPOINT_MESSAGES = 30
 
 # worker AIMessage 판별용 name 집합 — supervisor_node/replanner_node 양쪽에서 사용.
-_AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent"}
+_AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "relation_tree_agent"}
 
 
 def _params_signature(d: dict) -> dict:
@@ -142,6 +145,8 @@ def _params_signature(d: dict) -> dict:
         "dh_fail_type":  d.get("dh_fail_type", ""),
         "dh_cause_oper": d.get("dh_cause_oper", ""),
         "lh_lot_ids":    d.get("lh_lot_ids", ""),
+        "rt_lot_code":            d.get("rt_lot_code", ""),
+        "rt_main_oper_det_desc":  d.get("rt_main_oper_det_desc", ""),
     }
 
 
@@ -211,6 +216,10 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     meta_parts = []
     if state.get("lotcd"):
         meta_parts.append(f"현재 제품: {state['lotcd']}")
+    if state.get("rt_lot_code"):
+        meta_parts.append(f"이전 relation_tree lot: {state['rt_lot_code']}")
+    if state.get("rt_main_oper_det_desc"):
+        meta_parts.append(f"이전 relation_tree main_oper: {state['rt_main_oper_det_desc']}")
     if state.get("agent_suggestion"):
         meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
     meta = "\n".join(meta_parts) if meta_parts else ""
@@ -320,6 +329,10 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         meta_parts.append(f"이전 map lot: {prev_lot}")
     if state.get("yield_lot_ids"):
         meta_parts.append(f"이전 yield lot: {state['yield_lot_ids']}")
+    if state.get("rt_lot_code"):
+        meta_parts.append(f"이전 relation_tree lot: {state['rt_lot_code']}")
+    if state.get("rt_main_oper_det_desc"):
+        meta_parts.append(f"이전 relation_tree main_oper: {state['rt_main_oper_det_desc']}")
     if state.get("agent_suggestion"):
         meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
     meta = "\n".join(meta_parts)
@@ -428,6 +441,17 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
         if _is_placeholder_or_empty(params.get("lh_lot_ids")) and lot_ids:
             params["lh_lot_ids"] = ",".join(lot_ids)
             logger.info("[ResolveChained] lot_history_agent.lh_lot_ids ← wads_sql_result (%d lots)", len(lot_ids))
+    elif agent == "relation_tree_agent":
+        # relation_tree는 단일 lot — wads 결과의 첫 번째 lot 사용
+        if _is_placeholder_or_empty(params.get("rt_lot_code")) and lot_ids:
+            params["rt_lot_code"] = lot_ids[0]
+            logger.info("[ResolveChained] relation_tree_agent.rt_lot_code ← wads_sql_result[0] (of %d)", len(lot_ids))
+        # main_oper는 직전 wads_parameter 또는 state의 rt_main_oper_det_desc로 폴백
+        if _is_placeholder_or_empty(params.get("rt_main_oper_det_desc")):
+            fallback = state.get("wads_parameter") or state.get("rt_main_oper_det_desc")
+            if fallback:
+                params["rt_main_oper_det_desc"] = fallback
+                logger.info("[ResolveChained] relation_tree_agent.rt_main_oper_det_desc ← %s", fallback)
 
     return params
 
@@ -448,6 +472,11 @@ def _needs_replan(pending: list[dict]) -> bool:
                 return True
         elif agent == "fail_history_agent":
             if all(_is_placeholder_or_empty(params.get(k)) for k in ("dh_query", "dh_fail_type", "dh_cause_oper")):
+                return True
+        elif agent == "relation_tree_agent":
+            if _is_placeholder_or_empty(params.get("rt_lot_code")):
+                return True
+            if _is_placeholder_or_empty(params.get("rt_main_oper_det_desc")):
                 return True
         elif agent == "yield_agent":
             # yield는 lotcd만 있어도 동작하므로 chained input 의존도 낮음 — 패스
@@ -593,7 +622,7 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 @observe(name="supervisor_node")
 def supervisor_node(
     state: Dict[str, Any], config: RunnableConfig
-) -> Command[Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "lot_history_agent", "ppt_export", "__end__"]]:
+) -> Command[Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "lot_history_agent", "ppt_export", "relation_tree_agent", "__end__"]]:
     """Supervisor 노드: ReAct 스타일 멀티스텝 루프.
 
     각 스텝마다 에이전트 결과를 확인하고 다음 행동을 결정합니다.
@@ -666,6 +695,9 @@ def supervisor_node(
             "dh_cause_oper": task_params.get("dh_cause_oper", ""),
             # Lot History 파라미터
             "lh_lot_ids":    task_params.get("lh_lot_ids", ""),
+            # Relation Tree 파라미터 — 빈 값이면 직전 turn state 재사용 (prompt가 약속한 lot 계승)
+            "rt_lot_code":            task_params.get("rt_lot_code") or state.get("rt_lot_code", ""),
+            "rt_main_oper_det_desc":  task_params.get("rt_main_oper_det_desc") or state.get("rt_main_oper_det_desc", ""),
             # 이전 task가 남긴 stateful 필드 정리 — 다음 task에 stale로 영향 차단 (#19 fix).
             # worker가 정상 종료 시 자체 agent_suggestion을 다시 set하므로 빈 string은 안전.
             "agent_suggestion": "",
@@ -686,6 +718,25 @@ def supervisor_node(
                 })
                 normalized = _normalize_map_oper(str(user_response))
             update_dict["map_oper"] = normalized or "PT1H"
+
+        # relation_tree_agent 필수 파라미터 검증 (planner 경로) — LLM-routed 분기와 대칭
+        if current_task["agent"] == "relation_tree_agent":
+            if not update_dict.get("rt_lot_code"):
+                user_response = interrupt({
+                    "type": "missing_param",
+                    "param": "rt_lot_code",
+                    "message": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
+                    "route": "relation_tree_agent",
+                })
+                update_dict["rt_lot_code"] = str(user_response).strip()
+            if not update_dict.get("rt_main_oper_det_desc"):
+                user_response = interrupt({
+                    "type": "missing_param",
+                    "param": "rt_main_oper_det_desc",
+                    "message": "연관 분석할 main 공정명을 입력해주세요. (예: STEP07 또는 STEP07,STEP08)",
+                    "route": "relation_tree_agent",
+                })
+                update_dict["rt_main_oper_det_desc"] = str(user_response).strip()
 
         return Command(update=update_dict, goto=current_task["agent"])
 
@@ -900,6 +951,15 @@ def supervisor_node(
             })
             decision.map_oper = _normalize_map_oper(str(user_response)) or "PT1H"
 
+    if decision.next == "relation_tree_agent" and not decision.rt_lot_code:
+        user_response = interrupt({
+            "type": "missing_param",
+            "param": "rt_lot_code",
+            "message": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
+            "route": "relation_tree_agent",
+        })
+        decision.rt_lot_code = str(user_response).strip()
+
     # Langfuse — 라우팅 결정 후 메타데이터 기록
     try:
         get_client().update_current_span(
@@ -981,6 +1041,8 @@ def supervisor_node(
         "dh_fail_type":  decision.dh_fail_type,
         "dh_cause_oper": decision.dh_cause_oper,
         "lh_lot_ids":    decision.lh_lot_ids,
+        "rt_lot_code":           decision.rt_lot_code,
+        "rt_main_oper_det_desc": decision.rt_main_oper_det_desc,
         # LLM-routed 분기는 planner task가 아니므로 task goal 없음 (#12 fix)
         "current_task_goal": "",
         # SM-2 fix: planner turn 이후 LLM-routed turn에서 이전 task_id 누수 방지
@@ -1058,6 +1120,11 @@ class YieldQueryState(TypedDict):
     lh_lot_ids: str
     lot_history_artifacts: Annotated[list, operator.add]
 
+    # Relation Tree (Inline-WT 연관 분석) 파라미터 & 결과
+    rt_lot_code: str
+    rt_main_oper_det_desc: str
+    relation_tree_artifacts: Annotated[list, operator.add]
+
     # Map 결과
     map_result:    str
     map_artifacts: Annotated[list, operator.add]
@@ -1094,6 +1161,7 @@ from map_agent import map_agent_node  # noqa: E402
 from fail_history_agent import fail_history_agent_node  # noqa: E402
 from ppt_export_agent import ppt_export_node  # noqa: E402
 from lot_history_agent import lot_history_agent_node  # noqa: E402
+from relation_tree_agent import relation_tree_agent_node  # noqa: E402
 
 # 에이전트 노드 재시도 정책 (Oracle/LLM 일시적 오류 자동 재시도)
 # LangGraph 기본(default_retry_on)은 OSError/TimeoutError를 거부하므로
@@ -1112,6 +1180,7 @@ workflow.add_node("map_agent", map_agent_node, retry_policy=_retry)
 workflow.add_node("fail_history_agent", fail_history_agent_node, retry_policy=_retry)
 workflow.add_node("ppt_export", ppt_export_node, retry_policy=_retry)
 workflow.add_node("lot_history_agent", lot_history_agent_node, retry_policy=_retry)
+workflow.add_node("relation_tree_agent", relation_tree_agent_node, retry_policy=_retry)
 
 workflow.add_edge(START, "rewrite")
 workflow.add_edge("rewrite", "planner")        # rewrite → planner
@@ -1124,6 +1193,7 @@ workflow.add_edge("map_agent", "replanner")
 workflow.add_edge("fail_history_agent", "replanner")
 workflow.add_edge("ppt_export", "replanner")
 workflow.add_edge("lot_history_agent", "replanner")
+workflow.add_edge("relation_tree_agent", "replanner")
 
 
 # canonical plan-and-execute should_end: replanner가 set한 response로 END 분기 결정.

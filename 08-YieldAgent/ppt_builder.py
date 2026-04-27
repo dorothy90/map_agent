@@ -203,6 +203,7 @@ class YieldReportPPTBuilder:
             ("wads", state.get("wads_artifacts", [])),
             ("fail_history", state.get("fail_history_artifacts", [])),
             ("lot_history", state.get("lot_history_artifacts", [])),
+            ("relation_tree", state.get("relation_tree_artifacts", [])),
             ("analysis", state.get("analysis_result", "")),
         ]
         extra_slides = []

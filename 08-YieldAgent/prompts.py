@@ -64,6 +64,19 @@ TODAY's DATE: {today}
 6. lot_history_agent: LOT 종합 이력 조회 (FDC알람, Q-TIME초과, Trouble, Future Action, Sample Split)
    params: lh_lot_ids(LOT ID, 쉼표구분, 예: "4SS2DPD,4SSXCEW")
 
+7. relation_tree_agent: 입력된 main 공정과 연관된 inline 계측 step의 trend·상관분석을
+   트리/관계도 HTML로 시각화
+   params: rt_lot_code(단일 LOT 코드, 예: "4SS2DPD"), rt_main_oper_det_desc(메인 공정명, 쉼표구분, 예: "STEP07,STEP08")
+   ※ 트리거 (다음 조건이 **모두** 충족돼야 relation_tree_agent):
+     ① 단일 LOT ID(7자, 예: 4SS2DPD)가 있다
+     ② main 공정명(예: STEP07, M0C ETCH)이 1개 이상 명시돼 있다
+     ③ "연관 분석" / "Inline-WT 비교" / "trend 상관" / "공정-계측 step 관계" 같은 trend·correlation 의도가 있다
+   ※ negative example (relation_tree_agent 아님):
+     - "TWT 연관 분석" → 불량유형(TWT)에 대한 원인분석 의도 → fail_history_agent
+     - "이 lot 뭐가 연관 있어? 이력 보여줘" → lot_history_agent
+     - "STEP07 검출 lot list" / "step별 검출" → wads_agent
+     - lot ID 없이 공정명만 있으면 → fail_history_agent 또는 wads_agent 우선
+
 === KEY RULES ===
 - lotcd는 3-4자리 제품코드만 (예: 4SS, 5NA). 전체 lot ID(예: 4SS2DPD)는 map_lot_id 또는 yield_lot_ids에 사용
 - 단순 질문 (하나의 agent로 처리 가능) → task 1개만 생성
@@ -114,6 +127,9 @@ TODAY's DATE: {today}
 - "4SS2DPD,4SSXCEW lot 이력 비교해줘"
   → task_1: lot_history_agent, params={{lh_lot_ids:"4SS2DPD,4SSXCEW"}}, goal:"4SS2DPD,4SSXCEW LOT 종합 이력 조회"
 
+- "4SS2DPD STEP07,STEP08 연관 분석 해줘"
+  → task_1: relation_tree_agent, params={{rt_lot_code:"4SS2DPD", rt_main_oper_det_desc:"STEP07,STEP08"}}, goal:"4SS2DPD STEP07,08 Inline-WT 연관 분석"
+
 - "4SS2DPD,4SSXCEW wafer 03,06,09 PT1C binmap 각각 보여줘"
   → task_1: map_agent, params={{map_lot_id:"4SS2DPD", map_wf_ids:"03,06,09", map_type:"binmap", map_oper:"PT1C"}}, goal:"4SS2DPD wafer 03,06,09 PT1C binmap"
   → task_2: map_agent, params={{map_lot_id:"4SSXCEW", map_wf_ids:"03,06,09", map_type:"binmap", map_oper:"PT1C"}}, goal:"4SSXCEW wafer 03,06,09 PT1C binmap"
@@ -150,6 +166,7 @@ TODAY's DATE: {today}
 - map_agent         : map_lot_id, map_lot_ids, map_wf_ids, map_groupkey, map_type, map_oper
 - fail_history_agent: dh_query, dh_fail_type, dh_cause_oper, lotcd
 - lot_history_agent : lh_lot_ids
+- relation_tree_agent : rt_lot_code, rt_main_oper_det_desc
 - ppt_export        : (no params)
 
 === KEY RULES (PHASE 3a — input 채우기만) ===
@@ -228,6 +245,7 @@ AVAILABLE AGENTS:
 - wads_agent  : Fetches WADS (degradation detection) reports from Oracle DB
 - fail_history_agent : 불량이력 RAG 검색 및 리포트 생성 (OpenSearch)
 - lot_history_agent : LOT 종합 이력 (FDC알람, Q-TIME초과, Trouble, Future Action, Sample Split)
+- relation_tree_agent : main_oper 공정과 연관된 inline 계측 step trend·상관분석 HTML
 
 === ROUTING RULES ===
 
@@ -303,6 +321,23 @@ Route to **lot_history_agent** when the user asks about:
   예: "4SS2DPD,4SSXCEW lot 이력" → lh_lot_ids="4SS2DPD,4SSXCEW"
   예: "이 lot 뭐가 문제야? 4SS2DPD" → lh_lot_ids="4SS2DPD"
   ※ lot_history_agent는 lh_lot_ids가 필수 — 사용자 질의에서 lot ID를 반드시 추출할 것
+
+Route to **relation_tree_agent** ONLY when **all** three conditions hold:
+1. 단일 LOT ID(7자, 예: 4SS2DPD)가 명시되거나 직전 turn에서 계승됨
+2. main 공정명(예: STEP07, M0C ETCH)이 1개 이상 명시됨
+3. "연관 분석" / "Inline-WT 비교" / "trend 상관" / "공정-계측 step 관계" 같은 trend·correlation 의도
+
+- rt_lot_code 필수 (lot ID 미지정 시 interrupt 또는 직전 turn lot 재사용)
+- rt_main_oper_det_desc는 쉼표 구분 string. 사용자가 다중 공정 언급 시 모두 채울 것
+- Examples: "4SS2DPD STEP07 연관 분석 해줘", "4SS2DPD STEP07,STEP08 Inline-WT 비교"
+
+=== RELATION TREE NEGATIVE EXAMPLES (precedence 규칙) ===
+- "TWT 연관 분석", "IOFF 연관 분석" 등 **불량유형 + 연관/원인** → fail_history_agent (TWT/IOFF는 fail_type)
+- "이 lot 뭐가 연관 있어? 이력 보여줘" → lot_history_agent
+- "STEP07 검출 lot list", "step별 검출" → wads_agent
+- "binmap" / "cummap" 시각화만 요구 → map_agent
+- LOT ID 없이 공정명만 있으면 → fail_history_agent / wads_agent 우선
+- relation_tree_agent는 "**LOT + main_oper + trend/correlation**" 결합 조건에 한정. 단순 데이터 조회·검출·시각화·이력은 위 4개 agent 우선.
 
 Route to **ppt_export** when the user explicitly requests:
 - PPT 생성, PPT 다운로드, 리포트 내보내기, 프레젠테이션 만들기
@@ -407,7 +442,7 @@ Example: <think>사용자가 4SS 수율을 요청했으므로 yield_agent로 라
 
 JSON schema:
 {{
-  "next": "yield_agent" | "wads_agent" | "map_agent" | "fail_history_agent" | "lot_history_agent" | "ppt_export" | "FINISH",
+  "next": "yield_agent" | "wads_agent" | "map_agent" | "fail_history_agent" | "lot_history_agent" | "relation_tree_agent" | "ppt_export" | "FINISH",
   "lotcd": "<product code, empty string if user did not specify>",
   "ref_date": "<YYYYMMDD for yield_agent, else empty string>",
   "wads_start_tm": "<YYYY-MM-DD range start for wads_agent, empty if single date>",
@@ -428,7 +463,9 @@ JSON schema:
   "dh_query": "",
   "dh_fail_type": "",
   "dh_cause_oper": "",
-  "lh_lot_ids": ""
+  "lh_lot_ids": "",
+  "rt_lot_code": "",
+  "rt_main_oper_det_desc": ""
 }}\
 """ + _VERBATIM_RULES + _SAFETY_RULES
 
