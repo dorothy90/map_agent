@@ -40,6 +40,14 @@ def _week_to_db_gms(week_agent: str) -> str:
     return week_agent.replace("-W", "")
 
 
+_PROCESS_DB_MAP = {"pt1h": "PT1H TEST", "pt1c": "PT1C TEST"}
+
+
+def _process_to_db(p: str) -> str:
+    """agent 측 process 키('pt1h'/'pt1c') → DF_DIE_TO_WF_YLD.PROCESS 실제값."""
+    return _PROCESS_DB_MAP.get(p, p)
+
+
 # ── 날짜 리스트 생성 ──────────────────────────────────────────
 def _get_n_weeks(ref: date, n: int) -> list[date]:
     """ref 기준 최근 n주의 월요일 리스트 (오래된순)"""
@@ -69,6 +77,7 @@ def _get_n_days(ref: date, n: int) -> list[date]:
 # ── SQL 조회 함수 ─────────────────────────────────────────────
 def _fetch_weekly_sql(lotcd: str, week_strs: list[str], process: str) -> dict[str, dict]:
     """pt1h 또는 pt1c 프로세스의 n주 데이터를 Oracle SQL 한 번으로 조회."""
+    process = _process_to_db(process)
     db_weeks = [_week_to_db_yld(w) for w in week_strs]
     placeholders = ", ".join(f":w{i}" for i in range(len(week_strs)))
     sql = f"""
@@ -160,6 +169,7 @@ def _fetch_gms_sql(lotcd: str, week_strs: list[str]) -> dict[str, dict]:
 
 def _fetch_monthly_sql(lotcd: str, month_strs: list[str], process: str) -> dict[str, dict]:
     """YEAR + MONTH 컬럼 기반 월별 조회 (DF_DIE_TO_WF_YLD)."""
+    process = _process_to_db(process)
     params = {"lot_cd": lotcd, "process": process}
     for i, ym in enumerate(month_strs):
         y, m = ym.split("-")
@@ -217,6 +227,7 @@ def _fetch_monthly_sql(lotcd: str, month_strs: list[str], process: str) -> dict[
 
 def _fetch_daily_sql(lotcd: str, days: list[date], process: str) -> dict[str, dict]:
     """MEASURETIME_START 범위 조건 기반 일별 조회 (DF_DIE_TO_WF_YLD, range scan)."""
+    process = _process_to_db(process)
     start_dt = datetime.combine(min(days), datetime.min.time())
     end_dt = datetime.combine(max(days) + timedelta(days=1), datetime.min.time())
     days_set = {d.strftime("%Y-%m-%d") for d in days}
@@ -470,6 +481,7 @@ def _fetch_wafer_scatter(
     lotcd: str, ref_date: date, unit: str, periods: int, process: str,
 ) -> list[dict]:
     """기간별 wafer-level raw 데이터 조회 (scatter plot용)."""
+    process = _process_to_db(process)
     n = periods if periods > 0 else DEFAULT_PERIODS.get(unit, 4)
     per_period_limit = max(10000 // n, 2000)
     rows: list[dict] = []
@@ -619,6 +631,7 @@ def _parse_lot_specs(lot_ids: str = "", groupkey: str = "") -> list[tuple[str, i
 @timed
 def _fetch_lot_sql(lot_specs: list[tuple[str, int | None]], process: str) -> dict[str, dict]:
     """lot 단위 수율 비교 조회."""
+    process = _process_to_db(process)
     if not lot_specs:
         return {}
 

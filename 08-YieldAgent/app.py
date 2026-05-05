@@ -17,7 +17,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from datetime import date
 
-AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8000")
+AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8001")
 
 # ── 페이지 설정 ──────────────────────────────────────────
 st.set_page_config(
@@ -148,7 +148,9 @@ if query:
                 thinking_buffer = ""
                 thinking_placeholder = None
 
-                with httpx.Client(timeout=httpx.Timeout(connect=10, read=600, write=10, pool=10)) as client:
+                with httpx.Client(
+                    timeout=httpx.Timeout(connect=10, read=600, write=10, pool=10)
+                ) as client:
                     with client.stream(
                         "POST",
                         f"{AGENT_BASE_URL}/chat/stream",
@@ -202,7 +204,10 @@ if query:
                                     thinking_placeholder = None
                                     thinking_buffer = ""
                                 # 토큰 스트리밍 중이던 placeholder를 최종 내용으로 교체
-                                if token_placeholder is not None and agent == token_agent:
+                                if (
+                                    token_placeholder is not None
+                                    and agent == token_agent
+                                ):
                                     if agent == "supervisor":
                                         token_placeholder.info(f"🔍 {content}")
                                     else:
@@ -210,19 +215,25 @@ if query:
                                     token_placeholder = None
                                     token_agent = None
                                     token_buffer = ""
-                                collected_messages.append({
-                                    "agent": agent,
-                                    "content": content,
-                                })
+                                collected_messages.append(
+                                    {
+                                        "agent": agent,
+                                        "content": content,
+                                    }
+                                )
 
                             elif etype == "artifact":
-                                collected_artifacts.append({
-                                    "artifact_type": event.get("artifact_type", "html"),
-                                    "mime": event.get("mime", "text/html"),
-                                    "title": event.get("title", ""),
-                                    "agent": event.get("agent", ""),
-                                    "data": event.get("data", ""),
-                                })
+                                collected_artifacts.append(
+                                    {
+                                        "artifact_type": event.get(
+                                            "artifact_type", "html"
+                                        ),
+                                        "mime": event.get("mime", "text/html"),
+                                        "title": event.get("title", ""),
+                                        "agent": event.get("agent", ""),
+                                        "data": event.get("data", ""),
+                                    }
+                                )
 
                             elif etype == "suggestion":
                                 collected_suggestion = event.get("content", "")
@@ -233,10 +244,14 @@ if query:
                                     "message": event.get("message", ""),
                                     "route": event.get("route", ""),
                                 }
-                                st.warning(f"⚠️ {event.get('message', '추가 정보가 필요합니다.')}")
+                                st.warning(
+                                    f"⚠️ {event.get('message', '추가 정보가 필요합니다.')}"
+                                )
 
                             elif etype == "error":
-                                raise RuntimeError(event.get("message", "알 수 없는 오류"))
+                                raise RuntimeError(
+                                    event.get("message", "알 수 없는 오류")
+                                )
 
                 status.update(label="완료!", state="complete")
 
@@ -283,11 +298,13 @@ if query:
             st.warning("데이터를 가져올 수 없습니다. 서버 상태를 확인하세요.")
 
         # ── 히스토리 저장 ─────────────────────────────────
-        st.session_state.chat_history.append({
-            "query": query,
-            "messages": collected_messages,
-            "artifacts": collected_artifacts,
-            "suggestion": collected_suggestion,
-        })
+        st.session_state.chat_history.append(
+            {
+                "query": query,
+                "messages": collected_messages,
+                "artifacts": collected_artifacts,
+                "suggestion": collected_suggestion,
+            }
+        )
         # 메모리 제한: 최대 50턴 유지
         st.session_state.chat_history = st.session_state.chat_history[-50:]

@@ -30,6 +30,7 @@ from common import (
     HIGHER_IS_BETTER,
     CATEGORY_TO_BIN,
 )
+from wafer_zones import WAFER_ZONES, compute_zone_deltas, worst_zone
 
 logger = logging.getLogger("yield_agent.yield_viz")
 
@@ -765,6 +766,7 @@ def _build_cummap_grid_html(
 
     n = periods if periods > 0 else DEFAULT_PERIODS.get(unit, 4)
     date_ranges = _get_period_date_ranges(ref_date, unit, n)
+    date_ranges = date_ranges[-2:]  # cummap 은 최근 2기간만 (anomaly_params 와 정렬)
     if not date_ranges:
         return ""
 
@@ -873,32 +875,72 @@ def _build_cummap_grid_html(
 
         grid.append(row_data)
 
+    # ── delta row (직전 → 최신, period_idx=0 → 1) ──
+    if len(grid) == 2:
+        delta_row: list[tuple] = []
+        for ci in range(n_cols):
+            prev_arr, _ = grid[0][ci]
+            curr_arr, _ = grid[1][ci]
+            if prev_arr is None or curr_arr is None:
+                delta_row.append((None, 0.0, "-", 0.0))
+                continue
+            with np.errstate(invalid="ignore"):
+                delta_arr = curr_arr - prev_arr
+            valid = delta_arr[~np.isnan(delta_arr)]
+            avg_delta_pct = float(np.mean(valid) * 100) if len(valid) > 0 else 0.0
+
+            # zone 분석: 9개 zone 중 가장 열화 심한 영역
+            zone_d = compute_zone_deltas(delta_arr, min_row, min_col)
+            wz_code, wz_val = worst_zone(zone_d)
+            wz_label = WAFER_ZONES[wz_code]["label"]
+            wz_pct = wz_val * 100
+
+            delta_row.append((delta_arr, avg_delta_pct, wz_label, wz_pct))
+        grid.append(delta_row)
+
     # ── matplotlib subplot 그리드 ──
+    n_rows = len(grid)
+    is_delta_idx = len(date_ranges) if n_rows == len(date_ranges) + 1 else None
+
     fig, axes = plt.subplots(
-        n_periods, n_cols,
-        figsize=(3.2 * n_cols, 3.2 * n_periods),
+        n_rows, n_cols,
+        figsize=(3.2 * n_cols, 3.2 * n_rows),
         squeeze=False,
     )
 
-    for pi in range(n_periods):
+    for pi in range(n_rows):
         for ci in range(n_cols):
             ax = axes[pi, ci]
-            arr, avg_pct = grid[pi][ci]
+            is_delta = (pi == is_delta_idx)
+            cell = grid[pi][ci]
+            arr, avg_pct = cell[0], cell[1]
 
             if arr is not None:
-                # TODO: 현재 vmin=0, vmax=1 고정 → die별 상대적 차이가 안 보임
-                # percentile 기반 coloring 필요 시:
-                #   valid = arr[~np.isnan(arr)]
-                #   p5, p95 = np.percentile(valid, [5, 95])
-                #   ax.imshow(arr, cmap="RdYlGn", vmin=p5, vmax=p95, ...)
-                ax.imshow(arr, cmap="RdYlGn", vmin=0, vmax=1, interpolation="nearest")
-                ax.text(
-                    0.5, 0.5, f"{avg_pct:.1f}%",
-                    transform=ax.transAxes, ha="center", va="center",
-                    fontsize=10, fontweight="bold",
-                    color="white" if avg_pct < 50 else "black",
-                    bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.4),
-                )
+                if is_delta:
+                    wz_label, wz_pct = cell[2], cell[3]
+                    # diverging cmap, 변화율 -10%pt ~ +10%pt 클리핑
+                    ax.imshow(arr, cmap="RdBu", vmin=-0.10, vmax=0.10, interpolation="nearest")
+                    label = f"{avg_pct:+.2f}%pt\n↓ {wz_label} {wz_pct:+.2f}%pt"
+                    ax.text(
+                        0.5, 0.5, label,
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=8, fontweight="bold", color="black",
+                        bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7),
+                    )
+                else:
+                    # TODO: 현재 vmin=0, vmax=1 고정 → die별 상대적 차이가 안 보임
+                    # percentile 기반 coloring 필요 시:
+                    #   valid = arr[~np.isnan(arr)]
+                    #   p5, p95 = np.percentile(valid, [5, 95])
+                    #   ax.imshow(arr, cmap="RdYlGn", vmin=p5, vmax=p95, ...)
+                    ax.imshow(arr, cmap="RdYlGn", vmin=0, vmax=1, interpolation="nearest")
+                    ax.text(
+                        0.5, 0.5, f"{avg_pct:.1f}%",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=10, fontweight="bold",
+                        color="white" if avg_pct < 50 else "black",
+                        bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.4),
+                    )
             else:
                 blank = np.full((height, width), np.nan)
                 ax.imshow(blank, cmap="RdYlGn", vmin=0, vmax=1, interpolation="nearest")
@@ -909,7 +951,10 @@ def _build_cummap_grid_html(
             ax.set_yticks([])
 
             if ci == 0:
-                ax.set_ylabel(date_ranges[pi]["label"], fontsize=9, fontweight="bold")
+                if is_delta:
+                    ax.set_ylabel("Δ (직전→최신)", fontsize=9, fontweight="bold")
+                else:
+                    ax.set_ylabel(date_ranges[pi]["label"], fontsize=9, fontweight="bold")
             if pi == 0:
                 col_label = columns[ci][0]
                 ax.set_title(col_label, fontsize=9, fontweight="bold")
