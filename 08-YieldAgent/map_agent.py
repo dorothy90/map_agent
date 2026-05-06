@@ -257,6 +257,22 @@ def _parse_wafer_for_cummap(args):
     return rows, cols, passes
 
 
+def _parse_wafer_bins(map_val_json):
+    """단일 wafer 파싱 → (rows, cols, left_bins). target_bin 미적용.
+
+    cummap grid 처럼 같은 wafer 풀에 대해 여러 target_bin mask 가 필요한 경우
+    파싱을 한 번만 수행하고 호출측에서 numpy 비교로 mask 를 만들기 위해 사용.
+    """
+    raw = _fast_json_loads(map_val_json) if isinstance(map_val_json, str) else map_val_json
+    rows, cols, bins = [], [], []
+    for item in raw["MAP"]:
+        parts = item.split(",")
+        rows.append(int(parts[0]))
+        cols.append(int(parts[1]))
+        bins.append(parts[2] if len(parts) > 2 else "")
+    return rows, cols, bins
+
+
 def _parse_wafer_for_binmap(map_val_json) -> dict:
     """단일 wafer 파싱 (binmap 병렬 처리용) → {"x_y": {...}}"""
     raw = _fast_json_loads(map_val_json) if isinstance(map_val_json, str) else map_val_json

@@ -37,7 +37,7 @@ def _get_tool_payload() -> Dict[str, Any]:
 # ── 5개 테이블 쿼리 정의 ──────────────────────────────────────
 _QUERIES = {
     "fdc_alarm": """
-        SELECT LOT_CD, LOT_ID, TRANSFER_TM, EQP_ID, ITEM_NM,
+        SELECT LOT_CD, LOT_ID, TRANSFER_TM, OPER_ID, EQP_ID, ITEM_NM,
                ALARM_LEVEL_CD, RSLT_VAL, SPEC_MIN_VAL, SPEC_MAX_VAL
         FROM DF_FDC_ALARM WHERE LOT_ID = :lot_id ORDER BY TRANSFER_TM
     """,
@@ -64,7 +64,7 @@ _QUERIES = {
 }
 
 _COLUMN_NAMES = {
-    "fdc_alarm": ["lot_cd", "lot_id", "transfer_tm", "eqp_id", "item_nm",
+    "fdc_alarm": ["lot_cd", "lot_id", "transfer_tm", "oper_id", "eqp_id", "item_nm",
                    "alarm_level_cd", "rslt_val", "spec_min_val", "spec_max_val"],
     "qtime_over": ["lot_cd", "lot_id", "from_oper", "to_oper",
                     "control_limit", "q_time", "bal", "event_tm"],

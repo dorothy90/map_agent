@@ -118,16 +118,6 @@ details.section:target > summary{background:#fef9c3}
 .level-watch{background:#e0f2fe;color:#075985}
 .spec-over{color:#b91c1c;font-weight:700}
 
-/* row-overflow (Top-N more) */
-details.row-overflow{margin-top:6px}
-details.row-overflow > summary{cursor:pointer;list-style:none;padding:6px 10px;background:#f1f5f9;color:#475569;border-radius:6px;font-size:12px;font-weight:600;text-align:center;user-select:none}
-details.row-overflow > summary::-webkit-details-marker{display:none}
-details.row-overflow > summary:hover{background:#e2e8f0}
-details.row-overflow > summary::before{content:"+ "}
-details.row-overflow[open] > summary::before{content:"− "}
-details.row-overflow[open] > summary{background:#e2e8f0}
-details.row-overflow > .data-table{margin-top:6px}
-
 /* group view */
 details.group-row{background:#fafbfc;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;overflow:hidden}
 details.group-row > summary{cursor:pointer;list-style:none;padding:9px 12px;display:flex;align-items:center;gap:10px;font-size:13px;user-select:none;flex-wrap:wrap;color:#1f2937}
@@ -138,9 +128,7 @@ details.group-row > summary:hover{background:#f1f5f9}
 details.group-row .group-title{font-weight:700;color:#0f172a}
 details.group-row .group-cnt{margin-left:auto;color:#64748b;font-size:12px;font-weight:600}
 details.group-row .group-recent{color:#94a3b8;font-size:11px;margin-left:6px}
-details.group-row > .data-table,
-details.group-row > details.row-overflow{border-top:1px solid #e5e7eb}
-details.group-row > details.row-overflow{margin-top:0;border-radius:0}
+details.group-row > .data-table{border-top:1px solid #e5e7eb}
 
 /* cell-text expand */
 td.cell-text{max-width:380px}
@@ -213,7 +201,6 @@ _JS = """\
 
 _FDC_RANK = {"HALT": 0, "WARNING": 1, "WATCH": 2}
 _MIN_DT = _dt.datetime(1900, 1, 1)
-_TOP_N = 8
 _GROUP_MIN_ROWS = 5
 _GROUP_MIN_KEYS = 2
 _CELL_TEXT_MAX = 60
@@ -244,13 +231,6 @@ def _parse_delay_minutes(delay_str: Any) -> int:
     hours = int(m.group(2))
     mins = int(m.group(3))
     return days * 24 * 60 + hours * 60 + mins
-
-
-def _top_n_split(rows: List[Dict], n: int = _TOP_N) -> tuple:
-    """(visible, overflow) 분할."""
-    if len(rows) <= n:
-        return (rows, [])
-    return (rows[:n], rows[n:])
 
 
 def _render_cell_text(value: Any, max_chars: int = _CELL_TEXT_MAX) -> str:
@@ -299,12 +279,13 @@ def _sort_fdc(rows: List[Dict]) -> List[Dict]:
 
 
 def _sort_qtime(rows: List[Dict]) -> List[Dict]:
+    """event_tm 빠른 순(공정 발생 순서) — datetime이 아니면 가장 뒤로."""
     def key(r):
-        try:
-            return abs(float(r.get("bal") or 0))
-        except (TypeError, ValueError):
-            return 0.0
-    return sorted(rows, key=key, reverse=True)
+        v = r.get("event_tm")
+        if isinstance(v, _dt.datetime):
+            return (0, v)
+        return (1, _MIN_DT)
+    return sorted(rows, key=key)
 
 
 def _sort_trouble(rows: List[Dict]) -> List[Dict]:
@@ -312,7 +293,13 @@ def _sort_trouble(rows: List[Dict]) -> List[Dict]:
 
 
 def _sort_action(rows: List[Dict]) -> List[Dict]:
-    return sorted(rows, key=lambda r: _tm_sort_key(r.get("action_time")), reverse=True)
+    """action_time 오름차순 (공정 발생 순서). 누락은 가장 뒤로."""
+    def key(r):
+        v = r.get("action_time")
+        if isinstance(v, _dt.datetime):
+            return (0, v)
+        return (1, _MIN_DT)
+    return sorted(rows, key=key)
 
 
 # ── 섹션 헤더 헬퍼 ──────────────────────────────────────────
@@ -341,17 +328,6 @@ def _section_head(icon: str, title: str, chips_html: str, cnt: int, default_open
     )
 
 
-def _wrap_overflow(table_fn, rows_overflow: List[Dict]) -> str:
-    n = len(rows_overflow)
-    if not n:
-        return ""
-    return (
-        f'<details class="row-overflow"><summary>{n}건 더보기</summary>'
-        f'{table_fn(rows_overflow)}'
-        f'</details>'
-    )
-
-
 # ── FDC ALARM ───────────────────────────────────────────────
 
 
@@ -376,39 +352,41 @@ def _fdc_table(rows: List[Dict]) -> str:
 
 
 def _render_flat_fdc(rows: List[Dict]) -> str:
-    visible, overflow = _top_n_split(rows)
-    return _fdc_table(visible) + _wrap_overflow(_fdc_table, overflow)
+    return _fdc_table(rows)
 
 
 def _render_grouped_fdc(rows: List[Dict]) -> str:
-    """eqp_id로 그룹핑. HALT 많은 그룹 먼저, HALT 있는 그룹은 default open."""
+    """oper_id로 그룹핑. 그룹 헤더는 그룹의 가장 빠른 transfer_tm asc(공정 순서)로 정렬.
+
+    그룹 내 행은 기존 severity/시간 룰 유지 (HALT 우선 → 최신 transfer_tm).
+    """
     groups: Dict[str, List[Dict]] = {}
     for r in rows:
-        groups.setdefault(r.get("eqp_id") or "(N/A)", []).append(r)
+        groups.setdefault(r.get("oper_id") or "(N/A)", []).append(r)
 
     def gkey(item):
-        _eqp, grows = item
-        halt_n = sum(1 for r in grows if r.get("alarm_level_cd") == "HALT")
-        return (-halt_n, -len(grows))
+        _oper, grows = item
+        # 그룹 내 가장 빠른 transfer_tm (없으면 datetime.min sentinel)
+        tms = [r.get("transfer_tm") for r in grows if isinstance(r.get("transfer_tm"), _dt.datetime)]
+        return min(tms) if tms else _MIN_DT
 
     html = ""
-    for eqp, grows in sorted(groups.items(), key=gkey):
+    for oper, grows in sorted(groups.items(), key=gkey):
         # 그룹 내 정렬도 동일 룰 적용
         grows_sorted = _sort_fdc(grows)
         chips = _fdc_chips(grows_sorted)
-        most_recent = ""
-        for r in grows_sorted:
-            tm = r.get("transfer_tm")
-            if tm:
-                most_recent = str(tm)[5:10]
-                break
-        recent_html = f'<span class="group-recent">최근 {_h(most_recent)}</span>' if most_recent else ""
+        # 그룹의 첫 transfer_tm (공정 시작 시점)을 헤더에 표시
+        first_tm = ""
+        oper_tms = [r.get("transfer_tm") for r in grows if isinstance(r.get("transfer_tm"), _dt.datetime)]
+        if oper_tms:
+            first_tm = str(min(oper_tms))[5:10]
+        first_html = f'<span class="group-recent">시작 {_h(first_tm)}</span>' if first_tm else ""
         html += (
             f'<details class="group-row"><summary>'
-            f'<span class="group-title">{_h(eqp)}</span>'
+            f'<span class="group-title">{_h(oper)}</span>'
             f'{chips}'
             f'<span class="group-cnt">{len(grows_sorted)}건</span>'
-            f'{recent_html}'
+            f'{first_html}'
             f'</summary>'
         )
         html += _render_flat_fdc(grows_sorted)
@@ -423,8 +401,8 @@ def _render_fdc_section(rows: List[Dict], default_open: bool, section_id: str = 
     if not cnt:
         return head + '<div class="empty">해당 없음</div></div></details>'
     sorted_rows = _sort_fdc(rows)
-    distinct_eqp = {r.get("eqp_id") for r in sorted_rows if r.get("eqp_id")}
-    if cnt >= _GROUP_MIN_ROWS and len(distinct_eqp) >= _GROUP_MIN_KEYS:
+    distinct_oper = {r.get("oper_id") for r in sorted_rows if r.get("oper_id")}
+    if cnt >= _GROUP_MIN_ROWS and len(distinct_oper) >= _GROUP_MIN_KEYS:
         body = _render_grouped_fdc(sorted_rows)
     else:
         body = _render_flat_fdc(sorted_rows)
@@ -437,12 +415,14 @@ def _render_fdc_section(rows: List[Dict], default_open: bool, section_id: str = 
 def _qtime_table(rows: List[Dict]) -> str:
     html = (
         '<table class="data-table"><thead><tr>'
-        '<th>FROM</th><th>→</th><th>TO</th><th>제한</th><th>실제</th><th>초과</th>'
+        '<th>시간</th><th>FROM</th><th>→</th><th>TO</th><th>제한</th><th>실제</th><th>초과</th>'
         '</tr></thead><tbody>'
     )
     for r in rows:
+        tm = _h(str(r.get("event_tm", ""))[5:16])
         html += (
-            f'<tr><td>{_h(r.get("from_oper"))}</td><td>→</td><td>{_h(r.get("to_oper"))}</td>'
+            f'<tr><td>{tm}</td>'
+            f'<td>{_h(r.get("from_oper"))}</td><td>→</td><td>{_h(r.get("to_oper"))}</td>'
             f'<td>{_h(r.get("control_limit"))}분</td>'
             f'<td class="spec-over">{_h(r.get("q_time"))}분</td>'
             f'<td class="spec-over">{_h(r.get("bal"))}분</td></tr>'
@@ -456,8 +436,7 @@ def _render_qtime_section(rows: List[Dict], default_open: bool, section_id: str 
     if not cnt:
         return head + '<div class="empty">해당 없음</div></div></details>'
     sorted_rows = _sort_qtime(rows)
-    visible, overflow = _top_n_split(sorted_rows)
-    body = _qtime_table(visible) + _wrap_overflow(_qtime_table, overflow)
+    body = _qtime_table(sorted_rows)
     return head + body + '</div></details>'
 
 
@@ -484,38 +463,38 @@ def _trouble_table(rows: List[Dict]) -> str:
 
 
 def _render_flat_trouble(rows: List[Dict]) -> str:
-    visible, overflow = _top_n_split(rows)
-    return _trouble_table(visible) + _wrap_overflow(_trouble_table, overflow)
+    return _trouble_table(rows)
 
 
 def _render_grouped_trouble(rows: List[Dict]) -> str:
-    """cause_eq로 그룹핑. 장기 지연 많은 그룹 먼저, 장기 있으면 default open."""
+    """step_desc로 그룹핑. 그룹 헤더는 그룹의 가장 빠른 hold_time asc(공정 순서)로 정렬.
+
+    그룹 내 행은 기존 _sort_trouble 룰 유지 (지연시간 desc).
+    """
     groups: Dict[str, List[Dict]] = {}
     for r in rows:
-        groups.setdefault(r.get("cause_eq") or "(N/A)", []).append(r)
+        groups.setdefault(r.get("step_desc") or "(N/A)", []).append(r)
 
     def gkey(item):
-        _eq, grows = item
-        long_n = sum(1 for r in grows if _parse_delay_minutes(r.get("delay_time")) >= _LONG_DELAY_MIN)
-        return (-long_n, -len(grows))
+        _step, grows = item
+        tms = [r.get("hold_time") for r in grows if isinstance(r.get("hold_time"), _dt.datetime)]
+        return min(tms) if tms else _MIN_DT
 
     html = ""
-    for eq, grows in sorted(groups.items(), key=gkey):
+    for step, grows in sorted(groups.items(), key=gkey):
         grows_sorted = _sort_trouble(grows)
         chips = _trouble_chips(grows_sorted)
-        most_recent = ""
-        for r in grows_sorted:
-            tm = r.get("hold_time")
-            if tm:
-                most_recent = str(tm)[5:10]
-                break
-        recent_html = f'<span class="group-recent">최근 {_h(most_recent)}</span>' if most_recent else ""
+        first_tm = ""
+        step_tms = [r.get("hold_time") for r in grows if isinstance(r.get("hold_time"), _dt.datetime)]
+        if step_tms:
+            first_tm = str(min(step_tms))[5:10]
+        first_html = f'<span class="group-recent">시작 {_h(first_tm)}</span>' if first_tm else ""
         html += (
             f'<details class="group-row"><summary>'
-            f'<span class="group-title">{_h(eq)}</span>'
+            f'<span class="group-title">{_h(step)}</span>'
             f'{chips}'
             f'<span class="group-cnt">{len(grows_sorted)}건</span>'
-            f'{recent_html}'
+            f'{first_html}'
             f'</summary>'
         )
         html += _render_flat_trouble(grows_sorted)
@@ -530,8 +509,8 @@ def _render_trouble_section(rows: List[Dict], default_open: bool, section_id: st
     if not cnt:
         return head + '<div class="empty">해당 없음</div></div></details>'
     sorted_rows = _sort_trouble(rows)
-    distinct_eq = {r.get("cause_eq") for r in sorted_rows if r.get("cause_eq")}
-    if cnt >= _GROUP_MIN_ROWS and len(distinct_eq) >= _GROUP_MIN_KEYS:
+    distinct_step = {r.get("step_desc") for r in sorted_rows if r.get("step_desc")}
+    if cnt >= _GROUP_MIN_ROWS and len(distinct_step) >= _GROUP_MIN_KEYS:
         body = _render_grouped_trouble(sorted_rows)
     else:
         body = _render_flat_trouble(sorted_rows)
@@ -564,8 +543,7 @@ def _render_action_section(rows: List[Dict], default_open: bool, section_id: str
     if not cnt:
         return head + '<div class="empty">해당 없음</div></div></details>'
     sorted_rows = _sort_action(rows)
-    visible, overflow = _top_n_split(sorted_rows)
-    body = _action_table(visible) + _wrap_overflow(_action_table, overflow)
+    body = _action_table(sorted_rows)
     return head + body + '</div></details>'
 
 
@@ -591,8 +569,7 @@ def _render_sample_section(rows: List[Dict], default_open: bool, section_id: str
     head = _section_head("🧪", "SAMPLE SPLIT", "", cnt, default_open, section_id)
     if not cnt:
         return head + '<div class="empty">해당 없음</div></div></details>'
-    visible, overflow = _top_n_split(rows)
-    body = _sample_table(visible) + _wrap_overflow(_sample_table, overflow)
+    body = _sample_table(rows)
     return head + body + '</div></details>'
 
 
@@ -629,24 +606,15 @@ def _render_lot_card(lot_id: str, data: Dict[str, List[Dict]]) -> str:
     action_rows = data.get("future_action", [])
     sample_rows = data.get("sample_split", [])
 
-    fdc_open = bool(fdc_rows) and (
-        any(r.get("alarm_level_cd") == "HALT" for r in fdc_rows) or len(fdc_rows) <= _TOP_N
-    )
-    qtime_open = bool(qtime_rows)
-    trouble_open = bool(trouble_rows) and (
-        any(_parse_delay_minutes(r.get("delay_time")) >= _LONG_DELAY_MIN for r in trouble_rows)
-        or len(trouble_rows) <= 5
-    )
-
     html = f'<div class="lot-card risk-{risk}" id="lot-{safe}">'
     html += f'<div class="lot-card-header"><h2>{_h(lot_id)}</h2>'
     if lot_cd:
         html += f'<span class="badge badge-{risk}">{_h(lot_cd)}</span>'
     html += f'<span class="badge badge-{risk}">● {risk_label}</span></div>'
 
-    html += _render_fdc_section(fdc_rows, default_open=fdc_open, section_id=f"lot-{safe}-fdc")
-    html += _render_qtime_section(qtime_rows, default_open=qtime_open, section_id=f"lot-{safe}-qtime")
-    html += _render_trouble_section(trouble_rows, default_open=trouble_open, section_id=f"lot-{safe}-trouble")
+    html += _render_fdc_section(fdc_rows, default_open=False, section_id=f"lot-{safe}-fdc")
+    html += _render_qtime_section(qtime_rows, default_open=False, section_id=f"lot-{safe}-qtime")
+    html += _render_trouble_section(trouble_rows, default_open=False, section_id=f"lot-{safe}-trouble")
     html += _render_action_section(action_rows, default_open=False, section_id=f"lot-{safe}-action")
     html += _render_sample_section(sample_rows, default_open=False, section_id=f"lot-{safe}-sample")
     html += '</div>'
