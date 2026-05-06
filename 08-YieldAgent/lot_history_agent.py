@@ -45,8 +45,8 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:#f5f6fa;color:
 
 /* summary table */
 .summary-table{width:100%;border-collapse:collapse;margin-bottom:24px;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,0.07)}
-.summary-table th{background:#1e293b;color:#fff;padding:10px 14px;font-size:13px;font-weight:600;text-align:center}
-.summary-table td{padding:10px 14px;text-align:center;font-size:13px;border-bottom:1px solid #f0f0f0}
+.summary-table th{background:#f1f5f9;color:#475569;padding:10px 14px;font-size:12px;font-weight:600;text-align:center;letter-spacing:0.04em;text-transform:uppercase;border-bottom:1px solid #e2e8f0}
+.summary-table td{padding:11px 14px;text-align:center;font-size:13.5px;border-bottom:1px solid #f0f0f0}
 .summary-table tr:last-child td{border-bottom:none}
 .summary-table .lot-id{text-align:left;font-weight:600;color:#1e40af}
 .summary-table .lot-id a{color:inherit;text-decoration:none}
@@ -58,29 +58,45 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:#f5f6fa;color:
 .risk-green{color:#22c55e;font-size:15px}
 
 /* LOT card */
-.lot-card{background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:20px;overflow:hidden;scroll-margin-top:64px}
-.lot-card-header{padding:14px 20px;background:#1e293b;color:#fff;display:flex;align-items:center;gap:12px}
-.lot-card-header h2{font-size:16px;font-weight:700}
-.lot-card-header .badge{padding:2px 8px;border-radius:8px;font-size:11px;font-weight:600}
+.lot-card{background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,0.07);margin-bottom:20px;overflow:hidden;scroll-margin-top:64px;border-left:4px solid transparent}
+.lot-card.risk-red{border-left-color:#dc2626}
+.lot-card.risk-yellow{border-left-color:#f59e0b}
+.lot-card.risk-green{border-left-color:#22c55e}
+.lot-card-header{padding:14px 20px;background:#f8fafc;color:#1e293b;display:flex;align-items:center;gap:12px;border-bottom:1px solid #e2e8f0}
+.lot-card-header h2{font-size:17px;font-weight:700;color:#0f172a}
+.lot-card-header .badge{padding:3px 10px;border-radius:8px;font-size:11px;font-weight:700}
 .badge-red{background:#fecaca;color:#dc2626}
 .badge-yellow{background:#fef3c7;color:#b45309}
 .badge-green{background:#dcfce7;color:#16a34a}
 
+/* highlights box (핵심 이슈 진입 미리보기) */
+.lot-highlights{padding:12px 20px;background:#fafbfc;border-bottom:1px solid #f0f0f0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.lot-highlights .hl-label{color:#64748b;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;margin-right:4px}
+.lot-highlights .highlight-chip{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;transition:all 0.15s;border:1px solid transparent}
+.lot-highlights .highlight-chip:hover{filter:brightness(0.97);transform:translateY(-1px)}
+.lot-highlights .highlight-chip.halt{background:#fee2e2;color:#991b1b;border-color:#fecaca}
+.lot-highlights .highlight-chip.long{background:#fce7f3;color:#9d174d;border-color:#fbcfe8}
+.lot-highlights .highlight-chip.qtime{background:#ede9fe;color:#5b21b6;border-color:#ddd6fe}
+.lot-highlights .highlight-chip .hl-tag{font-size:11px;font-weight:700;letter-spacing:0.04em;opacity:0.85}
+.lot-highlights .highlight-chip .hl-detail{font-weight:500}
+.lot-highlights .hl-clear{color:#16a34a;font-size:13px;font-weight:600}
+
 /* sections (HTML5 details) */
 details.section{padding:0;border-bottom:1px solid #f0f0f0}
 details.section:last-child{border-bottom:none}
-details.section > summary{padding:14px 20px;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700;user-select:none}
+details.section > summary{padding:14px 20px;cursor:pointer;list-style:none;display:flex;align-items:center;gap:10px;font-size:14px;font-weight:700;user-select:none;scroll-margin-top:64px}
 details.section > summary::-webkit-details-marker{display:none}
 details.section > summary::before{content:"▸";font-size:11px;color:#94a3b8;width:12px;display:inline-block;transition:transform 0.15s}
 details.section[open] > summary::before{transform:rotate(90deg)}
 details.section > .section-body{padding:0 20px 16px 20px}
 details.section.empty-section{opacity:0.55}
 details.section.empty-section > summary{font-weight:500}
+details.section:target > summary{background:#fef9c3}
 .section-title-text{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .section-title-text .icon{font-size:16px}
 .section-title-spacer{flex:1}
 
-.cnt{background:#e2e8f0;color:#475569;padding:1px 8px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap}
+.cnt{background:#e2e8f0;color:#475569;padding:2px 10px;border-radius:10px;font-size:14px;font-weight:700;white-space:nowrap}
 .cnt-alert{background:#fee2e2;color:#dc2626}
 .empty{color:#94a3b8;font-size:13px;padding:4px 0}
 
@@ -93,10 +109,19 @@ details.section.empty-section > summary{font-weight:500}
 .severity-chip.short{background:#e0e7ff;color:#4338ca}
 
 /* data table */
-.data-table{width:100%;border-collapse:collapse;font-size:12.5px}
-.data-table th{background:#f8fafc;color:#64748b;padding:7px 10px;text-align:left;font-weight:600;border-bottom:1px solid #e2e8f0;white-space:nowrap}
-.data-table td{padding:7px 10px;border-bottom:1px solid #f1f5f9;vertical-align:top}
+.data-table{width:100%;border-collapse:collapse;font-size:13.5px;line-height:1.5}
+.data-table th{background:#f8fafc;color:#64748b;padding:9px 14px;text-align:left;font-weight:600;border-bottom:1px solid #e2e8f0;white-space:nowrap;font-size:12px;letter-spacing:0.02em;text-transform:uppercase}
+.data-table td{padding:9px 14px;border-bottom:1px solid #f1f5f9;vertical-align:top}
 .data-table tr:last-child td{border-bottom:none}
+/* zebra striping (lower priority than row-halt/row-long) */
+.data-table tbody tr:nth-child(2n) td{background:#fafbfc}
+/* row-level severity highlight (overrides zebra) */
+.data-table tr.row-halt > td,
+.data-table tr.row-halt:nth-child(2n) > td{background:#fff5f5;border-left:0}
+.data-table tr.row-halt > td:first-child{border-left:4px solid #dc2626;padding-left:10px}
+.data-table tr.row-long > td,
+.data-table tr.row-long:nth-child(2n) > td{background:#fdf2f8;border-left:0}
+.data-table tr.row-long > td:first-child{border-left:4px solid #ec4899;padding-left:10px}
 
 /* level badges */
 .level{padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700;display:inline-block}
@@ -144,9 +169,41 @@ td.cell-text .cell-full{white-space:pre-wrap;word-break:break-word;color:#1e293b
 _JS = """\
 <script>
 (function(){
+  // anchor 점프 시 target details 엘리먼트 및 조상 details 자동 open
+  function expandTargetDetails(){
+    var hash = location.hash;
+    if(!hash || hash.length < 2) return;
+    var el;
+    try{ el = document.querySelector(hash); }catch(_){ return; }
+    if(!el) return;
+    if(el.tagName === 'DETAILS') el.open = true;
+    var cur = el.parentNode;
+    while(cur && cur !== document){
+      if(cur.tagName === 'DETAILS') cur.open = true;
+      cur = cur.parentNode;
+    }
+  }
+  window.addEventListener('hashchange', expandTargetDetails);
+  // initial
+  if(location.hash) setTimeout(expandTargetDetails, 0);
+
+  // highlight chip click → expand + smooth scroll
+  document.querySelectorAll('.lot-highlights a.highlight-chip').forEach(function(a){
+    a.addEventListener('click', function(e){
+      var hash = a.getAttribute('href');
+      var target = hash && document.querySelector(hash);
+      if(target){
+        e.preventDefault();
+        if(target.tagName === 'DETAILS') target.open = true;
+        history.replaceState(null, '', hash);
+        target.scrollIntoView({behavior:'smooth', block:'start'});
+      }
+    });
+  });
+
   var tabs = document.querySelectorAll('.lot-nav a.tab');
   if(!tabs.length) return;
-  // smooth scroll
+  // LOT nav smooth scroll
   tabs.forEach(function(a){
     a.addEventListener('click', function(e){
       var hash = a.getAttribute('href');
@@ -287,14 +344,18 @@ def _sort_action(rows: List[Dict]) -> List[Dict]:
 # ── 섹션 헤더 헬퍼 ──────────────────────────────────────────
 
 
-def _section_head(icon: str, title: str, chips_html: str, cnt: int, default_open: bool) -> str:
-    """공통 섹션 헤더 + 본문 시작 태그. 호출자는 본문 + '</div></details>' 추가."""
+def _section_head(icon: str, title: str, chips_html: str, cnt: int, default_open: bool, section_id: str = "") -> str:
+    """공통 섹션 헤더 + 본문 시작 태그. 호출자는 본문 + '</div></details>' 추가.
+
+    section_id 가 주어지면 highlight chip의 anchor 타겟 (`#lot-{LOT}-{kind}`)으로 사용.
+    """
     open_attr = " open" if default_open and cnt else ""
     cls_extra = "" if cnt else " empty-section"
     cnt_cls = "cnt-alert" if cnt else "cnt"
     chips_part = f' {chips_html}' if chips_html else ""
+    id_attr = f' id="{section_id}"' if section_id else ""
     return (
-        f'<details class="section{cls_extra}"{open_attr}>'
+        f'<details class="section{cls_extra}"{open_attr}{id_attr}>'
         f'<summary>'
         f'<span class="section-title-text"><span class="icon">{icon}</span> {title}{chips_part}</span>'
         f'<span class="section-title-spacer"></span>'
@@ -328,8 +389,9 @@ def _fdc_table(rows: List[Dict]) -> str:
         tm = _h(str(r.get("transfer_tm", ""))[5:16])
         level = r.get("alarm_level_cd", "") or ""
         level_cls = f"level-{level.lower()}" if level else ""
+        row_cls = ' class="row-halt"' if level == "HALT" else ""
         html += (
-            f'<tr><td>{tm}</td><td>{_h(r.get("eqp_id"))}</td><td>{_h(r.get("item_nm"))}</td>'
+            f'<tr{row_cls}><td>{tm}</td><td>{_h(r.get("eqp_id"))}</td><td>{_h(r.get("item_nm"))}</td>'
             f'<td><span class="level {level_cls}">{_h(level)}</span></td>'
             f'<td class="spec-over">{_h(r.get("rslt_val"))}</td>'
             f'<td>{_h(r.get("spec_min_val"))} ~ {_h(r.get("spec_max_val"))}</td></tr>'
@@ -364,11 +426,9 @@ def _render_grouped_fdc(rows: List[Dict]) -> str:
             if tm:
                 most_recent = str(tm)[5:10]
                 break
-        has_halt = any(r.get("alarm_level_cd") == "HALT" for r in grows_sorted)
-        open_attr = " open" if has_halt else ""
         recent_html = f'<span class="group-recent">최근 {_h(most_recent)}</span>' if most_recent else ""
         html += (
-            f'<details class="group-row"{open_attr}><summary>'
+            f'<details class="group-row" open><summary>'
             f'<span class="group-title">{_h(eqp)}</span>'
             f'{chips}'
             f'<span class="group-cnt">{len(grows_sorted)}건</span>'
@@ -380,10 +440,10 @@ def _render_grouped_fdc(rows: List[Dict]) -> str:
     return html
 
 
-def _render_fdc_section(rows: List[Dict], default_open: bool) -> str:
+def _render_fdc_section(rows: List[Dict], default_open: bool, section_id: str = "") -> str:
     cnt = len(rows)
     chips_html = _fdc_chips(rows) if cnt else ""
-    head = _section_head("🔴", "FDC ALARM", chips_html, cnt, default_open)
+    head = _section_head("🔴", "FDC ALARM", chips_html, cnt, default_open, section_id)
     if not cnt:
         return head + '<div class="empty">해당 없음</div></div></details>'
     sorted_rows = _sort_fdc(rows)
@@ -414,9 +474,9 @@ def _qtime_table(rows: List[Dict]) -> str:
     return html + '</tbody></table>'
 
 
-def _render_qtime_section(rows: List[Dict], default_open: bool) -> str:
+def _render_qtime_section(rows: List[Dict], default_open: bool, section_id: str = "") -> str:
     cnt = len(rows)
-    head = _section_head("⏱", "Q-TIME 초과", "", cnt, default_open)
+    head = _section_head("⏱", "Q-TIME 초과", "", cnt, default_open, section_id)
     if not cnt:
         return head + '<div class="empty">해당 없음</div></div></details>'
     sorted_rows = _sort_qtime(rows)
@@ -437,8 +497,10 @@ def _trouble_table(rows: List[Dict]) -> str:
     for r in rows:
         tm = _h(str(r.get("hold_time", ""))[5:16])
         content_html = _render_cell_text(r.get("contents"))
+        is_long = _parse_delay_minutes(r.get("delay_time")) >= _LONG_DELAY_MIN
+        row_cls = ' class="row-long"' if is_long else ""
         html += (
-            f'<tr><td>{tm}</td><td>{_h(r.get("step_desc"))}</td><td>{_h(r.get("cause_eq"))}</td>'
+            f'<tr{row_cls}><td>{tm}</td><td>{_h(r.get("step_desc"))}</td><td>{_h(r.get("cause_eq"))}</td>'
             f'<td>{_h(r.get("delay_time"))}</td><td>{_h(r.get("h_code"))}</td>'
             f'<td class="cell-text">{content_html}</td></tr>'
         )
@@ -471,11 +533,9 @@ def _render_grouped_trouble(rows: List[Dict]) -> str:
             if tm:
                 most_recent = str(tm)[5:10]
                 break
-        has_long = any(_parse_delay_minutes(r.get("delay_time")) >= _LONG_DELAY_MIN for r in grows_sorted)
-        open_attr = " open" if has_long else ""
         recent_html = f'<span class="group-recent">최근 {_h(most_recent)}</span>' if most_recent else ""
         html += (
-            f'<details class="group-row"{open_attr}><summary>'
+            f'<details class="group-row" open><summary>'
             f'<span class="group-title">{_h(eq)}</span>'
             f'{chips}'
             f'<span class="group-cnt">{len(grows_sorted)}건</span>'
@@ -487,10 +547,10 @@ def _render_grouped_trouble(rows: List[Dict]) -> str:
     return html
 
 
-def _render_trouble_section(rows: List[Dict], default_open: bool) -> str:
+def _render_trouble_section(rows: List[Dict], default_open: bool, section_id: str = "") -> str:
     cnt = len(rows)
     chips_html = _trouble_chips(rows) if cnt else ""
-    head = _section_head("🔧", "TROUBLE LOT", chips_html, cnt, default_open)
+    head = _section_head("🔧", "TROUBLE LOT", chips_html, cnt, default_open, section_id)
     if not cnt:
         return head + '<div class="empty">해당 없음</div></div></details>'
     sorted_rows = _sort_trouble(rows)
@@ -522,9 +582,9 @@ def _action_table(rows: List[Dict]) -> str:
     return html + '</tbody></table>'
 
 
-def _render_action_section(rows: List[Dict], default_open: bool) -> str:
+def _render_action_section(rows: List[Dict], default_open: bool, section_id: str = "") -> str:
     cnt = len(rows)
-    head = _section_head("📌", "FUTURE ACTION", "", cnt, default_open)
+    head = _section_head("📌", "FUTURE ACTION", "", cnt, default_open, section_id)
     if not cnt:
         return head + '<div class="empty">해당 없음</div></div></details>'
     sorted_rows = _sort_action(rows)
@@ -550,9 +610,9 @@ def _sample_table(rows: List[Dict]) -> str:
     return html + '</tbody></table>'
 
 
-def _render_sample_section(rows: List[Dict], default_open: bool) -> str:
+def _render_sample_section(rows: List[Dict], default_open: bool, section_id: str = "") -> str:
     cnt = len(rows)
-    head = _section_head("🧪", "SAMPLE SPLIT", "", cnt, default_open)
+    head = _section_head("🧪", "SAMPLE SPLIT", "", cnt, default_open, section_id)
     if not cnt:
         return head + '<div class="empty">해당 없음</div></div></details>'
     visible, overflow = _top_n_split(rows)
@@ -575,10 +635,75 @@ def _risk_level(data: Dict[str, List[Dict]]) -> str:
 # ── 카드 / 전체 ─────────────────────────────────────────────
 
 
+def _render_lot_highlights(lot_safe_id: str, data: Dict[str, List[Dict]]) -> str:
+    """LOT 카드 헤더 바로 아래의 '핵심 이슈' 미리보기 박스.
+
+    HALT FDC, 장기 Hold(24h+), Q-TIME 초과 중 가장 두드러진 1건씩 chip으로 노출.
+    chip 클릭 시 해당 섹션 anchor 점프(`#lot-{ID}-{kind}`).
+    셋 다 0이면 라이트 톤 "특이사항 없음".
+    """
+    chips: List[str] = []
+
+    halt_rows = [r for r in data.get("fdc_alarm", []) if r.get("alarm_level_cd") == "HALT"]
+    if halt_rows:
+        # 최신 HALT 1건
+        halt_rows_sorted = sorted(halt_rows, key=lambda r: _tm_sort_key(r.get("transfer_tm")), reverse=True)
+        top = halt_rows_sorted[0]
+        eqp = _h(top.get("eqp_id"))
+        item = _h(top.get("item_nm"))
+        chips.append(
+            f'<a class="highlight-chip halt" href="#lot-{lot_safe_id}-fdc">'
+            f'<span class="hl-tag">HALT</span>'
+            f'<span class="hl-detail">{eqp} · {item}</span>'
+            f'</a>'
+        )
+
+    long_rows = [r for r in data.get("trouble_lot", [])
+                 if _parse_delay_minutes(r.get("delay_time")) >= _LONG_DELAY_MIN]
+    if long_rows:
+        # 가장 긴 지연 1건
+        top = max(long_rows, key=lambda r: _parse_delay_minutes(r.get("delay_time")))
+        eq = _h(top.get("cause_eq"))
+        delay = _h(top.get("delay_time"))
+        chips.append(
+            f'<a class="highlight-chip long" href="#lot-{lot_safe_id}-trouble">'
+            f'<span class="hl-tag">장기 HOLD</span>'
+            f'<span class="hl-detail">{eq} · {delay}</span>'
+            f'</a>'
+        )
+
+    qtime_rows = data.get("qtime_over", [])
+    if qtime_rows:
+        def _bal_abs(r):
+            try:
+                return abs(float(r.get("bal") or 0))
+            except (TypeError, ValueError):
+                return 0.0
+        top = max(qtime_rows, key=_bal_abs)
+        bal = _h(top.get("bal"))
+        from_op = str(top.get("from_oper") or "").split()[0] if top.get("from_oper") else ""
+        chips.append(
+            f'<a class="highlight-chip qtime" href="#lot-{lot_safe_id}-qtime">'
+            f'<span class="hl-tag">Q-TIME</span>'
+            f'<span class="hl-detail">{bal}분 · {_h(from_op)}…</span>'
+            f'</a>'
+        )
+
+    if not chips:
+        return '<div class="lot-highlights"><span class="hl-clear">✓ 특이사항 없음</span></div>'
+    return (
+        '<div class="lot-highlights">'
+        '<span class="hl-label">핵심 이슈</span>'
+        + "".join(chips) +
+        '</div>'
+    )
+
+
 def _render_lot_card(lot_id: str, data: Dict[str, List[Dict]]) -> str:
     """단일 LOT 카드 HTML"""
     risk = _risk_level(data)
     risk_label = {"red": "HIGH RISK", "yellow": "MEDIUM", "green": "NORMAL"}[risk]
+    safe = _safe_id(lot_id)
 
     lot_cd = ""
     for key in ["fdc_alarm", "qtime_over", "trouble_lot"]:
@@ -601,17 +726,19 @@ def _render_lot_card(lot_id: str, data: Dict[str, List[Dict]]) -> str:
         or len(trouble_rows) <= 5
     )
 
-    html = f'<div class="lot-card" id="lot-{_safe_id(lot_id)}">'
+    html = f'<div class="lot-card risk-{risk}" id="lot-{safe}">'
     html += f'<div class="lot-card-header"><h2>{_h(lot_id)}</h2>'
     if lot_cd:
         html += f'<span class="badge badge-{risk}">{_h(lot_cd)}</span>'
     html += f'<span class="badge badge-{risk}">● {risk_label}</span></div>'
 
-    html += _render_fdc_section(fdc_rows, default_open=fdc_open)
-    html += _render_qtime_section(qtime_rows, default_open=qtime_open)
-    html += _render_trouble_section(trouble_rows, default_open=trouble_open)
-    html += _render_action_section(action_rows, default_open=False)
-    html += _render_sample_section(sample_rows, default_open=False)
+    html += _render_lot_highlights(safe, data)
+
+    html += _render_fdc_section(fdc_rows, default_open=fdc_open, section_id=f"lot-{safe}-fdc")
+    html += _render_qtime_section(qtime_rows, default_open=qtime_open, section_id=f"lot-{safe}-qtime")
+    html += _render_trouble_section(trouble_rows, default_open=trouble_open, section_id=f"lot-{safe}-trouble")
+    html += _render_action_section(action_rows, default_open=False, section_id=f"lot-{safe}-action")
+    html += _render_sample_section(sample_rows, default_open=False, section_id=f"lot-{safe}-sample")
     html += '</div>'
     return html
 
