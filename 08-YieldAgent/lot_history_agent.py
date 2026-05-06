@@ -69,18 +69,6 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:#fafafa;color:
 .badge-yellow{background:#fef3c7;color:#92400e}
 .badge-green{background:#dcfce7;color:#166534}
 
-/* highlights box (핵심 이슈 진입 미리보기) */
-.lot-highlights{padding:12px 20px;background:#f8fafc;border-bottom:1px solid #e5e7eb;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-.lot-highlights .hl-label{color:#64748b;font-size:12px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;margin-right:4px}
-.lot-highlights .highlight-chip{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;transition:all 0.15s;border:1px solid transparent}
-.lot-highlights .highlight-chip:hover{filter:brightness(0.97);transform:translateY(-1px)}
-.lot-highlights .highlight-chip.halt{background:#fef2f2;color:#991b1b;border-color:#fecaca}
-.lot-highlights .highlight-chip.long{background:#fdf2f8;color:#9d174d;border-color:#fbcfe8}
-.lot-highlights .highlight-chip.qtime{background:#f5f3ff;color:#5b21b6;border-color:#ddd6fe}
-.lot-highlights .highlight-chip .hl-tag{font-size:11px;font-weight:700;letter-spacing:0.04em;opacity:0.85}
-.lot-highlights .highlight-chip .hl-detail{font-weight:500}
-.lot-highlights .hl-clear{color:#15803d;font-size:13px;font-weight:600}
-
 /* sections (HTML5 details) — default closed */
 details.section{padding:0;border-bottom:1px solid #e5e7eb}
 details.section:last-child{border-bottom:none}
@@ -186,20 +174,6 @@ _JS = """\
   window.addEventListener('hashchange', expandTargetDetails);
   // initial
   if(location.hash) setTimeout(expandTargetDetails, 0);
-
-  // highlight chip click → expand + smooth scroll
-  document.querySelectorAll('.lot-highlights a.highlight-chip').forEach(function(a){
-    a.addEventListener('click', function(e){
-      var hash = a.getAttribute('href');
-      var target = hash && document.querySelector(hash);
-      if(target){
-        e.preventDefault();
-        if(target.tagName === 'DETAILS') target.open = true;
-        history.replaceState(null, '', hash);
-        target.scrollIntoView({behavior:'smooth', block:'start'});
-      }
-    });
-  });
 
   var tabs = document.querySelectorAll('.lot-nav a.tab');
   if(!tabs.length) return;
@@ -637,70 +611,6 @@ def _risk_level(data: Dict[str, List[Dict]]) -> str:
 # ── 카드 / 전체 ─────────────────────────────────────────────
 
 
-def _render_lot_highlights(lot_safe_id: str, data: Dict[str, List[Dict]]) -> str:
-    """LOT 카드 헤더 바로 아래의 '핵심 이슈' 미리보기 박스.
-
-    HALT FDC, 장기 Hold(24h+), Q-TIME 초과 중 가장 두드러진 1건씩 chip으로 노출.
-    chip 클릭 시 해당 섹션 anchor 점프(`#lot-{ID}-{kind}`).
-    셋 다 0이면 라이트 톤 "특이사항 없음".
-    """
-    chips: List[str] = []
-
-    halt_rows = [r for r in data.get("fdc_alarm", []) if r.get("alarm_level_cd") == "HALT"]
-    if halt_rows:
-        # 최신 HALT 1건
-        halt_rows_sorted = sorted(halt_rows, key=lambda r: _tm_sort_key(r.get("transfer_tm")), reverse=True)
-        top = halt_rows_sorted[0]
-        eqp = _h(top.get("eqp_id"))
-        item = _h(top.get("item_nm"))
-        chips.append(
-            f'<a class="highlight-chip halt" href="#lot-{lot_safe_id}-fdc">'
-            f'<span class="hl-tag">HALT</span>'
-            f'<span class="hl-detail">{eqp} · {item}</span>'
-            f'</a>'
-        )
-
-    long_rows = [r for r in data.get("trouble_lot", [])
-                 if _parse_delay_minutes(r.get("delay_time")) >= _LONG_DELAY_MIN]
-    if long_rows:
-        # 가장 긴 지연 1건
-        top = max(long_rows, key=lambda r: _parse_delay_minutes(r.get("delay_time")))
-        eq = _h(top.get("cause_eq"))
-        delay = _h(top.get("delay_time"))
-        chips.append(
-            f'<a class="highlight-chip long" href="#lot-{lot_safe_id}-trouble">'
-            f'<span class="hl-tag">장기 HOLD</span>'
-            f'<span class="hl-detail">{eq} · {delay}</span>'
-            f'</a>'
-        )
-
-    qtime_rows = data.get("qtime_over", [])
-    if qtime_rows:
-        def _bal_abs(r):
-            try:
-                return abs(float(r.get("bal") or 0))
-            except (TypeError, ValueError):
-                return 0.0
-        top = max(qtime_rows, key=_bal_abs)
-        bal = _h(top.get("bal"))
-        from_op = str(top.get("from_oper") or "").split()[0] if top.get("from_oper") else ""
-        chips.append(
-            f'<a class="highlight-chip qtime" href="#lot-{lot_safe_id}-qtime">'
-            f'<span class="hl-tag">Q-TIME</span>'
-            f'<span class="hl-detail">{bal}분 · {_h(from_op)}…</span>'
-            f'</a>'
-        )
-
-    if not chips:
-        return '<div class="lot-highlights"><span class="hl-clear">✓ 특이사항 없음</span></div>'
-    return (
-        '<div class="lot-highlights">'
-        '<span class="hl-label">핵심 이슈</span>'
-        + "".join(chips) +
-        '</div>'
-    )
-
-
 def _render_lot_card(lot_id: str, data: Dict[str, List[Dict]]) -> str:
     """단일 LOT 카드 HTML"""
     risk = _risk_level(data)
@@ -733,8 +643,6 @@ def _render_lot_card(lot_id: str, data: Dict[str, List[Dict]]) -> str:
     if lot_cd:
         html += f'<span class="badge badge-{risk}">{_h(lot_cd)}</span>'
     html += f'<span class="badge badge-{risk}">● {risk_label}</span></div>'
-
-    html += _render_lot_highlights(safe, data)
 
     html += _render_fdc_section(fdc_rows, default_open=fdc_open, section_id=f"lot-{safe}-fdc")
     html += _render_qtime_section(qtime_rows, default_open=qtime_open, section_id=f"lot-{safe}-qtime")
