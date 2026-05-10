@@ -18,6 +18,131 @@ dev 환경(github.com/dorothy90/map_agent.git)은 이미 `fail-history` 인덱�
 
 ---
 
+## 0-A. 코드 배포 마이그레이션 (이번 PR이 운영에 미치는 영향)
+
+데이터 마이그레이션과 별개로 **코드 변경 배포** 자체에 신중히 다뤄야 할 사항들:
+
+### (1) 변경된 코드 표면
+
+| 영역 | 변경 | 운영 영향 |
+|---|---|---|
+| **신규 파일 8개** | `wiki_*.py`, `wiki_router.py`, `wiki_lint.py`, `wiki/` 디렉토리, `pages/wiki_graph.py`, `eval/run_wiki_eval.py`, `eval/datasets/wiki_micro.json` | 신규 모듈, 기존 코드 미영향 |
+| **수정 파일 6개** | `agent_server.py`(lifespan 4줄), `fail_history_agent.py`(state 반환 2필드), `fail_history_tools.py`(인덱스/필드 + wiki hook), `prompts.py`(FAIL_HISTORY 프롬프트에 1섹션 추가), `supervisor.py`(YieldQueryState 2필드 추가), `templates/fail_history_report.html`(헤더에 deep link 1줄), `eval/datasets/fail_history_goldset.json`(49건 키 변경) | **prompts.py와 supervisor.py state schema 변경**이 가장 영향 큰 표면 |
+| **신규 의존성** | `python-frontmatter>=1.1`, `jsonschema>=4` (둘 다 transitive 없음, 무거운 의존성 없음) | `pip install` 또는 `uv sync` 운영 환경 적용 필요 |
+| **신규 환경변수** | `WIKI_SUMMARIZE_MODEL` (default: `RETRIEVE_CHAIN_MODEL` 재사용), `STREAMLIT_BASE_URL` (default: `http://localhost:8501`) | .env 또는 systemd unit에 추가 |
+| **신규 디스크 경로** | `08-YieldAgent/wiki/` markdown vault (컨테이너 영속 볼륨 필요) | 운영 컨테이너 spec 변경 |
+| **신규 HTTP endpoint** | `GET /api/wiki/graph`, `GET /api/wiki/node/{id:path}` | 사내 방화벽/L7 ingress 라우팅 추가 |
+
+### (2) State schema 마이그레이션 (LangGraph checkpoint)
+
+`YieldQueryState`에 2 필드 추가됨:
+```python
+wiki_hit_ids: list[str]           # turn별 overwrite (reducer 없음)
+wiki_update_status: str           # "queued"|"summarized"|"persisted"|"dropped"|"skipped"
+```
+
+**기존 thread_id**(MongoDB checkpoint)에 누적된 state는 두 필드가 없음 → LangGraph가 default(`None`/`""`)로 처리. **schema 충돌 없음**(reducer가 add가 아닌 overwrite). 단:
+- 새 코드 첫 실행 시 기존 세션이 resume되면 state에 두 필드가 추가됨 → checkpoint 크기 미미하게 증가
+- `wiki_hit_ids`/`wiki_update_status` 값을 의존하는 다운스트림 코드가 새 코드에만 있으니 기존 thread도 안전
+
+### (3) 프롬프트 변경 영향 (LLM 응답 형식)
+
+`prompts.py FAIL_HISTORY_SYSTEM_PROMPT_TEMPLATE`에 "## Wiki Memory 사용 규칙" 섹션 추가 (5줄). 기존 응답 형식(answer + `[SUGGESTION: ...]`)은 동일하지만:
+- 운영 LLM(사내 로컬)이 추가된 섹션을 어떻게 해석하는지 **사전 검증 필수** (Step 3 staging smoke test)
+- gpt-oss-120b 또는 dev 모델 = 운영 모델 기준이면 dev PoC 결과가 그대로 적용
+- 다른 모델이면 `wiki_memory` 섹션 무시/오용 가능 → 응답 회귀 측정 필요
+
+### (4) 코드 ↔ 데이터 순서 의존성
+
+**중요한 조합**:
+| 코드 상태 | 데이터 상태 | 결과 |
+|---|---|---|
+| 구버전 (defect_type) | defect-history 인덱스 | ✅ 정상 (현재 운영) |
+| 신버전 (fail_type) | defect-history 인덱스 | ❌ **검색 결과 0** (필드명 불일치) |
+| 구버전 (defect_type) | fail-history 인덱스 | ❌ **검색 결과 0** |
+| 신버전 (fail_type) | fail-history 인덱스 | ✅ 정상 (목표) |
+
+→ **반드시 alias 전환(Step 4)이 코드 환경변수 변경(Step 5)보다 먼저**. 또는 코드/환경변수 변경 직전에 alias 전환을 묶어서 atomic하게.
+
+### (5) 코드 배포 절차 (Step 5 상세화)
+
+```bash
+# 5-0. 코드 가져오기 (사내 git mirror 가정)
+cd /opt/map_agent
+git fetch origin
+git checkout main
+git pull origin main   # b77f676 또는 0e9af9a 머지 확인
+
+# 5-1. 의존성 설치 (uv 또는 pip)
+cd /opt/map_agent/08-YieldAgent
+uv sync   # 또는 pip install python-frontmatter jsonschema
+# ※ Streamlit dev viewer 운영 안 띄우면 streamlit-agraph 불필요
+
+# 5-2. 환경변수 추가 (.env 또는 systemd)
+echo "OPENSEARCH_INDEX=fail-history" >> .env
+echo "WIKI_SUMMARIZE_MODEL=${RETRIEVE_CHAIN_MODEL:-gpt-oss-120b}" >> .env
+# STREAMLIT_BASE_URL은 운영 React URL 결정 후
+
+# 5-3. 디렉토리 권한 (컨테이너면 volume mount)
+mkdir -p /opt/map_agent/08-YieldAgent/wiki/{episodes,concepts,aliases,.cache}
+chown -R appuser:appuser /opt/map_agent/08-YieldAgent/wiki
+
+# 5-4. agent_server 재기동 (메모 §uvicorn 정책: --reload 없이 PID kill + 재기동)
+PID=$(lsof -nP -iTCP:8001 -sTCP:LISTEN | awk 'NR==2{print $2}')
+kill -INT $PID
+sleep 5
+cd /opt/map_agent/08-YieldAgent
+nohup python -m uvicorn agent_server:app --port 8001 --log-level info > /var/log/agent_server.log 2>&1 &
+
+# 5-5. health + lifespan 로그 확인
+curl -s http://localhost:8001/health
+grep "wiki_queue.*started\|MongoDB 체크포인터" /var/log/agent_server.log | tail -2
+```
+
+### (6) 신규 endpoint 노출 정책
+
+`/api/wiki/graph`, `/api/wiki/node/{id:path}`는 **인증 없는 read-only**. 운영 정책에 따라:
+- 사내망 only면 그대로 노출
+- 외부 노출은 nginx/L7 ingress에 path 기반 차단 또는 별도 reverse proxy 추가
+- vault 본문에 사내 코드명/제품명 포함 → 외부 접근 시 정보 노출 위험 (PoC 메모: dev=OpenRouter 외부, 운영=사내 로컬 LLM이라 redaction 미적용)
+
+### (7) Vault 디렉토리 운영 정책
+
+| 항목 | 권고 |
+|---|---|
+| 위치 | `/opt/map_agent/08-YieldAgent/wiki/` (또는 별도 영속 볼륨) |
+| 백업 | `wiki/` 전체 + `.cache/` 제외. 일 1회 정도 (PoC dev에선 노드 누적 100~200 스케일) |
+| 모니터링 | node 1000 초과 시 `wiki_queue` WARN. wiki_lint는 주 1회 cron |
+| 권한 | agent_server 프로세스만 write. read는 모니터링 도구도 OK |
+| 컨테이너 환경 | volume mount, `--restart` 정책에서도 vault 영속 보장 |
+
+### (8) 코드 롤백 절차 (Step 5 롤백 보강)
+
+데이터 롤백(§3)은 환경변수 원복으로 즉시 가능. 코드 롤백은 추가:
+
+```bash
+# R-A. 이전 commit으로 revert
+cd /opt/map_agent
+git log --oneline -5   # 이전 commit hash 확인 (b77f676 이전)
+git checkout <prev_hash>
+
+# R-B. 의존성 원복 불필요 (python-frontmatter/jsonschema는 새 모듈에만 사용,
+#       구버전 코드가 이 패키지를 import 안 하므로 설치된 채 둬도 무해)
+
+# R-C. 환경변수 원복
+sed -i '/^OPENSEARCH_INDEX=fail-history/d' .env
+echo "OPENSEARCH_INDEX=defect-history" >> .env
+
+# R-D. agent_server 재기동
+PID=$(lsof -nP -iTCP:8001 -sTCP:LISTEN | awk 'NR==2{print $2}')
+kill -INT $PID
+# ... 재기동
+```
+
+**롤백 시간**: ~10분 (코드 checkout + 재기동). vault 디렉토리는 그대로 두고, 다음 시도 시 재사용.
+
+---
+
 ## 1. 사전 점검 (배포 D-3)
 
 | 항목 | 명령 | 합격 기준 |
