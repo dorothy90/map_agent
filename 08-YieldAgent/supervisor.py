@@ -1116,6 +1116,10 @@ class YieldQueryState(TypedDict):
     # Fail History 결과
     fail_history_artifacts: Annotated[list, operator.add]
 
+    # Day 4: wiki memory 메타 (둘 다 turn별 overwrite, reducer 없음 — plan v3 §State/Checkpoint 가드)
+    wiki_hit_ids: list[str]              # 이번 turn에 wiki_memory가 참조한 노드 id (eval/디버그용)
+    wiki_update_status: str              # "queued" | "summarized" | "persisted" | "dropped" | "skipped"
+
     # Lot History 파라미터 & 결과
     lh_lot_ids: str
     lot_history_artifacts: Annotated[list, operator.add]

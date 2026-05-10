@@ -69,18 +69,29 @@ MONGO_URI = "mongodb://localhost:27017"
 MONGO_DB = "yield_agent"
 
 
-# ── FastAPI lifespan — MongoDB 연결 관리 ──────────────────
+# ── FastAPI lifespan — MongoDB 연결 + wiki_queue 워커 관리 ─
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # motor (async) — 대화 이력 저장용
     motor_client = AsyncIOMotorClient(MONGO_URI)
     app.state.motor_db = motor_client[MONGO_DB]
 
+    # wiki ingest 큐 워커 (Day 2 추가, plan v3 §wiki_queue.py)
+    # Day 3: placeholder summarizer를 실제 LLM summarizer로 교체
+    from wiki_queue import wiki_queue
+    from wiki_summarizer import summarize as wiki_summarize_fn
+    wiki_queue.set_summarizer(wiki_summarize_fn)
+    await wiki_queue.start()
+    app.state.wiki_queue = wiki_queue
+
     # MongoDBSaver (sync) — LangGraph 체크포인터
     with MongoDBSaver.from_conn_string(MONGO_URI, db_name=MONGO_DB) as checkpointer:
         app.state.graph = workflow.compile(checkpointer=checkpointer)
         logger.info("MongoDB 체크포인터 + motor 연결 완료 (%s/%s)", MONGO_URI, MONGO_DB)
-        yield
+        try:
+            yield
+        finally:
+            await wiki_queue.stop(timeout=10)
 
     motor_client.close()
     logger.info("MongoDB 연결 종료")
@@ -101,6 +112,11 @@ app.add_middleware(
 # plan: ~/.claude/plans/reactive-shimmying-lake.md — "단일 서버 확장" 원칙.
 # repl_agent 패키지는 기존 supervisor/graph 와 import 의존이 없다.
 app.include_router(repl_router, prefix="/repl", tags=["repl"])
+
+# ── Wiki vault graph endpoint (Day 5) ────────────────────
+from wiki_router import router as wiki_router  # noqa: E402
+
+app.include_router(wiki_router, prefix="/api/wiki", tags=["wiki"])
 
 
 def _sse(event: dict | object) -> str:
@@ -269,6 +285,9 @@ async def chat_stream(request: ChatRequest, req: Request):
             "step_count": 0,
             # canonical plan-and-execute: 이전 턴의 종료 신호가 다음 턴으로 새지 않도록 리셋
             "response": "",
+            # Day 4: wiki state는 turn별 overwrite (reducer 없음). 명시적 reset.
+            "wiki_hit_ids": [],
+            "wiki_update_status": "skipped",
             # anomaly_params는 매 새 사용자 turn 시 리셋 (#11 fix).
             # 동기: 이전 turn의 anomaly가 supervisor 라우팅 프롬프트(supervisor.py:409-414)에
             #       매번 "[이전 분석 결과]"로 주입되어 다른 product 분석에까지 stale 컨텍스트가

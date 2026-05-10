@@ -58,6 +58,14 @@ TODAY's DATE: {today}
 
 4. fail_history_agent: 불량이력 RAG 검색
    params: dh_query(검색 쿼리), dh_fail_type(불량유형, 예: "TWT"), dh_cause_oper(원인공정), lotcd
+   ※ 도메인 enum (사용자 입력에서 greedy 매칭, 가장 긴 일치 우선 — 예: "BG CMP"는 "BG"+"CMP"로 쪼개지 마라):
+     - dh_cause_oper ∈ {{BG CMP, BG ETCH, CONTACT ETCH, WELL IMPLANT, SPACER ETCH,
+       IMD DEP, GATE OX GROWTH, POLY DEP, PASSIVATION, PRE METAL CLN, STI CMP,
+       ILD CMP, VIA1 ETCH, METAL1 DEP}}
+     - dh_fail_type ∈ {{SCAN, JUNCTION, LEAK_ID, ION, TPD, VMIN, EASY, GATE_OX,
+       RON, DIBL, IDSAT, IGATE, LATCH, TWT, VTH, IDDQ, CONTACT, BVDS, FMAX, ISB_CMOS}}
+   ※ enum에 없는 잔여 토큰은 dh_query에 자유 텍스트로 보존하라.
+     절대 unknown 토큰을 dh_cause_oper/dh_fail_type에 강제로 넣지 마라 (term filter 0-hit 원인).
 
 5. ppt_export: PPT 내보내기 (이전 분석 결과를 PPT로 변환, params 불필요)
 
@@ -120,6 +128,10 @@ TODAY's DATE: {today}
 
 - "TWT 불량이력 검색해줘"
   → task_1: fail_history_agent, params={{dh_fail_type:"TWT"}}, goal:"TWT 불량이력 검색"
+
+- "4SA BG CMP EASY 불량 사례 알려줘"
+  → task_1: fail_history_agent, params={{lotcd:"4SA", dh_cause_oper:"BG CMP", dh_fail_type:"EASY"}}, goal:"4SA BG CMP 공정 EASY 불량 사례 조회"
+  ※ "BG CMP"는 enum의 단일 값(쪼개지 않음), "EASY"는 dh_fail_type enum 매칭
 
 - "4SS2DPD lot 이력 알려줘"
   → task_1: lot_history_agent, params={{lh_lot_ids:"4SS2DPD"}}, goal:"4SS2DPD LOT 종합 이력 조회"
@@ -270,19 +282,25 @@ Route to **wads_agent** when the user explicitly requests:
 Route to **fail_history_agent** when the user asks about:
 - 불량이력, 불량 히스토리, fail history, 과거 불량, 이전 불량 사례
 - 특정 불량 유형의 원인/조치 이력, 불량 원인
-- Examples: "TWT 불량이력 보여줘", "4SS M0C ETCH 불량 원인 알려줘", "IOFF 과거 사례"
+- Examples: "TWT 불량이력 보여줘", "4SS BG CMP 불량 원인 알려줘", "EASY 과거 사례"
 
 === FAIL HISTORY PARAMETERS ===
-- dh_fail_type: 사용자가 언급한 불량 유형 키워드를 추출
+※ 도메인 enum (실제 인덱스값, greedy 매칭 — 가장 긴 일치 우선):
+  - dh_fail_type ∈ {SCAN, JUNCTION, LEAK_ID, ION, TPD, VMIN, EASY, GATE_OX,
+    RON, DIBL, IDSAT, IGATE, LATCH, TWT, VTH, IDDQ, CONTACT, BVDS, FMAX, ISB_CMOS}
+  - dh_cause_oper ∈ {BG CMP, BG ETCH, CONTACT ETCH, WELL IMPLANT, SPACER ETCH,
+    IMD DEP, GATE OX GROWTH, POLY DEP, PASSIVATION, PRE METAL CLN, STI CMP,
+    ILD CMP, VIA1 ETCH, METAL1 DEP}
+- dh_fail_type: 사용자가 언급한 불량 유형 — 위 enum 안에서만 선택
   예: "TWT 불량이력" → dh_fail_type="TWT"
-  예: "IOFF 과거 사례" → dh_fail_type="IOFF"
+  예: "EASY 과거 사례" → dh_fail_type="EASY"
   예: "VTH 불량 원인" → dh_fail_type="VTH"
-  불량 유형 미지정 → dh_fail_type=""
-- dh_cause_oper: 사용자가 언급한 원인 공정명을 추출
-  예: "M0C ETCH 불량 원인" → dh_cause_oper="M0C ETCH"
-  예: "DEP 공정 불량" → dh_cause_oper="DEP"
-  공정 미지정 → dh_cause_oper=""
-- dh_query: 불량 유형/공정 외 자유텍스트 검색어 (보통 사용자 질의 전체 또는 핵심 키워드)
+  불량 유형 미지정 또는 enum 외 → dh_fail_type=""
+- dh_cause_oper: 사용자가 언급한 원인 공정 — 위 enum 안에서만 선택, 멀티-토큰값은 한 묶음
+  예: "BG CMP 불량 원인" → dh_cause_oper="BG CMP" (BG/CMP로 쪼개지 마라)
+  예: "GATE OX GROWTH 공정 불량" → dh_cause_oper="GATE OX GROWTH"
+  공정 미지정 또는 enum 외 → dh_cause_oper=""
+- dh_query: enum에 매칭 안 된 잔여 텍스트 (자유 검색어). enum-매칭 토큰을 여기에 넣지 마라.
 
 Route to **map_agent** when the user explicitly requests:
 - 웨이퍼 맵, wafer map, binmap, cummap, 누적 패스레이트
@@ -603,8 +621,15 @@ FAIL_HISTORY_SYSTEM_PROMPT_TEMPLATE = """당신은 반도체 불량이력(Fail H
 1. **search_fail_history**: OpenSearch 하이브리드 검색(BM25 + kNN)으로 불량이력 조회
    - query: 검색 쿼리 (자유 텍스트)
    - product: 제품 필터 (4SS, 4SA, 6E2, 5QQ)
-   - fail_type: 불량 유형 필터 (VTH, IDSAT, IOFF(F), TWT 등 27종)
-   - cause_oper: 원인 공정 필터 (GT PLUG ETCH, ISO ETCH, M0C ETCH, BLC ETCH, ISO TRENCH DEP, GT PLUG HM DEP, M0C MASK)
+   - fail_type: 불량 유형 필터 (실제 인덱스 20종 중 하나):
+     SCAN, JUNCTION, LEAK_ID, ION, TPD, VMIN, EASY, GATE_OX, RON, DIBL,
+     IDSAT, IGATE, LATCH, TWT, VTH, IDDQ, CONTACT, BVDS, FMAX, ISB_CMOS
+     ※ 인덱스 실제 저장값은 alias 포함("EASY(W)", "TWT(T)") — 도구가 prefix 매칭함
+   - cause_oper: 원인 공정 필터 (실제 인덱스 14종 중 하나):
+     BG CMP, BG ETCH, CONTACT ETCH, WELL IMPLANT, SPACER ETCH, IMD DEP,
+     GATE OX GROWTH, POLY DEP, PASSIVATION, PRE METAL CLN, STI CMP, ILD CMP,
+     VIA1 ETCH, METAL1 DEP
+     ※ 멀티-토큰 값(BG CMP, GATE OX GROWTH 등)은 단일 enum — 토큰 분리 금지
    - top_k: 검색 결과 수 (기본 5)
 
 2. **render_fail_report**: 검색 결과를 HTML 리포트로 렌더링
@@ -623,6 +648,14 @@ FAIL_HISTORY_SYSTEM_PROMPT_TEMPLATE = """당신은 반도체 불량이력(Fail H
 - 3회 검색 후에도 결과가 없으면 즉시 "해당 조건의 불량이력이 없습니다"로 응답하고 종료
 - 검색 결과가 1건이라도 있으면 그 결과로 응답 — 완벽한 결과를 찾으려고 반복하지 말 것
 - 동일한 파라미터로 재검색 금지 — 반드시 query, product, fail_type, cause_oper 중 하나 이상 변경
+
+## Wiki Memory 사용 규칙 (Day 4 추가):
+- search_fail_history 응답에는 `wiki_memory` 필드가 함께 포함됨 (concepts/aliases/recent_episodes)
+- wiki_memory는 **배경 컨텍스트만** — 답변·인용은 results(raw)에서만
+- wiki_memory.concepts.seen_count는 "이 트리플을 과거에 N번 분석했음"의 신호 — 누적 표현에 활용 ("이전 분석과 동일하게 ...")
+- wiki_memory.aliases는 어휘 정규화 힌트 (예: "FMAX"와 "FMAX(X)"가 같은 엔티티)
+- wiki_memory.recent_episodes는 같은 product의 최근 검색 — 비교 언급 가능, 단 doc_id 인용 금지
+- wiki_memory가 results와 모순되면 results 우선, wiki는 무시
 
 ## 응답 규칙:
 - 검색 결과를 기반으로만 답변 — 할루시네이션 금지

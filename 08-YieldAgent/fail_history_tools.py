@@ -37,7 +37,7 @@ logger = logging.getLogger("yield_agent.fail_history_tools")
 # ── 환경변수 ────────────────────────────────────────────────
 _OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "localhost")
 _OPENSEARCH_PORT = int(os.getenv("OPENSEARCH_PORT", "9200"))
-_OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "defect-history")
+_OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "fail-history")
 _OPENSEARCH_USER = os.getenv("OPENSEARCH_USER", "admin")
 _OPENSEARCH_PASSWORD = os.getenv("OPENSEARCH_PASSWORD", "admin")
 _OPENSEARCH_USE_SSL = os.getenv("OPENSEARCH_USE_SSL", "false").lower() in ("true", "1", "yes")
@@ -67,6 +67,10 @@ ACRONYM_MAP: Dict[str, str] = {
 _tool_payload_var: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
     "_fh_tool_payload"
 )
+# Day 3: wiki ContextVar 분리 (plan v3 §ContextVar 분리). reports lifecycle과 분리.
+_wiki_payload_var: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
+    "_fh_wiki_payload"
+)
 
 
 def _get_tool_payload() -> Dict[str, Any]:
@@ -76,6 +80,16 @@ def _get_tool_payload() -> Dict[str, Any]:
     except LookupError:
         storage: Dict[str, Any] = {"reports": []}
         _tool_payload_var.set(storage)
+        return storage
+
+
+def _get_wiki_payload() -> Dict[str, Any]:
+    """현재 컨텍스트의 wiki payload storage (hit_ids/last_status 등). plan v3 §ContextVar 분리."""
+    try:
+        return _wiki_payload_var.get()
+    except LookupError:
+        storage: Dict[str, Any] = {"hit_ids": [], "last_status": "skipped", "queries": []}
+        _wiki_payload_var.set(storage)
         return storage
 
 
@@ -164,11 +178,15 @@ def _search_opensearch(
     embedding = _get_embedding(expanded_query)
 
     # 메타데이터 필터 구성
+    # product / fail_type은 text + .keyword 매핑 → 정확매칭 위해 .keyword 사용
+    # cause_oper는 keyword 단일 매핑 → 그대로 사용
+    # fail_type 값은 인덱스에 "EASY(W)"처럼 alias 포함으로 저장 → prefix 매칭으로
+    #   사용자 입력("EASY")과 alias 포함값 양쪽 모두 수용 가능
     filters = []
     if product:
-        filters.append({"term": {"product": product}})
+        filters.append({"term": {"product.keyword": product}})
     if fail_type:
-        filters.append({"term": {"defect_type": fail_type}})
+        filters.append({"prefix": {"fail_type.keyword": fail_type}})
     if cause_oper:
         filters.append({"term": {"cause_oper": cause_oper}})
 
@@ -176,7 +194,7 @@ def _search_opensearch(
     bm25_query: Dict[str, Any] = {
         "multi_match": {
             "query": expanded_query,
-            "fields": ["content", "cause", "action", "comment", "product", "defect_type"],
+            "fields": ["content", "cause", "action", "comment", "product", "fail_type"],
         }
     }
     if filters:
@@ -231,7 +249,7 @@ def _search_opensearch(
         results.append({
             "product": src.get("product", ""),
             "cause_oper": src.get("cause_oper", ""),
-            "fail_type": src.get("defect_type", ""),
+            "fail_type": src.get("fail_type", ""),
             "cause": src.get("cause", ""),
             "action": src.get("action", ""),
             "comment": src.get("comment", ""),
@@ -292,10 +310,42 @@ def search_fail_history(
     if not results:
         return "조건에 맞는 불량이력이 없습니다."
 
-    # content 필드는 검색 결과 확인용으로만 포함, render에는 불필요
+    # ── wiki_memory lookup (Day 3) — 동기 디스크 read만 (ms) ───
+    wiki_mem: Dict[str, Any] = {"concepts": [], "aliases": [], "recent_episodes": []}
+    try:
+        import wiki_store
+        wiki_mem = wiki_store.lookup(
+            query=query,
+            filters={"product": product, "fail_type": fail_type, "cause_oper": cause_oper},
+            max_episodes=3,
+        )
+        wiki_storage = _get_wiki_payload()
+        wiki_storage.setdefault("hit_ids", []).extend(
+            [c["id"] for c in wiki_mem.get("concepts", [])]
+            + [e["id"] for e in wiki_mem.get("recent_episodes", []) if e.get("id")]
+        )
+    except Exception as e:
+        logger.warning("[search_fail_history] wiki lookup 실패: %s", e)
+
+    # ── wiki ingest enqueue (비동기, 사용자 응답에 무영향) ────
+    enqueue_status = "skipped"
+    try:
+        from wiki_queue import wiki_queue
+        enqueue_status = wiki_queue.summarize_enqueue({
+            "query": query,
+            "filters": {"product": product, "fail_type": fail_type, "cause_oper": cause_oper},
+            "raw_results": results,
+        })
+    except Exception as e:
+        logger.warning("[search_fail_history] wiki enqueue 실패: %s", e)
+    wiki_storage = _get_wiki_payload()
+    wiki_storage["last_status"] = enqueue_status
+    wiki_storage.setdefault("queries", []).append(query)
+
     output = {
         "total": len(results),
-        "results": results,
+        "results": results,           # 기존 호환 — render_fail_report가 사용
+        "wiki_memory": wiki_mem,      # Day 3 신규 — ReAct LLM이 보조 컨텍스트로 사용
     }
     return json.dumps(output, ensure_ascii=False, indent=2)
 
@@ -354,6 +404,18 @@ def _render_fail_history_html(
     # TODO: 사내 API 실제 URL로 교체
     download_base_url = os.getenv("DOWNLOAD_BASE_URL", "https://internal-api.example.com/docs")
 
+    # Day 5: wiki graph deep link — Streamlit dev viewer로 (PoC 시각화)
+    # 운영 React repo 도입 후엔 STREAMLIT_BASE_URL → REACT_BASE_URL로 교체 (plan v3 §부록)
+    _viewer_base = os.getenv("STREAMLIT_BASE_URL", "http://localhost:8501")
+    wiki_graph_url = f"{_viewer_base}/wiki_graph"
+    if results:
+        from urllib.parse import quote
+        r = results[0]
+        triple = (r.get("product", ""), r.get("cause_oper", ""), r.get("fail_type", ""))
+        if all(triple):
+            cid = "concept:" + "|".join(triple)
+            wiki_graph_url = f"{_viewer_base}/wiki_graph?focus={quote(cid, safe='|():')}"
+
     template = _jinja_env.get_template("fail_history_report.html")
     return template.render(
         results=results,
@@ -365,6 +427,7 @@ def _render_fail_history_html(
         index_name=_OPENSEARCH_INDEX,
         embedding_dim=_EMBEDDING_DIM,
         download_base_url=download_base_url,
+        wiki_graph_url=wiki_graph_url,
     )
 
 

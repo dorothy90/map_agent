@@ -21,7 +21,12 @@ from langfuse import observe
 from common import timed, get_llm, extract_suggestion, is_transient_error
 from lf_utils import lf_callbacks as _lf_callbacks
 from prompts import FAIL_HISTORY_SYSTEM_PROMPT_TEMPLATE
-from fail_history_tools import FAIL_HISTORY_TOOLS, _tool_payload_var, _get_tool_payload
+from fail_history_tools import (
+    FAIL_HISTORY_TOOLS,
+    _tool_payload_var,
+    _get_tool_payload,
+    _wiki_payload_var,
+)
 
 load_dotenv(override=True)
 
@@ -93,6 +98,9 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     # 요청별 격리된 저장소 초기화
     storage: Dict[str, Any] = {"reports": []}
     _tool_payload_var.set(storage)
+    # Day 4: wiki ContextVar 분리 — turn별 hit_ids/status 수거용
+    wiki_storage: Dict[str, Any] = {"hit_ids": [], "last_status": "skipped", "queries": []}
+    _wiki_payload_var.set(wiki_storage)
 
     # query 우선순위: planner task goal > 사용자 last_human (#12 fix)
     # C1 (wads_sql_result + _resolve_chained_params)이 chained input을 supervisor에서 해소하므로
@@ -173,9 +181,15 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     result_message = AIMessage(content=answer, name="fail_history_agent")
 
+    # Day 4: wiki state 추출 (turn별 overwrite, reducer 없음)
+    wiki_hit_ids = list(dict.fromkeys(wiki_storage.get("hit_ids") or []))
+    wiki_update_status = wiki_storage.get("last_status", "skipped")
+
     return {
         "messages": [result_message],
         "fail_history_artifacts": artifacts,
         "agent_suggestion": agent_suggestion,
         "past_steps": [(state.get("current_task_id", ""), answer[:300])],
+        "wiki_hit_ids": wiki_hit_ids,
+        "wiki_update_status": wiki_update_status,
     }
