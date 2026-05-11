@@ -1,90 +1,95 @@
 """
-Fail History Agent — 불량이력 RAG 검색 + HTML 리포트
-====================================================
-OpenSearch 하이브리드 검색(BM25 + kNN)으로 불량이력을 조회하고
-gui_v2.html 포맷의 HTML 리포트를 생성하는 ReAct 에이전트.
+Fail History Agent — 함수형 노드 (B2, no ReAct)
+================================================
+search → wiki-first면 vault 합성본 그대로, 아니면 LLM 1회 합성 → 조건부 HTML 카드.
+LLM에게 도구 결정을 맡기지 않는다. 코드가 직접 함수 호출.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
-import re
 from datetime import datetime
 from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.prebuilt import create_react_agent
 from langfuse import observe
 
 from common import timed, get_llm, extract_suggestion, is_transient_error
 from lf_utils import lf_callbacks as _lf_callbacks
-from prompts import FAIL_HISTORY_SYSTEM_PROMPT_TEMPLATE
+from prompts import FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE
 from fail_history_tools import (
-    FAIL_HISTORY_TOOLS,
+    do_search,
+    do_render_report,
     _tool_payload_var,
-    _get_tool_payload,
     _wiki_payload_var,
+    _supervisor_parsed_var,
 )
 
 load_dotenv(override=True)
 
 logger = logging.getLogger("yield_agent.fail_history_agent")
 
-# Fail History Agent용 모델
 _fh_model = get_llm(model=os.getenv("RETRIEVE_CHAIN_MODEL"))
 
 
-def _fh_prompt(state: dict) -> list:
-    """호출 시점의 날짜 + supervisor 파싱 컨텍스트를 포함한 system prompt 생성"""
-    current_date = datetime.now().strftime("%Y년 %m월 %d일")
-    system_prompt = FAIL_HISTORY_SYSTEM_PROMPT_TEMPLATE.format(current_date=current_date)
-
-    # supervisor가 파싱한 컨텍스트 주입
-    lotcd = state.get("_lotcd", "")
-    dh_query = state.get("_dh_query", "")
-    dh_fail_type = state.get("_dh_fail_type", "")
-    dh_cause_oper = state.get("_dh_cause_oper", "")
-
-    ctx_parts = []
-    if lotcd:
-        ctx_parts.append(f"product={lotcd}")
-    if dh_query:
-        ctx_parts.append(f"검색어={dh_query}")
-    if dh_fail_type:
-        ctx_parts.append(f"불량유형={dh_fail_type}")
-    if dh_cause_oper:
-        ctx_parts.append(f"원인공정={dh_cause_oper}")
-
-    if ctx_parts:
-        system_prompt += f"\n\n[조회 컨텍스트] {', '.join(ctx_parts)}"
-
-    return [SystemMessage(content=system_prompt)] + list(state.get("messages", []))
-
-
-_fh_graph = create_react_agent(
-    model=_fh_model,
-    tools=FAIL_HISTORY_TOOLS,
-    prompt=_fh_prompt,
-)
-
-
-# ── Fail History 리포트 HTML 렌더링 (ContextVar에서 수거) ──────
 def _render_fh_report_html(reports: List[Dict[str, Any]]) -> str:
-    """ContextVar에 저장된 리포트 HTML 반환"""
     if not reports:
         return ""
-    # render_fail_report가 저장한 HTML을 그대로 반환
     html_parts = [r.get("html", "") for r in reports if r.get("html")]
     return "\n".join(html_parts)
 
 
-# ── LangGraph 노드용 래퍼 ──────────────────────────────────────
+def _synthesize_answer(
+    query: str,
+    raw: Dict[str, Any],
+    lotcd: str,
+    dh_fail_type: str,
+    dh_cause_oper: str,
+    config: RunnableConfig,
+) -> str:
+    """raw 검색 결과 → 자연어 답변 (LLM 1회)."""
+    current_date = datetime.now().strftime("%Y년 %m월 %d일")
+    system_prompt = FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE.format(current_date=current_date)
+
+    ctx_parts = []
+    if lotcd:
+        ctx_parts.append(f"product={lotcd}")
+    if dh_fail_type:
+        ctx_parts.append(f"불량유형={dh_fail_type}")
+    if dh_cause_oper:
+        ctx_parts.append(f"원인공정={dh_cause_oper}")
+    if ctx_parts:
+        system_prompt += f"\n\n[조회 컨텍스트] {', '.join(ctx_parts)}"
+
+    results = raw.get("results", [])
+    input_parts = [
+        f"[사용자 쿼리]\n{query}",
+        f"[검색 결과 ({len(results)}건)]\n" + json.dumps(results, ensure_ascii=False, indent=2),
+    ]
+    if raw.get("retrieval_mode") == "wiki-assisted":
+        wiki_body = raw.get("wiki_concept_body", "")
+        wiki_confidence = raw.get("wiki_concept_confidence", 0.0)
+        if wiki_body:
+            input_parts.append(
+                f"[과거 누적 합성 본문 (confidence={wiki_confidence:.2f})]\n{wiki_body}"
+            )
+    human_msg = "\n\n".join(input_parts)
+
+    sub_config = {**config, "callbacks": _lf_callbacks()}
+    ai = _fh_model.invoke(
+        [SystemMessage(content=system_prompt), HumanMessage(content=human_msg)],
+        config=sub_config,
+    )
+    return ai.content if hasattr(ai, "content") else str(ai)
+
+
 @observe(name="fail_history_agent_node")
 @timed
 def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
-    """Fail History Agent 노드: OpenSearch RAG 검색 + HTML 리포트 생성"""
+    """함수형 노드: search → (wiki-first 즉시 / 아니면 LLM 1회 합성) → 조건부 HTML."""
     lotcd = state.get("lotcd", "")
     dh_query = state.get("dh_query", "")
     dh_fail_type = state.get("dh_fail_type", "")
@@ -95,16 +100,18 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         lotcd, dh_query, dh_fail_type, dh_cause_oper,
     )
 
-    # 요청별 격리된 저장소 초기화
+    # 요청별 격리 ContextVar 초기화
     storage: Dict[str, Any] = {"reports": []}
     _tool_payload_var.set(storage)
-    # Day 4: wiki ContextVar 분리 — turn별 hit_ids/status 수거용
     wiki_storage: Dict[str, Any] = {"hit_ids": [], "last_status": "skipped", "queries": []}
     _wiki_payload_var.set(wiki_storage)
+    _supervisor_parsed_var.set({
+        "product": lotcd,
+        "fail_type": dh_fail_type,
+        "cause_oper": dh_cause_oper,
+        "query_hint": dh_query,
+    })
 
-    # query 우선순위: planner task goal > 사용자 last_human (#12 fix)
-    # C1 (wads_sql_result + _resolve_chained_params)이 chained input을 supervisor에서 해소하므로
-    # state의 dh_fail_type/dh_cause_oper/lotcd는 ReAct subgraph에 _fh_prompt context로 자연 주입됨.
     messages = state.get("messages", [])
     last_human = next(
         (m for m in reversed(messages) if isinstance(m, HumanMessage)),
@@ -114,39 +121,20 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     query = task_goal or (last_human.content if last_human else f"{lotcd} 불량이력 조회")
     logger.info("[FH Agent] 쿼리: %s (task_goal=%r)", query, task_goal)
 
-    # 선택적 히스토리 필터링 — 최근 3턴
-    fh_history: List[Any] = []
-    turn_count = 0
-    for m in reversed(messages):
-        if turn_count >= 3:
-            break
-        if isinstance(m, HumanMessage):
-            fh_history.insert(0, m)
-            turn_count += 1
-        elif isinstance(m, AIMessage) and getattr(m, "name", "") == "fail_history_agent":
-            fh_history.insert(0, m)
-
-    if not fh_history or fh_history[-1].content != query:
-        fh_history.append(HumanMessage(content=query))
-
-    logger.info("[FH Agent] ReAct 그래프 invoke 시작 (history=%d msgs)", len(fh_history))
+    # 1) 검색 (함수 직접 호출)
     try:
-        sub_config = {**config, "callbacks": _lf_callbacks(), "recursion_limit": 10}
-        result = _fh_graph.invoke(
-            {
-                "messages": fh_history,
-                "_lotcd": lotcd,
-                "_dh_query": dh_query,
-                "_dh_fail_type": dh_fail_type,
-                "_dh_cause_oper": dh_cause_oper,
-            },
-            config=sub_config,
+        raw = do_search(
+            query=query,
+            product=lotcd,
+            fail_type=dh_fail_type,
+            cause_oper=dh_cause_oper,
+            top_k=5,
         )
     except Exception as e:
         if is_transient_error(e):
-            logger.warning("[FH Agent] transient 오류, retry 위임: %s", e)
+            logger.warning("[FH Agent] 검색 transient 오류, retry 위임: %s", e)
             raise
-        logger.error("[FH Agent] 영구 오류: %s", e, exc_info=True)
+        logger.error("[FH Agent] 검색 영구 오류: %s", e, exc_info=True)
         error_message = AIMessage(
             content="불량이력 검색 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
             name="fail_history_agent",
@@ -157,14 +145,36 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             "past_steps": [(state.get("current_task_id", ""), f"불량이력 영구 오류: {e}")],
         }
 
-    ai_messages = [m for m in result.get("messages", []) if isinstance(m, AIMessage)]
-    answer = ai_messages[-1].content if ai_messages else "불량이력 검색에 실패했습니다."
+    retrieval_mode = raw.get("retrieval_mode", "baseline")
+    results = raw.get("results", [])
+    logger.info("[FH Agent] retrieval_mode=%s, results=%d", retrieval_mode, len(results))
 
+    # 2) 답변 합성
+    if retrieval_mode == "wiki-first":
+        answer = raw.get("rendered_answer", "wiki 합성 본문이 비어 있습니다.")
+        logger.info("[FH Agent] wiki-first 경로 — LLM 호출 0회")
+    elif not results:
+        answer = "조건에 맞는 불량이력이 없습니다. 검색어나 필터를 조정해보세요. [SUGGESTION: ]"
+        logger.info("[FH Agent] 결과 0건 — LLM 호출 0회")
+    else:
+        try:
+            answer = _synthesize_answer(query, raw, lotcd, dh_fail_type, dh_cause_oper, config)
+        except Exception as e:
+            if is_transient_error(e):
+                logger.warning("[FH Agent] 합성 transient 오류, retry 위임: %s", e)
+                raise
+            logger.error("[FH Agent] 합성 영구 오류: %s", e, exc_info=True)
+            answer = "검색은 됐지만 답변 합성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요. [SUGGESTION: ]"
+
+    # 3) HTML 카드 (results 있을 때만 자동)
+    if results:
+        try:
+            do_render_report(query, results, summary=answer)
+        except Exception as e:
+            logger.warning("[FH Agent] HTML 렌더 실패: %s", e)
+
+    # 4) artifact 수거
     reports_payload = storage.get("reports", [])
-
-    logger.debug("[FH Agent] reports_payload count: %d", len(reports_payload))
-
-    # HTML artifact 수거
     artifacts = []
     if reports_payload:
         html = _render_fh_report_html(reports_payload)
@@ -176,12 +186,9 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
                 "title": "fail_history_report",
             })
 
-    # SUGGESTION 추출
     answer, agent_suggestion = extract_suggestion(answer)
-
     result_message = AIMessage(content=answer, name="fail_history_agent")
 
-    # Day 4: wiki state 추출 (turn별 overwrite, reducer 없음)
     wiki_hit_ids = list(dict.fromkeys(wiki_storage.get("hit_ids") or []))
     wiki_update_status = wiki_storage.get("last_status", "skipped")
 

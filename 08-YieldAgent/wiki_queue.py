@@ -55,10 +55,13 @@ class WikiQueue:
         self._persist_q: asyncio.Queue[tuple[str, tuple]] | None = None
         self._workers: list[asyncio.Task] = []
         self._running = False
-        self.drops: dict[str, int] = {"summarize": 0, "persist": 0, "queue_full": 0}
+        self.drops: dict[str, int] = {"summarize": 0, "persist": 0, "queue_full": 0,
+                                       "synthesis": 0, "synthesis_skip_low_diversity": 0}
         self.commits: dict[str, int] = {"episode_created": 0, "episode_skipped": 0,
                                           "concept_created": 0, "concept_updated": 0,
-                                          "alias_created": 0, "alias_skipped": 0}
+                                          "alias_created": 0, "alias_skipped": 0,
+                                          "synthesis_triggered": 0, "synthesis_persisted": 0}
+        self._synth_in_flight: set[str] = set()  # concept_id 중복 트리거 가드
 
     # ── public API ─────────────────────────────────────
     def set_summarizer(self, fn: SummarizeFn) -> None:
@@ -138,36 +141,74 @@ class WikiQueue:
         while True:
             item = await self._summarize_q.get()
             try:
-                payload = item["payload"]
-                attempt = item["attempt"]
-                try:
-                    result = await self._call_summarize(payload)
-                except Exception as e:
-                    logger.warning("[wiki_queue] summarize failed (attempt=%d): %s", attempt, e)
-                    result = None
-                if result is None and attempt + 1 < self._max_retry:
-                    await asyncio.sleep(2 ** attempt)
-                    item["attempt"] = attempt + 1
-                    try:
-                        self._summarize_q.put_nowait(item)
-                    except asyncio.QueueFull:
-                        self.drops["summarize"] += 1
-                elif result is None:
-                    self.drops["summarize"] += 1
-                    logger.warning("[wiki_queue] summarize dropped after %d attempts (drops=%d)",
-                                   self._max_retry, self.drops["summarize"])
+                task_type = item.get("task_type", "episode_summarize")
+                if task_type == "concept_synthesis":
+                    await self._handle_concept_synthesis(item)
                 else:
-                    # persist_q에 작업 분해
-                    ep = result.get("episode")
-                    if ep:
-                        self._persist_q.put_nowait(("episode", (ep,)))
-                    cf = result.get("concept_filters")
-                    if cf:
-                        self._persist_q.put_nowait(("concept", (cf, None)))
-                    for canonical, variant in (result.get("alias_pairs") or []):
-                        self._persist_q.put_nowait(("alias", (canonical, variant)))
+                    await self._handle_episode_summarize(item)
             finally:
                 self._summarize_q.task_done()
+
+    async def _handle_episode_summarize(self, item: dict[str, Any]) -> None:
+        """기존 단일 검색 응축 (Day 3까지의 흐름)."""
+        assert self._summarize_q is not None and self._persist_q is not None
+        payload = item["payload"]
+        attempt = item["attempt"]
+        try:
+            result = await self._call_summarize(payload)
+        except Exception as e:
+            logger.warning("[wiki_queue] summarize failed (attempt=%d): %s", attempt, e)
+            result = None
+        if result is None and attempt + 1 < self._max_retry:
+            await asyncio.sleep(2 ** attempt)
+            item["attempt"] = attempt + 1
+            try:
+                self._summarize_q.put_nowait(item)
+            except asyncio.QueueFull:
+                self.drops["summarize"] += 1
+        elif result is None:
+            self.drops["summarize"] += 1
+            logger.warning("[wiki_queue] summarize dropped after %d attempts (drops=%d)",
+                           self._max_retry, self.drops["summarize"])
+        else:
+            ep = result.get("episode")
+            if ep:
+                self._persist_q.put_nowait(("episode", (ep,)))
+            cf = result.get("concept_filters")
+            if cf:
+                self._persist_q.put_nowait(("concept", (cf, None)))
+            for canonical, variant in (result.get("alias_pairs") or []):
+                self._persist_q.put_nowait(("alias", (canonical, variant)))
+
+    async def _handle_concept_synthesis(self, item: dict[str, Any]) -> None:
+        """plan v3 §A: evidence_diversity 통과한 concept을 LLM으로 메타 합성."""
+        from wiki_summarizer import synthesize_concept
+
+        concept_id = item["concept_id"]
+        filters = item["filters"]
+        episodes = item["episodes"]
+        evidence = item["evidence"]
+
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(None, synthesize_concept, concept_id, episodes)
+        except Exception as e:
+            logger.warning("[wiki_queue] synthesize_concept failed: %s", e)
+            result = None
+        self._synth_in_flight.discard(concept_id)
+        if result is None:
+            self.drops["synthesis"] = self.drops.get("synthesis", 0) + 1
+            return
+        synth_payload = {
+            "body_markdown": result.body_markdown,
+            "confidence": float(result.confidence),
+            "citations": [c.model_dump() if hasattr(c, "model_dump") else c.dict() for c in result.citations],
+            "evidence": evidence,
+        }
+        try:
+            self._persist_q.put_nowait(("concept_synthesized", (filters, synth_payload)))
+        except asyncio.QueueFull:
+            self.drops["queue_full"] += 1
 
     async def _persist_worker(self) -> None:
         assert self._persist_q is not None
@@ -191,6 +232,21 @@ class WikiQueue:
                                 None, wiki_store.upsert_concept, cf, src, None
                             )
                             self.commits[f"concept_{status}"] = self.commits.get(f"concept_{status}", 0) + 1
+                            # plan v3 §A: concept update 후 evidence_diversity 트리거
+                            await self._maybe_trigger_synthesis(f"concept:{cid}", cf)
+                        elif kind == "concept_synthesized":
+                            cf, synth = args
+                            cid, status = await loop.run_in_executor(
+                                None,
+                                lambda: wiki_store.upsert_concept(
+                                    cf, source_episode_id=None, links=None,
+                                    synthesized_body=synth["body_markdown"],
+                                    confidence=synth["confidence"],
+                                    citations=synth["citations"],
+                                    evidence=synth["evidence"],
+                                ),
+                            )
+                            self.commits["synthesis_persisted"] += 1
                         elif kind == "alias":
                             canonical, variant = args
                             results = await loop.run_in_executor(
@@ -209,6 +265,76 @@ class WikiQueue:
                         await asyncio.sleep(2 ** attempt)
             finally:
                 self._persist_q.task_done()
+
+    async def _maybe_trigger_synthesis(self, concept_id: str, filters: dict[str, Any]) -> None:
+        """plan v3 §A: evidence_diversity 임계 통과 시 concept_synthesis task 발행.
+
+        같은 raw 반복은 score 낮아 트리거 X (사용자 비판 정면 가드).
+        """
+        if concept_id in self._synth_in_flight:
+            return  # 동시 트리거 가드
+        loop = asyncio.get_running_loop()
+
+        def _load_and_check() -> tuple[list[dict], dict] | None:
+            cid_key = concept_id.replace("concept:", "")
+            cpath = wiki_store._CONCEPTS / f"{wiki_store._safe_filename(cid_key)}.md"
+            cpost = wiki_store._read(cpath)
+            if cpost is None:
+                return None
+            md = cpost.metadata
+            src_ep_ids = list(md.get("source_episode_ids") or [])
+            if len(src_ep_ids) < 2:
+                return None
+            episodes: list[dict[str, Any]] = []
+            for ep_id in src_ep_ids[:10]:  # 토큰 가드
+                key = ep_id.replace("episode:", "")
+                ep_post = wiki_store._read(wiki_store._EPISODES / f"{key}.md")
+                if ep_post:
+                    episodes.append({
+                        "id": ep_id,
+                        "frontmatter": dict(ep_post.metadata),
+                        "body": ep_post.content or "",
+                    })
+            if len(episodes) < 2:
+                return None
+            ev = wiki_store.compute_evidence_diversity(episodes)
+            return episodes, ev
+
+        try:
+            check = await loop.run_in_executor(None, _load_and_check)
+        except Exception as e:
+            logger.warning("[wiki_queue] synthesis check failed: %s", e)
+            return
+        if check is None:
+            return
+        episodes, evidence = check
+
+        # 진단 가시성 — evidence 결과를 concept frontmatter에 항상 갱신
+        await loop.run_in_executor(None, wiki_store.update_concept_evidence, concept_id, evidence)
+
+        # 트리거 임계 (plan v3 §A)
+        if evidence["score"] < 0.6 and evidence["unique_doc_ids"] < 4:
+            self.drops["synthesis_skip_low_diversity"] += 1
+            logger.info("[wiki_queue] synthesis skip — low diversity %s: %s",
+                        concept_id, evidence)
+            return
+
+        # 트리거 발행
+        self._synth_in_flight.add(concept_id)
+        try:
+            self._summarize_q.put_nowait({
+                "task_type": "concept_synthesis",
+                "concept_id": concept_id,
+                "filters": filters,
+                "episodes": episodes,
+                "evidence": evidence,
+            })
+            self.commits["synthesis_triggered"] += 1
+            logger.info("[wiki_queue] synthesis triggered %s (diversity=%s)",
+                        concept_id, evidence["score"])
+        except asyncio.QueueFull:
+            self.drops["queue_full"] += 1
+            self._synth_in_flight.discard(concept_id)
 
     async def _call_summarize(self, payload: dict[str, Any]) -> SummarizeResult | None:
         """summarize_fn이 sync든 async든 처리."""

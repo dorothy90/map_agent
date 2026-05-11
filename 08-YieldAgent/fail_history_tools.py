@@ -18,7 +18,6 @@ from typing import Any, Dict, List, Optional
 
 import requests as http_requests
 from jinja2 import Environment, FileSystemLoader
-from langchain_core.tools import tool
 from langfuse import observe
 
 # ── Jinja2 템플릿 환경 ──────────────────────────────────────
@@ -72,6 +71,12 @@ _wiki_payload_var: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextV
     "_fh_wiki_payload"
 )
 
+# Day 4 옵션 C: supervisor parsed state를 도구가 직접 읽을 수 있게 노출.
+# ReAct LLM이 search_fail_history 호출 시 filter 빈 채로 보내면 fallback으로 보강.
+_supervisor_parsed_var: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
+    "_fh_supervisor_parsed"
+)
+
 
 def _get_tool_payload() -> Dict[str, Any]:
     """현재 컨텍스트의 tool payload storage 반환 (없으면 초기화)"""
@@ -91,6 +96,17 @@ def _get_wiki_payload() -> Dict[str, Any]:
         storage: Dict[str, Any] = {"hit_ids": [], "last_status": "skipped", "queries": []}
         _wiki_payload_var.set(storage)
         return storage
+
+
+def _get_supervisor_parsed() -> Dict[str, Any]:
+    """plan v3 옵션 C: supervisor가 추출한 product/fail_type/cause_oper.
+
+    fail_history_agent_node가 시작 시 set. ReAct LLM이 filter 빠뜨린 호출에 fallback.
+    """
+    try:
+        return _supervisor_parsed_var.get()
+    except LookupError:
+        return {}
 
 
 # ── OpenSearch 클라이언트 (싱글턴) ───────────────────────────
@@ -265,35 +281,88 @@ def _search_opensearch(
     return results
 
 
-# ── @tool 함수 ────────────────────────────────────────────────
-@tool
-def search_fail_history(
+# ── 함수형 노드 API (B2: ReAct 제거, 코드가 직접 호출) ────
+def do_search(
     query: str,
     product: str = "",
     fail_type: str = "",
     cause_oper: str = "",
     top_k: int = 5,
-) -> str:
-    """OpenSearch 하이브리드 검색 (BM25 + kNN)으로 불량이력을 조회합니다.
+) -> Dict[str, Any]:
+    """OpenSearch 하이브리드 검색 (BM25 + kNN)으로 불량이력 조회. dict 반환.
 
-    Args:
-        query: 검색 쿼리 (자유 텍스트, 예: "TWT 불량", "M0C ETCH RF TIME 원인")
-        product: 제품 필터 (예: "4SS", "4SA", "6E2", "5QQ"). 미입력시 전체 조회.
-        fail_type: 불량 유형 필터 (예: "TWT", "IOFF(F)", "VTH"). 미입력시 전체 조회.
-        cause_oper: 원인 공정 필터 (예: "M0C ETCH", "ISO ETCH"). 미입력시 전체 조회.
-        top_k: 검색 결과 수 (기본 5)
-
-    Returns:
-        검색 결과 JSON 문자열 (건수 + 각 결과의 메타정보)
+    retrieval_mode: "wiki-first" | "wiki-assisted" | "baseline"
+    wiki-first 시 rendered_answer(markdown) 포함 → 추가 합성 불요.
     """
     if not query or not query.strip():
-        return "검색어를 입력해주세요."
+        return {"total": 0, "results": [], "retrieval_mode": "empty_query"}
     top_k = max(1, min(top_k, 20))
 
+    if not product and not fail_type and not cause_oper:
+        sp = _get_supervisor_parsed()
+        if sp:
+            product = sp.get("product", "")
+            fail_type = sp.get("fail_type", "")
+            cause_oper = sp.get("cause_oper", "")
+            if any([product, fail_type, cause_oper]):
+                logger.info(
+                    "[do_search] supervisor fallback applied: product=%s fail_type=%s cause_oper=%s",
+                    product, fail_type, cause_oper,
+                )
+
     logger.info(
-        "[search_fail_history] query=%s, product=%s, fail_type=%s, cause_oper=%s, top_k=%d",
+        "[do_search] query=%s, product=%s, fail_type=%s, cause_oper=%s, top_k=%d",
         query, product, fail_type, cause_oper, top_k,
     )
+
+    gate_result: Optional[Dict[str, Any]] = None
+    wiki_first_enabled = os.getenv("WIKI_FIRST_ENABLED", "true").lower() in ("true", "1", "yes")
+    if wiki_first_enabled and product and fail_type and cause_oper:
+        try:
+            import wiki_store
+            gate_result = wiki_store.lookup_concept_body({
+                "product": product,
+                "fail_type": fail_type,
+                "cause_oper": cause_oper,
+            })
+        except Exception as e:
+            logger.warning("[do_search] wiki gate lookup 실패: %s", e)
+
+    if gate_result and gate_result.get("gate") == "wiki-first":
+        logger.info("[do_search] WIKI-FIRST mode (confidence=%.2f, %s)",
+                    gate_result["confidence"], gate_result["concept_id"])
+        ws = _get_wiki_payload()
+        ws["last_status"] = "wiki-first"
+        ws.setdefault("queries", []).append(query)
+        ws.setdefault("hit_ids", []).append(gate_result["concept_id"])
+        body = gate_result.get("body", "")
+        confidence = gate_result.get("confidence", 0.0)
+        citations = _format_user_citations(gate_result.get("citations", []))
+        cit_lines: List[str] = []
+        for c in citations:
+            label = c["natural_label"] or c["doc_id"] or c["source_file"]
+            url = c["download_url"]
+            if url:
+                cit_lines.append(f"- {label} [원본 PPT 다운로드]({url})")
+            else:
+                cit_lines.append(f"- {label}")
+        citations_md = "\n".join(cit_lines) if cit_lines else "(없음)"
+        rendered_answer = (
+            f"{body}\n\n"
+            f"**참고 자료 ({len(cit_lines)}건)**:\n{citations_md}\n\n"
+            f"_wiki-first 응답 · confidence={confidence:.2f} · OpenSearch 호출 0회_"
+        )
+        return {
+            "total": 0,
+            "results": [],
+            "wiki_memory": {"concepts": [], "aliases": [], "recent_episodes": []},
+            "retrieval_mode": "wiki-first",
+            "wiki_concept_body": body,
+            "wiki_concept_confidence": confidence,
+            "wiki_concept_id": gate_result.get("concept_id", ""),
+            "wiki_citations": citations,
+            "rendered_answer": rendered_answer,
+        }
 
     try:
         results = _search_opensearch(
@@ -304,13 +373,12 @@ def search_fail_history(
             top_k=top_k,
         )
     except Exception as e:
-        logger.error("[search_fail_history] 검색 오류: %s", e, exc_info=True)
-        return "오류: 불량이력 검색에 실패했습니다. 잠시 후 다시 시도해주세요."
+        logger.error("[do_search] 검색 오류: %s", e, exc_info=True)
+        raise
 
     if not results:
-        return "조건에 맞는 불량이력이 없습니다."
+        return {"total": 0, "results": [], "retrieval_mode": "baseline"}
 
-    # ── wiki_memory lookup (Day 3) — 동기 디스크 read만 (ms) ───
     wiki_mem: Dict[str, Any] = {"concepts": [], "aliases": [], "recent_episodes": []}
     try:
         import wiki_store
@@ -319,15 +387,14 @@ def search_fail_history(
             filters={"product": product, "fail_type": fail_type, "cause_oper": cause_oper},
             max_episodes=3,
         )
-        wiki_storage = _get_wiki_payload()
-        wiki_storage.setdefault("hit_ids", []).extend(
+        ws = _get_wiki_payload()
+        ws.setdefault("hit_ids", []).extend(
             [c["id"] for c in wiki_mem.get("concepts", [])]
             + [e["id"] for e in wiki_mem.get("recent_episodes", []) if e.get("id")]
         )
     except Exception as e:
-        logger.warning("[search_fail_history] wiki lookup 실패: %s", e)
+        logger.warning("[do_search] wiki lookup 실패: %s", e)
 
-    # ── wiki ingest enqueue (비동기, 사용자 응답에 무영향) ────
     enqueue_status = "skipped"
     try:
         from wiki_queue import wiki_queue
@@ -337,57 +404,77 @@ def search_fail_history(
             "raw_results": results,
         })
     except Exception as e:
-        logger.warning("[search_fail_history] wiki enqueue 실패: %s", e)
-    wiki_storage = _get_wiki_payload()
-    wiki_storage["last_status"] = enqueue_status
-    wiki_storage.setdefault("queries", []).append(query)
+        logger.warning("[do_search] wiki enqueue 실패: %s", e)
+    ws = _get_wiki_payload()
+    ws["last_status"] = enqueue_status
+    ws.setdefault("queries", []).append(query)
 
-    output = {
+    output: Dict[str, Any] = {
         "total": len(results),
-        "results": results,           # 기존 호환 — render_fail_report가 사용
-        "wiki_memory": wiki_mem,      # Day 3 신규 — ReAct LLM이 보조 컨텍스트로 사용
+        "results": results,
+        "wiki_memory": wiki_mem,
+        "retrieval_mode": "baseline",
     }
-    return json.dumps(output, ensure_ascii=False, indent=2)
+
+    if gate_result and gate_result.get("gate") == "wiki-assisted":
+        output["retrieval_mode"] = "wiki-assisted"
+        output["wiki_concept_body"] = gate_result.get("body", "")
+        output["wiki_concept_confidence"] = gate_result.get("confidence", 0.0)
+        output["wiki_concept_id"] = gate_result.get("concept_id", "")
+        output["wiki_citations"] = _format_user_citations(gate_result.get("citations", []))
+        logger.info("[do_search] WIKI-ASSISTED mode (confidence=%.2f)",
+                    gate_result["confidence"])
+
+    return output
 
 
-@tool
-def render_fail_report(
-    query: str,
-    results_json: str,
-    summary: str = "",
-) -> str:
-    """검색 결과를 Fail History HTML 리포트로 렌더링합니다.
-    search_fail_history의 반환값을 그대로 results_json에 전달하세요.
+# ── plan v3 §C 헬퍼 ─────────────────────────────────────
+def _format_user_citations(citations: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """citation에 download_url + natural_label 보강. doc_id 기반 placeholder."""
+    download_base = os.getenv("DOWNLOAD_BASE_URL", "https://internal-api.example.com/docs")
+    out: List[Dict[str, str]] = []
+    for c in citations[:8]:
+        doc_id = str(c.get("doc_id", "") or "")
+        date = str(c.get("date", "") or "")
+        source_file = str(c.get("source_file", "") or "")
+        existing_url = str(c.get("download_url", "") or "")
+        existing_label = str(c.get("natural_label", "") or "")
+        # source_file 없으면 doc_id 기반 placeholder
+        if not source_file and doc_id:
+            source_file = f"{doc_id}.pptx"
+        url = existing_url or (f"{download_base}/{source_file}" if source_file else "")
+        label = existing_label or (f"{date} {doc_id}".strip() if (date or doc_id) else source_file)
+        out.append({
+            "episode_id": str(c.get("episode_id", "") or ""),
+            "doc_id": doc_id,
+            "date": date,
+            "source_file": source_file,
+            "natural_label": label,
+            "download_url": url,
+        })
+    return out
+
+
+def do_render_report(query: str, results: List[Dict[str, Any]], summary: str = "") -> str:
+    """검색 결과 → Fail History HTML 카드. storage에 저장 + HTML 반환.
 
     Args:
-        query: 검색에 사용된 쿼리 (Query Card에 표시)
-        results_json: search_fail_history의 반환값 (JSON 문자열)
-        summary: 종합 요약 (RAG Summary 카드에 표시). 2-3문장으로 작성.
-
-    Returns:
-        렌더링 완료 메시지 (HTML은 화면에 별도 표시)
+        query: Query Card에 표시될 검색 쿼리
+        results: do_search()의 results list (raw 검색 결과)
+        summary: RAG Summary 카드 본문 (LLM 합성 답변 그대로 가능)
     """
-    logger.info("[render_fail_report] query=%s, summary_len=%d", query, len(summary))
-    storage = _get_tool_payload()
-
-    try:
-        data = json.loads(results_json)
-        results = data.get("results", [])
-    except (json.JSONDecodeError, AttributeError):
-        return "오류: results_json 파싱에 실패했습니다. search_fail_history의 반환값을 그대로 전달하세요."
-
     if not results:
-        return "렌더링할 검색 결과가 없습니다."
-
+        return ""
+    logger.info("[do_render_report] query=%s, results=%d, summary_len=%d",
+                query, len(results), len(summary))
+    storage = _get_tool_payload()
     html = _render_fail_history_html(results, query, summary)
-
     storage.setdefault("reports", []).append({
         "html": html,
         "query": query,
         "total": len(results),
     })
-
-    return f"Fail History HTML 리포트 렌더링 완료: {len(results)}건 (리포트는 화면에 별도 표시됩니다)"
+    return html
 
 
 # ── HTML 렌더링 ───────────────────────────────────────────────
@@ -431,5 +518,3 @@ def _render_fail_history_html(
     )
 
 
-# ── 도구 리스트 ──────────────────────────────────────────────
-FAIL_HISTORY_TOOLS = [search_fail_history, render_fail_report]

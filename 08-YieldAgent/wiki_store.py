@@ -6,11 +6,15 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
 
 import frontmatter
+
+logger = logging.getLogger("yield_agent.wiki_store")
 
 # ── 경로 ─────────────────────────────────────────────────
 _VAULT = Path(__file__).parent / "wiki"
@@ -91,8 +95,62 @@ def _read(path: Path) -> frontmatter.Post | None:
 
 
 def _write(path: Path, post: frontmatter.Post) -> None:
+    """Atomic write: .tmp → os.rename. plan v3 §위험·동시 write 충돌 가드."""
+    import os as _os
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(frontmatter.dumps(post), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(frontmatter.dumps(post), encoding="utf-8")
+    _os.replace(tmp, path)
+
+
+# ── lifecycle 기본값 ───────────────────────────────────
+_STALE_AFTER_DAYS = int(os.getenv("WIKI_STALE_AFTER_DAYS", "30"))
+
+
+def _lifecycle_defaults() -> dict[str, Any]:
+    """plan v3 §신규 필수 4기능 (3) Lifecycle minimal TTL."""
+    return {
+        "status": "active",
+        "last_active": _now_iso(),
+        "stale_after_days": _STALE_AFTER_DAYS,
+    }
+
+
+def compute_evidence_diversity(episodes: list[dict[str, Any]]) -> dict[str, Any]:
+    """plan v3 §A — evidence diversity 기반 트리거.
+
+    Returns {score: 0~1, unique_doc_ids: int, unique_dates: int, total_episodes: int}.
+    raw doc_id 다양성 + 시점 다양성 + episode 수로 0~1 점수 산출.
+    같은 raw set만 반복되면 score 낮음 (사용자 비판 정면 해결).
+    """
+    if not episodes:
+        return {"score": 0.0, "unique_doc_ids": 0, "unique_dates": 0, "total_episodes": 0}
+    all_doc_ids: set[str] = set()
+    all_dates: set[str] = set()
+    for ep in episodes:
+        # support flat dict (ep["doc_ids"]) and nested ({"frontmatter": {...}})
+        fm = ep.get("frontmatter") if isinstance(ep.get("frontmatter"), dict) else None
+        doc_ids = ep.get("doc_ids") or (fm.get("doc_ids") if fm else None) or []
+        for d in doc_ids:
+            all_doc_ids.add(d)
+        created = ep.get("created") or (fm.get("created") if fm else None) or ""
+        if created:
+            all_dates.add(str(created)[:10])  # date only
+    n = len(episodes)
+    unique_doc = len(all_doc_ids)
+    unique_dates = len(all_dates)
+    # 0~1 점수: doc 다양성(0.6) + 날짜 다양성(0.3) + episode 수(0.1)
+    score = min(1.0, (
+        0.6 * min(1.0, unique_doc / max(n, 1) / 1.5)  # doc/ep 비율, 1.5 이상이면 max
+        + 0.3 * min(1.0, unique_dates / max(n, 1))
+        + 0.1 * min(1.0, n / 5.0)
+    ))
+    return {
+        "score": round(score, 3),
+        "unique_doc_ids": unique_doc,
+        "unique_dates": unique_dates,
+        "total_episodes": n,
+    }
 
 
 # ── upsert: episode (immutable snapshot) ─────────────────
@@ -123,6 +181,10 @@ def upsert_episode(payload: dict) -> tuple[str, str]:
         "doc_ids": list(payload.get("doc_ids", []) or []),
         "filters": dict(payload.get("filters", {}) or {}),
         "summary": payload.get("summary", ""),
+        # plan v3 신규 필수 4기능
+        **_lifecycle_defaults(),
+        "confidence": float(payload.get("confidence", 0.5)),  # episode 단일이라 중립 0.5
+        "citations": list(payload.get("citations", []) or []),
     }
     post = frontmatter.Post(content=payload.get("body", ""), **fm)
     _write(path, post)
@@ -135,10 +197,18 @@ def upsert_concept(
     filters: dict,
     source_episode_id: str | None = None,
     links: list[str] | None = None,
+    *,
+    synthesized_body: str | None = None,
+    confidence: float | None = None,
+    citations: list[dict] | None = None,
+    evidence: dict | None = None,
 ) -> tuple[str, str]:
     """Concept rollup. 같은 (product, fail_type, cause_oper)는 누적.
 
-    seen_count++, source_episode_ids append (dedup), links union, version++, updated 갱신.
+    Base rollup (seen_count++, source append, version++, lifecycle 갱신)은 항상.
+    synthesized_body가 주어지면 body_versions에 누적 + content 갱신 (plan v3 §A 합성).
+    confidence/citations/evidence는 합성 호출에서만 전달.
+
     Returns (concept_id, status) — status in {"created", "updated"}.
     """
     _ensure_dirs()
@@ -146,6 +216,7 @@ def upsert_concept(
     path = _CONCEPTS / f"{_safe_filename(cid)}.md"
     existing = _read(path)
     now = _now_iso()
+
     if existing is None:
         fm = {
             "id": f"concept:{cid}",
@@ -159,11 +230,30 @@ def upsert_concept(
             "cause_oper": filters.get("cause_oper", ""),
             "seen_count": 1,
             "source_episode_ids": [source_episode_id] if source_episode_id else [],
+            # plan v3 신규 필수 4기능
+            **_lifecycle_defaults(),
+            "confidence": float(confidence) if confidence is not None else 0.0,
+            "citations": list(citations or []),
+            "evidence_diversity_score": float((evidence or {}).get("score", 0.0)),
+            "unique_doc_ids": int((evidence or {}).get("unique_doc_ids", 0)),
+            "body_versions": [],
         }
-        post = frontmatter.Post(content="", **fm)
+        body = ""
+        if synthesized_body:
+            fm["body_versions"].append({
+                "version": 1,
+                "created": now,
+                "expires_at": _ttl_iso(_STALE_AFTER_DAYS),
+                "source_episode_ids": fm["source_episode_ids"],
+                "body_markdown": synthesized_body,
+                "confidence": fm["confidence"],
+            })
+            body = synthesized_body
+        post = frontmatter.Post(content=body, **fm)
         _write(path, post)
         _log("concept_create", cid)
         return cid, "created"
+
     md = dict(existing.metadata)
     md["updated"] = now
     md["version"] = int(md.get("version", 1)) + 1
@@ -173,9 +263,174 @@ def upsert_concept(
         se.append(source_episode_id)
     md["source_episode_ids"] = se
     md["links"] = sorted(set(list(md.get("links", []) or []) + list(links or [])))
-    _write(path, frontmatter.Post(content=existing.content or "", **md))
+    # plan v3 lifecycle 갱신
+    md["last_active"] = now
+    md.setdefault("status", "active")
+    md.setdefault("stale_after_days", _STALE_AFTER_DAYS)
+    md.setdefault("citations", [])
+    md.setdefault("body_versions", [])
+    md.setdefault("evidence_diversity_score", 0.0)
+    md.setdefault("unique_doc_ids", 0)
+    md.setdefault("confidence", 0.0)
+
+    body_content = existing.content or ""
+    if synthesized_body:
+        new_ver = len(md["body_versions"]) + 1
+        md["body_versions"].append({
+            "version": new_ver,
+            "created": now,
+            "expires_at": _ttl_iso(_STALE_AFTER_DAYS),
+            "source_episode_ids": list(se),
+            "body_markdown": synthesized_body,
+            "confidence": float(confidence) if confidence is not None else md["confidence"],
+        })
+        # cap 5 (plan §위험: body_versions 누적 cap)
+        if len(md["body_versions"]) > 5:
+            md["body_versions"] = md["body_versions"][-5:]
+        if confidence is not None:
+            md["confidence"] = float(confidence)
+        if citations:
+            md["citations"] = list(citations)
+        if evidence:
+            md["evidence_diversity_score"] = float(evidence.get("score", md["evidence_diversity_score"]))
+            md["unique_doc_ids"] = int(evidence.get("unique_doc_ids", md["unique_doc_ids"]))
+        body_content = synthesized_body
+
+    _write(path, frontmatter.Post(content=body_content, **md))
     _log("concept_update", cid)
     return cid, "updated"
+
+
+def _ttl_iso(days: int) -> str:
+    return (datetime.datetime.now() + datetime.timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def update_concept_evidence(concept_id: str, evidence: dict[str, Any]) -> bool:
+    """진단 가시성: evidence 계산 결과를 concept frontmatter에 매번 갱신.
+
+    합성 발동 여부 무관하게 score/unique_doc_ids/last_evidence_check 저장.
+    "왜 합성 안 됐는지"를 vault 파일만 보고도 파악 가능.
+    """
+    cid_key = concept_id.replace("concept:", "")
+    cpath = _CONCEPTS / f"{_safe_filename(cid_key)}.md"
+    post = _read(cpath)
+    if post is None:
+        return False
+    md = dict(post.metadata)
+    md["evidence_diversity_score"] = float(evidence.get("score", 0.0))
+    md["unique_doc_ids"] = int(evidence.get("unique_doc_ids", 0))
+    md["last_evidence_check"] = _now_iso()
+    _write(cpath, frontmatter.Post(content=post.content or "", **md))
+    return True
+
+
+# ── lookup_concept_body: wiki-first/assisted 게이트 ──────
+def lookup_concept_body(
+    filters: dict,
+    *,
+    min_len: int = 400,
+    min_source_episodes: int = 3,
+    min_unique_doc_ids: int = 4,
+    min_confidence: float = 0.7,
+    min_citation_coverage: float = 0.8,
+    max_last_active_days: int = 30,
+) -> dict[str, Any]:
+    """plan v3 §C wiki-first/wiki-assisted 게이트.
+
+    Returns:
+      {
+        "gate": "wiki-first" | "wiki-assisted" | "none",
+        "body": str | None,
+        "confidence": float,
+        "citations": list,
+        "fail_reasons": list[str],   # 미통과 시 이유
+        "concept_id": str | None,
+      }
+    """
+    _ensure_dirs()
+    out: dict[str, Any] = {"gate": "none", "body": None, "confidence": 0.0,
+                            "citations": [], "fail_reasons": [], "concept_id": None}
+    if not all(filters.get(k) for k in ("product", "fail_type", "cause_oper")):
+        out["fail_reasons"].append("filter_not_exact")
+        return out
+    cid = _concept_key(filters)
+    out["concept_id"] = f"concept:{cid}"
+    post = _read(_CONCEPTS / f"{_safe_filename(cid)}.md")
+    if post is None:
+        # plan v3 §위험 "concept 키 정규화 미흡" 보완 — alias로 fallback
+        # 예: filters.fail_type="EASY(W)"인데 vault엔 "EASY"만 있으면
+        #     alias 노드(EASY↔EASY(W)) 통해 정규형 변환 시도
+        ft = filters.get("fail_type", "")
+        for apath in _ALIASES.glob("*.md"):
+            apost = _read(apath)
+            if apost is None:
+                continue
+            am = apost.metadata
+            c = am.get("canonical", "")
+            v = am.get("variant", "")
+            other = None
+            if ft == v and c:
+                other = c
+            elif ft == c and v:
+                other = v
+            if other:
+                alt_filters = {**filters, "fail_type": other}
+                alt_cid = _concept_key(alt_filters)
+                alt_path = _CONCEPTS / f"{_safe_filename(alt_cid)}.md"
+                alt_post = _read(alt_path)
+                if alt_post is not None:
+                    post = alt_post
+                    cid = alt_cid
+                    out["concept_id"] = f"concept:{alt_cid}"
+                    logger.info("[lookup_concept_body] alias fallback %s → %s", ft, other)
+                    break
+        if post is None:
+            out["fail_reasons"].append("concept_missing")
+            return out
+    md = post.metadata
+    body = post.content or ""
+    confidence = float(md.get("confidence", 0.0))
+    citations = list(md.get("citations") or [])
+    src_ep = list(md.get("source_episode_ids") or [])
+    unique_doc = int(md.get("unique_doc_ids", 0))
+    out["confidence"] = confidence
+    out["citations"] = citations
+
+    # 각 임계 체크
+    if len(body) < min_len:
+        out["fail_reasons"].append(f"body_len<{min_len}")
+    if len(src_ep) < min_source_episodes:
+        out["fail_reasons"].append(f"source_episodes<{min_source_episodes}")
+    if unique_doc < min_unique_doc_ids:
+        out["fail_reasons"].append(f"unique_doc_ids<{min_unique_doc_ids}")
+    if confidence < min_confidence:
+        out["fail_reasons"].append(f"confidence<{min_confidence}")
+    # citation coverage: citations 수 / body의 [ep:xxx] 등장 수 (단순화: citations 충분하면 OK)
+    citation_coverage = 1.0 if citations else 0.0
+    if citation_coverage < min_citation_coverage:
+        out["fail_reasons"].append(f"citation_coverage<{min_citation_coverage}")
+    # freshness
+    last_active = md.get("last_active", md.get("updated", ""))
+    if last_active:
+        try:
+            last_dt = datetime.datetime.fromisoformat(str(last_active))
+            age_days = (datetime.datetime.now() - last_dt).days
+            if age_days > max_last_active_days:
+                out["fail_reasons"].append(f"stale_>{max_last_active_days}d")
+        except Exception:
+            out["fail_reasons"].append("last_active_unparseable")
+    if md.get("status", "active") != "active":
+        out["fail_reasons"].append(f"status={md.get('status')}")
+
+    # 게이트 결정
+    if not out["fail_reasons"]:
+        out["gate"] = "wiki-first"
+        out["body"] = body
+    elif body and len(body) >= 200 and confidence >= 0.4:
+        # 일부 임계 통과 — wiki-assisted
+        out["gate"] = "wiki-assisted"
+        out["body"] = body
+    return out
 
 
 # ── upsert: alias (symmetry 보장) ────────────────────────
@@ -204,6 +459,9 @@ def upsert_alias(canonical: str, variant: str) -> list[tuple[str, str]]:
             "links": [],
             "canonical": c,
             "variant": v,
+            **_lifecycle_defaults(),
+            "confidence": 1.0,  # alias는 LLM 확정 발견이라 100%
+            "citations": [],
         }
         post = frontmatter.Post(content="", **fm)
         _write(path, post)

@@ -23,6 +23,66 @@ import wiki_queue  # noqa: E402
 import wiki_store  # noqa: E402
 from fail_history_tools import search_fail_history  # noqa: E402
 
+
+# ── plan v3 §D 신규 메트릭 함수들 ─────────────────────
+def compute_rouge_l(reference: str, candidate: str) -> float:
+    """ROUGE-L F1 (LCS 기반, 단순 whitespace 토큰).
+
+    plan v3 §D: concept_improvement_score 측정용.
+    baseline answer와 synthesized answer의 ROUGE-L 차이로 합성 효과 정량화.
+    """
+    ref = (reference or "").lower().split()
+    cand = (candidate or "").lower().split()
+    if not ref or not cand:
+        return 0.0
+    m, n = len(ref), len(cand)
+    # DP LCS
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if ref[i - 1] == cand[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1] + 1
+            else:
+                dp[i][j] = dp[i - 1][j] if dp[i - 1][j] >= dp[i][j - 1] else dp[i][j - 1]
+    lcs = dp[m][n]
+    if lcs == 0:
+        return 0.0
+    p = lcs / n
+    r = lcs / m
+    return round(2 * p * r / (p + r), 4) if (p + r) > 0 else 0.0
+
+
+def compute_citation_match(body: str, citations: list[dict]) -> float:
+    """plan v3 §D: citation_match_rate.
+
+    body 안의 [ep:xxx] 인용 표시 수 vs citations list 매칭 비율.
+    citations가 충분히 등장하면 1.0, 빠지면 비율로.
+    """
+    import re as _re
+    inline = set(_re.findall(r"\[ep:([a-zA-Z0-9_-]+)\]", body or ""))
+    cited = {c.get("episode_id", "").replace("episode:", "") for c in (citations or [])}
+    if not cited:
+        return 0.0
+    if not inline:
+        # citations만 있고 본문에 인용 없음 → 부분 점수
+        return 0.5
+    matched = inline & cited
+    return round(len(matched) / max(len(cited), 1), 4)
+
+
+def compute_freshness_regression(node_meta: dict, max_days: int = 30) -> bool:
+    """plan v3 §D: 30일 초과 stale 노드가 응답에 쓰였는지. True면 회귀."""
+    import datetime as _dt
+    la = node_meta.get("last_active") or node_meta.get("updated", "")
+    if not la:
+        return False
+    try:
+        last_dt = _dt.datetime.fromisoformat(str(la))
+        return (_dt.datetime.now() - last_dt).days > max_days
+    except Exception:
+        return False
+
+
 _DATASETS = Path(__file__).parent / "datasets"
 _RESULTS = Path(__file__).parent / "results"
 
