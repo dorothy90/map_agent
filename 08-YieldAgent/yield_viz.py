@@ -1027,9 +1027,12 @@ def _build_cummap_grid_html(
             if arr is not None:
                 if is_delta:
                     wz_label, wz_pct = cell[2], cell[3]
-                    # diverging cmap, 변화율 -10%pt ~ +10%pt 클리핑
+                    # diverging cmap, 컬럼별 |delta| p95 기반 대칭 클리핑 (±1%pt ~ ±10%pt)
+                    valid = arr[~np.isnan(arr)]
+                    lim = float(np.percentile(np.abs(valid), 95)) if valid.size else 0.01
+                    lim = min(0.10, max(0.01, lim))
                     ax.imshow(
-                        arr, cmap="RdBu", vmin=-0.10, vmax=0.10, interpolation="nearest"
+                        arr, cmap="RdBu", vmin=-lim, vmax=lim, interpolation="nearest"
                     )
                     label = f"{avg_pct:+.2f}%pt\n↓ {wz_label} {wz_pct:+.2f}%pt"
                     ax.text(
