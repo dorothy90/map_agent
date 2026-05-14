@@ -168,6 +168,15 @@ def _get_embedding(text: str) -> List[float]:
     return list(_get_embedding_cached(text))
 
 
+def _coerce_str(val: Any, sep: str = ", ") -> str:
+    """OpenSearch가 list로 반환할 수 있는 필드를 문자열로 정규화."""
+    if val is None:
+        return ""
+    if isinstance(val, list):
+        return sep.join(str(v) for v in val if v not in (None, ""))
+    return str(val)
+
+
 def _expand_acronyms(query: str) -> str:
     """쿼리 내 약어를 풀네임으로 확장 (BM25 recall 향상)"""
     expanded = query
@@ -204,7 +213,11 @@ def _search_opensearch(
     if fail_type:
         filters.append({"prefix": {"fail_type.keyword": fail_type}})
     if cause_oper:
-        filters.append({"term": {"cause_oper": cause_oper}})
+        # cause_oper가 list로 들어오면 terms, 단일값이면 term
+        if isinstance(cause_oper, list):
+            filters.append({"terms": {"cause_oper": cause_oper}})
+        else:
+            filters.append({"term": {"cause_oper": cause_oper}})
 
     # BM25 쿼리
     bm25_query: Dict[str, Any] = {
@@ -264,7 +277,9 @@ def _search_opensearch(
         score = hit.get("_score", 0)
         results.append({
             "product": src.get("product", ""),
-            "cause_oper": src.get("cause_oper", ""),
+            # cause_oper는 OpenSearch에서 multi-value(list)로 올 수 있어 문자열로 정규화
+            # (그렇지 않으면 dict.fromkeys/Jinja 렌더에서 깨짐)
+            "cause_oper": _coerce_str(src.get("cause_oper", "")),
             "fail_type": src.get("fail_type", ""),
             "cause": src.get("cause", ""),
             "action": src.get("action", ""),
@@ -485,8 +500,14 @@ def _render_fail_history_html(
 ) -> str:
     """gui_v2.html 포맷의 Fail History HTML 리포트 동적 생성 (Jinja2 템플릿)"""
 
-    products = list(dict.fromkeys(r["product"] for r in results if r.get("product")))
-    opers = list(dict.fromkeys(r["cause_oper"] for r in results if r.get("cause_oper")))
+    # cause_oper/product가 OpenSearch list 필드로 올 수 있어 dict.fromkeys 직전에 정규화
+    # (list는 unhashable → 정규화 없으면 렌더 폭발)
+    for r in results:
+        r["cause_oper"] = _coerce_str(r.get("cause_oper", ""))
+        r["product"] = _coerce_str(r.get("product", ""))
+        r["fail_type"] = _coerce_str(r.get("fail_type", ""))
+    products = list(dict.fromkeys(r["product"] for r in results if r["product"]))
+    opers = list(dict.fromkeys(r["cause_oper"] for r in results if r["cause_oper"]))
 
     # TODO: 사내 API 실제 URL로 교체
     download_base_url = os.getenv("DOWNLOAD_BASE_URL", "https://internal-api.example.com/docs")
