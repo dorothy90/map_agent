@@ -1,0 +1,67 @@
+# Wiki foundations catalog
+# =========================
+# 운영자가 사내 도메인 지식을 기반으로 작성하는 핵심 트리플 seed.
+# bootstrap_wiki_warmup.py가 이 catalog 먼저 채운 뒤 OpenSearch top-N으로 보완.
+# wiki_lint.py가 priority=high 트리플 중 vault 미존재 시 `gap`으로 알림.
+#
+# Karpathy 정신: schema = 사람이 만든 가이드, ingest/synthesize = LLM 자동.
+#
+# 필드:
+#   product:    "4SS" | "4SA" | "6E2" | "5QQ" 등 인덱스 실재 product
+#   fail_type:  fail-history 인덱스 fail_type (alias 포함 형태 가능 — prefix 매칭)
+#   cause_oper: 단일 enum (멀티 토큰 분리 금지: "PRE METAL CLN" 한 덩어리)
+#   priority:   high | medium | low
+#   note:       (선택) 운영자 메모
+
+foundations:
+  # === 사내 도메인 지식 기반 seed ===
+  # TODO(운영자): 실 운영 우선순위에 맞게 조정·추가.
+  # 아래는 로컬 PoC에서 검증된 트리플 + 추정 빈출 케이스 예시.
+
+  - product: 4SS
+    fail_type: EASY
+    cause_oper: PRE METAL CLN
+    priority: high
+    note: 로컬 PoC 검증 완료 (confidence 0.86, 4건 evidence)
+
+  - product: 4SS
+    fail_type: EASY
+    cause_oper: STI CMP
+    priority: high
+
+  - product: 4SS
+    fail_type: TWT
+    cause_oper: M0C ETCH
+    priority: high
+
+  - product: 4SS
+    fail_type: IOFF
+    cause_oper: STI CMP
+    priority: medium
+
+  - product: 4SS
+    fail_type: VTH
+    cause_oper: GATE OX GROWTH
+    priority: medium
+
+  - product: 4SA
+    fail_type: EASY
+    cause_oper: PRE METAL CLN
+    priority: medium
+
+  - product: 6E2
+    fail_type: EASY
+    cause_oper: ILD CMP
+    priority: medium
+
+  - product: 6E2
+    fail_type: FMAX
+    cause_oper: METAL1 DEP
+    priority: low
+
+  # === 사내 운영자 추가 영역 (TODO) ===
+  # - product: ???
+  #   fail_type: ???
+  #   cause_oper: ???
+  #   priority: high|medium|low
+  #   note: 사내 실 우선순위

@@ -13,22 +13,31 @@ exit 0 = 위반 없음, 1 = 위반 발견, 2 = vault 경로 오류
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
 import frontmatter
+import yaml
 
 
 def scan(vault: Path) -> dict[str, list[Any]]:
-    """vault 전체 스캔 → 위반 카테고리별 list."""
+    """vault 전체 스캔 → 위반 카테고리별 list.
+
+    Karpathy 회귀(임계 완화)로 wiki-first 게이트가 풀린 만큼 lint 룰을 강화한다.
+    추가: gap(foundations.yaml priority=high 누락), low_confidence, stale_episode.
+    """
     issues: dict[str, list[Any]] = {
         "orphan": [],
         "broken_link": [],
         "invalid_frontmatter": [],
         "alias_asymmetry": [],
         "duplicate_concept": [],
+        "gap": [],
+        "low_confidence": [],
+        "stale_episode": [],
     }
 
     nodes: dict[str, tuple[Path, dict]] = {}  # id -> (path, frontmatter)
@@ -100,11 +109,62 @@ def scan(vault: Path) -> dict[str, list[Any]]:
             for link in (md.get("links") or []):
                 if link.startswith("episode:"):
                     referenced_eps.add(link)
-    for nid in nodes:
-        if nid.startswith("episode:") and nid not in referenced_eps:
-            issues["orphan"].append({"id": nid})
+    now = datetime.datetime.now()
+    for nid, (_, md) in nodes.items():
+        if not nid.startswith("episode:") or nid in referenced_eps:
+            continue
+        age_days = _age_days(md, now)
+        entry: dict[str, Any] = {"id": nid}
+        if age_days is not None:
+            entry["age_days"] = age_days
+        issues["orphan"].append(entry)
+        if age_days is not None and age_days > 30:
+            issues["stale_episode"].append({"id": nid, "age_days": age_days})
+
+    # 6) gap: foundations.yaml priority=high 트리플 중 vault 미존재
+    fpath = vault / "foundations.yaml"
+    if fpath.exists():
+        try:
+            cfg = yaml.safe_load(fpath.read_text(encoding="utf-8")) or {}
+        except Exception as e:
+            issues["invalid_frontmatter"].append({"path": str(fpath), "error": str(e)})
+            cfg = {}
+        for entry in cfg.get("foundations", []) or []:
+            if entry.get("priority") != "high":
+                continue
+            triple = (
+                entry.get("product", ""),
+                entry.get("cause_oper", ""),
+                entry.get("fail_type", ""),
+            )
+            if all(triple) and triple not in concept_keys:
+                issues["gap"].append({
+                    "triple": "|".join(triple),
+                    "priority": entry.get("priority"),
+                })
+
+    # 7) low_confidence: concept confidence < 0.5 → 운영자 검수 대상
+    for nid, (_, md) in nodes.items():
+        if not nid.startswith("concept:"):
+            continue
+        try:
+            conf = float(md.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            conf = 0.0
+        if conf < 0.5:
+            issues["low_confidence"].append({"id": nid, "confidence": conf})
 
     return issues
+
+
+def _age_days(md: dict, now: datetime.datetime) -> int | None:
+    last = md.get("last_active") or md.get("updated") or md.get("created")
+    if not last:
+        return None
+    try:
+        return (now - datetime.datetime.fromisoformat(str(last))).days
+    except (TypeError, ValueError):
+        return None
 
 
 def main() -> int:
@@ -113,6 +173,8 @@ def main() -> int:
     parser.add_argument("--vault", default=default_vault, help="vault directory")
     parser.add_argument("--json", action="store_true", help="JSON 출력")
     parser.add_argument("--quiet", action="store_true", help="exit code only")
+    parser.add_argument("--log", action="store_true",
+                        help="결과를 wiki/lint_logs/YYYY-MM-DD.md 에도 저장")
     args = parser.parse_args()
 
     vault = Path(args.vault).resolve()
@@ -134,6 +196,24 @@ def main() -> int:
                 if len(items) > 10:
                     print(f"  ... and {len(items) - 10} more")
         print(f"\nTOTAL ISSUES: {total} (vault={vault})")
+
+    if args.log:
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        log_dir = vault / "lint_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{today}.md"
+        lines = [f"# Wiki lint — {today}", "",
+                 f"TOTAL ISSUES: **{total}** (vault=`{vault}`)", ""]
+        for kind, items in issues.items():
+            if not items:
+                continue
+            lines.append(f"## {kind} ({len(items)})")
+            lines.append("")
+            for it in items:
+                lines.append(f"- {it}")
+            lines.append("")
+        log_path.write_text("\n".join(lines), encoding="utf-8")
+        print(f"logged to {log_path}")
 
     return 0 if total == 0 else 1
 

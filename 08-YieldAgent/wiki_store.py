@@ -328,11 +328,10 @@ def update_concept_evidence(concept_id: str, evidence: dict[str, Any]) -> bool:
 def lookup_concept_body(
     filters: dict,
     *,
-    min_len: int = 400,
-    min_source_episodes: int = 3,
-    min_unique_doc_ids: int = 4,
-    min_confidence: float = 0.7,
-    min_citation_coverage: float = 0.8,
+    min_len: int = 200,
+    min_source_episodes: int = 1,
+    min_confidence: float = 0.5,
+    min_citation_coverage: float = 0.0,
     max_last_active_days: int = 30,
 ) -> dict[str, Any]:
     """plan v3 §C wiki-first/wiki-assisted 게이트.
@@ -392,17 +391,15 @@ def lookup_concept_body(
     confidence = float(md.get("confidence", 0.0))
     citations = list(md.get("citations") or [])
     src_ep = list(md.get("source_episode_ids") or [])
-    unique_doc = int(md.get("unique_doc_ids", 0))
     out["confidence"] = confidence
     out["citations"] = citations
 
-    # 각 임계 체크
+    # Karpathy 회귀: unique_doc_ids·evidence_diversity 게이트 제거.
+    # 합성 호출 가드(같은 raw 반복 source 제외)는 wiki_queue 쪽에 남김.
     if len(body) < min_len:
         out["fail_reasons"].append(f"body_len<{min_len}")
     if len(src_ep) < min_source_episodes:
         out["fail_reasons"].append(f"source_episodes<{min_source_episodes}")
-    if unique_doc < min_unique_doc_ids:
-        out["fail_reasons"].append(f"unique_doc_ids<{min_unique_doc_ids}")
     if confidence < min_confidence:
         out["fail_reasons"].append(f"confidence<{min_confidence}")
     # citation coverage: citations 수 / body의 [ep:xxx] 등장 수 (단순화: citations 충분하면 OK)

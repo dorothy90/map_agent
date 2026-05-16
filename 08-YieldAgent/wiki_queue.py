@@ -312,10 +312,12 @@ class WikiQueue:
         # 진단 가시성 — evidence 결과를 concept frontmatter에 항상 갱신
         await loop.run_in_executor(None, wiki_store.update_concept_evidence, concept_id, evidence)
 
-        # 트리거 임계 (plan v3 §A)
-        if evidence["score"] < 0.6 and evidence["unique_doc_ids"] < 4:
+        # Karpathy 회귀: unique_doc_ids 가드 제거.
+        # episode 2건 이상이면 합성 시도하되, evidence_diversity가 매우 낮은(<0.3)
+        # 케이스(예: 동일 raw 5번 반복)만 차단 — Codex 핵심 우려 보존.
+        if evidence["score"] < 0.3:
             self.drops["synthesis_skip_low_diversity"] += 1
-            logger.info("[wiki_queue] synthesis skip — low diversity %s: %s",
+            logger.info("[wiki_queue] synthesis skip — same-raw repetition %s: %s",
                         concept_id, evidence)
             return
 

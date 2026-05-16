@@ -347,8 +347,19 @@ def do_search(
             else:
                 cit_lines.append(f"- {label}")
         citations_md = "\n".join(cit_lines) if cit_lines else "(없음)"
+        # Karpathy 회귀로 임계 완화 → 저신뢰 concept도 wiki-first 발동.
+        # 사용자 판단을 위한 confidence 배지 (≥0.7 무배지 / 0.5~0.7 참고용 / <0.5 근거 약함)
+        evidence_n = len(cit_lines)
+        if confidence < 0.5:
+            badge = (f"> ⚠️ **근거 약함** — evidence {evidence_n}건, "
+                     f"confidence={confidence:.2f}. 운영자 검수 권장.\n\n")
+        elif confidence < 0.7:
+            badge = (f"> ℹ️ **참고용** — evidence {evidence_n}건, "
+                     f"confidence={confidence:.2f}.\n\n")
+        else:
+            badge = ""
         rendered_answer = (
-            f"{body}\n\n"
+            f"{badge}{body}\n\n"
             f"**참고 자료 ({len(cit_lines)}건)**:\n{citations_md}\n\n"
             f"_wiki-first 응답 · confidence={confidence:.2f} · OpenSearch 호출 0회_"
         )
