@@ -281,6 +281,74 @@ def _search_opensearch(
     return results
 
 
+# ── super_concept "참고용" 보조 섹션 (env로 토글) ────
+def _lookup_super_reference(product: str, fail_type: str, cause_oper: str) -> str:
+    """WIKI_SUPER_REFERENCE_ENABLED=true 시 super_concept 본문 합쳐서 반환.
+
+    Karpathy + plan v3 §B 정신: super는 답변 근거 아닌 "참고용" 보조 섹션.
+    fail_type 우선, 그 다음 cause_oper 축. alias 정규화: "EASY(W)" → "EASY".
+    """
+    if os.getenv("WIKI_SUPER_REFERENCE_ENABLED", "false").lower() not in ("true", "1", "yes"):
+        return ""
+    try:
+        import wiki_store
+    except Exception:
+        return ""
+    parts: List[str] = []
+    if fail_type:
+        ft_norm = fail_type.split("(", 1)[0].strip()
+        s = wiki_store.lookup_super_concept("fail_type", ft_norm)
+        if s and s.get("body"):
+            parts.append(f"### fail_type={ft_norm} 관련\n{s['body'].strip()}")
+    if cause_oper:
+        s = wiki_store.lookup_super_concept("cause_oper", cause_oper)
+        if s and s.get("body"):
+            parts.append(f"### cause_oper={cause_oper} 관련\n{s['body'].strip()}")
+    return "\n\n".join(parts)
+
+
+# ── wiki-first 카드 보조: citations doc_id로 raw 단순 조회 ────
+def _fetch_results_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
+    """citations의 doc_id로 OpenSearch에서 단순 조회 (BM25/kNN 없음).
+
+    wiki-first 응답일 때 HTML 카드 렌더용 raw 결과를 채우기 위해 사용.
+    점수는 의미 없음(0.0). LLM 합성은 안 거치므로 wiki-first 가치(LLM 0회)는 유지.
+    """
+    doc_ids = [d for d in doc_ids if d]
+    if not doc_ids:
+        return []
+    client = _get_opensearch_client()
+    # doc_id는 인덱스에서 type=keyword 단일 매핑 — `.keyword` 서브필드 없음
+    body = {
+        "size": min(len(doc_ids), 20),
+        "query": {"terms": {"doc_id": doc_ids}},
+    }
+    try:
+        resp = client.search(index=_OPENSEARCH_INDEX, body=body)
+    except Exception as e:
+        logger.warning("[_fetch_results_by_doc_ids] terms query 실패: %s", e)
+        return []
+    results: List[Dict[str, Any]] = []
+    for hit in resp.get("hits", {}).get("hits", []):
+        src = hit.get("_source", {})
+        results.append({
+            "product": src.get("product", ""),
+            "cause_oper": src.get("cause_oper", ""),
+            "fail_type": src.get("fail_type", ""),
+            "cause": src.get("cause", ""),
+            "action": src.get("action", ""),
+            "comment": src.get("comment", ""),
+            "date": src.get("date", ""),
+            "source_file": src.get("source_file", ""),
+            "page_num": src.get("page_num", 0),
+            "doc_id": src.get("doc_id", ""),
+            "filenm": src.get("filenm", ""),
+            "score": 0.0,
+            "content": src.get("content", "")[:200],
+        })
+    return results
+
+
 # ── 함수형 노드 API (B2: ReAct 제거, 코드가 직접 호출) ────
 def do_search(
     query: str,
@@ -358,14 +426,18 @@ def do_search(
                      f"confidence={confidence:.2f}.\n\n")
         else:
             badge = ""
+        # 옵션 4: citations doc_id로 OpenSearch 단순 조회 → HTML 카드용 raw 채움.
+        # LLM 합성은 안 거치므로 wiki-first 본질(LLM 0회)은 유지. 점수 의미 없음.
+        doc_ids = [c.get("doc_id", "") for c in citations if c.get("doc_id")]
+        card_results = _fetch_results_by_doc_ids(doc_ids)
         rendered_answer = (
             f"{badge}{body}\n\n"
             f"**참고 자료 ({len(cit_lines)}건)**:\n{citations_md}\n\n"
-            f"_wiki-first 응답 · confidence={confidence:.2f} · OpenSearch 호출 0회_"
+            f"_wiki-first 응답 · confidence={confidence:.2f} · OpenSearch lookup {len(card_results)}건 (카드용, LLM 호출 0회)_"
         )
         return {
-            "total": 0,
-            "results": [],
+            "total": len(card_results),
+            "results": card_results,
             "wiki_memory": {"concepts": [], "aliases": [], "recent_episodes": []},
             "retrieval_mode": "wiki-first",
             "wiki_concept_body": body,
@@ -373,6 +445,7 @@ def do_search(
             "wiki_concept_id": gate_result.get("concept_id", ""),
             "wiki_citations": citations,
             "rendered_answer": rendered_answer,
+            "super_reference_body": _lookup_super_reference(product, fail_type, cause_oper),
         }
 
     try:
@@ -388,7 +461,12 @@ def do_search(
         raise
 
     if not results:
-        return {"total": 0, "results": [], "retrieval_mode": "baseline"}
+        return {
+            "total": 0,
+            "results": [],
+            "retrieval_mode": "baseline",
+            "super_reference_body": _lookup_super_reference(product, fail_type, cause_oper),
+        }
 
     wiki_mem: Dict[str, Any] = {"concepts": [], "aliases": [], "recent_episodes": []}
     try:
@@ -436,6 +514,7 @@ def do_search(
         logger.info("[do_search] WIKI-ASSISTED mode (confidence=%.2f)",
                     gate_result["confidence"])
 
+    output["super_reference_body"] = _lookup_super_reference(product, fail_type, cause_oper)
     return output
 
 
@@ -494,25 +573,10 @@ def _render_fail_history_html(
     query: str,
     summary: str,
 ) -> str:
-    """gui_v2.html 포맷의 Fail History HTML 리포트 동적 생성 (Jinja2 템플릿)"""
-
-    products = list(dict.fromkeys(r["product"] for r in results if r.get("product")))
-    opers = list(dict.fromkeys(r["cause_oper"] for r in results if r.get("cause_oper")))
+    """Fail History 결과를 번호 표 HTML로 렌더 (Jinja2 템플릿)."""
 
     # TODO: 사내 API 실제 URL로 교체
     download_base_url = os.getenv("DOWNLOAD_BASE_URL", "https://internal-api.example.com/docs")
-
-    # Day 5: wiki graph deep link — Streamlit dev viewer로 (PoC 시각화)
-    # 운영 React repo 도입 후엔 STREAMLIT_BASE_URL → REACT_BASE_URL로 교체 (plan v3 §부록)
-    _viewer_base = os.getenv("STREAMLIT_BASE_URL", "http://localhost:8501")
-    wiki_graph_url = f"{_viewer_base}/wiki_graph"
-    if results:
-        from urllib.parse import quote
-        r = results[0]
-        triple = (r.get("product", ""), r.get("cause_oper", ""), r.get("fail_type", ""))
-        if all(triple):
-            cid = "concept:" + "|".join(triple)
-            wiki_graph_url = f"{_viewer_base}/wiki_graph?focus={quote(cid, safe='|():')}"
 
     template = _jinja_env.get_template("fail_history_report.html")
     return template.render(
@@ -520,12 +584,7 @@ def _render_fail_history_html(
         query=query,
         summary=summary,
         total=len(results),
-        products=products,
-        opers=opers,
-        index_name=_OPENSEARCH_INDEX,
-        embedding_dim=_EMBEDDING_DIM,
         download_base_url=download_base_url,
-        wiki_graph_url=wiki_graph_url,
     )
 
 

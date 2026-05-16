@@ -3,269 +3,144 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Fail History Intelligence Report</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+    <title>Fail History Report</title>
     <style>
         :root {
-            --bg-body: #f0f4f8; --bg-card: #ffffff;
-            --text-main: #1a1f26; --text-muted: #73808c; --text-dim: #a0aab4;
-            --primary: #00ccd9; --primary-glow: rgba(0,204,217,0.3); --primary-dim: rgba(0,204,217,0.08);
-            --blue: #4d8eff; --purple: #a855f7;
-            --danger: #e53333; --danger-bg: rgba(229,51,51,0.08);
-            --success: #1ab280; --success-bg: rgba(26,178,128,0.08);
-            --border: #e2e8f0; --border-hover: rgba(0,204,217,0.35);
-            --shadow-sm: 0 2px 8px rgba(0,0,0,0.04); --shadow-lg: 0 16px 32px rgba(0,0,0,0.1);
-            --radius-md: 14px; --radius-lg: 18px;
-            --transition: all 0.35s cubic-bezier(0.25,0.8,0.25,1);
+            --bg: #ffffff;
+            --text: #1a1f26;
+            --muted: #6b7280;
+            --border: #e5e7eb;
+            --accent: #0ea5e9;
+            --row-alt: #f9fafb;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            background: linear-gradient(160deg,#f0f4f8 0%,#e4eaf0 50%,#f0f4f8 100%);
-            min-height: 100vh; display: flex; justify-content: center; padding: 48px 20px;
-            font-family: 'Inter', sans-serif; color: var(--text-main); position: relative; overflow-x: hidden;
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            font-size: 14px;
+            line-height: 1.5;
+            padding: 24px;
         }
-        body::before {
-            content: ''; position: fixed; inset: 0;
-            background-image: radial-gradient(circle,rgba(0,0,0,0.04) 1px,transparent 1px);
-            background-size: 32px 32px; z-index: 0; pointer-events: none;
+        .container { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+        .header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+        .header h1 { font-size: 16px; font-weight: 700; }
+        .header .query { color: var(--muted); font-size: 13px; }
+        .header .count { color: var(--accent); font-weight: 600; font-size: 13px; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            background: var(--bg);
+            border: 1px solid var(--border);
         }
-        .container { width: 100%; max-width: 740px; display: flex; flex-direction: column; gap: 24px; position: relative; z-index: 1; }
-        .header { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; animation: fadeSlideDown 0.6s ease-out; }
-        .header-left { display: flex; align-items: center; gap: 14px; }
-        .pulse-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 0 var(--primary-glow); animation: pulse 2s infinite; }
-        @keyframes pulse { 0% { transform: scale(0.95); box-shadow: 0 0 0 0 var(--primary-glow); } 70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(0,204,217,0); } 100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0,204,217,0); } }
-        .header-title { font-family: 'Outfit', sans-serif; font-size: 24px; font-weight: 700; letter-spacing: 1px; background: linear-gradient(135deg,#1a1f26,#3b4252); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .header-time { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); letter-spacing: 0.5px; }
-        .section-header { display: flex; justify-content: space-between; align-items: flex-end; padding-bottom: 14px; border-bottom: 2px solid rgba(0,0,0,0.04); animation: fadeSlideDown 0.6s ease-out 0.1s both; }
-        .section-title { font-family: 'Outfit', sans-serif; font-size: 18px; font-weight: 700; color: var(--text-main); letter-spacing: 0.5px; }
-        .badge-count { background: var(--danger-bg); border: 1px solid rgba(229,51,51,0.2); border-radius: 20px; padding: 6px 14px; font-size: 11px; font-weight: 700; color: var(--danger); letter-spacing: 0.5px; }
-        .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 26px; box-shadow: var(--shadow-sm); transition: var(--transition); position: relative; overflow: hidden; }
-        .card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: var(--border-hover); }
-        .query-card { animation: fadeSlideDown 0.6s ease-out 0.2s both; }
-        .query-card::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 4px; background: linear-gradient(90deg,var(--danger),#ff6b6b); }
-        .query-label { font-size: 11px; font-weight: 700; color: var(--danger); letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px; display: block; }
-        .query-value { font-family: 'Outfit', sans-serif; font-size: 28px; font-weight: 800; color: var(--text-main); margin-bottom: 18px; }
-        .chip-group { display: flex; gap: 8px; flex-wrap: wrap; }
-        .chip { border-radius: 20px; padding: 5px 14px; font-size: 11px; font-weight: 600; transition: var(--transition); cursor: default; letter-spacing: 0.3px; }
-        .chip:hover { transform: scale(1.05); }
-        .chip-product { background: rgba(0,204,217,0.08); border: 1px solid rgba(0,204,217,0.2); color: #009da8; }
-        .chip-oper { background: rgba(77,142,255,0.08); border: 1px solid rgba(77,142,255,0.2); color: #3366cc; }
-        .match-card { display: flex; gap: 0; padding: 0; overflow: hidden; }
-        .match-accent { width: 5px; flex-shrink: 0; transition: width 0.3s ease; }
-        .match-card:hover .match-accent { width: 7px; }
-        .accent-1 { background: linear-gradient(180deg,var(--primary),var(--blue)); }
-        .accent-2 { background: linear-gradient(180deg,var(--blue),var(--purple)); }
-        .accent-3 { background: linear-gradient(180deg,var(--purple),#ec4899); }
-        .match-body { display: flex; gap: 20px; padding: 24px; flex: 1; align-items: stretch; }
-        @media (max-width: 640px) { .match-body { flex-direction: column; } }
-        .file-icon { width: 36px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; text-decoration: none; transition: var(--transition); border-radius: 8px; color: var(--text-dim); }
-        .file-icon:hover { color: var(--primary); transform: scale(1.1); }
-        .match-rank-row { display: flex; align-items: center; gap: 8px; }
-        .match-date { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); font-weight: 600; letter-spacing: 0.3px; }
-        .match-content { flex: 1; display: flex; flex-direction: column; gap: 16px; justify-content: center; }
-        .match-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
-        .match-title-group { display: flex; flex-direction: column; gap: 8px; }
-        .match-rank { font-size: 10px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; padding: 4px 12px; border-radius: 20px; display: inline-block; align-self: flex-start; }
-        .rank-1 { background: rgba(0,204,217,0.1); color: #009da8; }
-        .rank-2 { background: rgba(77,142,255,0.1); color: #3366cc; }
-        .rank-3 { background: rgba(168,85,247,0.1); color: #8b3fd9; }
-        .match-title { font-family: 'Outfit', sans-serif; font-size: 18px; font-weight: 700; color: var(--text-main); }
-        .score-ring-wrapper { display: flex; flex-direction: column; align-items: center; gap: 4px; flex-shrink: 0; }
-        .score-ring { position: relative; width: 72px; height: 72px; }
-        .score-ring svg { transform: rotate(-90deg); width: 72px; height: 72px; }
-        .score-ring .bg { fill: none; stroke: #e8ecf1; stroke-width: 4; }
-        .score-ring .progress { fill: none; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 188.5; animation: scoreRing 1.2s ease-out forwards; }
-        .progress-1 { stroke: url(#grad1); } .progress-2 { stroke: url(#grad2); } .progress-3 { stroke: url(#grad3); }
-        @keyframes scoreRing { from { stroke-dashoffset: 188.5; } }
-        .score-number { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: 'Outfit', sans-serif; font-size: 18px; font-weight: 800; color: var(--text-main); }
-        .score-label { font-size: 9px; font-weight: 700; color: var(--text-dim); letter-spacing: 1px; text-transform: uppercase; }
-        .match-details { display: flex; flex-direction: column; gap: 12px; background: #f8fafc; padding: 16px 20px; border-radius: 10px; border-left: 3px solid #cbd5e1; }
-        .details-1 { border-left-color: var(--primary); } .details-2 { border-left-color: var(--blue); } .details-3 { border-left-color: var(--purple); }
-        .detail-row { display: flex; flex-direction: column; gap: 5px; }
-        .detail-label { font-size: 10px; font-weight: 800; letter-spacing: 0.8px; text-transform: uppercase; }
-        .label-cause { color: var(--text-muted); } .label-action { color: var(--success); }
-        .detail-text { font-size: 13px; line-height: 1.6; color: var(--text-main); }
-        .text-action { font-weight: 600; color: var(--primary); }
-        .summary-card { background: linear-gradient(145deg,#161b22,#1f2937); border-radius: var(--radius-lg); padding: 34px; position: relative; overflow: hidden; border: 1px solid #374151; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.4),0 10px 10px -5px rgba(0,0,0,0.15); margin-top: 8px; animation: fadeSlideDown 0.6s ease-out 0.8s both; }
-        .summary-card::before { content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%; background: radial-gradient(circle,rgba(0,204,217,0.08) 0%,transparent 50%); z-index: 0; pointer-events: none; }
-        .summary-content { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 22px; }
-        .summary-header { display: flex; align-items: center; gap: 12px; }
-        .summary-icon { width: 30px; height: 30px; border-radius: 8px; background: rgba(0,204,217,0.12); display: flex; align-items: center; justify-content: center; }
-        .summary-title { font-family: 'Outfit', sans-serif; font-size: 16px; font-weight: 700; color: var(--primary); letter-spacing: 1px; }
-        .summary-text { font-size: 14px; color: #cbd5e1; line-height: 1.8; font-weight: 400; }
-        .summary-stats { display: flex; gap: 0; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 18px; flex-wrap: wrap; }
-        .stat-item { flex: 1; display: flex; flex-direction: column; gap: 5px; padding: 0 16px; border-right: 1px solid rgba(255,255,255,0.06); }
-        .stat-item:first-child { padding-left: 0; } .stat-item:last-child { border-right: none; padding-right: 0; }
-        .stat-label { font-size: 9px; color: #64748b; letter-spacing: 0.8px; text-transform: uppercase; font-weight: 700; }
-        .stat-value { font-family: 'Outfit', sans-serif; font-size: 14px; color: #e2e8f0; font-weight: 700; }
-        .summary-footer { text-align: center; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.05); }
-        .summary-footer span { font-size: 10px; color: #4a5568; letter-spacing: 1px; font-weight: 500; }
-        .summary-footer span em { color: var(--primary); font-style: normal; font-weight: 700; }
-        @keyframes fadeSlideDown { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
-        @media (max-width: 500px) { .header { flex-direction: column; align-items: flex-start; gap: 8px; } .query-value { font-size: 22px; } .match-title { font-size: 15px; } .summary-stats { flex-wrap: wrap; gap: 12px; } .stat-item { border-right: none; padding: 0; min-width: 45%; } }
+        thead th {
+            text-align: left;
+            padding: 10px 12px;
+            background: var(--row-alt);
+            border-bottom: 1px solid var(--border);
+            font-weight: 600;
+            color: var(--text);
+            white-space: nowrap;
+        }
+        tbody td {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: top;
+        }
+        tbody tr:nth-child(even) td { background: var(--row-alt); }
+        tbody tr:last-child td { border-bottom: none; }
+        td.num { font-weight: 700; color: var(--accent); width: 36px; text-align: right; }
+        td.score { font-variant-numeric: tabular-nums; white-space: nowrap; }
+        td.date { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        td.src a { color: var(--accent); text-decoration: none; }
+        td.src a:hover { text-decoration: underline; }
+        td.src .none { color: var(--muted); }
+        .hint {
+            font-size: 12px;
+            color: var(--muted);
+            padding: 8px 12px;
+            background: var(--row-alt);
+            border-left: 3px solid var(--accent);
+            border-radius: 2px;
+        }
+        details.summary-block {
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 0;
+        }
+        details.summary-block summary {
+            cursor: pointer;
+            padding: 10px 12px;
+            font-weight: 600;
+            user-select: none;
+        }
+        details.summary-block[open] summary { border-bottom: 1px solid var(--border); }
+        details.summary-block .body {
+            padding: 12px;
+            white-space: pre-wrap;
+            font-size: 13px;
+            color: var(--text);
+        }
     </style>
 </head>
 <body>
-    <svg width="0" height="0" style="position:absolute;">
-        <defs>
-            <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#00ccd9"/><stop offset="100%" stop-color="#4d8eff"/></linearGradient>
-            <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4d8eff"/><stop offset="100%" stop-color="#a855f7"/></linearGradient>
-            <linearGradient id="grad3" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#a855f7"/><stop offset="100%" stop-color="#ec4899"/></linearGradient>
-        </defs>
-    </svg>
-
     <div class="container">
         <div class="header">
-            <div class="header-left">
-                <div class="pulse-dot"></div>
-                <span class="header-title">FAIL HISTORY AGENT</span>
-            </div>
-            <a class="header-graph-link" href="{{ wiki_graph_url }}" target="_blank"
-               style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--blue); text-decoration: none; padding: 4px 10px; border: 1px solid rgba(77,142,255,0.3); border-radius: 12px; letter-spacing: 0.3px;">
-                🕸 그래프에서 보기
-            </a>
-            <span class="header-time" id="headerTime"></span>
+            <h1>Fail History</h1>
+            <span class="query">검색어: {{ query }}</span>
+            <span class="count">{{ total }}건</span>
         </div>
 
-        <div class="section-header">
-            <span class="section-title">AGENT RESULTS</span>
-            <span class="badge-count">Results {{ total }} History</span>
-        </div>
-
-        <div class="card query-card">
-            <span class="query-label">Search Query</span>
-            <div class="query-value">{{ query }}</div>
-            <div class="chip-group">
-                {% for p in products %}
-                <span class="chip chip-product">{{ p }}</span>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>제품</th>
+                    <th>공정</th>
+                    <th>불량유형</th>
+                    <th>원인</th>
+                    <th>조치</th>
+                    <th>점수</th>
+                    <th>날짜</th>
+                    <th>원본</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for r in results %}
+                <tr>
+                    <td class="num">{{ loop.index }}</td>
+                    <td>{{ r.product | default("") }}</td>
+                    <td>{{ r.cause_oper | default("") }}</td>
+                    <td>{{ r.fail_type | default("") }}</td>
+                    <td>{{ r.cause | default("") }}</td>
+                    <td>{{ r.action | default("") }}</td>
+                    <td class="score">{{ "%.1f" | format(r.score | default(0)) }}</td>
+                    <td class="date">{{ r.date | default("") }}</td>
+                    <td class="src">
+                        {% if r.doc_id and r.filenm %}
+                        <a href="{{ download_base_url }}/{{ r.doc_id }}/{{ r.filenm | urlencode }}"
+                           target="_blank" rel="noopener"
+                           title="{{ r.filenm }} (p.{{ r.page_num | default(0) }})">파일</a>
+                        {% else %}
+                        <span class="none">-</span>
+                        {% endif %}
+                    </td>
+                </tr>
                 {% endfor %}
-                {% for o in opers %}
-                <span class="chip chip-oper">{{ o }}</span>
-                {% endfor %}
-            </div>
-        </div>
+            </tbody>
+        </table>
 
-        {% for r in results %}
-        {% set ci = loop.index0 % 3 %}
-        {% set accent = ["accent-1", "accent-2", "accent-3"] %}
-        {% set rank_cls = ["rank-1", "rank-2", "rank-3"] %}
-        {% set progress_cls = ["progress-1", "progress-2", "progress-3"] %}
-        {% set details_cls = ["details-1", "details-2", "details-3"] %}
-        {% set score = r.score | default(0) %}
-        {% set offset = (188.5 * (1 - score / 100)) | round(1) %}
-        <div class="card match-card">
-            <div class="match-accent {{ accent[ci] }}"></div>
-            <div class="match-body">
-                {% if r.doc_id and r.filenm %}
-                <a class="file-icon"
-                   href="{{ download_base_url }}/{{ r.doc_id }}/{{ r.filenm | urlencode }}"
-                   target="_blank"
-                   title="{{ r.filenm }} (p.{{ r.page_num | default(0) }})"><svg width="20" height="24" viewBox="0 0 20 24" fill="none"><path d="M12 1H3a2 2 0 0 0-2 2v18a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8l-7-7z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 1v7h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 13l-3 3 3 3M10 13l3 3-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" opacity="0"/></svg></a>
-                {% else %}
-                <span class="file-icon" style="opacity:0.3;cursor:default;" title="원본 파일 없음"><svg width="20" height="24" viewBox="0 0 20 24" fill="none"><path d="M12 1H3a2 2 0 0 0-2 2v18a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8l-7-7z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 1v7h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-                {% endif %}
-                <div class="match-content">
-                    <div class="match-header">
-                        <div class="match-title-group">
-                            <div class="match-rank-row">
-                                <span class="match-rank {{ rank_cls[ci] }}">RANK #{{ "%02d" | format(loop.index) }}</span>
-                                <span class="match-date">{{ r.date | default("") }}</span>
-                            </div>
-                            <span class="match-title">{{ r.product | default("") }} / {{ r.cause_oper | default("") }} / {{ r.fail_type | default("") }}</span>
-                        </div>
-                        <div class="score-ring-wrapper">
-                            <div class="score-ring">
-                                <svg viewBox="0 0 64 64">
-                                    <circle class="bg" cx="32" cy="32" r="30" />
-                                    <circle class="progress {{ progress_cls[ci] }}" cx="32" cy="32" r="30"
-                                        style="stroke-dashoffset: {{ offset }};" />
-                                </svg>
-                                <span class="score-number" data-target="{{ score }}">0</span>
-                            </div>
-                            <span class="score-label">Hybrid Score</span>
-                        </div>
-                    </div>
-                    <div class="match-details {{ details_cls[ci] }}">
-                        <div class="detail-row">
-                            <span class="detail-label label-cause">Root Cause</span>
-                            <span class="detail-text">{{ r.cause | default("") }}</span>
-                        </div>
-                        <div class="detail-row">
-                            <span class="detail-label label-action">Verified Action</span>
-                            <span class="detail-text text-action">{{ r.action | default("") }}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
+        <div class="hint">
+            다음 턴에 번호로 선택할 수 있어요 — 예: "1번, 3번을 PPT로 만들어줘"
         </div>
-        {% endfor %}
 
         {% if summary %}
-        <div class="summary-card">
-            <div class="summary-content">
-                <div class="summary-header">
-                    <div class="summary-icon">
-                        <div class="pulse-dot" style="width:8px;height:8px;animation-delay:1s;"></div>
-                    </div>
-                    <span class="summary-title">INTEGRATED RAG SUMMARY</span>
-                </div>
-                <p class="summary-text">{{ summary }}</p>
-                <div class="summary-stats">
-                    <div class="stat-item">
-                        <span class="stat-label">Index</span>
-                        <span class="stat-value">{{ index_name }}</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Documents</span>
-                        <span class="stat-value">{{ total }}</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Embedding</span>
-                        <span class="stat-value">{{ embedding_dim }}-dim</span>
-                    </div>
-                    <div class="stat-item">
-                        <span class="stat-label">Method</span>
-                        <span class="stat-value">Hybrid Search</span>
-                    </div>
-                </div>
-                <div class="summary-footer">
-                    <span>Powered by <em>BM25 + kNN Vector</em> Weighted Hybrid Search</span>
-                </div>
-            </div>
-        </div>
+        <details class="summary-block">
+            <summary>RAG 합성 요약</summary>
+            <div class="body">{{ summary }}</div>
+        </details>
         {% endif %}
     </div>
-
-    <script>
-        function updateTime() {
-            var now = new Date();
-            var fmt = now.toLocaleString('ko-KR', {
-                year: 'numeric', month: '2-digit', day: '2-digit',
-                hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-            });
-            document.getElementById('headerTime').textContent = fmt;
-        }
-        updateTime(); setInterval(updateTime, 1000);
-
-        var observer = new IntersectionObserver(function(entries) {
-            entries.forEach(function(entry) {
-                if (entry.isIntersecting) {
-                    var el = entry.target;
-                    var target = parseFloat(el.dataset.target);
-                    var duration = 1200; var start = performance.now();
-                    function animate(now) {
-                        var elapsed = now - start;
-                        var progress = Math.min(elapsed / duration, 1);
-                        var eased = 1 - Math.pow(1 - progress, 3);
-                        el.textContent = (target * eased).toFixed(1);
-                        if (progress < 1) requestAnimationFrame(animate);
-                    }
-                    requestAnimationFrame(animate);
-                    observer.unobserve(el);
-                }
-            });
-        }, { threshold: 0.5 });
-        document.querySelectorAll('.score-number').forEach(function(el) { observer.observe(el); });
-    </script>
 </body>
 </html>

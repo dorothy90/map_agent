@@ -31,7 +31,7 @@ def _safe_filename(key: str) -> str:
 def _scan_nodes() -> dict[str, dict[str, Any]]:
     """vault 전체 frontmatter 스캔 → {id: metadata + _body}."""
     nodes: dict[str, dict[str, Any]] = {}
-    for kind in ("episodes", "concepts", "aliases"):
+    for kind in ("episodes", "concepts", "aliases", "super_concepts"):
         d = _VAULT / kind
         if not d.exists():
             continue
@@ -58,6 +58,8 @@ def _label(md: dict[str, Any], ntype: str) -> str:
         return f"📄 {q}" if q else f"📄 {md.get('id', '')[:24]}"
     if ntype == "alias":
         return f"{md.get('canonical', '')} ↔ {md.get('variant', '')}"
+    if ntype == "super_concept":
+        return f"★ {md.get('axis', '')}={md.get('axis_value', '')}"
     return md.get("id", "")
 
 
@@ -84,10 +86,127 @@ def _node_attrs(md: dict[str, Any], ntype: str) -> dict[str, Any]:
             "canonical": md.get("canonical", ""),
             "variant": md.get("variant", ""),
         })
+    elif ntype == "super_concept":
+        attrs.update({
+            "axis": md.get("axis", ""),
+            "axis_value": md.get("axis_value", ""),
+            "confidence": float(md.get("confidence", 0.0) or 0.0),
+        })
     return attrs
 
 
-def _build_graph(filter_type: str | None, filter_product: str | None, limit: int) -> dict[str, Any]:
+def _axis_node_id(axis: str, value: str) -> str:
+    return f"axis_{axis}:{value}"
+
+
+def _axis_label(axis: str, value: str) -> str:
+    tag = {"product": "🟦 P", "fail_type": "🟥 F", "cause_oper": "🟩 O"}.get(axis, axis)
+    return f"{tag} · {value}"
+
+
+def _build_product_tree(filter_product: str | None, limit: int) -> dict[str, Any]:
+    """Phase 8: product 중심 3-tier 트리 view.
+
+    Levels:
+      product (root) → prod_fail (product+fail_type, alias 정규화) → concept (leaf)
+    leaf label은 cause_oper만 — product/fail_type은 부모 노드에서 이미 보임.
+    episode / alias / axis_* / super_concept 노드 제외.
+    """
+    nodes_raw = _scan_nodes()
+    nodes_out: list[dict[str, Any]] = []
+    edges_out: list[dict[str, Any]] = []
+    products_added: set[str] = set()
+    prod_fails_added: set[str] = set()
+    edge_seen: set[str] = set()
+
+    for nid, md in nodes_raw.items():
+        if md.get("type") != "concept":
+            continue
+        product = (md.get("product") or "").strip()
+        fail_type = (md.get("fail_type") or "").strip()
+        cause_oper = (md.get("cause_oper") or "").strip()
+        if not (product and fail_type and cause_oper):
+            continue
+        if filter_product and product != filter_product:
+            continue
+        fail_norm = fail_type.split("(", 1)[0].strip() if "(" in fail_type else fail_type
+
+        pid = f"product:{product}"
+        if pid not in products_added:
+            products_added.add(pid)
+            nodes_out.append({
+                "key": pid,
+                "attributes": {
+                    "label": product,
+                    "type": "product",
+                    "size": 28,
+                    "color": "#3b82f6",
+                    "product": product,
+                },
+            })
+
+        pf_id = f"prod_fail:{product}|{fail_norm}"
+        if pf_id not in prod_fails_added:
+            prod_fails_added.add(pf_id)
+            nodes_out.append({
+                "key": pf_id,
+                "attributes": {
+                    "label": fail_norm,
+                    "type": "prod_fail",
+                    "size": 18,
+                    "color": "#ef4444",
+                    "product": product,
+                    "fail_type": fail_norm,
+                },
+            })
+            ek = f"{pid}__{pf_id}__has_fail"
+            if ek not in edge_seen:
+                edges_out.append({
+                    "key": ek, "source": pid, "target": pf_id,
+                    "attributes": {"kind": "has_fail", "weight": 1.0},
+                })
+                edge_seen.add(ek)
+
+        nodes_out.append({
+            "key": nid,
+            "attributes": {
+                "label": cause_oper,
+                "type": "concept",
+                "size": 12,
+                "color": "#22c55e",
+                "product": product,
+                "fail_type": fail_type,
+                "cause_oper": cause_oper,
+                "confidence": float(md.get("confidence", 0.0) or 0.0),
+            },
+        })
+        ek = f"{pf_id}__{nid}__has_oper"
+        if ek not in edge_seen:
+            edges_out.append({
+                "key": ek, "source": pf_id, "target": nid,
+                "attributes": {"kind": "has_oper", "weight": 1.0},
+            })
+            edge_seen.add(ek)
+
+        if len(nodes_out) >= limit:
+            break
+
+    return {
+        "attributes": {"name": "fail_history_wiki", "view": "product_tree"},
+        "options": {"type": "directed", "multi": True, "allowSelfLoops": True},
+        "nodes": nodes_out,
+        "edges": edges_out,
+    }
+
+
+def _build_graph(
+    filter_type: str | None,
+    filter_product: str | None,
+    limit: int,
+    view: str = "default",
+) -> dict[str, Any]:
+    if view == "product_tree":
+        return _build_product_tree(filter_product, limit)
     nodes_raw = _scan_nodes()
     nodes_out: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
@@ -141,6 +260,64 @@ def _build_graph(filter_type: str | None, filter_product: str | None, limit: int
                 })
                 edge_seen.add(ek)
 
+    # axis 노드 (product / fail_type / cause_oper) 자동 생성.
+    # concept이 어느 축에 속하는지 그래프에서 직접 시각화 + 같은 axis 가진 concept이
+    # 자연 클러스터됨. super_concept은 axis 1개와만 연결 ("abstracts").
+    axis_nodes_added: dict[str, dict[str, Any]] = {}
+
+    def _add_axis_node(axis: str, value: str) -> str | None:
+        v = (value or "").strip()
+        if not v:
+            return None
+        # fail_type alias normalize: "EASY(W)" → "EASY"
+        if axis == "fail_type" and "(" in v:
+            v = v.split("(", 1)[0].strip()
+        aid = _axis_node_id(axis, v)
+        if aid in seen_keys or aid in axis_nodes_added:
+            return aid
+        axis_nodes_added[aid] = {
+            "label": _axis_label(axis, v),
+            "type": f"axis_{axis}",
+            "axis": axis,
+            "axis_value": v,
+        }
+        return aid
+
+    for nid, md in nodes_raw.items():
+        if nid not in seen_keys:
+            continue
+        ntype = md.get("type", "")
+        if ntype == "concept":
+            for ax in ("product", "fail_type", "cause_oper"):
+                aid = _add_axis_node(ax, md.get(ax, ""))
+                if aid is None:
+                    continue
+                ek = f"{nid}__{aid}__has_{ax}"
+                if ek in edge_seen:
+                    continue
+                edges_out.append({
+                    "key": ek,
+                    "source": nid,
+                    "target": aid,
+                    "attributes": {"kind": f"has_{ax}", "weight": 0.8},
+                })
+                edge_seen.add(ek)
+        elif ntype == "super_concept":
+            aid = _add_axis_node(md.get("axis", ""), md.get("axis_value", ""))
+            if aid is not None:
+                ek = f"{nid}__{aid}__abstracts"
+                if ek not in edge_seen:
+                    edges_out.append({
+                        "key": ek,
+                        "source": nid,
+                        "target": aid,
+                        "attributes": {"kind": "abstracts", "weight": 2.0},
+                    })
+                    edge_seen.add(ek)
+
+    for aid, attrs in axis_nodes_added.items():
+        nodes_out.append({"key": aid, "attributes": attrs})
+
     return {
         "attributes": {"name": "fail_history_wiki"},
         "options": {"type": "directed", "multi": True, "allowSelfLoops": True},
@@ -154,14 +331,18 @@ def get_graph(
     type: str | None = Query(None, description="filter by node type: episode|concept|alias"),
     product: str | None = Query(None, description="filter by product"),
     limit: int = Query(300, ge=1, le=1000),
+    view: str = Query("default", description="default | product_tree"),
 ) -> dict[str, Any]:
-    """graphology v0.25 호환 JSON. 5초 TTL 캐시."""
-    key = f"{type or ''}|{product or ''}|{limit}"
+    """graphology v0.25 호환 JSON. 5초 TTL 캐시.
+
+    view='product_tree': product → fail_type → cause_oper 3-tier (Phase 8).
+    """
+    key = f"{type or ''}|{product or ''}|{limit}|{view}"
     now = time.time()
     cached = _cache.get(key)
     if cached and (now - cached[0]) < _CACHE_TTL_SEC:
         return cached[1]
-    g = _build_graph(type, product, limit)
+    g = _build_graph(type, product, limit, view)
     _cache[key] = (now, g)
     return g
 

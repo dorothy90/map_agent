@@ -1,5 +1,5 @@
 """
-Bootstrap wiki vault eager warm-up — 1회성.
+Bootstrap wiki vault eager warm-up — 1회성 (재실행 안전).
 
 사내 배포 직전에 vault를 사전 채워서 첫 사용자 검색부터 wiki-first 발동 가능하게 만든다.
 
@@ -9,6 +9,13 @@ Bootstrap wiki vault eager warm-up — 1회성.
   3) 트리플별 query 변형 N회로 do_search() 호출 → 비동기 ingest 누적
   4) 큐 drain 대기
   5) vault 요약 + lint 실행
+
+재실행 안전성 (idempotent):
+  - episode upsert는 (query + filters + doc_ids) hash 기반 id 사용 → 같은 검색은
+    같은 episode_id로 덮어쓰기 (중복 누적 X)
+  - concept synthesis는 evidence_diversity_score < 0.3 (동일 raw 반복) 시 skip,
+    in-flight 가드 (_synth_in_flight)도 중복 트리거 차단
+  - 같은 트리플 재실행은 안전. 단 LLM 호출이 다시 발생할 수는 있음
 
 사용:
   python bootstrap_wiki_warmup.py --dry-run

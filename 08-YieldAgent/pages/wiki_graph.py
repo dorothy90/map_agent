@@ -1,4 +1,4 @@
-"""Wiki vault graph viewer (PoC dev UI, Streamlit multipage).
+ 역"""Wiki vault graph viewer (PoC dev UI, Streamlit multipage).
 
 본격적인 운영 시각화는 별도 React+Vite repo의 react-force-graph-2d (plan v3 §부록).
 이 페이지는 PoC 검증용 임시 viewer — 같은 백엔드 endpoint(/api/wiki/graph)를 사용한다.
@@ -24,13 +24,33 @@ qp = st.query_params
 focus = qp.get("focus", "")
 default_type = qp.get("type", "")
 default_product = qp.get("product", "")
+default_view = qp.get("view", "default")
 
 # ── 사이드바 필터 ───────────────────────────────────────
+VIEW_OPTIONS = ["default", "product_tree"]
+VIEW_LABELS = {
+    "default": "default (episode/concept/alias/axis 평등)",
+    "product_tree": "product_tree (product → fail → oper 3-tier)",
+}
+
 with st.sidebar:
     st.header("필터")
+    view_idx = VIEW_OPTIONS.index(default_view) if default_view in VIEW_OPTIONS else 0
+    view_choice = st.selectbox(
+        "View",
+        VIEW_OPTIONS,
+        index=view_idx,
+        format_func=lambda v: VIEW_LABELS.get(v, v),
+    )
     type_options = ["(전체)", "episode", "concept", "alias"]
     type_idx = type_options.index(default_type) if default_type in type_options else 0
-    type_filter = st.selectbox("노드 유형", type_options, index=type_idx)
+    type_filter = st.selectbox(
+        "노드 유형",
+        type_options,
+        index=type_idx,
+        disabled=(view_choice == "product_tree"),
+        help="product_tree에서는 무시됨",
+    )
 
     product_filter = st.text_input("Product", value=default_product, placeholder="4SS / 6E2 / 4SA / 5QQ")
     limit = st.number_input("Max nodes", min_value=10, max_value=1000, value=300, step=50)
@@ -39,14 +59,14 @@ with st.sidebar:
         f"""
         **사용법**
         - 카드 리포트의 [그래프에서 보기] → focus 노드 강조
-        - URL 파라미터: `?focus=concept:4SS|...&product=4SS`
+        - URL 파라미터: `?focus=concept:4SS|...&product=4SS&view=product_tree`
         - 백엔드 endpoint: `{API_BASE}/api/wiki/graph`
         """
     )
 
 # ── 백엔드 fetch ────────────────────────────────────────
-params = {"limit": int(limit)}
-if type_filter != "(전체)":
+params = {"limit": int(limit), "view": view_choice}
+if view_choice != "product_tree" and type_filter != "(전체)":
     params["type"] = type_filter
 if product_filter.strip():
     params["product"] = product_filter.strip()
@@ -68,7 +88,19 @@ if focus:
     st.info(f"🎯 Focus: `{focus}`")
 
 # ── agraph 노드/엣지 ────────────────────────────────────
-type_color = {"episode": "#3498db", "concept": "#9b59b6", "alias": "#95a5a6"}
+type_color = {
+    "episode": "#3498db",
+    "concept": "#9b59b6",
+    "alias": "#95a5a6",
+    # Phase 8: product_tree view
+    "product": "#3b82f6",       # 파랑 — root
+    "prod_fail": "#ef4444",     # 빨강 — mid (product+fail_type)
+    # axis_* (default view)
+    "axis_product": "#3b82f6",
+    "axis_fail_type": "#ef4444",
+    "axis_cause_oper": "#22c55e",
+    "super_concept": "#f59e0b",
+}
 type_size = {"episode": 12, "concept": 22, "alias": 14}
 
 nodes = []
@@ -78,14 +110,20 @@ for n in g.get("nodes", []):
     nt = attrs.get("type", "")
     is_focus = (nid == focus)
     seen = int(attrs.get("seen_count", 1)) if nt == "concept" else 1
-    size = type_size.get(nt, 12) + (12 if is_focus else 0) + min(seen, 12)
-    # title은 hover tooltip — newline/특수문자 제거 (vis-network가 일부 텍스트를 URL로 해석하는 케이스 회피)
+    # 서버에서 size hint 보냈으면 그걸 우선 사용
+    base_size = int(attrs.get("size") or type_size.get(nt, 12))
+    size = base_size + (12 if is_focus else 0) + (min(seen, 12) if nt == "concept" else 0)
+    # 색: focus > 서버 color > type 매핑 > default
+    color = (
+        "#e74c3c" if is_focus
+        else attrs.get("color") or type_color.get(nt, "#bbb")
+    )
     safe_title = f"{nid} | updated {attrs.get('updated', '')}".replace("\n", " ").replace("\r", " ")
     nodes.append(Node(
         id=nid,
         label=(attrs.get("label", nid) or nid)[:42],
         size=size,
-        color="#e74c3c" if is_focus else type_color.get(nt, "#bbb"),
+        color=color,
         title=safe_title,
     ))
 

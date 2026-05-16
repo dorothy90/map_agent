@@ -42,6 +42,28 @@ def _render_fh_report_html(reports: List[Dict[str, Any]]) -> str:
     return "\n".join(html_parts)
 
 
+def _format_numbered_results(results: List[Dict[str, Any]]) -> str:
+    """다음 턴 supervisor LLM이 messages만 보고도 N번이 무엇인지 알 수 있게
+    각 결과를 한 줄로 압축한 번호 텍스트 블록을 만든다."""
+    if not results:
+        return ""
+    lines = ["[검색 결과 {}건]".format(len(results))]
+    for i, r in enumerate(results, start=1):
+        product = r.get("product") or "-"
+        oper = r.get("cause_oper") or "-"
+        ft = r.get("fail_type") or "-"
+        cause = (r.get("cause") or "").strip().replace("\n", " ")
+        action = (r.get("action") or "").strip().replace("\n", " ")
+        if len(cause) > 60:
+            cause = cause[:60] + "…"
+        if len(action) > 40:
+            action = action[:40] + "…"
+        lines.append(
+            f"{i}. {product} / {oper} — 불량: {ft} (원인: {cause} / 조치: {action})"
+        )
+    return "\n".join(lines)
+
+
 def _synthesize_answer(
     query: str,
     raw: Dict[str, Any],
@@ -142,6 +164,7 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         return {
             "messages": [error_message],
             "fail_history_artifacts": [],
+            "fail_history_results": [],
             "past_steps": [(state.get("current_task_id", ""), f"불량이력 영구 오류: {e}")],
         }
 
@@ -166,10 +189,25 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             logger.error("[FH Agent] 합성 영구 오류: %s", e, exc_info=True)
             answer = "검색은 됐지만 답변 합성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요. [SUGGESTION: ]"
 
+    # 2-b) super_concept "참고용" 보조 섹션 (env WIKI_SUPER_REFERENCE_ENABLED=true 시)
+    # Karpathy 정신: 답변 근거 X, 별도 섹션으로만. LLM 합성에 섞이지 않도록 후처리.
+    super_body = raw.get("super_reference_body") or ""
+    if super_body:
+        answer = answer.rstrip() + "\n\n---\n\n## 관련 패턴 (참고용)\n\n" + super_body
+
     # 3) HTML 카드 (results 있을 때만 자동)
+    # wiki-first는 옵션 4(doc_id _mget)로 results를 채워서 카드도 항상 렌더됨.
+    # summary는 wiki-first일 때 markdown rendered_answer 대신 짧은 텍스트로 분기.
     if results:
+        if retrieval_mode == "wiki-first":
+            report_summary = (
+                f"Wiki 누적 분석 결과 (evidence {len(results)}건, "
+                f"confidence={raw.get('wiki_concept_confidence', 0):.2f})"
+            )
+        else:
+            report_summary = answer
         try:
-            do_render_report(query, results, summary=answer)
+            do_render_report(query, results, summary=report_summary)
         except Exception as e:
             logger.warning("[FH Agent] HTML 렌더 실패: %s", e)
 
@@ -187,7 +225,13 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             })
 
     answer, agent_suggestion = extract_suggestion(answer)
-    result_message = AIMessage(content=answer, name="fail_history_agent")
+
+    numbered_block = _format_numbered_results(results)
+    if numbered_block:
+        message_content = f"{numbered_block}\n\n[합성 답변]\n{answer}"
+    else:
+        message_content = answer
+    result_message = AIMessage(content=message_content, name="fail_history_agent")
 
     wiki_hit_ids = list(dict.fromkeys(wiki_storage.get("hit_ids") or []))
     wiki_update_status = wiki_storage.get("last_status", "skipped")
@@ -195,8 +239,9 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     return {
         "messages": [result_message],
         "fail_history_artifacts": artifacts,
+        "fail_history_results": results,
         "agent_suggestion": agent_suggestion,
-        "past_steps": [(state.get("current_task_id", ""), answer[:300])],
+        "past_steps": [(state.get("current_task_id", ""), message_content[:300])],
         "wiki_hit_ids": wiki_hit_ids,
         "wiki_update_status": wiki_update_status,
     }

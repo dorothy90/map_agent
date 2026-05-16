@@ -264,3 +264,98 @@ def synthesize_concept(
         ]
     out.citations = [_enrich(c) for c in out.citations]
     return out
+
+
+# ── Day 5: super_concept — cross-concept 추상화 (참고용 한정) ─────
+class SuperConceptSynthesis(BaseModel):
+    """plan v3 §B: 여러 concept → cross-concept 추상화 결과. 참고용 한정."""
+    body_markdown: str = Field(
+        description="공통 패턴 / 변별 요소 / 참고 권고 섹션 + 합성 근거 concept_id 인용"
+    )
+    confidence: float = Field(
+        ge=0.0, le=1.0,
+        description="0~1 self-rated. concept body보다 0.1~0.2 낮게 권장."
+    )
+    notes: str = Field(default="", description="합성 시 주의사항/한계")
+
+
+_SUPER_SYSTEM = """당신은 반도체 fail_history wiki의 cross-concept 추상화 합성기입니다.
+
+[역할]
+여러 concept(트리플 단위 누적 지식)을 입력 받아, 공통 패턴을 추상화한 super_concept 본문을 생성합니다.
+
+[원칙]
+- 입력 concept body에 명시된 정보만 사용. 추측·일반론 금지.
+- 본문은 참고용으로만 사용 — 운영자가 "확정 근거"가 아닌 "유사 패턴 hint"로 읽음을 의식.
+- 출력 구조:
+  ```
+  ## 공통 패턴 (N concepts 기반)
+  - ...
+
+  ## 변별 요소
+  - [concept:...] : ...
+
+  ## 참고 권고
+  - 운영자가 참고할 패턴 가이드
+  ```
+- `confidence` (0~1):
+  - source concept 수 / 일치도 / 모순 기반
+  - 보통 0.4~0.7 권장. 모순 크면 <0.4, 명확 일치 + source ≥4면 >0.7.
+- 출력 언어: 한국어
+"""
+
+
+@observe(name="wiki_synthesize_super_concept")
+def synthesize_super_concept(
+    axis: str,
+    axis_value: str,
+    concepts: list[dict],
+) -> SuperConceptSynthesis | None:
+    """여러 concept → cross-concept 메타 합성 (참고용 한정).
+
+    Args:
+        axis: 와일드카드 축 — "fail_type" | "cause_oper" | "product"
+        axis_value: 고정된 다른 축 값 (예: axis="fail_type", value="EASY")
+        concepts: list of {"id": "concept:...", "frontmatter": {...}, "body": str}
+
+    Returns:
+        SuperConceptSynthesis or None
+    """
+    if len(concepts) < 2:
+        logger.info("[synthesize_super_concept] concepts < 2, skip: %s=%s", axis, axis_value)
+        return None
+
+    blocks = []
+    for c in concepts[:10]:
+        cid = c.get("id", "")
+        fm = c.get("frontmatter", {}) or {}
+        product = fm.get("product", "")
+        cause_oper = fm.get("cause_oper", "")
+        fail_type = fm.get("fail_type", "")
+        conf = fm.get("confidence", 0.0)
+        body = (c.get("body") or "")[:1500]
+        blocks.append(
+            f"--- [{cid}] product={product} cause_oper={cause_oper} fail_type={fail_type} concept_confidence={conf} ---\n{body}"
+        )
+    blocks_str = "\n\n".join(blocks)
+    user_msg = (
+        f"[Axis] {axis} = {axis_value} (다른 축은 와일드카드)\n"
+        f"[Concepts] {len(concepts)}개 (상위 {len(blocks)}건 표시)\n\n"
+        f"{blocks_str}\n\n"
+        f"위 concept들을 메타 분석해 추상화된 markdown body + confidence 생성하라.\n"
+        f"공통 패턴 / 변별 요소 / 참고 권고 섹션 필수."
+    )
+
+    try:
+        chain = _model().with_structured_output(SuperConceptSynthesis, method="function_calling")
+        out: SuperConceptSynthesis | None = chain.invoke(
+            [("system", _SUPER_SYSTEM), ("human", user_msg)],
+            config={"callbacks": _lf_callbacks()},
+        )
+    except Exception as e:
+        logger.warning("[synthesize_super_concept] LLM 호출 실패: %s", e)
+        return None
+    if out is None:
+        logger.warning("[synthesize_super_concept] structured output None")
+        return None
+    return out

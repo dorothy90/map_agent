@@ -16,13 +16,22 @@ import frontmatter
 
 logger = logging.getLogger("yield_agent.wiki_store")
 
-# ── 경로 ─────────────────────────────────────────────────
-_VAULT = Path(__file__).parent / "wiki"
+# ── 경로 (env로 사내 vault 위치 변경 가능) ────────────────
+_VAULT = Path(os.getenv("WIKI_VAULT_PATH") or (Path(__file__).parent / "wiki"))
 _EPISODES = _VAULT / "episodes"
 _CONCEPTS = _VAULT / "concepts"
 _ALIASES = _VAULT / "aliases"
+_SUPER_CONCEPTS = _VAULT / "super_concepts"
 _LOG = _VAULT / "log.md"
 _INDEX = _VAULT / "index.md"
+
+# ── wiki-first 게이트 임계 (env로 운영 중 조정 가능, 재기동 후 반영) ──
+# 데이터 누적 후 보수적으로 올리려면 .env에 WIKI_FIRST_MIN_* 추가.
+WIKI_FIRST_MIN_LEN = int(os.getenv("WIKI_FIRST_MIN_LEN", "200"))
+WIKI_FIRST_MIN_SOURCE_EPISODES = int(os.getenv("WIKI_FIRST_MIN_SOURCE_EPISODES", "1"))
+WIKI_FIRST_MIN_CONFIDENCE = float(os.getenv("WIKI_FIRST_MIN_CONFIDENCE", "0.5"))
+WIKI_FIRST_MIN_CITATION_COVERAGE = float(os.getenv("WIKI_FIRST_MIN_CITATION_COVERAGE", "0.0"))
+WIKI_FIRST_MAX_AGE_DAYS = int(os.getenv("WIKI_FIRST_MAX_AGE_DAYS", "30"))
 
 
 # ── ACRONYM_MAP 재사용 (fail_history_tools에 정의) ───────
@@ -73,7 +82,7 @@ def _alias_key(canonical: str, variant: str) -> str:
 
 
 def _ensure_dirs() -> None:
-    for d in (_EPISODES, _CONCEPTS, _ALIASES):
+    for d in (_EPISODES, _CONCEPTS, _ALIASES, _SUPER_CONCEPTS):
         d.mkdir(parents=True, exist_ok=True)
     if not _LOG.exists():
         _LOG.write_text("# Wiki Operation Log\n\n", encoding="utf-8")
@@ -328,11 +337,11 @@ def update_concept_evidence(concept_id: str, evidence: dict[str, Any]) -> bool:
 def lookup_concept_body(
     filters: dict,
     *,
-    min_len: int = 200,
-    min_source_episodes: int = 1,
-    min_confidence: float = 0.5,
-    min_citation_coverage: float = 0.0,
-    max_last_active_days: int = 30,
+    min_len: int = WIKI_FIRST_MIN_LEN,
+    min_source_episodes: int = WIKI_FIRST_MIN_SOURCE_EPISODES,
+    min_confidence: float = WIKI_FIRST_MIN_CONFIDENCE,
+    min_citation_coverage: float = WIKI_FIRST_MIN_CITATION_COVERAGE,
+    max_last_active_days: int = WIKI_FIRST_MAX_AGE_DAYS,
 ) -> dict[str, Any]:
     """plan v3 §C wiki-first/wiki-assisted 게이트.
 
@@ -541,6 +550,75 @@ def read_node(node_id: str) -> dict[str, Any] | None:
     return {"frontmatter": dict(post.metadata), "body": post.content or ""}
 
 
+def lookup_super_concept(axis: str, axis_value: str) -> dict[str, Any] | None:
+    """super_concept 노드 읽기. status=reference_only가 아니면 None.
+
+    Args:
+        axis: "fail_type" | "cause_oper" | "product"
+        axis_value: 고정된 축 값
+    """
+    _ensure_dirs()
+    sid_key = f"{axis}={axis_value}"
+    path = _SUPER_CONCEPTS / f"{_safe_filename(sid_key)}.md"
+    post = _read(path)
+    if post is None:
+        return None
+    md = dict(post.metadata)
+    if md.get("status") != "reference_only":
+        return None
+    return {"frontmatter": md, "body": post.content or ""}
+
+
+# ── super_concept upsert (Day 5: cross-concept 추상화, 참고용 한정) ────
+def upsert_super_concept(
+    axis: str,
+    axis_value: str,
+    source_concept_ids: list[str],
+    synthesized_body: str,
+    confidence: float,
+) -> tuple[str, Path]:
+    """super_concept 노드 생성/갱신. 자동 답변 근거 사용 금지 (status: reference_only).
+
+    Args:
+        axis: 와일드카드 축 — "fail_type" | "cause_oper" | "product"
+        axis_value: 고정된 다른 축 값 (예: "EASY"면 fail_type=EASY 고정, 나머지 *)
+        source_concept_ids: 합성 source가 된 concept id list
+        synthesized_body: LLM이 메타 합성한 markdown 본문
+        confidence: 0~1 self-rated (concept보다 낮게 권장)
+
+    Returns:
+        (super_id, file_path)
+    """
+    _ensure_dirs()
+    sid_key = f"{axis}={axis_value}"
+    super_id = f"super:{sid_key}"
+    path = _SUPER_CONCEPTS / f"{_safe_filename(sid_key)}.md"
+    now = _now_iso()
+    existing = _read(path)
+    if existing is not None:
+        md = dict(existing.metadata)
+    else:
+        md = {
+            "id": super_id,
+            "type": "super_concept",
+            "axis": axis,
+            "axis_value": axis_value,
+            "status": "reference_only",
+            "created": now,
+            **_lifecycle_defaults(),
+        }
+    md["updated"] = now
+    md["last_active"] = now
+    md["source_concept_ids"] = list(source_concept_ids)
+    md["confidence"] = float(confidence)
+    md["version"] = int(md.get("version", 0)) + 1
+    md["status"] = "reference_only"  # 항상 강제
+    post = frontmatter.Post(content=synthesized_body, **md)
+    _write(path, post)
+    _log("super_upsert", super_id, hits=len(source_concept_ids))
+    return super_id, path
+
+
 # ── 카운트 (eval/디버그) ─────────────────────────────────
 def counts() -> dict[str, int]:
     _ensure_dirs()
@@ -548,4 +626,5 @@ def counts() -> dict[str, int]:
         "episode": len(list(_EPISODES.glob("*.md"))),
         "concept": len(list(_CONCEPTS.glob("*.md"))),
         "alias": len(list(_ALIASES.glob("*.md"))),
+        "super_concept": len(list(_SUPER_CONCEPTS.glob("*.md"))),
     }

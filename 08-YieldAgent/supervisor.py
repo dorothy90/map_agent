@@ -1115,6 +1115,7 @@ class YieldQueryState(TypedDict):
 
     # Fail History 결과
     fail_history_artifacts: Annotated[list, operator.add]
+    fail_history_results: list[dict]     # 다음-턴 번호 선택 라우팅용 raw results (overwrite, per-turn reset in agent_server)
 
     # Day 4: wiki memory 메타 (둘 다 turn별 overwrite, reducer 없음 — plan v3 §State/Checkpoint 가드)
     wiki_hit_ids: list[str]              # 이번 turn에 wiki_memory가 참조한 노드 id (eval/디버그용)

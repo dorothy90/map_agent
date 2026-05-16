@@ -69,6 +69,43 @@ MONGO_URI = "mongodb://localhost:27017"
 MONGO_DB = "yield_agent"
 
 
+async def _wiki_lint_cron_loop(interval_hours: float) -> None:
+    """daily lint 백그라운드 task. env WIKI_LINT_CRON_HOURS>0 시에만 시작.
+
+    매 N시간마다 wiki_lint.scan() → wiki/lint_logs/YYYY-MM-DD.md 누적 저장.
+    """
+    import wiki_lint
+    import wiki_store
+    interval_s = max(60.0, interval_hours * 3600.0)
+    while True:
+        try:
+            await asyncio.sleep(interval_s)
+            vault = wiki_store._VAULT
+            issues = wiki_lint.scan(vault)
+            total = sum(len(v) for v in issues.values())
+            today = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d")
+            log_dir = vault / "lint_logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"{today}.md"
+            lines = [f"# Wiki lint (auto cron) — {today}", "",
+                     f"TOTAL ISSUES: **{total}** (vault=`{vault}`)", ""]
+            for kind, items in issues.items():
+                if not items:
+                    continue
+                lines.append(f"## {kind} ({len(items)})")
+                lines.append("")
+                for it in items:
+                    lines.append(f"- {it}")
+                lines.append("")
+            log_path.write_text("\n".join(lines), encoding="utf-8")
+            logger.info("[wiki_lint cron] total=%d → %s", total, log_path)
+        except asyncio.CancelledError:
+            logger.info("[wiki_lint cron] cancelled")
+            return
+        except Exception as e:
+            logger.warning("[wiki_lint cron] error: %s", e)
+
+
 # ── FastAPI lifespan — MongoDB 연결 + wiki_queue 워커 관리 ─
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -84,6 +121,14 @@ async def lifespan(app: FastAPI):
     await wiki_queue.start()
     app.state.wiki_queue = wiki_queue
 
+    # Day 6: lint daily cron (WIKI_LINT_CRON_HOURS=0 또는 미설정 시 비활성)
+    lint_hours = float(os.getenv("WIKI_LINT_CRON_HOURS", "0") or "0")
+    lint_task: asyncio.Task | None = None
+    if lint_hours > 0:
+        lint_task = asyncio.create_task(_wiki_lint_cron_loop(lint_hours))
+        logger.info("[wiki_lint cron] started, interval=%sh", lint_hours)
+    app.state.wiki_lint_task = lint_task
+
     # MongoDBSaver (sync) — LangGraph 체크포인터
     with MongoDBSaver.from_conn_string(MONGO_URI, db_name=MONGO_DB) as checkpointer:
         app.state.graph = workflow.compile(checkpointer=checkpointer)
@@ -91,6 +136,12 @@ async def lifespan(app: FastAPI):
         try:
             yield
         finally:
+            if lint_task is not None:
+                lint_task.cancel()
+                try:
+                    await lint_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             await wiki_queue.stop(timeout=10)
 
     motor_client.close()
@@ -288,6 +339,8 @@ async def chat_stream(request: ChatRequest, req: Request):
             # Day 4: wiki state는 turn별 overwrite (reducer 없음). 명시적 reset.
             "wiki_hit_ids": [],
             "wiki_update_status": "skipped",
+            # 다음-턴 번호 선택 라우팅용 raw results (reducer 없음, turn별 overwrite)
+            "fail_history_results": [],
             # anomaly_params는 매 새 사용자 turn 시 리셋 (#11 fix).
             # 동기: 이전 turn의 anomaly가 supervisor 라우팅 프롬프트(supervisor.py:409-414)에
             #       매번 "[이전 분석 결과]"로 주입되어 다른 product 분석에까지 stale 컨텍스트가
