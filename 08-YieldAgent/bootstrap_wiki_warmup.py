@@ -1,33 +1,32 @@
 """
-Bootstrap wiki vault eager warm-up — 1회성 (재실행 안전).
+Bootstrap wiki vault — 직접 합성 (raw docs → concept body, episode 단계 생략).
 
-사내 배포 직전에 vault를 사전 채워서 첫 사용자 검색부터 wiki-first 발동 가능하게 만든다.
+Phase 11: 사용자 검색 시뮬레이션·큐·episode 단계 모두 제거. 트리플별 OpenSearch에서
+raw docs 직접 fetch → LLM 합성 1회 → wiki_store.upsert_concept 즉시 저장.
+
+장점:
+  - LLM 호출 ~트리플 수 (검색 트리거형 대비 1/3)
+  - 큐·worker 없음 → 디버깅 단순, 직렬 진행
+  - 신규 doc 인덱싱 시 idempotent 재실행 (같은 트리플은 최신 raw로 재합성)
 
 흐름:
-  1) foundations.yaml 우선 seed
-  2) OpenSearch aggregation top-N으로 보완 (min_docs 임계 통과만)
-  3) 트리플별 query 변형 N회로 do_search() 호출 → 비동기 ingest 누적
-  4) 큐 drain 대기
-  5) vault 요약 + lint 실행
-
-재실행 안전성 (idempotent):
-  - episode upsert는 (query + filters + doc_ids) hash 기반 id 사용 → 같은 검색은
-    같은 episode_id로 덮어쓰기 (중복 누적 X)
-  - concept synthesis는 evidence_diversity_score < 0.3 (동일 raw 반복) 시 skip,
-    in-flight 가드 (_synth_in_flight)도 중복 트리거 차단
-  - 같은 트리플 재실행은 안전. 단 LLM 호출이 다시 발생할 수는 있음
+  1) foundations.yaml seed + OpenSearch aggregation top-N → 트리플 list
+  2) 트리플별 OpenSearch raw docs fetch (terms+prefix filter)
+  3) synthesize_concept_from_docs (LLM 1회) → ConceptSynthesis
+  4) wiki_store.upsert_concept → vault에 즉시 저장
+  5) (선택) wiki_lint 실행
 
 사용:
-  python bootstrap_wiki_warmup.py --dry-run
-  python bootstrap_wiki_warmup.py --apply
-  python bootstrap_wiki_warmup.py --apply --top 30 --queries-per-triple 4
+  python bootstrap_wiki_warmup.py --dry-run                  # seed 후보만 출력
+  python bootstrap_wiki_warmup.py --apply                    # 실 실행
+  python bootstrap_wiki_warmup.py --apply --top 50 --max-docs 20
 """
 from __future__ import annotations
 
 import argparse
-import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,18 +34,17 @@ import yaml
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
-
 sys.path.insert(0, str(Path(__file__).parent))
 
-from fail_history_tools import _get_opensearch_client, do_search
-from wiki_queue import wiki_queue
-from wiki_summarizer import summarize as wiki_summarize_fn
-import wiki_store
+from fail_history_tools import _get_opensearch_client  # noqa: E402
+import wiki_store  # noqa: E402
+from wiki_summarizer import synthesize_concept_from_docs  # noqa: E402
 
 _OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "fail-history")
 _VAULT_PATH = Path(os.getenv("WIKI_VAULT_PATH", str(Path(__file__).parent / "wiki")))
 
 
+# ── seed 수집 ────────────────────────────────────────────
 def load_foundations(vault: Path) -> list[dict[str, Any]]:
     fpath = vault / "foundations.yaml"
     if not fpath.exists():
@@ -71,12 +69,12 @@ def fetch_opensearch_triples(top: int, min_docs: int) -> list[dict[str, Any]]:
         "size": 0,
         "aggs": {
             "by_product": {
-                "terms": {"field": "product.keyword", "size": 10},
+                "terms": {"field": "product.keyword", "size": 20},
                 "aggs": {
                     "by_fail": {
-                        "terms": {"field": "fail_type.keyword", "size": 20},
+                        "terms": {"field": "fail_type.keyword", "size": 50},
                         "aggs": {
-                            "by_oper": {"terms": {"field": "cause_oper", "size": 20}}
+                            "by_oper": {"terms": {"field": "cause_oper", "size": 50}}
                         }
                     }
                 }
@@ -96,8 +94,10 @@ def fetch_opensearch_triples(top: int, min_docs: int) -> list[dict[str, Any]]:
                     "cause_oper": ob["key"],
                     "doc_count": ob["doc_count"],
                 })
-    triples = sorted([t for t in triples if t["doc_count"] >= min_docs],
-                     key=lambda t: -t["doc_count"])[:top]
+    triples = sorted(
+        [t for t in triples if t["doc_count"] >= min_docs],
+        key=lambda t: -t["doc_count"],
+    )[:top]
     for t in triples:
         t["priority"] = "auto"
         t["source"] = "opensearch"
@@ -105,65 +105,101 @@ def fetch_opensearch_triples(top: int, min_docs: int) -> list[dict[str, Any]]:
 
 
 def merge_seeds(foundations: list[dict], aggregated: list[dict]) -> list[dict]:
-    seen = {(s["product"], s["fail_type"], s["cause_oper"]) for s in foundations}
+    """foundations 우선 + aggregation에 있는 트리플 추가.
+    fail_type alias 정규화 키 ("EASY(W)" → "EASY") 로 dedup."""
+    def _norm_key(t: dict) -> tuple[str, str, str]:
+        f = t["fail_type"]
+        fnorm = f.split("(", 1)[0].strip() if "(" in f else f
+        return (t["product"], fnorm, t["cause_oper"])
+
+    seen = {_norm_key(s) for s in foundations}
     out = list(foundations)
     for t in aggregated:
-        key = (t["product"], t["fail_type"], t["cause_oper"])
-        if key not in seen:
+        if _norm_key(t) not in seen:
             out.append(t)
-            seen.add(key)
+            seen.add(_norm_key(t))
     return out
 
 
-def query_variants(product: str, fail_type: str, cause_oper: str) -> list[str]:
-    """자연어 다양화 — 같은 raw 반복 가드(evidence_diversity)를 우회."""
-    return [
-        f"{fail_type} 불량 원인",
-        f"{cause_oper}에서 발생한 {fail_type}",
-        f"{product} {fail_type} 패턴 정리",
-        f"{product} {cause_oper} 불량 이력",
-    ]
+# ── raw docs fetch + 합성 ────────────────────────────────
+def fetch_docs_for_triple(
+    product: str,
+    fail_type: str,
+    cause_oper: str,
+    max_docs: int,
+) -> list[dict[str, Any]]:
+    """트리플 docs를 OpenSearch에서 직접 fetch (검색 점수 계산 X)."""
+    client = _get_opensearch_client()
+    fail_norm = fail_type.split("(", 1)[0].strip() if "(" in fail_type else fail_type
+    body = {
+        "size": max_docs,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"product.keyword": product}},
+                    {"prefix": {"fail_type.keyword": fail_norm}},
+                    {"term": {"cause_oper": cause_oper}},
+                ]
+            }
+        },
+    }
+    resp = client.search(index=_OPENSEARCH_INDEX, body=body)
+    return [hit.get("_source", {}) for hit in resp.get("hits", {}).get("hits", [])]
 
 
-async def warmup(seeds: list[dict], queries_per_triple: int) -> None:
-    for i, s in enumerate(seeds, 1):
-        product = s["product"]
-        fail_type = s["fail_type"]
-        cause_oper = s["cause_oper"]
-        print(f"  [{i}/{len(seeds)}] {product}|{fail_type}|{cause_oper}  (source={s['source']})")
-        for q in query_variants(product, fail_type, cause_oper)[:queries_per_triple]:
-            try:
-                do_search(query=q, product=product, fail_type=fail_type,
-                          cause_oper=cause_oper, top_k=5)
-            except Exception as e:
-                print(f"    ✗ query={q!r} 실패: {e}")
-                continue
+def process_triple(t: dict[str, Any], max_docs: int) -> tuple[str, str]:
+    """트리플 1개 처리 → (status, message)."""
+    p, f, o = t["product"], t["fail_type"], t["cause_oper"]
+    cid = f"concept:{p}|{o}|{f}"
+    try:
+        docs = fetch_docs_for_triple(p, f, o, max_docs=max_docs)
+    except Exception as e:
+        return ("fetch_fail", f"  ✗ docs fetch: {e}")
+    if not docs:
+        return ("no_docs", "  ⚠ docs 0건 (skip)")
+    try:
+        result = synthesize_concept_from_docs(cid, docs)
+    except Exception as e:
+        return ("synth_fail", f"  ✗ synth: {e}")
+    if result is None:
+        return ("synth_none", "  ✗ synth None (LLM 실패 또는 응답 빈 채)")
+    try:
+        wiki_store.upsert_concept(
+            filters={"product": p, "fail_type": f, "cause_oper": o},
+            source_episode_id=None,  # 직접 합성 — episode 단계 생략
+            synthesized_body=result.body_markdown,
+            confidence=result.confidence,
+            citations=[c.model_dump() for c in result.citations],
+            evidence={
+                "score": 1.0 if len(docs) >= 5 else len(docs) / 5.0,
+                "unique_doc_ids": len({d.get("doc_id") for d in docs if d.get("doc_id")}),
+                "n_episodes": 0,
+                "n_dates": len({d.get("date") for d in docs if d.get("date")}),
+            },
+        )
+    except Exception as e:
+        return ("save_fail", f"  ✗ upsert: {e}")
+    return ("ok", f"  ✓ conf={result.confidence:.2f}  docs={len(docs)}  cits={len(result.citations)}")
 
 
-def summarize_vault() -> None:
-    counts = wiki_store.counts()
-    print(f"\nvault counts: episodes={counts.get('episodes', 0)} "
-          f"concepts={counts.get('concepts', 0)} "
-          f"aliases={counts.get('aliases', 0)}")
-    high = mid = low = 0
-    for cpath in wiki_store._CONCEPTS.glob("*.md"):
-        post = wiki_store._read(cpath)
-        if post is None:
-            continue
-        try:
-            conf = float(post.metadata.get("confidence", 0.0))
-        except (TypeError, ValueError):
-            conf = 0.0
-        if conf >= 0.7:
-            high += 1
-        elif conf >= 0.5:
-            mid += 1
-        else:
-            low += 1
-    print(f"  concept confidence: ≥0.7={high}  0.5~0.7={mid}  <0.5={low}")
+# ── main ────────────────────────────────────────────────
+def main() -> int:
+    p = argparse.ArgumentParser(description="Wiki vault 직접 합성 (raw docs → concept body)")
+    p.add_argument("--dry-run", action="store_true", help="seed 후보만 출력")
+    p.add_argument("--apply", action="store_true", help="실 실행")
+    p.add_argument("--top", type=int, default=200, help="OpenSearch aggregation top-N 트리플 (default 200)")
+    p.add_argument("--min-docs", type=int, default=1, help="트리플 채택 최소 doc 수 (default 1)")
+    p.add_argument("--max-docs", type=int, default=15, help="트리플당 LLM에 전달할 max docs (default 15)")
+    p.add_argument("--skip-existing", action="store_true",
+                   help="vault에 이미 합성된 concept(confidence>0)은 skip — 신규 트리플만")
+    p.add_argument("--no-lint", action="store_true", help="끝에 lint 실행 안 함")
+    args = p.parse_args()
 
+    if args.dry_run and args.apply:
+        p.error("--dry-run 과 --apply 동시 지정 불가")
+    if not (args.dry_run or args.apply):
+        p.error("--dry-run 또는 --apply 둘 중 하나 필수")
 
-async def amain(args: argparse.Namespace) -> int:
     vault = _VAULT_PATH
     print(f"vault: {vault}")
     print(f"opensearch index: {_OPENSEARCH_INDEX}")
@@ -173,14 +209,11 @@ async def amain(args: argparse.Namespace) -> int:
     for s in foundations:
         print(f"  - {s['product']}|{s['fail_type']}|{s['cause_oper']} (priority={s['priority']})")
 
-    aggregated: list[dict[str, Any]] = []
     try:
         aggregated = fetch_opensearch_triples(top=args.top, min_docs=args.min_docs)
     except Exception as e:
         print(f"\n  ⚠️ OpenSearch aggregation 실패: {e}")
-        if not foundations:
-            print("  foundations도 없음 → 종료")
-            return 2
+        aggregated = []
     print(f"\n2) OpenSearch aggregation top-{args.top} (min_docs={args.min_docs}): {len(aggregated)}")
     for t in aggregated[:10]:
         print(f"  - {t['product']}|{t['fail_type']}|{t['cause_oper']} (doc={t['doc_count']})")
@@ -190,23 +223,57 @@ async def amain(args: argparse.Namespace) -> int:
     seeds = merge_seeds(foundations, aggregated)
     print(f"\n3) merged seeds: {len(seeds)}")
 
+    if args.skip_existing:
+        before = len(seeds)
+        filtered = []
+        for s in seeds:
+            cid = f"concept:{s['product']}|{s['cause_oper']}|{s['fail_type']}"
+            existing = wiki_store.read_node(cid)
+            try:
+                conf = float(existing.get("frontmatter", {}).get("confidence", 0) if existing else 0)
+            except (TypeError, ValueError):
+                conf = 0.0
+            if conf <= 0:
+                filtered.append(s)
+        seeds = filtered
+        print(f"  --skip-existing: {before} → {len(seeds)} (이미 합성된 concept 제외)")
+
     if args.dry_run:
         print("\n--dry-run — 실 실행 X")
         return 0
 
-    print("\n4) wiki_queue start + warmup 시작…")
-    wiki_queue.set_summarizer(wiki_summarize_fn)
-    await wiki_queue.start()
-    try:
-        await warmup(seeds, queries_per_triple=args.queries_per_triple)
-        print(f"\n5) 큐 drain 대기 (timeout={args.drain_timeout}s)…")
-        await wiki_queue.stop(timeout=args.drain_timeout)
-    except Exception as e:
-        print(f"warmup 중 오류: {e}")
-        await wiki_queue.stop(timeout=10)
-        return 1
+    # ── 4) 트리플별 직접 합성 ─────────────────────────
+    print(f"\n4) 트리플별 직접 합성 시작 — {len(seeds)}개")
+    t0 = time.time()
+    counts = {"ok": 0, "no_docs": 0, "fetch_fail": 0, "synth_fail": 0, "synth_none": 0, "save_fail": 0}
+    for i, t in enumerate(seeds, 1):
+        print(f"  [{i}/{len(seeds)}] {t['product']}|{t['fail_type']}|{t['cause_oper']}  (src={t['source']})")
+        status, msg = process_triple(t, max_docs=args.max_docs)
+        counts[status] = counts.get(status, 0) + 1
+        print(msg)
+    elapsed = time.time() - t0
+    print(f"\n  완료: {elapsed:.1f}s ({elapsed/60:.1f}분)")
+    print(f"  결과: {counts}")
 
-    summarize_vault()
+    # ── 5) vault 요약 + lint ───────────────────────────
+    vc = wiki_store.counts()
+    print(f"\nvault counts: episodes={vc.get('episode', 0)}  concepts={vc.get('concept', 0)}  super={vc.get('super_concept', 0)}")
+    high = mid = low = 0
+    for cpath in wiki_store._CONCEPTS.glob("*.md"):
+        post = wiki_store._read(cpath)
+        if post is None:
+            continue
+        try:
+            conf = float(post.metadata.get("confidence", 0) or 0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        if conf >= 0.7:
+            high += 1
+        elif conf >= 0.5:
+            mid += 1
+        else:
+            low += 1
+    print(f"  concept confidence: ≥0.7={high}  0.5~0.7={mid}  <0.5={low}")
 
     if not args.no_lint:
         print("\n6) lint 실행…")
@@ -218,26 +285,7 @@ async def amain(args: argparse.Namespace) -> int:
             if items:
                 print(f"    {kind}: {len(items)}")
 
-    return 0
-
-
-def main() -> int:
-    p = argparse.ArgumentParser(description="Bootstrap wiki vault eager warm-up")
-    p.add_argument("--dry-run", action="store_true", help="seed 후보만 출력")
-    p.add_argument("--apply", action="store_true", help="실 실행")
-    p.add_argument("--top", type=int, default=20, help="OpenSearch top-N 트리플 (default 20)")
-    p.add_argument("--min-docs", type=int, default=2, help="트리플 채택 최소 doc 수 (default 2)")
-    p.add_argument("--queries-per-triple", type=int, default=3, help="트리플당 query 변형 수 (default 3)")
-    p.add_argument("--drain-timeout", type=int, default=600, help="큐 drain timeout 초 (default 600)")
-    p.add_argument("--no-lint", action="store_true", help="끝에 lint 실행 안 함")
-    args = p.parse_args()
-
-    if not (args.dry_run or args.apply):
-        p.error("--dry-run 또는 --apply 둘 중 하나 필수")
-    if args.dry_run and args.apply:
-        p.error("--dry-run 과 --apply 동시 지정 불가")
-
-    return asyncio.run(amain(args))
+    return 0 if counts["ok"] > 0 else 1
 
 
 if __name__ == "__main__":

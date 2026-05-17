@@ -104,59 +104,106 @@ def _axis_label(axis: str, value: str) -> str:
     return f"{tag} · {value}"
 
 
-def _build_product_tree(filter_product: str | None, limit: int) -> dict[str, Any]:
-    """Phase 8: product 중심 3-tier 트리 view.
+def _fetch_triple_aggregation(filter_product: str | None) -> dict[tuple[str, str, str], int]:
+    """OpenSearch aggregation으로 (product, fail_norm, cause_oper) 트리플별 doc 수 집계.
 
-    Levels:
-      product (root) → prod_fail (product+fail_type, alias 정규화) → concept (leaf)
-    leaf label은 cause_oper만 — product/fail_type은 부모 노드에서 이미 보임.
-    episode / alias / axis_* / super_concept 노드 제외.
+    실패 시 빈 dict 반환 → product_tree는 vault concept만으로 자연 fallback.
     """
-    nodes_raw = _scan_nodes()
+    try:
+        from fail_history_tools import _get_opensearch_client, _OPENSEARCH_INDEX
+        client = _get_opensearch_client()
+        body = {
+            "size": 0,
+            "aggs": {
+                "by_product": {
+                    "terms": {"field": "product.keyword", "size": 50},
+                    "aggs": {
+                        "by_fail": {
+                            "terms": {"field": "fail_type.keyword", "size": 50},
+                            "aggs": {
+                                "by_oper": {"terms": {"field": "cause_oper", "size": 50}}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        resp = client.search(index=_OPENSEARCH_INDEX, body=body)
+    except Exception as e:
+        logger.warning("[product_tree] OpenSearch aggregation 실패 — vault만 사용: %s", e)
+        return {}
+    out: dict[tuple[str, str, str], int] = {}
+    for pb in resp.get("aggregations", {}).get("by_product", {}).get("buckets", []):
+        p = pb["key"]
+        if filter_product and p != filter_product:
+            continue
+        for fb in pb.get("by_fail", {}).get("buckets", []):
+            f = fb["key"]
+            fnorm = f.split("(", 1)[0].strip() if "(" in f else f
+            for ob in fb.get("by_oper", {}).get("buckets", []):
+                key = (p, fnorm, ob["key"])
+                out[key] = out.get(key, 0) + int(ob.get("doc_count", 0))
+    return out
+
+
+def _build_product_tree(filter_product: str | None, limit: int) -> dict[str, Any]:
+    """Phase 8 + 9: product 중심 3-tier 트리 view.
+
+    Leaf 채우는 출처 두 가지:
+      - vault concept (합성됨) → 진한 초록 + confidence 표시 (has_wiki=True)
+      - OpenSearch aggregation only (vault 없음) → 옅은 초록 + doc_count만 (has_wiki=False)
+
+    OpenSearch 실패 시 vault concept만 표시 (Phase 8-A 동작).
+    """
+    # 1) vault concept 수집 — key: (product, fail_norm, cause_oper)
+    vault_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for nid, md in _scan_nodes().items():
+        if md.get("type") != "concept":
+            continue
+        p = (md.get("product") or "").strip()
+        f = (md.get("fail_type") or "").strip()
+        o = (md.get("cause_oper") or "").strip()
+        if not (p and f and o):
+            continue
+        if filter_product and p != filter_product:
+            continue
+        fnorm = f.split("(", 1)[0].strip() if "(" in f else f
+        vault_by_key.setdefault((p, fnorm, o), {"id": nid, "md": md, "fail_raw": f})
+
+    # 2) OpenSearch aggregation 트리플 + doc_count
+    aggregated = _fetch_triple_aggregation(filter_product)
+
+    # 3) merge — 두 출처의 모든 트리플
+    all_keys = sorted(set(vault_by_key.keys()) | set(aggregated.keys()))
+
     nodes_out: list[dict[str, Any]] = []
     edges_out: list[dict[str, Any]] = []
     products_added: set[str] = set()
     prod_fails_added: set[str] = set()
     edge_seen: set[str] = set()
 
-    for nid, md in nodes_raw.items():
-        if md.get("type") != "concept":
-            continue
-        product = (md.get("product") or "").strip()
-        fail_type = (md.get("fail_type") or "").strip()
-        cause_oper = (md.get("cause_oper") or "").strip()
-        if not (product and fail_type and cause_oper):
-            continue
-        if filter_product and product != filter_product:
-            continue
-        fail_norm = fail_type.split("(", 1)[0].strip() if "(" in fail_type else fail_type
-
-        pid = f"product:{product}"
+    for (p, fnorm, o) in all_keys:
+        # product 노드
+        pid = f"product:{p}"
         if pid not in products_added:
             products_added.add(pid)
             nodes_out.append({
                 "key": pid,
                 "attributes": {
-                    "label": product,
-                    "type": "product",
-                    "size": 28,
-                    "color": "#3b82f6",
-                    "product": product,
+                    "label": p, "type": "product", "size": 28,
+                    "color": "#3b82f6", "product": p,
                 },
             })
 
-        pf_id = f"prod_fail:{product}|{fail_norm}"
+        # prod_fail 노드
+        pf_id = f"prod_fail:{p}|{fnorm}"
         if pf_id not in prod_fails_added:
             prod_fails_added.add(pf_id)
             nodes_out.append({
                 "key": pf_id,
                 "attributes": {
-                    "label": fail_norm,
-                    "type": "prod_fail",
-                    "size": 18,
-                    "color": "#ef4444",
-                    "product": product,
-                    "fail_type": fail_norm,
+                    "label": fnorm, "type": "prod_fail", "size": 18,
+                    "color": "#ef4444", "product": p, "fail_type": fnorm,
                 },
             })
             ek = f"{pid}__{pf_id}__has_fail"
@@ -167,19 +214,31 @@ def _build_product_tree(filter_product: str | None, limit: int) -> dict[str, Any
                 })
                 edge_seen.add(ek)
 
-        nodes_out.append({
-            "key": nid,
-            "attributes": {
-                "label": cause_oper,
-                "type": "concept",
-                "size": 12,
-                "color": "#22c55e",
-                "product": product,
-                "fail_type": fail_type,
-                "cause_oper": cause_oper,
+        # leaf 노드 — vault 있으면 진한 초록(has_wiki=True), 없으면 옅은 초록
+        vault_info = vault_by_key.get((p, fnorm, o))
+        doc_count = aggregated.get((p, fnorm, o), 0)
+        if vault_info:
+            nid = vault_info["id"]
+            md = vault_info["md"]
+            leaf_attrs = {
+                "label": o, "type": "concept", "size": 14,
+                "color": "#16a34a",   # 진한 초록 = vault 합성됨
+                "product": p, "fail_type": vault_info["fail_raw"], "cause_oper": o,
                 "confidence": float(md.get("confidence", 0.0) or 0.0),
-            },
-        })
+                "has_wiki": True,
+                "doc_count": doc_count,
+            }
+        else:
+            nid = f"trip:{p}|{fnorm}|{o}"
+            leaf_attrs = {
+                "label": o, "type": "concept", "size": 10,
+                "color": "#bbf7d0",   # 옅은 초록 = OpenSearch only (vault 미합성)
+                "product": p, "fail_type": fnorm, "cause_oper": o,
+                "confidence": 0.0,
+                "has_wiki": False,
+                "doc_count": doc_count,
+            }
+        nodes_out.append({"key": nid, "attributes": leaf_attrs})
         ek = f"{pf_id}__{nid}__has_oper"
         if ek not in edge_seen:
             edges_out.append({

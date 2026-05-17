@@ -1,8 +1,9 @@
- 역"""Wiki vault graph viewer (PoC dev UI, Streamlit multipage).
+"""Wiki vault graph viewer (PoC dev UI, Streamlit multipage).
 
 본격적인 운영 시각화는 별도 React+Vite repo의 react-force-graph-2d (plan v3 §부록).
 이 페이지는 PoC 검증용 임시 viewer — 같은 백엔드 endpoint(/api/wiki/graph)를 사용한다.
 """
+
 from __future__ import annotations
 
 import os
@@ -52,8 +53,12 @@ with st.sidebar:
         help="product_tree에서는 무시됨",
     )
 
-    product_filter = st.text_input("Product", value=default_product, placeholder="4SS / 6E2 / 4SA / 5QQ")
-    limit = st.number_input("Max nodes", min_value=10, max_value=1000, value=300, step=50)
+    product_filter = st.text_input(
+        "Product", value=default_product, placeholder="4SS / 6E2 / 4SA / 5QQ"
+    )
+    limit = st.number_input(
+        "Max nodes", min_value=10, max_value=1000, value=300, step=50
+    )
     st.divider()
     st.markdown(
         f"""
@@ -93,8 +98,8 @@ type_color = {
     "concept": "#9b59b6",
     "alias": "#95a5a6",
     # Phase 8: product_tree view
-    "product": "#3b82f6",       # 파랑 — root
-    "prod_fail": "#ef4444",     # 빨강 — mid (product+fail_type)
+    "product": "#3b82f6",  # 파랑 — root
+    "prod_fail": "#ef4444",  # 빨강 — mid (product+fail_type)
     # axis_* (default view)
     "axis_product": "#3b82f6",
     "axis_fail_type": "#ef4444",
@@ -108,33 +113,41 @@ for n in g.get("nodes", []):
     nid = n["key"]
     attrs = n["attributes"]
     nt = attrs.get("type", "")
-    is_focus = (nid == focus)
+    is_focus = nid == focus
     seen = int(attrs.get("seen_count", 1)) if nt == "concept" else 1
     # 서버에서 size hint 보냈으면 그걸 우선 사용
     base_size = int(attrs.get("size") or type_size.get(nt, 12))
-    size = base_size + (12 if is_focus else 0) + (min(seen, 12) if nt == "concept" else 0)
-    # 색: focus > 서버 color > type 매핑 > default
-    color = (
-        "#e74c3c" if is_focus
-        else attrs.get("color") or type_color.get(nt, "#bbb")
+    size = (
+        base_size + (12 if is_focus else 0) + (min(seen, 12) if nt == "concept" else 0)
     )
-    safe_title = f"{nid} | updated {attrs.get('updated', '')}".replace("\n", " ").replace("\r", " ")
-    nodes.append(Node(
-        id=nid,
-        label=(attrs.get("label", nid) or nid)[:42],
-        size=size,
-        color=color,
-        title=safe_title,
-    ))
+    # 색: focus > 서버 color > type 매핑 > default
+    color = "#e74c3c" if is_focus else attrs.get("color") or type_color.get(nt, "#bbb")
+    safe_title = f"{nid} | updated {attrs.get('updated', '')}".replace(
+        "\n", " "
+    ).replace("\r", " ")
+    nodes.append(
+        Node(
+            id=nid,
+            label=(attrs.get("label", nid) or nid)[:42],
+            size=size,
+            color=color,
+            title=safe_title,
+        )
+    )
 
 edges = []
 for e in g.get("edges", []):
-    edges.append(Edge(
-        source=e["source"],
-        target=e["target"],
-        label=e["attributes"].get("kind", ""),
-        color="#aaa",
-    ))
+    kind = e["attributes"].get("kind", "")
+    # axis 구조 edge (has_product/has_fail/has_oper)는 시각 노이즈라 라벨 hide
+    edge_label = "" if kind.startswith("has_") else kind
+    edges.append(
+        Edge(
+            source=e["source"],
+            target=e["target"],
+            label=edge_label,
+            color="#aaa",
+        )
+    )
 
 config = Config(width=1200, height=720, directed=True, physics=True, hierarchical=False)
 agraph(nodes=nodes, edges=edges, config=config)
@@ -144,7 +157,9 @@ if focus:
     st.divider()
     st.subheader("Focus Node Detail")
     try:
-        nr = requests.get(f"{API_BASE}/api/wiki/node/{quote(focus, safe=':|()')}", timeout=10)
+        nr = requests.get(
+            f"{API_BASE}/api/wiki/node/{quote(focus, safe=':|()')}", timeout=10
+        )
         if nr.status_code == 200:
             nd = nr.json()
             with st.expander("frontmatter", expanded=True):

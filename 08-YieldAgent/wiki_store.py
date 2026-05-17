@@ -407,8 +407,11 @@ def lookup_concept_body(
     # 합성 호출 가드(같은 raw 반복 source 제외)는 wiki_queue 쪽에 남김.
     if len(body) < min_len:
         out["fail_reasons"].append(f"body_len<{min_len}")
-    if len(src_ep) < min_source_episodes:
-        out["fail_reasons"].append(f"source_episodes<{min_source_episodes}")
+    # source count = episode source + citation source. 직접 합성 모드(episode 단계 생략)에선
+    # source_episode_ids가 비고 citations만 채워짐 → 둘 다 합산해서 임계 체크.
+    source_count = len(src_ep) + len(citations)
+    if source_count < min_source_episodes:
+        out["fail_reasons"].append(f"source_count<{min_source_episodes}")
     if confidence < min_confidence:
         out["fail_reasons"].append(f"confidence<{min_confidence}")
     # citation coverage: citations 수 / body의 [ep:xxx] 등장 수 (단순화: citations 충분하면 OK)

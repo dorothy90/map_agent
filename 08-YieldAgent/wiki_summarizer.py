@@ -359,3 +359,114 @@ def synthesize_super_concept(
         logger.warning("[synthesize_super_concept] structured output None")
         return None
     return out
+
+
+# ── Phase 11: 직접 합성 (raw docs → concept body) — episode 단계 생략 ────
+_SYNTHESIZE_FROM_DOCS_SYSTEM = """당신은 반도체 fail_history docs를 정리해 wiki concept 본문을 만드는 어시스턴트입니다.
+
+[원칙]
+- 같은 트리플(product/fail_type/cause_oper)의 raw docs N건을 메타 분석한 markdown body 생성.
+- raw docs에 명시된 cause/action/comment만 사용. 추측·일반론 금지.
+- 각 주장 끝에 `[FH-XXXXXX]` 형식 doc_id inline 인용. 인용 없는 주장은 출력 금지.
+- 출력 구조:
+  ```
+  ## 누적 패턴 (N건 분석)
+  - 주 원인: ... (X/N건) [FH-...]
+  - 부 원인: ... [FH-...]
+
+  ## 검증된 조치
+  - 조치 → 효과 (X/Y) [FH-...]
+
+  ## 미해결 / 이상 케이스
+  - ... [FH-...]
+  ```
+- `confidence` (0~1) 자가 평가: doc 수 / 일치도 / 모순 기반.
+  - 0.8+: 5+ docs, 일치도 높음, 모순 0
+  - 0.5~0.7: 2~4 docs, 부분 일치
+  - <0.5: 1~2 docs 또는 모순 많음
+- `citations`에는 본문에 인용한 모든 doc_id 채워라. source_file/date도 함께.
+- 출력 언어: 한국어
+"""
+
+
+@observe(name="wiki_synthesize_concept_from_docs")
+def synthesize_concept_from_docs(
+    concept_id: str,
+    raw_docs: list[dict],
+) -> ConceptSynthesis | None:
+    """Phase 11: 직접 합성 — 같은 트리플 raw docs → concept body. episode 단계 생략.
+
+    Args:
+        concept_id: e.g. "concept:4SS|PRE METAL CLN|EASY"
+        raw_docs: OpenSearch에서 fetch한 _source dict list
+                  (doc_id / source_file / date / cause / action / comment / ...)
+    Returns:
+        ConceptSynthesis or None (실패 시).
+    """
+    if not raw_docs:
+        logger.info("[synthesize_concept_from_docs] empty docs: %s", concept_id)
+        return None
+
+    blocks = []
+    for d in raw_docs[:15]:  # 토큰 가드
+        did = d.get("doc_id", "")
+        date = d.get("date", "")
+        cause = (d.get("cause") or "").strip()[:600]
+        action = (d.get("action") or "").strip()[:600]
+        comment = (d.get("comment") or "").strip()[:300]
+        blocks.append(
+            f"--- [{did}] date={date} ---\n"
+            f"원인: {cause}\n"
+            f"조치: {action}\n"
+            f"코멘트: {comment}"
+        )
+    blocks_str = "\n\n".join(blocks)
+    user_msg = (
+        f"[Concept] {concept_id}\n"
+        f"[Raw docs] {len(raw_docs)}건 (상위 {len(blocks)}건 표시)\n\n"
+        f"{blocks_str}\n\n"
+        f"위 raw docs를 메타 분석해 markdown body + confidence + citations 생성하라.\n"
+        f"각 주장에 [FH-xxx] inline 인용 필수."
+    )
+
+    try:
+        chain = _model().with_structured_output(ConceptSynthesis, method="function_calling")
+        out: ConceptSynthesis | None = chain.invoke(
+            [("system", _SYNTHESIZE_FROM_DOCS_SYSTEM), ("human", user_msg)],
+            config={"callbacks": _lf_callbacks()},
+        )
+    except Exception as e:
+        logger.warning("[synthesize_concept_from_docs] LLM 호출 실패: %s", e)
+        return None
+    if out is None:
+        logger.warning("[synthesize_concept_from_docs] structured output None")
+        return None
+
+    # citation enrichment: LLM이 doc_id만 채워도 source_file/date 자동 보강
+    doc_by_id = {d.get("doc_id", ""): d for d in raw_docs if d.get("doc_id")}
+
+    def _enrich(c: EpisodeRef) -> EpisodeRef:
+        meta = doc_by_id.get(c.doc_id, {})
+        if meta:
+            if not c.source_file and meta.get("source_file"):
+                c.source_file = meta["source_file"]
+            if not c.date and meta.get("date"):
+                c.date = str(meta["date"])
+            if not c.natural_label:
+                date_part = c.date or str(meta.get("date", ""))
+                ftype = meta.get("fail_type", "")
+                c.natural_label = f"{date_part} {ftype}".strip()
+        return c
+
+    if not out.citations:
+        out.citations = [
+            EpisodeRef(
+                episode_id="",  # 직접 합성이라 episode 없음
+                doc_id=d.get("doc_id", ""),
+                source_file=d.get("source_file", ""),
+                date=str(d.get("date", "")),
+            )
+            for d in raw_docs[:10] if d.get("doc_id")
+        ]
+    out.citations = [_enrich(c) for c in out.citations]
+    return out
