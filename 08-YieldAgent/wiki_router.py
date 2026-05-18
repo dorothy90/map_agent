@@ -406,6 +406,62 @@ def get_graph(
     return g
 
 
+@router.get("/trip-docs")
+def get_trip_docs(
+    product: str = Query(...),
+    fail_type: str = Query(...),
+    cause_oper: str = Query(...),
+    limit: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    """(product, fail_type, cause_oper) 트리플로 OpenSearch fail-history 원본 docs.
+
+    vault 합성이 안 된 ⚪ 트리플의 원본 사례를 프론트에 보여주기 위함.
+    fail_type은 alias 포함 저장이라 prefix 매칭(예: 입력 EASY → 인덱스 EASY/EASY(W) 모두).
+    실패 시 빈 docs + error 반환 (graceful — vault concept 페이지는 정상 동작).
+    """
+    try:
+        from fail_history_tools import _OPENSEARCH_INDEX, _get_opensearch_client
+        client = _get_opensearch_client()
+        body = {
+            "size": limit,
+            "_source": {"excludes": ["embedding"]},
+            "query": {
+                "bool": {
+                    "filter": [
+                        {"term": {"product.keyword": product}},
+                        {"prefix": {"fail_type.keyword": fail_type}},
+                        {"term": {"cause_oper": cause_oper}},
+                    ]
+                }
+            },
+        }
+        resp = client.search(index=_OPENSEARCH_INDEX, body=body)
+    except Exception as e:
+        logger.warning("[trip-docs] OpenSearch 호출 실패: %s", e)
+        return {"docs": [], "total": 0, "error": str(e)}
+
+    docs: list[dict[str, Any]] = []
+    for hit in resp.get("hits", {}).get("hits", []):
+        src = hit.get("_source", {})
+        docs.append({
+            "doc_id": src.get("doc_id") or hit.get("_id", ""),
+            "product": src.get("product", ""),
+            "fail_type": src.get("fail_type", ""),
+            "cause_oper": src.get("cause_oper", ""),
+            "cause": src.get("cause", ""),
+            "action": src.get("action", ""),
+            "comment": src.get("comment", ""),
+            "content": src.get("content", ""),
+            "date": src.get("date", ""),
+            "source_file": src.get("source_file", ""),
+            "download_url": src.get("download_url", ""),
+            "score": hit.get("_score"),
+        })
+    total_obj = resp.get("hits", {}).get("total", {})
+    total = total_obj.get("value", len(docs)) if isinstance(total_obj, dict) else int(total_obj or len(docs))
+    return {"docs": docs, "total": total}
+
+
 @router.get("/node/{node_id:path}")
 def get_node(node_id: str) -> dict[str, Any]:
     """노드 상세 + backlinks (incoming edges). node_id 예: 'concept:4SS|STI CMP|EASY(W)'."""

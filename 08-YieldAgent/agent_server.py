@@ -150,10 +150,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Yield Agent Server", lifespan=lifespan)
 
-# ── CORS — React dev server 허용 ─────────────────────────
+# ── CORS — dev React server + 사내 wiki 프론트 (cross-origin) ─────────────────
+# 운영: 백엔드(:8001)와 프론트(사내 별도 호스트)가 독립 서버 → cross-origin 호출.
+# WIKI_FRONTEND_ORIGINS=https://wiki.사내,https://other.사내 처럼 콤마 구분으로 추가.
+_dev_origins = ["http://localhost:3000", "http://localhost:5173"]
+_extra_origins = [
+    o.strip() for o in os.getenv("WIKI_FRONTEND_ORIGINS", "").split(",") if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=_dev_origins + _extra_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

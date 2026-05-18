@@ -72,6 +72,37 @@ def compute_freshness_regression(node_meta: dict, max_days: int = 30) -> bool:
         return False
 
 
+def compute_precision_at_k(top_doc_ids: list[str], expected_docs: set[str], k: int = 5) -> float:
+    top = [d for d in top_doc_ids if d][:k]
+    if not top:
+        return 0.0
+    hits = sum(1 for d in top if d in expected_docs)
+    return hits / k
+
+
+def compute_ndcg_at_k(top_doc_ids: list[str], expected_docs: set[str], k: int = 5) -> float:
+    import math
+    if not expected_docs or not top_doc_ids:
+        return 0.0
+    dcg = sum(
+        1.0 / math.log2(i + 1)
+        for i, d in enumerate(top_doc_ids[:k], 1)
+        if d in expected_docs
+    )
+    ideal_hits = min(len(expected_docs), k)
+    idcg = sum(1.0 / math.log2(i + 1) for i in range(1, ideal_hits + 1))
+    return dcg / idcg if idcg > 0 else 0.0
+
+
+_FILTER_MODE_KEYS = {
+    "all": {"product", "fail_type", "cause_oper"},
+    "none": set(),
+    "product_only": {"product"},
+    "fail_type_only": {"fail_type"},
+    "cause_oper_only": {"cause_oper"},
+}
+
+
 _DATASETS = Path(__file__).parent / "datasets"
 _RESULTS = Path(__file__).parent / "results"
 
@@ -115,20 +146,26 @@ def _is_rich_concept(expected_cid: str | None) -> bool:
         return False
 
 
-def run_case(case: dict, force_baseline: bool) -> dict:
+def run_case(case: dict, force_baseline: bool, filter_mode: str = "all") -> dict:
     f = dict(case.get("expected_filters", {}) or {})
     is_exact_triple = all(f.get(k) for k in ("product", "fail_type", "cause_oper"))
     expected_cid = case.get("expected_wiki_concept_id") or _expected_concept_id(f)
     is_rich = _is_rich_concept(expected_cid)
+
+    allowed = _FILTER_MODE_KEYS.get(filter_mode, _FILTER_MODE_KEYS["all"])
+    f_applied = {
+        k: ((f.get(k) or "") if k in allowed else "")
+        for k in ("product", "fail_type", "cause_oper")
+    }
 
     cm = wiki_disabled() if force_baseline else nullcontext()
     t0 = time.perf_counter()
     with cm:
         data = do_search(
             query=case["query"],
-            product=f.get("product", "") or "",
-            fail_type=f.get("fail_type", "") or "",
-            cause_oper=f.get("cause_oper", "") or "",
+            product=f_applied["product"],
+            fail_type=f_applied["fail_type"],
+            cause_oper=f_applied["cause_oper"],
             top_k=5,
         )
     elapsed = time.perf_counter() - t0
@@ -148,6 +185,20 @@ def run_case(case: dict, force_baseline: bool) -> dict:
         if d in expected_docs:
             mrr = 1.0 / i
             break
+    precision5 = compute_precision_at_k(top_doc_ids, expected_docs, k=5)
+    ndcg5 = compute_ndcg_at_k(top_doc_ids, expected_docs, k=5)
+
+    forbidden_docs = set(case.get("forbidden_doc_ids", []) or [])
+    forbidden_hit = int(any(d in forbidden_docs for d in top_doc_ids)) if forbidden_docs else 0
+
+    # ambiguous 카테고리 전용 메트릭: top-5 중 expected_cause_oper와 일치하는 비율.
+    # expected_doc_ids는 doc_id 정렬 첫 5건이라 query 관련성과 무관함 — purity가 진짜 본질.
+    expected_co = case.get("expected_cause_oper", "") or ""
+    if expected_co and results:
+        top_co_match = sum(1 for r in results[:5] if r.get("cause_oper") == expected_co)
+        cause_oper_purity = top_co_match / min(len(results), 5)
+    else:
+        cause_oper_purity = 0.0
 
     raw_text = " ".join(
         (r.get("cause", "") or "") + " " + (r.get("action", "") or "") + " " + (r.get("comment", "") or "")
@@ -172,11 +223,17 @@ def run_case(case: dict, force_baseline: bool) -> dict:
 
     return {
         "id": case["id"],
+        "category": case.get("category", ""),
+        "filter_mode": filter_mode,
         "is_exact_triple": is_exact_triple,
         "is_rich_concept": is_rich,
         "retrieval_mode": retrieval_mode,
         "recall@5": round(recall, 3),
         "mrr": round(mrr, 3),
+        "precision@5": round(precision5, 3),
+        "ndcg@5": round(ndcg5, 3),
+        "forbidden_hit": forbidden_hit,
+        "cause_oper_purity": round(cause_oper_purity, 3),
         "must_mention_rate": round(must_rate, 3),
         "wiki_concept_hit": wiki_concept_hit,
         "wiki_alias_count": len(wiki_mem.get("aliases") or []),
@@ -194,6 +251,12 @@ def run_case(case: dict, force_baseline: bool) -> dict:
 def _load_cases(bench: str, limit: int | None) -> list[dict]:
     if bench == "main":
         path = _DATASETS / "fail_history_goldset.json"
+        cases = json.loads(path.read_text(encoding="utf-8"))
+    elif bench == "main_fresh":
+        path = _DATASETS / "fail_history_goldset_fresh.json"
+        cases = json.loads(path.read_text(encoding="utf-8"))
+    elif bench == "main_v2":
+        path = _DATASETS / "fail_history_goldset_v2.json"
         cases = json.loads(path.read_text(encoding="utf-8"))
     elif bench == "wiki_micro":
         path = _DATASETS / "wiki_micro.json"
@@ -224,10 +287,11 @@ def _format_row(metric: str, *vals: float | None, width: int = 12) -> str:
 
 
 def _summary_table(by_mode: dict[str, list[dict]]) -> str:
-    """4-way 비교 + 분모 분리 출력."""
+    """4-way 비교 + 분모 분리 출력 + 필터 축별 breakdown."""
     metrics = [
-        "recall@5", "mrr", "must_mention_rate",
-        "rouge_l", "citation_match", "freshness_regression",
+        "recall@5", "precision@5", "ndcg@5", "mrr", "forbidden_hit",
+        "cause_oper_purity",
+        "must_mention_rate", "rouge_l", "citation_match", "freshness_regression",
         "wiki_confidence", "wiki_concept_hit",
         "raw_results_count", "latency_s",
     ]
@@ -289,6 +353,58 @@ def _summary_table(by_mode: dict[str, list[dict]]) -> str:
             v = _avg(rs_target, k)
             lines.append(_format_row(k, v))
 
+    # 6) 카테고리별 breakdown (v2 골든셋용)
+    categories: list[str] = []
+    seen_cat: set[str] = set()
+    for rs in by_mode.values():
+        for r in rs:
+            cat = r.get("category") or ""
+            if cat and cat not in seen_cat:
+                seen_cat.add(cat)
+                categories.append(cat)
+    if categories:
+        for mode in by_mode.keys():
+            rs_mode = by_mode[mode]
+            if not rs_mode:
+                continue
+            lines.append(f"\n[카테고리별 평균 — mode={mode}]")
+            lines.append("-" * 92)
+            header = f"{'metric':<26} | " + " | ".join(f"{c:>14}" for c in categories)
+            lines.append(header)
+            lines.append("-" * 92)
+            for k in metrics:
+                vals = [
+                    _avg([r for r in rs_mode if r.get("category") == c], k)
+                    for c in categories
+                ]
+                lines.append(_format_row(k, *vals, width=14))
+
+    # 7) 필터 축별 breakdown — 같은 mode 안에서 filter_mode 5종 비교
+    filter_modes_seen: list[str] = []
+    seen: set[str] = set()
+    for rs in by_mode.values():
+        for r in rs:
+            fm = r.get("filter_mode")
+            if fm and fm not in seen:
+                seen.add(fm)
+                filter_modes_seen.append(fm)
+    if len(filter_modes_seen) > 1:
+        for mode in by_mode.keys():
+            rs_mode = by_mode[mode]
+            if not rs_mode:
+                continue
+            lines.append(f"\n[필터 축별 breakdown — mode={mode}]")
+            lines.append("-" * 92)
+            header = f"{'metric':<26} | " + " | ".join(f"{fm:>14}" for fm in filter_modes_seen)
+            lines.append(header)
+            lines.append("-" * 92)
+            for k in metrics:
+                vals = [
+                    _avg([r for r in rs_mode if r.get("filter_mode") == fm], k)
+                    for fm in filter_modes_seen
+                ]
+                lines.append(_format_row(k, *vals, width=14))
+
     lines.append("\n" + "=" * 92)
     return "\n".join(lines)
 
@@ -297,10 +413,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Wiki PoC evaluator (4-way)")
     parser.add_argument("--mode", choices=["baseline", "wiki-on", "both"], default="both",
                         help="baseline=wiki off / wiki-on=wiki 자연 분기 / both=둘 다")
-    parser.add_argument("--bench", choices=["main", "wiki_micro"], default="main")
+    parser.add_argument("--bench", choices=["main", "main_fresh", "main_v2", "wiki_micro"], default="main")
     parser.add_argument("--limit", type=int, default=5)
     parser.add_argument("--save", action="store_true", help="results/ 에 JSON 저장")
+    parser.add_argument(
+        "--filter-modes",
+        default="all",
+        help="comma-separated: all,none,product_only,fail_type_only,cause_oper_only",
+    )
+    parser.add_argument("--label", default="", help="결과 JSON 파일명에 붙는 ablation 식별자")
     args = parser.parse_args()
+    filter_modes = [fm.strip() for fm in args.filter_modes.split(",") if fm.strip()]
+    unknown = [fm for fm in filter_modes if fm not in _FILTER_MODE_KEYS]
+    if unknown:
+        parser.error(f"unknown filter-modes: {unknown} (allowed: {sorted(_FILTER_MODE_KEYS)})")
 
     cases = _load_cases(args.bench, args.limit)
     print(f"[bench={args.bench} mode={args.mode} cases={len(cases)}]")
@@ -311,29 +437,37 @@ def main() -> int:
     for case in cases:
         for m in modes:
             force_baseline = (m == "baseline")
-            try:
-                r = run_case(case, force_baseline)
-            except Exception as e:
-                r = {"id": case["id"], "error": str(e)}
-                print(f"  [{m}] {case['id']} ERROR: {e}")
+            for fm in filter_modes:
+                try:
+                    r = run_case(case, force_baseline, filter_mode=fm)
+                except Exception as e:
+                    r = {"id": case["id"], "filter_mode": fm, "error": str(e)}
+                    print(f"  [{m}/{fm}] {case['id']} ERROR: {e}")
+                    by_mode[m].append(r)
+                    continue
                 by_mode[m].append(r)
-                continue
-            by_mode[m].append(r)
-            print(
-                f"  [{m}] {case['id']:<24} mode={r['retrieval_mode']:<14} "
-                f"recall={r['recall@5']:.2f} mrr={r['mrr']:.2f} "
-                f"must={r['must_mention_rate']:.2f} rouge={r['rouge_l']:.2f} "
-                f"cit_m={r['citation_match']:.2f} fresh_reg={r['freshness_regression']} "
-                f"raw={r['raw_results_count']} t={r['latency_s']}s"
-            )
+                print(
+                    f"  [{m}/{fm}] {case['id']:<22} mode={r['retrieval_mode']:<14} "
+                    f"recall={r['recall@5']:.2f} p@5={r['precision@5']:.2f} "
+                    f"ndcg={r['ndcg@5']:.2f} mrr={r['mrr']:.2f} "
+                    f"raw={r['raw_results_count']} t={r['latency_s']}s"
+                )
 
     print()
     print(_summary_table(by_mode))
 
     if args.save:
         _RESULTS.mkdir(parents=True, exist_ok=True)
-        out = _RESULTS / f"wiki_eval_{args.bench}_{int(time.time())}.json"
-        out.write_text(json.dumps({"by_mode": by_mode}, ensure_ascii=False, indent=2), encoding="utf-8")
+        label = f"_{args.label}" if args.label else ""
+        out = _RESULTS / f"wiki_eval_{args.bench}{label}_{int(time.time())}.json"
+        out.write_text(
+            json.dumps(
+                {"by_mode": by_mode, "filter_modes": filter_modes, "label": args.label},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         print(f"\nsaved: {out}")
     return 0
 
