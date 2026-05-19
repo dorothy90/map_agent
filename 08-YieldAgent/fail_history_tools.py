@@ -196,13 +196,21 @@ def _search_opensearch(
     # 메타데이터 필터 구성
     # product / fail_type은 text + .keyword 매핑 → 정확매칭 위해 .keyword 사용
     # cause_oper는 keyword 단일 매핑 → 그대로 사용
-    # fail_type 값은 인덱스에 "EASY(W)"처럼 alias 포함으로 저장 → prefix 매칭으로
-    #   사용자 입력("EASY")과 alias 포함값 양쪽 모두 수용 가능
+    # fail_type 값은 인덱스에 "EASY(W)" 또는 "pteidx_snc_n/o"처럼 접두/접미가 붙어
+    #   저장될 수 있음 → substring(wildcard) 매칭으로 사용자 입력("EASY","snc_no")이
+    #   인덱스 값 어디에 있든 잡히도록 처리. case_insensitive로 대소문자 차이도 수용.
     filters = []
     if product:
         filters.append({"term": {"product.keyword": product}})
     if fail_type:
-        filters.append({"prefix": {"fail_type.keyword": fail_type}})
+        filters.append({
+            "wildcard": {
+                "fail_type.keyword": {
+                    "value": f"*{fail_type}*",
+                    "case_insensitive": True,
+                }
+            }
+        })
     if cause_oper:
         filters.append({"term": {"cause_oper": cause_oper}})
 
@@ -460,6 +468,28 @@ def do_search(
         logger.error("[do_search] 검색 오류: %s", e, exc_info=True)
         raise
 
+    # 0-hit fallback: fail_type 필터로 인해 결과가 비었을 가능성이 있으면
+    # fail_type 필터를 빼고 1회 재검색 (BM25/kNN이 fail_type을 텍스트로 매칭).
+    # 예: 사용자 "snc_no" / 인덱스값 "pteidx_snc_n/o"처럼 wildcard도 빗나가는 케이스.
+    fail_type_filter_dropped = False
+    if not results and fail_type:
+        logger.info(
+            "[do_search] 0-hit with fail_type=%r — fail_type 필터 제거 후 재시도",
+            fail_type,
+        )
+        try:
+            results = _search_opensearch(
+                query=query,
+                product=product,
+                fail_type="",
+                cause_oper=cause_oper,
+                top_k=top_k,
+            )
+            fail_type_filter_dropped = True
+        except Exception as e:
+            logger.error("[do_search] fallback 검색 오류: %s", e, exc_info=True)
+            raise
+
     if not results:
         return {
             "total": 0,
@@ -503,6 +533,7 @@ def do_search(
         "results": results,
         "wiki_memory": wiki_mem,
         "retrieval_mode": "baseline",
+        "fail_type_filter_dropped": fail_type_filter_dropped,
     }
 
     if gate_result and gate_result.get("gate") == "wiki-assisted":
