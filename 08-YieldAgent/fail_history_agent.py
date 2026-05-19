@@ -1,7 +1,7 @@
 """
 Fail History Agent — 함수형 노드 (B2, no ReAct)
 ================================================
-search → wiki-first면 vault 합성본 그대로, 아니면 LLM 1회 합성 → 조건부 HTML 카드.
+search → wiki-first면 vault 합성본 그대로, 아니면 LLM 1회 합성 → 인용 문서 표시.
 LLM에게 도구 결정을 맡기지 않는다. 코드가 직접 함수 호출.
 """
 from __future__ import annotations
@@ -9,8 +9,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -22,8 +23,6 @@ from lf_utils import lf_callbacks as _lf_callbacks
 from prompts import FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE
 from fail_history_tools import (
     do_search,
-    do_render_report,
-    _tool_payload_var,
     _wiki_payload_var,
     _supervisor_parsed_var,
 )
@@ -35,33 +34,39 @@ logger = logging.getLogger("yield_agent.fail_history_agent")
 _fh_model = get_llm(model=os.getenv("RETRIEVE_CHAIN_MODEL"))
 
 
-def _render_fh_report_html(reports: List[Dict[str, Any]]) -> str:
-    if not reports:
-        return ""
-    html_parts = [r.get("html", "") for r in reports if r.get("html")]
-    return "\n".join(html_parts)
+
+def _extract_cited_doc_ids(answer: str) -> Set[str]:
+    return set(re.findall(r'\[FH-([^\]]+)\]', answer))
 
 
-def _format_numbered_results(results: List[Dict[str, Any]]) -> str:
-    """다음 턴 supervisor LLM이 messages만 보고도 N번이 무엇인지 알 수 있게
-    각 결과를 한 줄로 압축한 번호 텍스트 블록을 만든다."""
+def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) -> str:
     if not results:
         return ""
-    lines = ["[검색 결과 {}건]".format(len(results))]
-    for i, r in enumerate(results, start=1):
+    download_base = os.getenv("DOWNLOAD_BASE_URL", "").rstrip("/")
+    display = [r for r in results if r.get("doc_id") in cited_ids] if cited_ids else results
+    if not display:
+        display = results
+
+    lines = [f"### 🔍 출처 (총 {len(display)}건)\n"]
+    for i, r in enumerate(display, start=1):
         product = r.get("product") or "-"
+        fail_type = r.get("fail_type") or "-"
         oper = r.get("cause_oper") or "-"
-        ft = r.get("fail_type") or "-"
+        date = r.get("date") or "-"
         cause = (r.get("cause") or "").strip().replace("\n", " ")
         action = (r.get("action") or "").strip().replace("\n", " ")
-        if len(cause) > 60:
-            cause = cause[:60] + "…"
-        if len(action) > 40:
-            action = action[:40] + "…"
-        lines.append(
-            f"{i}. {product} / {oper} — 불량: {ft} (원인: {cause} / 조치: {action})"
-        )
-    return "\n".join(lines)
+        source_file = r.get("source_file") or r.get("filenm") or ""
+        url = f"{download_base}/{source_file}" if download_base and source_file else ""
+        doc_name = source_file.split('/')[-1] if source_file else "다운로드"
+
+        lines.append(f"**{i}. {date} | Product: `{product}` | Fail: `{fail_type}` | Oper: `{oper}`**")
+        lines.append(f"- **원인:** {cause}")
+        lines.append(f"- **조치:** {action}")
+        if url:
+            lines.append(f"- **문서:** [{doc_name}]({url})")
+        lines.append("")
+        
+    return "\n".join(lines).strip()
 
 
 def _synthesize_answer(
@@ -111,7 +116,7 @@ def _synthesize_answer(
 @observe(name="fail_history_agent_node")
 @timed
 def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
-    """함수형 노드: search → (wiki-first 즉시 / 아니면 LLM 1회 합성) → 조건부 HTML."""
+    """함수형 노드: search → (wiki-first 즉시 / 아니면 LLM 1회 합성) → 인용 문서 표시."""
     lotcd = state.get("lotcd", "")
     dh_query = state.get("dh_query", "")
     dh_fail_type = state.get("dh_fail_type", "")
@@ -123,8 +128,6 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     )
 
     # 요청별 격리 ContextVar 초기화
-    storage: Dict[str, Any] = {"reports": []}
-    _tool_payload_var.set(storage)
     wiki_storage: Dict[str, Any] = {"hit_ids": [], "last_status": "skipped", "queries": []}
     _wiki_payload_var.set(wiki_storage)
     _supervisor_parsed_var.set({
@@ -195,42 +198,16 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     if super_body:
         answer = answer.rstrip() + "\n\n---\n\n## 관련 패턴 (참고용)\n\n" + super_body
 
-    # 3) HTML 카드 (results 있을 때만 자동)
-    # wiki-first는 옵션 4(doc_id _mget)로 results를 채워서 카드도 항상 렌더됨.
-    # summary는 wiki-first일 때 markdown rendered_answer 대신 짧은 텍스트로 분기.
-    if results:
-        if retrieval_mode == "wiki-first":
-            report_summary = (
-                f"Wiki 누적 분석 결과 (evidence {len(results)}건, "
-                f"confidence={raw.get('wiki_concept_confidence', 0):.2f})"
-            )
-        else:
-            report_summary = answer
-        try:
-            do_render_report(query, results, summary=report_summary)
-        except Exception as e:
-            logger.warning("[FH Agent] HTML 렌더 실패: %s", e)
-
-    # 4) artifact 수거
-    reports_payload = storage.get("reports", [])
     artifacts = []
-    if reports_payload:
-        html = _render_fh_report_html(reports_payload)
-        if html:
-            artifacts.append({
-                "type": "html",
-                "mime": "text/html",
-                "data": html,
-                "title": "fail_history_report",
-            })
 
     answer, agent_suggestion = extract_suggestion(answer)
 
-    numbered_block = _format_numbered_results(results)
-    if numbered_block:
-        message_content = f"{numbered_block}\n\n[합성 답변]\n{answer}"
+    cited_ids = _extract_cited_doc_ids(answer)
+    result_block = _format_cited_results(results, cited_ids)
+    if result_block:
+        message_content = f"### 💡 [답변]\n\n{answer}\n\n---\n\n{result_block}"
     else:
-        message_content = answer
+        message_content = f"### 💡 [답변]\n\n{answer}"
     result_message = AIMessage(content=message_content, name="fail_history_agent")
 
     wiki_hit_ids = list(dict.fromkeys(wiki_storage.get("hit_ids") or []))

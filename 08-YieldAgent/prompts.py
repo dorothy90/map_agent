@@ -76,14 +76,14 @@ TODAY's DATE: {today}
    트리/관계도 HTML로 시각화
    params: rt_lot_code(단일 LOT 코드, 예: "4SS2DPD"), rt_main_oper_det_desc(메인 공정명, 쉼표구분, 예: "STEP07,STEP08")
    ※ 트리거 (다음 조건이 **모두** 충족돼야 relation_tree_agent):
-     ① 단일 LOT ID(7자, 예: 4SS2DPD)가 있다
-     ② main 공정명(예: STEP07, M0C ETCH)이 1개 이상 명시돼 있다
-     ③ "연관 분석" / "Inline-WT 비교" / "trend 상관" / "공정-계측 step 관계" 같은 trend·correlation 의도가 있다
+     ① LOT ID(예: 4SS2DPD) 또는 제품코드(예: 4SS)가 있다
+     ② main 공정명(예: STEP07, CONTACT ETCH)이 1개 이상 명시돼 있다
+     ③ "연관 분석" / "Inline-WT 비교" / "Inline-WT 연계 분석" / "trend 상관" / "공정-계측 step 관계" 같은 trend·correlation 의도가 있다
    ※ negative example (relation_tree_agent 아님):
      - "TWT 연관 분석" → 불량유형(TWT)에 대한 원인분석 의도 → fail_history_agent
      - "이 lot 뭐가 연관 있어? 이력 보여줘" → lot_history_agent
      - "STEP07 검출 lot list" / "step별 검출" → wads_agent
-     - lot ID 없이 공정명만 있으면 → fail_history_agent 또는 wads_agent 우선
+     - lot ID·코드 없이 공정명만 있으면 → fail_history_agent 또는 wads_agent 우선
 
 === KEY RULES ===
 - lotcd는 3-4자리 제품코드만 (예: 4SS, 5NA). 전체 lot ID(예: 4SS2DPD)는 map_lot_id 또는 yield_lot_ids에 사용
@@ -141,6 +141,9 @@ TODAY's DATE: {today}
 
 - "4SS2DPD STEP07,STEP08 연관 분석 해줘"
   → task_1: relation_tree_agent, params={{rt_lot_code:"4SS2DPD", rt_main_oper_det_desc:"STEP07,STEP08"}}, goal:"4SS2DPD STEP07,08 Inline-WT 연관 분석"
+
+- "4SS CONTACT ETCH Inline-WT 연계 분석"
+  → task_1: relation_tree_agent, params={{rt_lot_code:"4SS", rt_main_oper_det_desc:"CONTACT ETCH"}}, goal:"4SS CONTACT ETCH Inline-WT 연계 분석"
 
 - "4SS2DPD,4SSXCEW wafer 03,06,09 PT1C binmap 각각 보여줘"
   → task_1: map_agent, params={{map_lot_id:"4SS2DPD", map_wf_ids:"03,06,09", map_type:"binmap", map_oper:"PT1C"}}, goal:"4SS2DPD wafer 03,06,09 PT1C binmap"
@@ -218,6 +221,7 @@ TODAY's DATE: {today}
 Rules:
 - Read the conversation history to understand what the user is referring to
 - If the user responds with a short affirmative ("응", "네", "좋아", "부탁해") or adds conditions to a previous AI suggestion, incorporate the suggestion's intent into the rewrite
+- **[Inline-WT 선택]** 이전 에이전트 제안(agent_suggestion)에 "Inline-WT 연계 분석"이 포함돼 있고, 사용자가 숫자("1", "2", "1번") 또는 공정명("CONTACT ETCH", "BG CMP" 등)만 단독 입력한 경우 → 직전 fail_history 결과에서 해당 번호의 cause_oper를 찾아 "LOT_CODE CAUSE_OPER Inline-WT 연계 분석" 형태로 리라이팅 (절대 "상세 보여줘" 형태로 변환하지 말 것)
 - If the message already has clear intent, return it UNCHANGED
 - Expand ambiguous references using conversation context (e.g., product code, agent type)
 - When a date is mentioned without a year (e.g., "3월 2일"), assume the current year ({year})
@@ -247,7 +251,8 @@ Rules:
 
 # ── Supervisor 시스템 프롬프트 ──────────────────────────────────
 
-SUPERVISOR_SYSTEM_PROMPT = """\
+SUPERVISOR_SYSTEM_PROMPT = (
+    """\
 You are a supervisor managing semiconductor yield data queries and WADS degradation reports.
 
 TODAY's DATE: {today}
@@ -286,11 +291,11 @@ Route to **fail_history_agent** when the user asks about:
 
 === FAIL HISTORY PARAMETERS ===
 ※ 도메인 enum (실제 인덱스값, greedy 매칭 — 가장 긴 일치 우선):
-  - dh_fail_type ∈ {SCAN, JUNCTION, LEAK_ID, ION, TPD, VMIN, EASY, GATE_OX,
-    RON, DIBL, IDSAT, IGATE, LATCH, TWT, VTH, IDDQ, CONTACT, BVDS, FMAX, ISB_CMOS}
-  - dh_cause_oper ∈ {BG CMP, BG ETCH, CONTACT ETCH, WELL IMPLANT, SPACER ETCH,
+  - dh_fail_type ∈ {{SCAN, JUNCTION, LEAK_ID, ION, TPD, VMIN, EASY, GATE_OX,
+    RON, DIBL, IDSAT, IGATE, LATCH, TWT, VTH, IDDQ, CONTACT, BVDS, FMAX, ISB_CMOS}}
+  - dh_cause_oper ∈ {{BG CMP, BG ETCH, CONTACT ETCH, WELL IMPLANT, SPACER ETCH,
     IMD DEP, GATE OX GROWTH, POLY DEP, PASSIVATION, PRE METAL CLN, STI CMP,
-    ILD CMP, VIA1 ETCH, METAL1 DEP}
+    ILD CMP, VIA1 ETCH, METAL1 DEP}}
 - dh_fail_type: 사용자가 언급한 불량 유형 — 위 enum 안에서만 선택
   예: "TWT 불량이력" → dh_fail_type="TWT"
   예: "EASY 과거 사례" → dh_fail_type="EASY"
@@ -340,21 +345,21 @@ Route to **lot_history_agent** when the user asks about:
   예: "이 lot 뭐가 문제야? 4SS2DPD" → lh_lot_ids="4SS2DPD"
   ※ lot_history_agent는 lh_lot_ids가 필수 — 사용자 질의에서 lot ID를 반드시 추출할 것
 
-Route to **relation_tree_agent** ONLY when **all** three conditions hold:
-1. 단일 LOT ID(7자, 예: 4SS2DPD)가 명시되거나 직전 turn에서 계승됨
-2. main 공정명(예: STEP07, M0C ETCH)이 1개 이상 명시됨
-3. "연관 분석" / "Inline-WT 비교" / "trend 상관" / "공정-계측 step 관계" 같은 trend·correlation 의도
+Route to **relation_tree_agent** when **all** three conditions hold:
+1. LOT ID(예: 4SS2DPD) 또는 제품코드(예: 4SS)가 명시되거나 직전 turn에서 계승됨
+2. main 공정명(예: STEP07, M0C ETCH, CONTACT ETCH)이 1개 이상 명시됨
+3. "연관 분석" / "Inline-WT 비교" / "Inline-WT 연계 분석" / "trend 상관" / "공정-계측 step 관계" 같은 trend·correlation 의도
 
 - rt_lot_code 필수 (lot ID 미지정 시 interrupt 또는 직전 turn lot 재사용)
 - rt_main_oper_det_desc는 쉼표 구분 string. 사용자가 다중 공정 언급 시 모두 채울 것
-- Examples: "4SS2DPD STEP07 연관 분석 해줘", "4SS2DPD STEP07,STEP08 Inline-WT 비교"
+- Examples: "4SS2DPD STEP07 연관 분석 해줘", "4SS2DPD STEP07,STEP08 Inline-WT 비교", "4SS CONTACT ETCH Inline-WT 연계 분석"
 
 === RELATION TREE NEGATIVE EXAMPLES (precedence 규칙) ===
-- "TWT 연관 분석", "IOFF 연관 분석" 등 **불량유형 + 연관/원인** → fail_history_agent (TWT/IOFF는 fail_type)
+- "TWT 연관 분석", "IOFF 연관 분석" 등 **불량유형 + 연관/원인** → fail_history_agent (TWT/IOFF는 fail_type, 공정명 아님)
 - "이 lot 뭐가 연관 있어? 이력 보여줘" → lot_history_agent
 - "STEP07 검출 lot list", "step별 검출" → wads_agent
 - "binmap" / "cummap" 시각화만 요구 → map_agent
-- LOT ID 없이 공정명만 있으면 → fail_history_agent / wads_agent 우선
+- LOT ID·코드 없이 공정명만 있으면 → fail_history_agent / wads_agent 우선
 - relation_tree_agent는 "**LOT + main_oper + trend/correlation**" 결합 조건에 한정. 단순 데이터 조회·검출·시각화·이력은 위 4개 agent 우선.
 
 Route to **ppt_export** when the user explicitly requests:
@@ -485,11 +490,15 @@ JSON schema:
   "rt_lot_code": "",
   "rt_main_oper_det_desc": ""
 }}\
-""" + _VERBATIM_RULES + _SAFETY_RULES
+"""
+    + _VERBATIM_RULES
+    + _SAFETY_RULES
+)
 
 # ── WADS 시스템 프롬프트 ────────────────────────────────────────
 
-WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 전문 어시스턴트입니다.
+WADS_SYSTEM_PROMPT_TEMPLATE = (
+    """당신은 WADS(Weekly Aggregation Data System) 전문 어시스턴트입니다.
 
 **현재 날짜: {current_date}**
 (사용자가 "1월 4일"처럼 연도 없이 날짜를 말하면, 현재 연도 기준으로 해석하세요)
@@ -575,14 +584,20 @@ WADS_SYSTEM_PROMPT_TEMPLATE = """당신은 WADS(Weekly Aggregation Data System) 
 - 도구가 "조건에 맞는 WADS 데이터가 없습니다"를 반환하면 → 연결 오류가 아님. "해당 조건의 WADS 데이터가 없습니다"로 안내.
 - 도구가 "Oracle 연결/조회에 실패했습니다"를 반환한 경우에만 → 연결 오류로 안내.
 - 데이터가 없는 것을 절대 "연결 오류", "시스템 오류"로 표현하지 마세요.
-""" + _RETRY_RULES + _SAFETY_RULES
+"""
+    + _RETRY_RULES
+    + _SAFETY_RULES
+)
 
 # ── Yield 분석 프롬프트 ─────────────────────────────────────────
 
-ANALYSIS_SYSTEM_PROMPT = """당신은 반도체 수율(yield) 분석 전문가입니다.
+ANALYSIS_SYSTEM_PROMPT = (
+    """당신은 반도체 수율(yield) 분석 전문가입니다.
 아래 제공되는 이상감지 결과는 시스템이 계산한 확정 데이터입니다.
 이 데이터를 기반으로 트렌드를 요약·정리해주세요. 직접 파라미터를 선별하지 마세요.
-항상 한국어로 답변하세요.""" + _VERBATIM_RULES
+항상 한국어로 답변하세요."""
+    + _VERBATIM_RULES
+)
 
 ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 {n}기간 pt1h+pt1c 파라미터 데이터입니다.
 
@@ -613,7 +628,8 @@ ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 {n}기간 pt1h+pt
 
 # ── Fail History 합성 시스템 프롬프트 (B2: ReAct 제거 후 단일 합성용) ───
 
-FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE = """당신은 반도체 불량이력(Fail History) 검색 결과를 사용자에게 자연어로 정리해주는 어시스턴트입니다.
+FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE = (
+    """당신은 반도체 불량이력(Fail History) 검색 결과를 사용자에게 자연어로 정리해주는 어시스턴트입니다.
 
 **현재 날짜: {current_date}**
 
@@ -631,5 +647,9 @@ FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE = """당신은 반도체 불량이력(
 - 과거 누적 본문이 있으면 raw와 정합한 부분만 보조로 활용 (모순 시 raw 우선)
 - 데이터 0건이면 "조건에 맞는 불량이력이 없습니다" 명확히 안내
 - 마지막 줄 반드시 `[SUGGESTION: 후속 제안]` 형식. 제안할 내용 없으면 `[SUGGESTION: ]`
+- 검색 결과가 1건 이상이면 SUGGESTION에 반드시 포함: "Inline-WT 연계 분석을 원하시면 결과 번호나 공정명을 입력해주세요. (예: 1 또는 BG CMP)"
 - 한국어로 응답
-""" + _RETRY_RULES + _SAFETY_RULES
+"""
+    + _RETRY_RULES
+    + _SAFETY_RULES
+)
