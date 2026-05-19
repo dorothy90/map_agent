@@ -110,22 +110,27 @@ function toForceGraphData(graphJson) {
   return { nodes, links };
 }
 
-function getProduct(n) { return (n.raw?.product || "").trim(); }
+function getProduct(n) { return (n.raw?.product || (n.type === "product" ? n.name : "")).trim(); }
 function normalizeFail(f) {
   if (!f) return "";
   return f.includes("(") ? f.split("(")[0].trim() : f.trim();
 }
-function getFail(n) { return normalizeFail(n.raw?.fail_type); }
+function getFail(n) { return normalizeFail(n.raw?.fail_type || (n.type === "prod_fail" ? n.name : "")); }
 function getOper(n) { return (n.raw?.cause_oper || "").trim(); }
 
+const _alphaCache = new Map();
 function withAlpha(hex, alpha) {
   if (typeof hex !== "string" || !hex.startsWith("#")) return hex;
+  const key = `${hex}_${alpha}`;
+  if (_alphaCache.has(key)) return _alphaCache.get(key);
   let h = hex.slice(1);
   if (h.length === 3) h = h.split("").map((c) => c + c).join("");
   const r = parseInt(h.slice(0, 2), 16);
   const g = parseInt(h.slice(2, 4), 16);
   const b = parseInt(h.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${alpha})`;
+  const val = `rgba(${r},${g},${b},${alpha})`;
+  _alphaCache.set(key, val);
+  return val;
 }
 
 function buildAdjacency(data) {
@@ -170,7 +175,7 @@ export default function WikiGraph() {
   const search = searchParams.get("q") || "";
 
   // local (URL 안 박는) display 상태
-  const [labels, setLabels] = useState("hover");
+  const [labels, setLabels] = useState("smart");
   const [arrows, setArrows] = useState(true);
   const [nodeScale, setNodeScale] = useState(1.0);
   const [linkDist, setLinkDist] = useState(60);
@@ -182,6 +187,15 @@ export default function WikiGraph() {
   const [error, setError] = useState(null);
   const [selectedId, setSelectedId] = useState(focus || null);
   const [hoverId, setHoverId] = useState(null);
+  const [metaMinimized, setMetaMinimized] = useState(false);
+
+  const hoverTimeoutRef = useRef(null);
+  const handleNodeHover = useCallback((n) => {
+    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+    hoverTimeoutRef.current = setTimeout(() => {
+      setHoverId(n ? n.id : null);
+    }, 40);
+  }, []);
 
   const [nodeData, setNodeData] = useState(null);
   const [nodeError, setNodeError] = useState(null);
@@ -300,12 +314,18 @@ export default function WikiGraph() {
         if (!p || !products.includes(p)) return false;
       }
       if (fails.length) {
-        const f = getFail(n);
-        if (!f || !fails.includes(f)) return false;
+        // product 노드는 fail 속성이 없으므로, fail 필터 검사에서 무조건 통과(생존)시켜 트리를 유지함
+        if (n.type !== "product") {
+          const f = getFail(n);
+          if (!f || !fails.includes(f)) return false;
+        }
       }
       if (opers.length) {
-        const o = getOper(n);
-        if (!o || !opers.includes(o)) return false;
+        // product, prod_fail 노드는 oper 속성이 없으므로, oper 필터 검사에서 통과시킴
+        if (n.type !== "product" && n.type !== "prod_fail") {
+          const o = getOper(n);
+          if (!o || !opers.includes(o)) return false;
+        }
       }
       if (hasWikiOnly && !(n.type === "concept" && n.raw?.has_wiki)) return false;
       return true;
@@ -368,15 +388,20 @@ export default function WikiGraph() {
     return preLayout(finalData.nodes, finalData.links);
   }, [finalData]);
 
-  // 데이터 변경/첫 마운트 시 카메라 fit. cooldownTicks=0이라 시뮬 안 돌고, fit만 즉시.
+  const fitGraphRef = useRef(null);
+
+  // 데이터 변경/첫 마운트 시 카메라 fit. (graph 데이터가 새로 fetch 되었을 때만 1회 실행)
   useEffect(() => {
     const t = setTimeout(() => {
       if (fgRef.current && laidOutData.nodes.length > 0) {
-        fgRef.current.zoomToFit?.(400, 60);
+        if (fitGraphRef.current !== graph) {
+          fgRef.current.zoomToFit?.(400, 60);
+          fitGraphRef.current = graph;
+        }
       }
     }, 100);
     return () => clearTimeout(t);
-  }, [laidOutData]);
+  }, [laidOutData, graph]);
 
   const isDimmed = useCallback(
     (n) => {
@@ -397,28 +422,50 @@ export default function WikiGraph() {
 
   const linkColor = useCallback(
     (l) => {
-      const s = typeof l.source === "object" ? l.source.id : l.source;
-      const t = typeof l.target === "object" ? l.target.id : l.target;
-      const focused = s === selectedId || t === selectedId || s === hoverId || t === hoverId;
-      return focused ? "rgba(167, 139, 250, 0.65)" : "rgba(140,140,140,0.15)";
+      const s = l.source.id || l.source;
+      const t = l.target.id || l.target;
+      const hasFocus = selectedId || hoverId;
+      const isFocusedEdge = s === selectedId || t === selectedId || s === hoverId || t === hoverId;
+      
+      if (hasFocus) {
+        return isFocusedEdge ? "rgba(167, 139, 250, 0.9)" : "rgba(120, 120, 120, 0.15)";
+      }
+      return "rgba(180, 180, 180, 0.35)"; // 기본 상태일 때 선을 더 밝게 표시
     },
     [selectedId, hoverId],
   );
 
   const linkWidth = useCallback(
     (l) => {
-      const s = typeof l.source === "object" ? l.source.id : l.source;
-      const t = typeof l.target === "object" ? l.target.id : l.target;
-      return s === selectedId || t === selectedId || s === hoverId || t === hoverId ? 1.4 : 0.4;
+      const s = l.source.id || l.source;
+      const t = l.target.id || l.target;
+      const hasFocus = selectedId || hoverId;
+      const isFocusedEdge = s === selectedId || t === selectedId || s === hoverId || t === hoverId;
+      
+      if (hasFocus) {
+        return isFocusedEdge ? 2.0 : 0.4;
+      }
+      return 1.0; // 기본 상태일 때 굵기를 더 두껍게 표시
     },
     [selectedId, hoverId],
   );
 
   const drawLabel = useCallback(
-    (n) => {
+    (n, globalScale) => {
       if (labels === "off") return false;
       if (labels === "always") return true;
-      return n.id === selectedId || n.id === hoverId;
+      if (n.id === selectedId || n.id === hoverId) return true;
+      if (labels === "hover") return false;
+
+      // labels === "smart"
+      // product, fail 계열은 줌아웃 상태에서도 우선 표시
+      const isMajor = ["product", "prod_fail", "axis_product", "axis_fail_type"].includes(n.type);
+      if (isMajor) return true;
+      
+      // 나머지(oper 등 concept)는 일정 수준 줌인(> 0.8) 했을 때 표시
+      if (globalScale > 0.8) return true;
+      
+      return false;
     },
     [labels, selectedId, hoverId],
   );
@@ -432,7 +479,7 @@ export default function WikiGraph() {
         ctx.lineWidth = 1.2;
         ctx.stroke();
       }
-      if (!drawLabel(n)) return;
+      if (!drawLabel(n, globalScale)) return;
       ctx.fillStyle = isDimmed(n) ? "rgba(220,220,220,0.25)" : "#f0f0f0";
       ctx.font = `${11 / globalScale}px Inter, sans-serif`;
       ctx.textAlign = "left";
@@ -441,16 +488,37 @@ export default function WikiGraph() {
     [selectedId, hoverId, nodeScale, drawLabel, isDimmed],
   );
 
-  const nodeCanvasObjectMode = useCallback(
-    (n) => (drawLabel(n) || n.id === selectedId || n.id === hoverId ? "after" : undefined),
-    [drawLabel, selectedId, hoverId],
-  );
+  const nodeCanvasObjectMode = useCallback(() => "after", []);
+
+  const handleReset = useCallback(() => {
+    setSearchParams(new URLSearchParams(), { replace: true });
+    setLabels("smart");
+    setArrows(true);
+    setNodeScale(1.0);
+    setLinkDist(60);
+    setOpenSec({ filters: true, local: true, display: false, groups: true });
+    setSelectedId(null);
+    setHoverId(null);
+    if (fgRef.current && laidOutData.nodes.length > 0) {
+      setTimeout(() => fgRef.current.zoomToFit?.(400, 60), 100);
+    }
+  }, [setSearchParams, laidOutData]);
 
   return (
     <div className="app-shell">
       <aside className="filter-panel">
         <div className="filter-panel-header">
-          <Link to="/" style={{ fontSize: 12, color: "var(--text-muted)" }}>← Home</Link>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <Link to="/" style={{ fontSize: 12, color: "var(--text-muted)" }}>← Home</Link>
+            <button 
+              onClick={handleReset}
+              style={{ fontSize: 11, color: "var(--text-muted)", cursor: "pointer", background: "none", border: "none" }}
+              onMouseOver={(e) => e.currentTarget.style.color = "var(--text)"}
+              onMouseOut={(e) => e.currentTarget.style.color = "var(--text-muted)"}
+            >
+              ↺ 초기화
+            </button>
+          </div>
           <h1 className="sidebar-title" style={{ marginTop: 8 }}>Wiki Graph</h1>
           <div className="sidebar-stat">
             {finalData.nodes.length} / {baseData.nodes.length} nodes
@@ -567,7 +635,7 @@ export default function WikiGraph() {
           <div className="filter-row">
             <span className="filter-row-label">Labels</span>
             <div className="radio-row">
-              {["always", "hover", "off"].map((opt) => (
+              {["smart", "always", "hover", "off"].map((opt) => (
                 <label key={opt}>
                   <input
                     type="radio"
@@ -646,6 +714,23 @@ export default function WikiGraph() {
             </span>
           )}
           <span className="topbar-spacer" />
+          <button 
+            onClick={() => fgRef.current?.zoomToFit(400, 60)} 
+            style={{
+              marginRight: 16, 
+              padding: "4px 8px", 
+              background: "var(--bg-2)", 
+              border: "1px solid var(--border)", 
+              borderRadius: "var(--radius-sm)", 
+              color: "var(--text-muted)",
+              fontSize: 12,
+              cursor: "pointer"
+            }}
+            onMouseOver={(e) => { e.currentTarget.style.color = "var(--text)"; e.currentTarget.style.borderColor = "var(--accent)"; }}
+            onMouseOut={(e) => { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.borderColor = "var(--border)"; }}
+          >
+            ⛶ 화면 맞춤
+          </button>
           <span className="topbar-stat">
             {finalData.nodes.length} nodes · {finalData.links.length} edges
           </span>
@@ -672,7 +757,8 @@ export default function WikiGraph() {
               linkDirectionalArrowLength={arrows ? 2 : 0}
               linkDirectionalArrowRelPos={1}
               onNodeClick={(n) => setSelectedId(n.id)}
-              onNodeHover={(n) => setHoverId(n ? n.id : null)}
+              onNodeHover={handleNodeHover}
+              onBackgroundClick={() => setSelectedId(null)}
               cooldownTicks={0}
               cooldownTime={0}
               warmupTicks={0}
@@ -684,13 +770,43 @@ export default function WikiGraph() {
         </div>
       </div>
 
-      <aside className="meta-pane">
-        {!selectedId && <div className="empty-meta">노드를 클릭하면 상세가 표시됩니다.</div>}
-        {selectedId && (
+      <aside
+        className="meta-pane"
+        style={{
+          width: metaMinimized ? 40 : 320,
+          padding: metaMinimized ? "14px 4px" : "14px 16px",
+          transition: "all 0.2s ease",
+          position: "relative",
+          overflowX: "hidden"
+        }}
+      >
+        {!selectedId && !metaMinimized && <div className="empty-meta">노드를 클릭하면 상세가 표시됩니다.</div>}
+        {selectedId && metaMinimized && (
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+            <button onClick={() => setMetaMinimized(false)} title="상세 패널 최대화" style={{ padding: 4, color: "var(--text-muted)" }}>
+              ◀
+            </button>
+            <div style={{ writingMode: "vertical-rl", color: "var(--text-muted)", fontSize: 11, letterSpacing: 2 }}>
+              {selectedId.length > 20 ? selectedId.slice(0, 20) + "..." : selectedId}
+            </div>
+          </div>
+        )}
+        {selectedId && !metaMinimized && (
           <>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16, alignItems: "center" }}>
+              <h2 className="meta-section-title" style={{ margin: 0 }}>Selected Node</h2>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setMetaMinimized(true)} title="패널 최소화" style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                  ▶ 접기
+                </button>
+                <button onClick={() => setSelectedId(null)} title="선택 해제" style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                  ✕ 닫기
+                </button>
+              </div>
+            </div>
+
             <div className="meta-section">
-              <h2 className="meta-section-title">Selected</h2>
-              <div className="backlink-item" style={{ wordBreak: "break-all" }}>{selectedId}</div>
+              <div className="backlink-item" style={{ wordBreak: "break-all", color: "var(--accent-hover)", fontWeight: 600 }}>{selectedId}</div>
               {selectedRaw?.type && (
                 <div className="field-row" style={{ marginTop: 6 }}>
                   <div className="field-key">type</div>
