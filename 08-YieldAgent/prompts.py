@@ -43,8 +43,9 @@ TODAY's DATE: {today}
 === AVAILABLE AGENTS & PARAMETERS ===
 
 1. yield_agent: 수율/pt1h 파라미터 데이터 조회
-   params: lotcd(3-4자 제품코드, 예: "4SS"), ref_date(YYYYMMDD), unit("weekly"|"monthly"|"daily"),
-           periods(조회 기간 수), filter_params(파라미터 목록, 예: ["VTH","IDSAT"]),
+   params: lotcd(3-4자 제품코드, 예: "4SS"),
+           time_range(라벨 기반 조회 기간 — 아래 YIELD TIME RANGE 섹션 참고. 시간 미지정 시 omit/null),
+           filter_params(파라미터 목록, 예: ["VTH","IDSAT"]),
            yield_lot_ids(특정 lot ID, 예: "4SS2DPD,4SSXCEW"), yield_groupkey("lot.wf" 형식)
 
 2. wads_agent: WADS 열화 검출 리포트 / 검출 lot list 조회
@@ -92,13 +93,40 @@ TODAY's DATE: {today}
 - 복합 질문 (여러 agent 또는 같은 agent 다른 파라미터) → 여러 task 생성
 - 조건부 작업 ("~하면 ~해줘", "이상 있으면") → 첫 번째 작업만 task로 생성, goal에 조건 기록
 - 각 task의 params에는 해당 agent가 필요로 하는 파라미터만 포함
-- **날짜는 YYYY-MM-DD 또는 YYYYMMDD 형식으로 변환**하여 task params에 넣어라. 자연어 literal("최근 일주일" 등)을 그대로 넣으면 worker가 해석하지 못함.
-  - yield_agent.ref_date: YYYYMMDD (예: "{today_yyyymmdd}")
-  - wads_agent.wads_start_tm / wads_end_tm: YYYY-MM-DD (예: "{today_yyyy_mm_dd}")
-  - "최근 1주일" / "지난 7일" → wads_start_tm=(오늘-6일 YYYY-MM-DD), wads_end_tm="{today_yyyy_mm_dd}"
-  - "오늘" → end_tm="{today_yyyy_mm_dd}"
-  - "1월 20일" → "{year}-01-20"
-  - 해석 불가능한 패턴이면 해당 필드를 빈 문자열 ""로 두어라 (worker가 default 처리)
+- **날짜/기간 처리** — agent마다 형식이 다르다:
+  - yield_agent: task params에 `time_range` 객체를 넣어라 (아래 YIELD TIME RANGE 섹션 참고). YYYYMMDD/periods를 직접 계산하지 마라.
+  - wads_agent.wads_start_tm / wads_end_tm: YYYY-MM-DD 문자열 (예: "{today_yyyy_mm_dd}")
+    - "최근 1주일" / "지난 7일" → wads_start_tm=(오늘-6일 YYYY-MM-DD), wads_end_tm="{today_yyyy_mm_dd}"
+    - "오늘" → end_tm="{today_yyyy_mm_dd}"
+    - "1월 20일" → "{year}-01-20"
+  - map_agent.ref_date: YYYYMMDD (사용자가 날짜 지정 시) 또는 "" (미지정)
+  - 자연어 literal("최근 일주일" 등)을 그대로 wads 필드에 넣지 마라 (worker가 해석하지 못함). 해석 불가능하면 빈 문자열로 두어라.
+
+=== YIELD TIME RANGE (yield_agent 전용) ===
+yield_agent의 params에 들어갈 `time_range` 객체는 라벨 기반이다.
+오늘: {today_yyyy_mm_dd}  |  이번 ISO 주차: {today_iso_week}  |  이번 달: {today_year_month}
+
+형식:
+  "time_range": {{"unit": "weekly"|"monthly"|"daily", "start": <라벨>, "end": <라벨>}}
+  단일 시점이면 start == end. 시간 미지정이면 time_range 필드를 아예 넣지 마라 (기본값: weekly 최근 4주).
+
+라벨 포맷:
+  weekly:  "YYYY-Www"   (예: "2026-W17")  ← ISO 주차
+  monthly: "YYYY-MM"    (예: "2026-02")
+  daily:   "YYYY-MM-DD" (예: "2026-05-06")
+
+자연어 → time_range 변환 예시:
+  "16-17주차"       → {{"unit":"weekly",  "start":"{year}-W16", "end":"{year}-W17"}}
+  "11주차"          → {{"unit":"weekly",  "start":"{year}-W11", "end":"{year}-W11"}}
+  "이번주"          → {{"unit":"weekly",  "start":"{today_iso_week}", "end":"{today_iso_week}"}}
+  "최근 6주"        → unit=weekly, end="{today_iso_week}", start=(end -5주)
+  "2월"             → {{"unit":"monthly", "start":"{year}-02", "end":"{year}-02"}}
+  "최근 3달"        → unit=monthly, end="{today_year_month}", start=(end -2달)
+  "5월 2일~6일"     → {{"unit":"daily",   "start":"{year}-05-02", "end":"{year}-05-06"}}
+  "지난 7일"        → unit=daily, end="{today_yyyy_mm_dd}", start=(end -6일)
+주의:
+- "N주차"는 단일 주차(start==end), "N주 치"는 최근 N주(end=오늘 주차).
+- yield_agent task에 ref_date/unit/periods를 직접 넣지 말 것 — time_range로 통일.
 - task_id는 "task_1", "task_2" 형식으로 순번 부여
 - 사용자 메시지가 짧거나 모호한 follow-up이면 직전 대화 히스토리와 [State context]를 활용하여 lot ID·제품코드·필터 등을 task params에 명시 채워라
 - **CRITICAL**: chained input(예: 후속 task의 map_lot_ids, lh_lot_ids 등)이 이전 task 결과에 의존하는 경우 해당 필드를 **빈 문자열 ""** 으로 두거나 **필드 자체를 omit**하라. 절대로 `"<task_1 결과 lot IDs>"`, `"<task_1_result_lot_ids>"`, `"{{from_task_1}}"`, `"task_1 결과"` 같은 placeholder 텍스트를 값으로 넣지 마라. 시스템의 replanner가 이전 task 결과를 보고 자동으로 채운다.
@@ -111,6 +139,15 @@ TODAY's DATE: {today}
 
 - "4SS 수율 보여줘"
   → task_1: yield_agent, params={{lotcd:"4SS"}}, goal:"4SS 수율 조회"
+
+- "4SS 16-17주차 수율"
+  → task_1: yield_agent, params={{lotcd:"4SS", time_range:{{unit:"weekly", start:"{year}-W16", end:"{year}-W17"}}}}, goal:"4SS 16~17주차 수율 조회"
+
+- "4SS 2월 수율"
+  → task_1: yield_agent, params={{lotcd:"4SS", time_range:{{unit:"monthly", start:"{year}-02", end:"{year}-02"}}}}, goal:"4SS 2월 수율 조회"
+
+- "4SS 5월 2일부터 6일까지 daily 수율"
+  → task_1: yield_agent, params={{lotcd:"4SS", time_range:{{unit:"daily", start:"{year}-05-02", end:"{year}-05-06"}}}}, goal:"4SS 5/2~5/6 daily 수율 조회"
 
 - "4SS 수율이랑 WADS 열화 리포트 같이 보여줘"
   → task_1: yield_agent, params={{lotcd:"4SS"}}, goal:"4SS 수율 조회"
@@ -173,7 +210,7 @@ Your job: update the params of REMAINING tasks based on results from already-exe
 TODAY's DATE: {today}
 
 === AVAILABLE AGENTS & PARAMS ===
-- yield_agent       : lotcd, ref_date, unit, periods, filter_params, yield_lot_ids, yield_groupkey
+- yield_agent       : lotcd, time_range({{unit,start,end}} 라벨 객체), filter_params, yield_lot_ids, yield_groupkey
 - wads_agent        : lotcd, wads_start_tm, wads_end_tm, wads_parameter
 - map_agent         : map_lot_id, map_lot_ids, map_wf_ids, map_groupkey, map_type, map_oper
 - fail_history_agent: dh_query, dh_fail_type, dh_cause_oper, lotcd
@@ -370,38 +407,43 @@ Route to **FINISH** when the request is unrelated to yield, WADS, wafer map, lot
 - 실패 원인을 자체 추론하여 새 질문("PT1H/PT1C 선택해주세요" 등)을 생성하지 마라. 이미 interrupt 단계에서 사용자에게 물어본 파라미터는 이미 채워져 있다.
 - worker가 빈 결과를 반환했다면 "lot ID를 확인해주세요" 같은 안내는 worker 메시지에 이미 포함되어 있으므로 그대로 relay.
 
-=== UNIT & PERIODS ===
-unit 결정:
-  "월별", "매월", "월간"  → unit="monthly"
-  "일별", "매일", "일간"  → unit="daily"
-  명시 없음              → unit="weekly"
+=== TIME RANGE (yield_agent 전용) ===
+yield_agent에는 **라벨 기반 time_range 객체**를 채워라. YYYYMMDD/periods를 직접 계산하지 마라.
+(supervisor가 라벨을 ref_date/periods/unit으로 변환한다.)
 
-periods 오버라이드 (자연어에서 숫자 파싱):
-  "최근 3달"  → unit="monthly", periods=3
-  "지난 7일"  → unit="daily",   periods=7
-  "6주 치"    → unit="weekly",  periods=6
-  "N주차"     → unit="weekly",  periods=1  (특정 1주만 조회, ref_date로 해당 주 월요일 지정)
-  주의: "N주차"(특정 주 1개)와 "N주 치"(최근 N주)는 완전히 다름
-  숫자 없으면 → periods=0 (yield_agent가 기본값 적용: weekly=4, monthly=3, daily=4)
+오늘: {today_yyyy_mm_dd}  |  이번 ISO 주차: {today_iso_week}  |  이번 달: {today_year_month}
 
-=== TIME REFERENCE ===
+time_range 형식:
+  {{
+    "unit": "weekly" | "monthly" | "daily",
+    "start": <시작 라벨, 포함>,
+    "end":   <끝 라벨, 포함>
+  }}
+  단일 시점이면 start == end. 시간 미지정 시 time_range=null (yield_agent 기본값: weekly 최근 4주).
 
-ref_date는 조회 범위의 **마지막 날(끝점)**이다.
-_get_n_days / _get_n_weeks 등은 ref_date로부터 과거 방향으로 periods만큼 조회한다.
+라벨 포맷 (단위별):
+  weekly:  "YYYY-Www"   (예: "2026-W17") ← ISO 주차
+  monthly: "YYYY-MM"    (예: "2026-02")
+  daily:   "YYYY-MM-DD" (예: "2026-05-06")
 
-For yield_agent → ref_date (YYYYMMDD):
-  날짜 범위 "A부터 B까지" / "A~B" → ref_date=B(종료일), periods=일수차+1, unit=daily
-    예: "3월 1일부터 3일까지" → ref_date=20260303, periods=3, unit=daily
-    예: "2월 20일부터 28일까지" → ref_date=20260228, periods=9, unit=daily
-  "오늘" / "금일"        → {today_yyyymmdd}
-  "이번주"               → this week's Monday in YYYYMMDD
-  "저번주" / "지난주"    → last week's Monday in YYYYMMDD
-  "N주전"                → N weeks ago Monday in YYYYMMDD
-  "N주차"                → 올해 ISO week N의 월요일 YYYYMMDD, periods=1
-                           예: "11주차" (2026년) → ref_date=20260309, periods=1
-                           주의: "N주차"(특정 주 1개)와 "N주 치"(최근 N주)는 다름
-  specific date "1월 20일" → 20260120
-  no time mentioned      → {today_yyyymmdd}
+자연어 → time_range 예시 (오늘 = {today_yyyy_mm_dd}, ISO 주차 = {today_iso_week} 기준):
+  "16-17주차 수율"        → unit=weekly,  start="{year}-W16", end="{year}-W17"
+  "11주차"                → unit=weekly,  start="{year}-W11", end="{year}-W11"
+  "이번주"                → unit=weekly,  start="{today_iso_week}", end="{today_iso_week}"
+  "지난주" / "저번주"     → unit=weekly,  start=end=(오늘 ISO 주차 -1주)
+  "6주 치" / "최근 6주"   → unit=weekly,  end="{today_iso_week}", start=(오늘 ISO 주차 -5주)
+  "2월"                   → unit=monthly, start="{year}-02", end="{year}-02"
+  "최근 3달"              → unit=monthly, end="{today_year_month}", start=({today_year_month} -2달)
+  "5월 2일부터 6일까지"   → unit=daily,   start="{year}-05-02", end="{year}-05-06"
+  "지난 7일"              → unit=daily,   end="{today_yyyy_mm_dd}", start=({today_yyyy_mm_dd} -6일)
+  "오늘 수율" / 시간 미지정 → time_range=null (기본값 weekly 최근 4주 사용)
+
+주의:
+- "N주차"는 단일 주차(start==end), "N주 치"는 최근 N주(end=오늘 주차).
+- yield_agent 라우팅 시 ref_date/unit/periods 필드는 비워두고 time_range만 채워라.
+- 위 자연어 예시에 없는 미묘한 표현이라도 라벨 포맷 규칙에 맞춰 추론해라.
+
+=== TIME REFERENCE (map_agent / wads_agent) ===
 
 For map_agent → ref_date (YYYYMMDD):
   사용자가 날짜를 지정한 경우 → 해당 날짜 YYYYMMDD (예: "3월 6일" → 20260306)
@@ -462,13 +504,14 @@ JSON schema:
 {{
   "next": "yield_agent" | "wads_agent" | "map_agent" | "fail_history_agent" | "lot_history_agent" | "relation_tree_agent" | "ppt_export" | "FINISH",
   "lotcd": "<product code, empty string if user did not specify>",
-  "ref_date": "<YYYYMMDD for yield_agent, else empty string>",
+  "ref_date": "<YYYYMMDD for map_agent only, else empty string>",
+  "time_range": null,  // yield_agent 전용. 예: {{"unit":"weekly","start":"2026-W16","end":"2026-W17"}}. 시간 미지정이면 null.
   "wads_start_tm": "<YYYY-MM-DD range start for wads_agent, empty if single date>",
   "wads_end_tm": "<YYYY-MM-DD for wads_agent, else empty string>",
   "wads_parameter": "<step code like 'step07' if user mentioned, else empty>",
   "filter_params": ["VTH", "IDSAT"],
-  "unit": "weekly",
-  "periods": 0,
+  "unit": "weekly",   // yield_agent에서는 time_range.unit을 통해 자동 결정됨 (그대로 두어도 OK)
+  "periods": 0,       // yield_agent에서는 time_range로 자동 결정됨 (그대로 두어도 OK)
   "message": "<Korean message>",
   "map_lot_id":   "",
   "map_lot_ids":  "",

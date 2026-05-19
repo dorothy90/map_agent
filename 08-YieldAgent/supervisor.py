@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import operator
 import logging
-from datetime import date
-from typing import Annotated, Any, Dict, Literal, TypedDict
+from datetime import date, datetime
+from typing import Annotated, Any, Dict, Literal, Optional, TypedDict
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, trim_messages
@@ -62,6 +62,82 @@ class PlanResponse(BaseModel):
     tasks: list[TaskItem] = Field(description="실행할 작업 목록")
 
 
+class TimeRange(BaseModel):
+    """yield_agent 조회 기간을 라벨 기반으로 표현.
+
+    LLM이 YYYYMMDD나 periods 계산을 직접 하지 않도록 단위별 자연 라벨로만 받는다.
+    supervisor가 이 라벨을 코드로 ref_date(YYYYMMDD)/periods/unit로 변환한다.
+
+    라벨 포맷:
+      weekly:  "YYYY-Www"   (예: "2026-W17") — ISO 주차
+      monthly: "YYYY-MM"    (예: "2026-02")
+      daily:   "YYYY-MM-DD" (예: "2026-05-06")
+    단일 시점이면 start == end, 범위면 다름.
+    """
+
+    unit: Literal["weekly", "monthly", "daily"] = Field(description="시간 단위")
+    start: str = Field(description="시작 라벨 (포함)")
+    end: str = Field(description="끝 라벨 (포함)")
+
+
+def _parse_iso_week_label(label: str) -> tuple[int, int]:
+    """'2026-W17' / '2026-w17' → (2026, 17)"""
+    year_s, week_s = label.strip().replace("w", "W").split("-W", 1)
+    return int(year_s), int(week_s)
+
+
+def _parse_year_month_label(label: str) -> tuple[int, int]:
+    """'2026-02' → (2026, 2)"""
+    year_s, month_s = label.strip().split("-", 1)
+    return int(year_s), int(month_s)
+
+
+def resolve_time_range(tr: TimeRange) -> tuple[str, int, str]:
+    """TimeRange 라벨 → (ref_date YYYYMMDD, periods, unit)."""
+    unit = tr.unit
+    start, end = (tr.start or "").strip(), (tr.end or "").strip()
+    if not start or not end:
+        raise ValueError(f"time_range start/end empty: start={start!r} end={end!r}")
+
+    if unit == "weekly":
+        sy, sw = _parse_iso_week_label(start)
+        ey, ew = _parse_iso_week_label(end)
+        start_monday = date.fromisocalendar(sy, sw, 1)
+        end_monday = date.fromisocalendar(ey, ew, 1)
+        weeks = ((end_monday - start_monday).days // 7) + 1
+        return end_monday.strftime("%Y%m%d"), max(1, weeks), "weekly"
+
+    if unit == "monthly":
+        sy, sm = _parse_year_month_label(start)
+        ey, em = _parse_year_month_label(end)
+        months = (ey - sy) * 12 + (em - sm) + 1
+        return f"{ey:04d}{em:02d}01", max(1, months), "monthly"
+
+    if unit == "daily":
+        sd = datetime.strptime(start, "%Y-%m-%d").date()
+        ed = datetime.strptime(end, "%Y-%m-%d").date()
+        days = (ed - sd).days + 1
+        return ed.strftime("%Y%m%d"), max(1, days), "daily"
+
+    raise ValueError(f"unknown time_range.unit: {unit!r}")
+
+
+def _apply_time_range_dict(params: dict) -> None:
+    """task_params dict 안의 time_range를 ref_date/periods/unit으로 변환·치환 (in-place)."""
+    tr_data = params.get("time_range")
+    if not isinstance(tr_data, dict):
+        return
+    try:
+        tr_obj = TimeRange(**tr_data)
+        ref, periods, unit = resolve_time_range(tr_obj)
+    except Exception as e:
+        logger.warning("[Supervisor] task_params.time_range 변환 실패: %s | data=%r", e, tr_data)
+        return
+    params["ref_date"] = ref
+    params["periods"] = periods
+    params["unit"] = unit
+
+
 class RouteResponse(BaseModel):
     """Supervisor의 라우팅 결정 — with_structured_output으로 타입 보장"""
 
@@ -70,7 +146,14 @@ class RouteResponse(BaseModel):
     )
     lotcd: str = Field(default="", description="3~4자리 제품코드만 (예: 4SS, 5NA, 6E2). 전체 lot ID(예: 4SS2DPD)는 절대 입력하지 말 것. 사용자가 미지정 시 빈 문자열")
     ref_date: str = Field(
-        default="", description="Yield 기준날짜 YYYYMMDD (yield_agent 전용)"
+        default="", description="기준날짜 YYYYMMDD (map_agent 전용 — yield_agent는 time_range 사용)"
+    )
+    time_range: Optional[TimeRange] = Field(
+        default=None,
+        description=(
+            "yield_agent 조회 기간 (라벨 기반). 채워지면 ref_date/periods/unit은 무시되고 "
+            "supervisor가 라벨에서 계산. 시간 미지정 시 null."
+        ),
     )
     wads_start_tm: str = Field(
         default="", description="WADS 조회 시작 날짜 YYYY-MM-DD (범위 조회 시, 비어있으면 wads_end_tm 단일 날짜 조회)"
@@ -311,10 +394,13 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         return {}
 
     today = date.today()
+    _iy, _iw, _ = today.isocalendar()
     prompt = PLANNER_SYSTEM_PROMPT.format(
         today=today.strftime("%Y년 %m월 %d일 (%A)"),
         today_yyyymmdd=today.strftime("%Y%m%d"),
         today_yyyy_mm_dd=today.strftime("%Y-%m-%d"),
+        today_iso_week=f"{_iy}-W{_iw:02d}",
+        today_year_month=today.strftime("%Y-%m"),
         year=today.year,
     )
 
@@ -652,6 +738,8 @@ def supervisor_node(
         remaining = pending[1:]
         # C1: 코드 기반 chained input 해소 — wads_sql_result 메시지에서 lot_ids 자동 주입 (LLM 불필요)
         task_params = _resolve_chained_params(current_task, state)
+        # planner가 time_range를 자연 라벨로 넘긴 경우 → ref_date/periods/unit으로 변환 (in-place)
+        _apply_time_range_dict(task_params)
 
         task_message = AIMessage(
             content=f"[Task {current_task.get('task_id', '?')}] {current_task.get('goal', '')}",
@@ -745,11 +833,17 @@ def supervisor_node(
     today = date.today()
     today_yyyymmdd = today.strftime("%Y%m%d")
     today_yyyy_mm_dd = today.strftime("%Y-%m-%d")
+    _iy, _iw, _ = today.isocalendar()
+    today_iso_week = f"{_iy}-W{_iw:02d}"
+    today_year_month = today.strftime("%Y-%m")
 
     prompt = SUPERVISOR_SYSTEM_PROMPT.format(
         today=today.strftime("%Y년 %m월 %d일 (%A)"),
         today_yyyymmdd=today_yyyymmdd,
         today_yyyy_mm_dd=today_yyyy_mm_dd,
+        today_iso_week=today_iso_week,
+        today_year_month=today_year_month,
+        year=today.year,
     )
 
     # 이전 이상감지 결과가 있으면 컨텍스트 정보로 주입 (라우팅은 rewrite된 메시지 기반)
@@ -889,6 +983,20 @@ def supervisor_node(
             wads_end_tm="",
             message="요청을 이해하지 못했습니다. 다시 시도해 주세요.",
         )
+
+    # time_range가 채워졌으면 라벨에서 ref_date/periods/unit을 계산해 덮어쓴다.
+    # LLM이 YYYYMMDD 계산을 직접 안 해도 되도록 한 핵심 변환 지점.
+    if decision.time_range is not None:
+        try:
+            new_ref, new_periods, new_unit = resolve_time_range(decision.time_range)
+            decision.ref_date = new_ref
+            decision.periods = new_periods
+            decision.unit = new_unit
+        except Exception as e:
+            logger.warning(
+                "[Supervisor] time_range 변환 실패 (%s) — ref_date/periods 그대로 사용",
+                e,
+            )
 
     # 동일 에이전트 + 동일 파라미터 재호출 방지: 파라미터가 바뀌면 허용
     # step_count > 1 조건: 첫 스텝은 새 질의이므로 이전 대화 히스토리의 에이전트와 겹쳐도 허용
