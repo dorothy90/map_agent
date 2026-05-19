@@ -225,9 +225,13 @@ def _search_opensearch(
         bm25_query = {"bool": {"must": [bm25_query], "filter": filters}}
 
     # kNN 쿼리 (메타데이터 필터 포함)
+    # ※ kNN + filter 조합에서 OpenSearch가 exact-kNN 경로로 떨어지면,
+    #   필터된 후보군에 embedding=null인 문서가 섞일 때
+    #   "cannot read field 'point' because this.point is null" 오류 발생.
+    #   filter에 항상 `exists: embedding`을 함께 걸어 null 후보를 배제.
     knn_body: Dict[str, Any] = {"vector": embedding, "k": top_k}
-    if filters:
-        knn_body["filter"] = {"bool": {"filter": filters}}
+    knn_filters = filters + [{"exists": {"field": "embedding"}}]
+    knn_body["filter"] = {"bool": {"filter": knn_filters}}
     knn_query: Dict[str, Any] = {
         "knn": {
             "embedding": knn_body
