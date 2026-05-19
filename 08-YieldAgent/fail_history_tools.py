@@ -267,8 +267,28 @@ def _search_opensearch(
             body=search_body,
         )
     except Exception as e:
-        logger.error("OpenSearch 검색 실패: %s", e, exc_info=True)
-        raise
+        # OpenSearch hybrid search + normalization-processor 는 sub-query 결과 수가
+        # 어긋나면(특히 kNN 후보가 0건일 때) `index -X out of bounds for length Y`
+        # 같은 search_phase_execution_exception 을 던지는 알려진 버그가 있다.
+        # BM25-only 로 폴백해 사용자에게 빈 화면 대신 결과를 돌려준다.
+        msg = str(e)
+        is_hybrid_bug = (
+            "search_phase_execution_exception" in msg
+            or "out of bounds" in msg
+            or "this.point is null" in msg
+        )
+        if not is_hybrid_bug:
+            logger.error("OpenSearch 검색 실패: %s", e, exc_info=True)
+            raise
+        logger.warning(
+            "[_search_opensearch] hybrid 실패 — BM25-only 폴백: %s", e
+        )
+        bm25_only_body = {"size": top_k, "query": bm25_query}
+        try:
+            response = client.search(index=_OPENSEARCH_INDEX, body=bm25_only_body)
+        except Exception as e2:
+            logger.error("OpenSearch BM25 폴백도 실패: %s", e2, exc_info=True)
+            raise
 
     results = []
     for hit in response.get("hits", {}).get("hits", []):
