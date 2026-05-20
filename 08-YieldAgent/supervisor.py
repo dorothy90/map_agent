@@ -528,10 +528,10 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "[Replanner] plan 완료 감지 (tasks=%d) → response set, should_end → END",
             len(task_plan),
         )
-        return {
-            "response": last_agent_msg,
-            "messages": [AIMessage(content=last_agent_msg, name="supervisor")],
-        }
+        # response만 설정 — should_end 종료 신호 전용. worker가 이미 answer를
+        # messages에 넣고 SSE로 스트리밍했으므로, 같은 내용을 supervisor 메시지로
+        # 재방출하면 프론트엔드에 답변이 두 번 렌더된다.
+        return {"response": last_agent_msg}
 
     # Fast path: 큐 비었거나 past 비었거나 chained-input 의존이 없으면 LLM 호출 생략
     if not pending or not past:
@@ -979,9 +979,10 @@ def supervisor_node(
         today_yyyy_mm_dd if decision.next == "wads_agent" else ""
     )
 
-    # FINISH 메시지 relay (#X1 fix): supervisor LLM이 worker의 에러 결과를 보고도
+    # FINISH no-data 처리 (#X1 fix): supervisor LLM이 worker의 에러 결과를 보고도
     # 엉뚱한 메시지(예: "PT1H/PT1C 선택해주세요")를 hallucinate하는 경우가 있다.
-    # FINISH 결정 + 직전 worker가 "데이터 없음" 류 응답이면 worker 메시지를 그대로 사용자에게 전달.
+    # 직전 worker가 "데이터 없음" 류 응답이면 그 메시지는 이미 사용자에게 스트리밍됐으므로,
+    # supervisor는 빈 메시지로 침묵한다 — worker 메시지를 재방출하면 답변이 두 번 표시된다.
     if decision.next == "FINISH":
         last_agent_msg = next(
             (m.content for m in reversed(messages)
@@ -994,8 +995,8 @@ def supervisor_node(
             "오류가 발생했습니다", "실행 실패", "조회 실패",
         )
         if last_agent_msg and any(kw in last_agent_msg for kw in _NO_DATA_KEYWORDS):
-            logger.info("[Supervisor] FINISH 메시지 relay: LLM 메시지 대신 worker 마지막 응답 사용")
-            decision.message = last_agent_msg
+            logger.info("[Supervisor] FINISH no-data: worker 메시지 유지, supervisor echo 생략")
+            decision.message = ""
 
     result_message = AIMessage(content=decision.message, name="supervisor")
 
