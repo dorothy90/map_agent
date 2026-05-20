@@ -35,8 +35,22 @@ _fh_model = get_llm(model=os.getenv("RETRIEVE_CHAIN_MODEL"))
 
 
 
-def _extract_cited_indices(answer: str) -> Set[int]:
-    return {int(m) for m in re.findall(r'\[FH-(\d+)\]', answer)}
+_RELEVANT_LINE_RE = re.compile(r'\[RELEVANT:\s*([0-9,\s]*)\]')
+
+
+def _extract_relevant_indices(answer: str) -> Set[int]:
+    """`[RELEVANT: i,j,k]` 라인을 우선 파싱, 없으면 인라인 `[FH-N]` 인용을 fallback."""
+    m = _RELEVANT_LINE_RE.search(answer)
+    if m:
+        raw = m.group(1).strip()
+        if not raw:
+            return set()
+        return {int(t) for t in re.findall(r'\d+', raw)}
+    return {int(t) for t in re.findall(r'\[FH-(\d+)\]', answer)}
+
+
+def _strip_relevant_line(answer: str) -> str:
+    return _RELEVANT_LINE_RE.sub('', answer).rstrip()
 
 
 def _format_cited_results(results: List[Dict[str, Any]], cited_indices: Set[int]) -> str:
@@ -204,7 +218,8 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     answer, agent_suggestion = extract_suggestion(answer)
 
-    cited_indices = _extract_cited_indices(answer)
+    cited_indices = _extract_relevant_indices(answer)
+    answer = _strip_relevant_line(answer)
     result_block = _format_cited_results(results, cited_indices)
     if result_block:
         message_content = f"### 💡 [답변]\n\n{answer}\n\n---\n\n{result_block}"
