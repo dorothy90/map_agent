@@ -245,8 +245,10 @@ def synthesize_concept(
             c.doc_id = meta["doc_ids"][0]
         if not c.date and meta.get("date"):
             c.date = meta["date"]
-        if not c.source_file and meta.get("source_files"):
-            c.source_file = meta["source_files"][0]
+        # source_file은 episode 메타가 authoritative — LLM이 채운 값은 환각이라
+        # 무시하고 항상 덮어쓴다 (episode 메타에 없으면 빈 값으로 둔다).
+        src_files = meta.get("source_files") or []
+        c.source_file = str(src_files[0]) if src_files else ""
         if not c.natural_label:
             date_part = c.date or meta.get("date", "")
             q_part = (meta.get("query", "") or "")[:30]
@@ -384,7 +386,7 @@ _SYNTHESIZE_FROM_DOCS_SYSTEM = """당신은 반도체 fail_history docs를 정�
   - 0.8+: 5+ docs, 일치도 높음, 모순 0
   - 0.5~0.7: 2~4 docs, 부분 일치
   - <0.5: 1~2 docs 또는 모순 많음
-- `citations`에는 본문에 인용한 모든 doc_id 채워라. source_file/date도 함께.
+- `citations`에는 본문에 인용한 모든 doc_id를 채워라. source_file은 채우지 마라 — 후처리에서 raw doc 기준으로 자동 보강한다.
 - 출력 언어: 한국어
 """
 
@@ -447,9 +449,10 @@ def synthesize_concept_from_docs(
 
     def _enrich(c: EpisodeRef) -> EpisodeRef:
         meta = doc_by_id.get(c.doc_id, {})
+        # source_file은 raw doc이 authoritative — LLM이 채운 값은 입력에 없는
+        # 정보라 환각이므로 무시하고 doc_id로 매칭한 실제 파일명으로 항상 덮어쓴다.
+        c.source_file = str(meta.get("source_file") or meta.get("filenm") or "")
         if meta:
-            if not c.source_file and meta.get("source_file"):
-                c.source_file = meta["source_file"]
             if not c.date and meta.get("date"):
                 c.date = str(meta["date"])
             if not c.natural_label:
@@ -463,7 +466,7 @@ def synthesize_concept_from_docs(
             EpisodeRef(
                 episode_id="",  # 직접 합성이라 episode 없음
                 doc_id=d.get("doc_id", ""),
-                source_file=d.get("source_file", ""),
+                source_file=str(d.get("source_file") or d.get("filenm") or ""),
                 date=str(d.get("date", "")),
             )
             for d in raw_docs[:10] if d.get("doc_id")

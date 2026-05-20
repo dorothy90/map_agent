@@ -480,10 +480,8 @@ def _enrich_citation_urls(citations: list[Any]) -> list[Any]:
             continue
         c = dict(c)
         if not c.get("download_url"):
+            # source_file이 실제로 있을 때만 URL 조립 — 없는 파일명 placeholder 금지.
             source_file = str(c.get("source_file") or "")
-            doc_id = str(c.get("doc_id") or "")
-            if not source_file and doc_id:
-                source_file = f"{doc_id}.pptx"
             if source_file:
                 c["download_url"] = f"{download_base}?source_file={quote(source_file)}"
         out.append(c)
