@@ -11,6 +11,7 @@ import {
 
 import { fetchGraph, fetchNode, fetchTripDocs } from "../api/wiki";
 import { TripDocsList } from "./WikiDocs.jsx";
+import { useWikiRoutes } from "../wikiRoutes.js";
 
 const DEFAULT_COLORS = {
   concept: "#a78bfa",
@@ -162,6 +163,7 @@ function bfsHops(adj, start, depth) {
 
 export default function WikiGraph() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const routes = useWikiRoutes();
   const view = searchParams.get("view") || "product_tree";
   const limit = Number(searchParams.get("limit") || "300");
   const focus = searchParams.get("focus") || "";
@@ -509,7 +511,7 @@ export default function WikiGraph() {
       <aside className="filter-panel">
         <div className="filter-panel-header">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-            <Link to="/" style={{ fontSize: 12, color: "var(--text-muted)" }}>← Home</Link>
+            <Link to={routes.home} style={{ fontSize: 12, color: "var(--text-muted)" }}>← Home</Link>
             <button 
               onClick={handleReset}
               style={{ fontSize: 11, color: "var(--text-muted)", cursor: "pointer", background: "none", border: "none" }}
@@ -902,6 +904,7 @@ function VirtualNodeSummary({ raw }) {
 }
 
 function NodeSummary({ data, nodeId }) {
+  const routes = useWikiRoutes();
   const md = data.frontmatter || {};
   const body = data.body_markdown || "";
   const backlinks = data.backlinks || [];
@@ -924,7 +927,7 @@ function NodeSummary({ data, nodeId }) {
 
       {nodeId.startsWith("concept:") && (
         <div className="meta-section">
-          <Link to={`/wiki/docs?concept=${encodeURIComponent(nodeId)}`}>📖 Docs에서 열기 →</Link>
+          <Link to={`${routes.docs}?concept=${encodeURIComponent(nodeId)}`}>📖 Docs에서 열기 →</Link>
         </div>
       )}
 

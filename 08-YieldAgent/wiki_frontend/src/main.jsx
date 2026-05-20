@@ -5,20 +5,22 @@ import { BrowserRouter, Navigate, Route, Routes, Link } from "react-router-dom";
 import "./styles/theme.css";
 import WikiDocs from "./pages/WikiDocs.jsx";
 import WikiGraph from "./pages/WikiGraph.jsx";
+import { useWikiRoutes } from "./wikiRoutes.js";
 
 function Home() {
+  const routes = useWikiRoutes();
   return (
     <div className="home-shell">
       <div className="home-card">
         <h1 className="home-title">Wiki</h1>
         <p className="home-sub">vault에 누적된 fail-history 합성 결과를 탐색합니다.</p>
         <div className="home-grid">
-          <Link to="/wiki/docs" className="home-link">
+          <Link to={routes.docs} className="home-link">
             <div className="home-link-icon">📖</div>
             <div className="home-link-title">Docs</div>
             <div className="home-link-sub">product → fail → oper 트리 + 본문 reader</div>
           </Link>
-          <Link to="/wiki/graph" className="home-link">
+          <Link to={routes.graph} className="home-link">
             <div className="home-link-icon">🕸</div>
             <div className="home-link-title">Graph</div>
             <div className="home-link-sub">concept · episode · alias 노드 force layout</div>

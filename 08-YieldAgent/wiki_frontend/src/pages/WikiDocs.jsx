@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { fetchProductTree, fetchNode, fetchTripDocs } from "../api/wiki";
+import { useWikiRoutes } from "../wikiRoutes.js";
 
 function buildTree(graphJson) {
   const tree = {};
@@ -39,6 +40,7 @@ function matchQ(q, p, f, o) {
 export default function WikiDocs() {
   const [searchParams, setSearchParams] = useSearchParams();
   const conceptParam = searchParams.get("concept") || "";
+  const routes = useWikiRoutes();
 
   const [graph, setGraph] = useState(null);
   const [error, setError] = useState(null);
@@ -225,7 +227,7 @@ export default function WikiDocs() {
               <h1 className="reader-title">{selectedLeaf.cause_oper}</h1>
               <div className="reader-actions">
                 <Link
-                  to={`/wiki/graph?view=default&focus=${encodeURIComponent(selectedNid)}`}
+                  to={`${routes.graph}?view=default&focus=${encodeURIComponent(selectedNid)}`}
                 >
                   🕸 그래프에서 보기
                 </Link>
