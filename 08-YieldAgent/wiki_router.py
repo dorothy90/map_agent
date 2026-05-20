@@ -453,7 +453,7 @@ def get_trip_docs(
             "comment": src.get("comment", ""),
             "content": src.get("content", ""),
             "date": src.get("date", ""),
-            "source_file": src.get("source_file", ""),
+            "source_file": src.get("source_file") or src.get("filenm") or "",
             "download_url": src.get("download_url", ""),
             "score": hit.get("_score"),
         })
