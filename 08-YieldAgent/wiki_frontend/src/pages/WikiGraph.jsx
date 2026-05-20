@@ -186,16 +186,7 @@ export default function WikiGraph() {
   const [graph, setGraph] = useState(null);
   const [error, setError] = useState(null);
   const [selectedId, setSelectedId] = useState(focus || null);
-  const [hoverId, setHoverId] = useState(null);
   const [metaMinimized, setMetaMinimized] = useState(false);
-
-  const hoverTimeoutRef = useRef(null);
-  const handleNodeHover = useCallback((n) => {
-    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-    hoverTimeoutRef.current = setTimeout(() => {
-      setHoverId(n ? n.id : null);
-    }, 40);
-  }, []);
 
   const [nodeData, setNodeData] = useState(null);
   const [nodeError, setNodeError] = useState(null);
@@ -307,27 +298,115 @@ export default function WikiGraph() {
   );
 
   const filteredData = useMemo(() => {
+    // 트리 구조에서 상위 노드(product, prod_fail)가 하위 필터 조건(opers, hasWiki)에 의해
+    // 불필요하게 남아있는 것(고아 노드)을 방지하기 위해 연결 정보를 확인합니다.
+    const baseAdj = new Map();
+    for (const l of baseData.links) {
+      const s = typeof l.source === "object" ? l.source.id : l.source;
+      const t = typeof l.target === "object" ? l.target.id : l.target;
+      if (!baseAdj.has(s)) baseAdj.set(s, []);
+      if (!baseAdj.has(t)) baseAdj.set(t, []);
+      baseAdj.get(s).push(t);
+      baseAdj.get(t).push(s);
+    }
+    const nodeMap = new Map(baseData.nodes.map((n) => [n.id, n]));
+
     const passes = (n) => {
+      // 1. Type
       if (types.length && !types.includes(n.type)) return false;
+
+      // 2. Product
       if (products.length) {
         const p = getProduct(n);
         if (!p || !products.includes(p)) return false;
       }
+
+      // 3. Fails
       if (fails.length) {
-        // product 노드는 fail 속성이 없으므로, fail 필터 검사에서 무조건 통과(생존)시켜 트리를 유지함
-        if (n.type !== "product") {
+        if (n.type === "product") {
+          const neighbors = baseAdj.get(n.id) || [];
+          const hasValidFail = neighbors.some((nid) => {
+            const nb = nodeMap.get(nid);
+            if (!nb) return false;
+            const f = getFail(nb);
+            return f && fails.includes(f);
+          });
+          if (!hasValidFail) return false;
+        } else {
           const f = getFail(n);
           if (!f || !fails.includes(f)) return false;
         }
       }
+
+      // 4. Opers
       if (opers.length) {
-        // product, prod_fail 노드는 oper 속성이 없으므로, oper 필터 검사에서 통과시킴
-        if (n.type !== "product" && n.type !== "prod_fail") {
+        if (n.type === "prod_fail") {
+          const neighbors = baseAdj.get(n.id) || [];
+          const hasValidOper = neighbors.some((nid) => {
+            const nb = nodeMap.get(nid);
+            if (!nb) return false;
+            const o = getOper(nb);
+            return o && opers.includes(o);
+          });
+          if (!hasValidOper) return false;
+        } else if (n.type === "product") {
+          const neighbors = baseAdj.get(n.id) || [];
+          let hasValidOperDescendant = false;
+          for (const nid of neighbors) {
+            const nb = nodeMap.get(nid);
+            if (!nb || nb.type !== "prod_fail") continue;
+            const failNeighbors = baseAdj.get(nb.id) || [];
+            const valid = failNeighbors.some((nnid) => {
+              const nnb = nodeMap.get(nnid);
+              if (!nnb) return false;
+              const o = getOper(nnb);
+              return o && opers.includes(o);
+            });
+            if (valid) {
+              hasValidOperDescendant = true;
+              break;
+            }
+          }
+          if (!hasValidOperDescendant) return false;
+        } else {
           const o = getOper(n);
           if (!o || !opers.includes(o)) return false;
         }
       }
-      if (hasWikiOnly && !(n.type === "concept" && n.raw?.has_wiki)) return false;
+
+      // 5. hasWikiOnly
+      if (hasWikiOnly) {
+        if (n.type === "prod_fail") {
+          const neighbors = baseAdj.get(n.id) || [];
+          const hasWiki = neighbors.some((nid) => {
+            const nb = nodeMap.get(nid);
+            return nb && nb.type === "concept" && nb.raw?.has_wiki;
+          });
+          if (!hasWiki) return false;
+        } else if (n.type === "product") {
+          const neighbors = baseAdj.get(n.id) || [];
+          let hasWikiDescendant = false;
+          for (const nid of neighbors) {
+            const nb = nodeMap.get(nid);
+            if (!nb || nb.type !== "prod_fail") continue;
+            const failNeighbors = baseAdj.get(nb.id) || [];
+            const valid = failNeighbors.some((nnid) => {
+              const nnb = nodeMap.get(nnid);
+              return nnb && nnb.type === "concept" && nnb.raw?.has_wiki;
+            });
+            if (valid) {
+              hasWikiDescendant = true;
+              break;
+            }
+          }
+          if (!hasWikiDescendant) return false;
+        } else if (n.type === "concept") {
+          if (!n.raw?.has_wiki) return false;
+        } else {
+          return false;
+        }
+      }
+
       return true;
     };
     const nodes = baseData.nodes.filter(passes);
@@ -362,17 +441,17 @@ export default function WikiGraph() {
     return new Set(finalData.nodes.filter((n) => n.name.toLowerCase().includes(q)).map((n) => n.id));
   }, [finalData, search]);
 
-  const hoverAdj = useMemo(() => {
-    if (!hoverId) return null;
-    const adj = new Set([hoverId]);
+  const selectedAdj = useMemo(() => {
+    if (!selectedId) return null;
+    const adj = new Set([selectedId]);
     for (const l of finalData.links) {
       const s = typeof l.source === "object" ? l.source.id : l.source;
       const t = typeof l.target === "object" ? l.target.id : l.target;
-      if (s === hoverId) adj.add(t);
-      if (t === hoverId) adj.add(s);
+      if (s === selectedId) adj.add(t);
+      if (t === selectedId) adj.add(s);
     }
     return adj;
-  }, [hoverId, finalData]);
+  }, [selectedId, finalData]);
 
   // link distance d3 force 적용 — distance만 갱신, reheat 안 함 (이미 식은 시뮬레이션 깨우지 않음).
   useEffect(() => {
@@ -405,56 +484,56 @@ export default function WikiGraph() {
 
   const isDimmed = useCallback(
     (n) => {
-      if (hoverAdj && !hoverAdj.has(n.id)) return true;
+      if (selectedAdj && !selectedAdj.has(n.id)) return true;
       if (searchMatch && !searchMatch.has(n.id)) return true;
       return false;
     },
-    [hoverAdj, searchMatch],
+    [selectedAdj, searchMatch],
   );
 
   const nodeColor = useCallback(
     (n) => {
-      if (n.id === selectedId || n.id === hoverId) return "#ffffff";
+      if (n.id === selectedId) return "#ffffff";
       return isDimmed(n) ? withAlpha(n.color, 0.18) : n.color;
     },
-    [selectedId, hoverId, isDimmed],
+    [selectedId, isDimmed],
   );
 
   const linkColor = useCallback(
     (l) => {
       const s = l.source.id || l.source;
       const t = l.target.id || l.target;
-      const hasFocus = selectedId || hoverId;
-      const isFocusedEdge = s === selectedId || t === selectedId || s === hoverId || t === hoverId;
+      const hasFocus = !!selectedId;
+      const isFocusedEdge = s === selectedId || t === selectedId;
       
       if (hasFocus) {
         return isFocusedEdge ? "rgba(167, 139, 250, 0.9)" : "rgba(120, 120, 120, 0.15)";
       }
       return "rgba(180, 180, 180, 0.35)"; // 기본 상태일 때 선을 더 밝게 표시
     },
-    [selectedId, hoverId],
+    [selectedId],
   );
 
   const linkWidth = useCallback(
     (l) => {
       const s = l.source.id || l.source;
       const t = l.target.id || l.target;
-      const hasFocus = selectedId || hoverId;
-      const isFocusedEdge = s === selectedId || t === selectedId || s === hoverId || t === hoverId;
+      const hasFocus = !!selectedId;
+      const isFocusedEdge = s === selectedId || t === selectedId;
       
       if (hasFocus) {
         return isFocusedEdge ? 2.0 : 0.4;
       }
       return 1.0; // 기본 상태일 때 굵기를 더 두껍게 표시
     },
-    [selectedId, hoverId],
+    [selectedId],
   );
 
   const drawLabel = useCallback(
     (n, globalScale) => {
       if (labels === "off") return false;
       if (labels === "always") return true;
-      if (n.id === selectedId || n.id === hoverId) return true;
+      if (n.id === selectedId) return true;
       if (labels === "hover") return false;
 
       // labels === "smart"
@@ -467,12 +546,12 @@ export default function WikiGraph() {
       
       return false;
     },
-    [labels, selectedId, hoverId],
+    [labels, selectedId],
   );
 
   const nodeCanvasObject = useCallback(
     (n, ctx, globalScale) => {
-      if (n.id === selectedId || n.id === hoverId) {
+      if (n.id === selectedId) {
         ctx.beginPath();
         ctx.arc(n.x, n.y, (n.val || 3) * nodeScale + 4, 0, 2 * Math.PI);
         ctx.strokeStyle = "rgba(167, 139, 250, 0.7)";
@@ -485,7 +564,7 @@ export default function WikiGraph() {
       ctx.textAlign = "left";
       ctx.fillText(n.name, n.x + (n.val || 3) * nodeScale + 5, n.y + 3 / globalScale);
     },
-    [selectedId, hoverId, nodeScale, drawLabel, isDimmed],
+    [selectedId, nodeScale, drawLabel, isDimmed],
   );
 
   const nodeCanvasObjectMode = useCallback(() => "after", []);
@@ -498,7 +577,6 @@ export default function WikiGraph() {
     setLinkDist(60);
     setOpenSec({ filters: true, local: true, display: false, groups: true });
     setSelectedId(null);
-    setHoverId(null);
     if (fgRef.current && laidOutData.nodes.length > 0) {
       setTimeout(() => fgRef.current.zoomToFit?.(400, 60), 100);
     }
@@ -509,7 +587,10 @@ export default function WikiGraph() {
       <aside className="filter-panel">
         <div className="filter-panel-header">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-            <Link to="/" style={{ fontSize: 12, color: "var(--text-muted)" }}>← Home</Link>
+            <div style={{ display: "flex", gap: 12 }}>
+              <Link to="/" style={{ fontSize: 12, color: "var(--text-muted)", textDecoration: "none" }} onMouseOver={(e) => e.currentTarget.style.color = "var(--text)"} onMouseOut={(e) => e.currentTarget.style.color = "var(--text-muted)"}>← Home</Link>
+              <Link to="/wiki/docs" style={{ fontSize: 12, color: "var(--text-muted)", textDecoration: "none" }} onMouseOver={(e) => e.currentTarget.style.color = "var(--text)"} onMouseOut={(e) => e.currentTarget.style.color = "var(--text-muted)"}>📖 Docs</Link>
+            </div>
             <button 
               onClick={handleReset}
               style={{ fontSize: 11, color: "var(--text-muted)", cursor: "pointer", background: "none", border: "none" }}
@@ -757,7 +838,6 @@ export default function WikiGraph() {
               linkDirectionalArrowLength={arrows ? 2 : 0}
               linkDirectionalArrowRelPos={1}
               onNodeClick={(n) => setSelectedId(n.id)}
-              onNodeHover={handleNodeHover}
               onBackgroundClick={() => setSelectedId(null)}
               cooldownTicks={0}
               cooldownTime={0}

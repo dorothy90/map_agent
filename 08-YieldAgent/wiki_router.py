@@ -8,6 +8,7 @@ graphology v0.25 호환 JSON 반환:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -460,6 +461,45 @@ def get_trip_docs(
     total_obj = resp.get("hits", {}).get("total", {})
     total = total_obj.get("value", len(docs)) if isinstance(total_obj, dict) else int(total_obj or len(docs))
     return {"docs": docs, "total": total}
+
+
+@router.get("/doc/{doc_id}")
+def get_doc(doc_id: str) -> dict[str, Any]:
+    """doc_id로 OpenSearch 원본 doc 1건 조회 (FH-xxx 인용 클릭 시 사용)."""
+    try:
+        from fail_history_tools import _OPENSEARCH_INDEX, _get_opensearch_client
+        client = _get_opensearch_client()
+        resp = client.search(
+            index=_OPENSEARCH_INDEX,
+            body={
+                "size": 1,
+                "_source": {"excludes": ["embedding"]},
+                "query": {"ids": {"values": [doc_id]}},
+            },
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"OpenSearch 호출 실패: {e}")
+    hits = resp.get("hits", {}).get("hits", [])
+    if not hits:
+        raise HTTPException(status_code=404, detail=f"doc not found: {doc_id}")
+    src = hits[0].get("_source", {})
+    source_file = src.get("source_file", "")
+    download_url = src.get("download_url", "")
+    if not download_url and source_file:
+        base = os.getenv("DOWNLOAD_BASE_URL", "https://downloadendpoint-estress/download")
+        download_url = f"{base.rstrip('/')}/{source_file}"
+    return {
+        "doc_id": src.get("doc_id", doc_id),
+        "product": src.get("product", ""),
+        "fail_type": src.get("fail_type", ""),
+        "cause_oper": src.get("cause_oper", ""),
+        "date": src.get("date", ""),
+        "source_file": source_file,
+        "download_url": download_url,
+        "cause": src.get("cause", ""),
+        "action": src.get("action", ""),
+        "comment": src.get("comment", ""),
+    }
 
 
 @router.get("/node/{node_id:path}")

@@ -42,8 +42,8 @@ class SummarizeOut(BaseModel):
 # ── Day 2 신규: 같은 트리플 N건 누적 합성 ────────────────
 class EpisodeRef(BaseModel):
     """plan v3 §C citation tracking — 사용자 향 + 운영 audit 분리."""
-    episode_id: str = Field(description="내부 추적 (개발자 audit)")
-    doc_id: str = Field(default="", description="raw doc ID (예: FH-000429)")
+    episode_id: str = Field(description="episode vault ID (예: episode:abc123). doc_id(FH-xxx)와 다름. 직접 합성 시 빈 문자열 가능")
+    doc_id: str = Field(default="", description="OpenSearch raw doc ID (예: FH-000238). FH-로 시작하는 실제 문서 ID를 여기에 채울 것")
     source_file: str = Field(default="", description="PPT 파일명 (사용자 가시)")
     date: str = Field(default="", description="YYYY-MM-DD")
     natural_label: str = Field(default="", description="사용자 자연어 라벨")
@@ -126,11 +126,13 @@ def summarize(payload: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     doc_ids = [r.get("doc_id") for r in raw if r.get("doc_id")]
+    source_files = [r.get("source_file") for r in raw if r.get("source_file")]
     return {
         "episode": {
             "query": query,
             "filters": filters,
             "doc_ids": doc_ids,
+            "source_files": source_files,
             "body": out.episode_body_md,
             "summary": out.episode_summary,
             "links": [],
@@ -143,30 +145,53 @@ def summarize(payload: dict[str, Any]) -> dict[str, Any] | None:
 
 
 # ── Day 2: synthesize_concept — N건 episode → concept body 통합 ──
-_SYNTHESIZE_SYSTEM = """당신은 반도체 fail_history wiki의 누적 분석 요약기입니다.
+_SYNTHESIZE_SYSTEM = """당신은 반도체 메모리 공장 수율팀의 fail_history wiki 누적 분석 요약기입니다.
 
 [원칙]
-- 여러 episode를 읽고 메타 분석한 합성 markdown body를 생성합니다.
 - raw episode들에 명시된 정보만 사용. 추측/일반론 금지.
-- 각 주장 끝에 반드시 `[ep:xxx]` 형식 inline 인용. 인용 없는 주장은 출력 금지.
-- 출력 구조:
-  ```
-  ## 누적 패턴 (N건 분석)
-  - 주 원인: ... (X/N건) [ep:abc] [ep:def]
-  - 부 원인: ... [ep:ghi]
-
-  ## 검증된 조치
-  - 조치 → 성공률 (X/Y) [ep:...]
-
-  ## 미해결 / 이상 케이스
-  - ... [ep:...]
-  ```
-- `confidence` (0~1) 자가 평가: source 다양성, raw 간 일치도, 인용 가능 evidence 수 기반.
-  - 0.8+: source 5+, 일치도 높음, 모순 0
-  - 0.5~0.7: source 3+, 부분 일치, 일부 모순
-  - <0.5: source 2 미만 또는 모순 많음
-- `citations`에는 본문에서 인용한 모든 episode_id를 채워라. doc_id가 있으면 같이.
+- 각 주장 끝에 반드시 [ep:xxx] inline 인용. 인용 없는 주장 출력 금지.
 - 출력 언어: 한국어
+- FMMEA(Failure Mode·Mechanism·Effect Analysis) + 8D 구조 준수
+
+[출력 구조 — 아래 순서 그대로]
+
+## 불량 메커니즘 다이어그램
+```mermaid
+flowchart LR
+    A["근본원인"] --> B["공정이상\\n{cause_oper}"]
+    B --> C["물리적 메커니즘"]
+    C --> D["불량모드\\n{fail_type}"]
+    D --> E["수율 영향"]
+    F["기여인자1"] --> B
+    G["기여인자2"] --> C
+```
+규칙: episode에서 파악된 실제 인과관계로 노드를 채울 것. 노드 텍스트 15자 이내, \\n으로 줄바꿈 가능. 기여인자 없으면 F/G 노드 생략. 근거 없는 노드 추가 금지.
+
+## 원본 사례 요약
+| Lot | 불량유형 | 공정 | 물리적 메커니즘 | 조치 | 재발방지 |
+|-----|---------|------|--------------|------|---------|
+episode마다 1행. Lot/불량유형/공정은 concept_id에서 추출. 없는 정보는 -
+
+## 누적 패턴 ({N}건 분석)
+- **주 원인**: ... (X/N건) [ep:abc] [ep:def]
+- **기여 인자**: ... [ep:ghi]
+
+## 검증된 조치
+- **영구 조치 (8D D5)**: {조치} → 효과 (X/Y건) [ep:...]
+- **임시 봉쇄 (8D D3)**: {조치} [ep:...]
+
+## 표준화 권고 (Lessons Learned)
+- ... [ep:...]
+
+## 미해결 / 추가 분석 필요
+- ... [ep:...]
+
+[confidence 기준]
+- 0.8+: source 5건 이상, 메커니즘 일치도 높음, 모순 없음
+- 0.5~0.7: source 3건 이상, 부분 일치
+- <0.5: source 2건 미만 또는 모순 많음
+
+[citations] 본문에 인용한 모든 episode_id + doc_id 필수
 """
 
 
@@ -253,6 +278,10 @@ def synthesize_concept(
             label = f"{date_part} {q_part}".strip()
             if label:
                 c.natural_label = label
+        if not c.download_url and c.source_file:
+            base = os.getenv("DOWNLOAD_BASE_URL",
+                             "https://downloadendpoint-estress/download")
+            c.download_url = f"{base.rstrip('/')}/{c.source_file}"
         return c
 
     if not out.citations:
@@ -362,30 +391,53 @@ def synthesize_super_concept(
 
 
 # ── Phase 11: 직접 합성 (raw docs → concept body) — episode 단계 생략 ────
-_SYNTHESIZE_FROM_DOCS_SYSTEM = """당신은 반도체 fail_history docs를 정리해 wiki concept 본문을 만드는 어시스턴트입니다.
+_SYNTHESIZE_FROM_DOCS_SYSTEM = """당신은 반도체 메모리 공장 수율팀의 fail_history wiki 직접 합성기입니다.
 
 [원칙]
-- 같은 트리플(product/fail_type/cause_oper)의 raw docs N건을 메타 분석한 markdown body 생성.
 - raw docs에 명시된 cause/action/comment만 사용. 추측·일반론 금지.
-- 각 주장 끝에 `[FH-XXXXXX]` 형식 doc_id inline 인용. 인용 없는 주장은 출력 금지.
-- 출력 구조:
-  ```
-  ## 누적 패턴 (N건 분석)
-  - 주 원인: ... (X/N건) [FH-...]
-  - 부 원인: ... [FH-...]
-
-  ## 검증된 조치
-  - 조치 → 효과 (X/Y) [FH-...]
-
-  ## 미해결 / 이상 케이스
-  - ... [FH-...]
-  ```
-- `confidence` (0~1) 자가 평가: doc 수 / 일치도 / 모순 기반.
-  - 0.8+: 5+ docs, 일치도 높음, 모순 0
-  - 0.5~0.7: 2~4 docs, 부분 일치
-  - <0.5: 1~2 docs 또는 모순 많음
-- `citations`에는 본문에 인용한 모든 doc_id 채워라. source_file/date도 함께.
+- 각 주장 끝에 반드시 [FH-XXXXXX] 형식 doc_id inline 인용. 인용 없는 주장 출력 금지.
 - 출력 언어: 한국어
+- FMMEA(Failure Mode·Mechanism·Effect Analysis) + 8D 구조 준수
+
+[출력 구조 — 아래 순서 그대로]
+
+## 불량 메커니즘 다이어그램
+```mermaid
+flowchart LR
+    A["근본원인"] --> B["공정이상\\n{cause_oper}"]
+    B --> C["물리적 메커니즘"]
+    C --> D["불량모드\\n{fail_type}"]
+    D --> E["수율 영향"]
+    F["기여인자1"] --> B
+    G["기여인자2"] --> C
+```
+규칙: raw docs에서 파악된 실제 인과관계로 노드를 채울 것. 노드 텍스트 15자 이내, \\n으로 줄바꿈 가능. 기여인자 없으면 F/G 노드 생략. 근거 없는 노드 추가 금지.
+
+## 원본 사례 요약
+| Lot | 불량유형 | 공정 | 물리적 메커니즘 | 조치 | 재발방지 |
+|-----|---------|------|--------------|------|---------|
+doc마다 1행. Lot/불량유형/공정은 concept_id에서 추출. 없는 정보는 -
+
+## 누적 패턴 ({N}건 분석)
+- **주 원인**: ... (X/N건) [FH-...] [FH-...]
+- **기여 인자**: ... [FH-...]
+
+## 검증된 조치
+- **영구 조치 (8D D5)**: {조치} → 효과 (X/Y건) [FH-...]
+- **임시 봉쇄 (8D D3)**: {조치} [FH-...]
+
+## 표준화 권고 (Lessons Learned)
+- ... [FH-...]
+
+## 미해결 / 추가 분석 필요
+- ... [FH-...]
+
+[confidence 기준]
+- 0.8+: 5건 이상, 일치도 높음, 모순 없음
+- 0.5~0.7: 2~4건, 부분 일치
+- <0.5: 1~2건 또는 모순 많음
+
+[citations] doc_id만 채워라. source_file은 절대 추측하지 말고 반드시 빈 문자열("")로 둘 것.
 """
 
 
@@ -456,6 +508,10 @@ def synthesize_concept_from_docs(
                 date_part = c.date or str(meta.get("date", ""))
                 ftype = meta.get("fail_type", "")
                 c.natural_label = f"{date_part} {ftype}".strip()
+        if not c.download_url and c.source_file:
+            base = os.getenv("DOWNLOAD_BASE_URL",
+                             "https://downloadendpoint-estress/download")
+            c.download_url = f"{base.rstrip('/')}/{c.source_file}"
         return c
 
     if not out.citations:

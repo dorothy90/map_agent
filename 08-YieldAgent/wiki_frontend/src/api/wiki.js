@@ -38,4 +38,8 @@ export function fetchTripDocs({ product, fail_type, cause_oper, limit = 20 }) {
   return getJson(`/api/wiki/trip-docs?${params.toString()}`);
 }
 
+export function fetchDoc(docId) {
+  return getJson(`/api/wiki/doc/${encodeURIComponent(docId)}`);
+}
+
 export { API_BASE };

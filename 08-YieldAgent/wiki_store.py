@@ -188,6 +188,7 @@ def upsert_episode(payload: dict) -> tuple[str, str]:
         "query": payload["query"],
         "query_normalized": _normalize_query(payload["query"]),
         "doc_ids": list(payload.get("doc_ids", []) or []),
+        "source_files": list(payload.get("source_files", []) or []),
         "filters": dict(payload.get("filters", {}) or {}),
         "summary": payload.get("summary", ""),
         # plan v3 신규 필수 4기능

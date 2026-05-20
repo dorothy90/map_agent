@@ -1,9 +1,145 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import mermaid from "mermaid";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { fetchProductTree, fetchNode, fetchTripDocs } from "../api/wiki";
+let _mermaidReady = false;
+function initMermaid() {
+  if (_mermaidReady) return;
+  mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
+  _mermaidReady = true;
+}
+
+function MermaidDiagram({ code }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    initMermaid();
+    const id = `mmd-${Math.random().toString(36).slice(2)}`;
+    mermaid.render(id, code)
+      .then(({ svg }) => { if (ref.current) ref.current.innerHTML = svg; })
+      .catch(() => { if (ref.current) ref.current.textContent = code; });
+  }, [code]);
+  return <div ref={ref} className="mermaid-wrap" />;
+}
+
+function EpModal({ epId, onClose }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    fetchNode(`episode:${epId}`)
+      .then(setData)
+      .finally(() => setLoading(false));
+  }, [epId]);
+  return (
+    <div className="ep-modal-overlay" onClick={onClose}>
+      <div className="ep-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="ep-modal-header">
+          <span className="ep-modal-title">ep:{epId.slice(0, 8)}</span>
+          <button className="ep-modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="ep-modal-body">
+          {loading && <div className="loading-text">로딩…</div>}
+          {data && (
+            <>
+              <div className="ep-modal-meta">
+                {data.frontmatter?.query && <div><b>쿼리</b>: {data.frontmatter.query}</div>}
+                {data.frontmatter?.created && <div><b>생성</b>: {String(data.frontmatter.created).slice(0, 10)}</div>}
+                {(data.frontmatter?.doc_ids || []).length > 0 && (
+                  <div><b>docs</b>: {data.frontmatter.doc_ids.join(", ")}</div>
+                )}
+              </div>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.body_markdown || "(본문 없음)"}</ReactMarkdown>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FhModal({ docId, onClose }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    fetchDoc(docId)
+      .then(setData)
+      .catch((e) => setErr(String(e)))
+      .finally(() => setLoading(false));
+  }, [docId]);
+  return (
+    <div className="ep-modal-overlay" onClick={onClose}>
+      <div className="ep-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="ep-modal-header">
+          <span className="ep-modal-title">{docId}</span>
+          <button className="ep-modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="ep-modal-body">
+          {loading && <div className="loading-text">로딩…</div>}
+          {err && <div style={{ color: "var(--red)" }}>{err}</div>}
+          {data && (
+            <>
+              <div className="ep-modal-meta">
+                {data.date && <div><b>날짜</b>: {data.date}</div>}
+                {data.product && <div><b>제품</b>: {data.product} / {data.fail_type} / {data.cause_oper}</div>}
+                {data.source_file && (
+                  <div><b>파일</b>:{" "}
+                    {data.download_url
+                      ? <a href={data.download_url} target="_blank" rel="noreferrer">📎 {data.source_file}</a>
+                      : data.source_file}
+                  </div>
+                )}
+              </div>
+              {data.cause && <div style={{ marginTop: 8 }}><b>원인</b><br />{data.cause}</div>}
+              {data.action && <div style={{ marginTop: 8 }}><b>조치</b><br />{data.action}</div>}
+              {data.comment && <div style={{ marginTop: 8 }}><b>코멘트</b><br />{data.comment}</div>}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function addEpLinks(md) {
+  return md
+    .replace(/\[ep:([a-f0-9]+)\]/g, "[ep:$1](#ep:$1)")
+    .replace(/\[(FH-[A-Z0-9]+)\]/g, "[$1](#fh:$1)");
+}
+
+function makeMdComponents(onEpClick, onFhClick) {
+  return {
+    code({ node, inline, className, children, ...props }) {
+      const lang = (className || "").replace("language-", "");
+      if (!inline && lang === "mermaid") {
+        return <MermaidDiagram code={String(children).trim()} />;
+      }
+      return <code className={className} {...props}>{children}</code>;
+    },
+    a({ href, children }) {
+      if (href?.startsWith("#ep:")) {
+        const epId = href.slice(4);
+        return (
+          <button className="ep-ref-btn" onClick={() => onEpClick(epId)}>
+            {children}
+          </button>
+        );
+      }
+      if (href?.startsWith("#fh:")) {
+        const docId = href.slice(4);
+        return (
+          <button className="ep-ref-btn" onClick={() => onFhClick(docId)}>
+            {children}
+          </button>
+        );
+      }
+      return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
+    },
+  };
+}
+
+import { fetchProductTree, fetchNode, fetchTripDocs, fetchDoc } from "../api/wiki";
 
 function buildTree(graphJson) {
   const tree = {};
@@ -51,6 +187,8 @@ export default function WikiDocs() {
   const [tripDocs, setTripDocs] = useState(null);
   const [tripLoading, setTripLoading] = useState(false);
   const [tripError, setTripError] = useState(null);
+  const [epModal, setEpModal] = useState(null);
+  const [fhModal, setFhModal] = useState(null);
 
   useEffect(() => {
     let cancel = false;
@@ -128,7 +266,21 @@ export default function WikiDocs() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-header">
-          <h1 className="sidebar-title">Wiki Docs</h1>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <div style={{ display: "flex", gap: 12 }}>
+              <Link to="/" style={{ fontSize: 12, color: "var(--text-muted)", textDecoration: "none" }} onMouseOver={(e) => e.currentTarget.style.color = "var(--text)"} onMouseOut={(e) => e.currentTarget.style.color = "var(--text-muted)"}>← Home</Link>
+              <Link to="/wiki/graph" style={{ fontSize: 12, color: "var(--text-muted)", textDecoration: "none" }} onMouseOver={(e) => e.currentTarget.style.color = "var(--text)"} onMouseOut={(e) => e.currentTarget.style.color = "var(--text-muted)"}>🕸 Graph</Link>
+            </div>
+            <button 
+              onClick={() => { setSearchParams(new URLSearchParams(), { replace: true }); setSelectedNid(null); setQuery(""); setOpenProducts({}); }}
+              style={{ fontSize: 11, color: "var(--text-muted)", cursor: "pointer", background: "none", border: "none" }}
+              onMouseOver={(e) => e.currentTarget.style.color = "var(--text)"}
+              onMouseOut={(e) => e.currentTarget.style.color = "var(--text-muted)"}
+            >
+              ↺ 초기화
+            </button>
+          </div>
+          <h1 className="sidebar-title" style={{ marginTop: 8 }}>Wiki Docs</h1>
           <div className="sidebar-stat">
             {stats.products} products · {stats.triples} triples · {stats.wiki} wiki
           </div>
@@ -239,8 +391,11 @@ export default function WikiDocs() {
             {selectedLeaf.has_wiki && nodeData && (
               <div className="reader-body">
                 {nodeData.body_markdown ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {nodeData.body_markdown}
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={makeMdComponents(setEpModal, setFhModal)}
+                  >
+                    {addEpLinks(nodeData.body_markdown)}
                   </ReactMarkdown>
                 ) : (
                   <p style={{ color: "var(--text-muted)" }}>본문이 비어 있습니다.</p>
@@ -261,14 +416,18 @@ export default function WikiDocs() {
             tripDocs={tripDocs}
             leaf={selectedLeaf}
             loading={nodeLoading || tripLoading}
+            onFhClick={setFhModal}
           />
         </aside>
       )}
+
+      {epModal && <EpModal epId={epModal} onClose={() => setEpModal(null)} />}
+      {fhModal && <FhModal docId={fhModal} onClose={() => setFhModal(null)} />}
     </div>
   );
 }
 
-function MetaPane({ data, tripDocs, leaf, loading }) {
+function MetaPane({ data, tripDocs, leaf, loading, onFhClick }) {
   const md = data?.frontmatter || {};
   const cits = md.citations || [];
   const backlinks = data?.backlinks || [];
@@ -309,10 +468,13 @@ function MetaPane({ data, tripDocs, leaf, loading }) {
               <h2 className="meta-section-title">Citations · {cits.length}</h2>
               {cits.map((c, i) => {
                 const label = c.natural_label || c.doc_id || c.source_file || c.episode_id || `cit-${i}`;
+                const docId = c.doc_id || (c.episode_id?.startsWith("FH-") ? c.episode_id : null);
                 return (
                   <div className="citation-item" key={i}>
                     {c.download_url ? (
                       <a href={c.download_url} target="_blank" rel="noreferrer">📎 {label}</a>
+                    ) : docId ? (
+                      <button className="ep-ref-btn" onClick={() => onFhClick(docId)}>📎 {label}</button>
                     ) : (
                       <span>📎 {label}</span>
                     )}
