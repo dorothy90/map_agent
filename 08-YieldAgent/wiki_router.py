@@ -8,6 +8,7 @@ graphology v0.25 호환 JSON 반환:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -462,6 +463,33 @@ def get_trip_docs(
     return {"docs": docs, "total": total}
 
 
+def _enrich_citation_urls(citations: list[Any]) -> list[Any]:
+    """볼트 citations에 download_url 보강.
+
+    합성 경로(wiki_summarizer)는 source_file만 저장하고 download_url은 비워둠.
+    표시 시점에 DOWNLOAD_BASE_URL + source_file 로 조립 — fail_history_tools.
+    _format_user_citations 와 동일 패턴.
+    """
+    download_base = os.getenv(
+        "DOWNLOAD_BASE_URL", "https://internal-api.example.com/docs"
+    ).rstrip("/")
+    out: list[Any] = []
+    for c in citations:
+        if not isinstance(c, dict):
+            out.append(c)
+            continue
+        c = dict(c)
+        if not c.get("download_url"):
+            source_file = str(c.get("source_file") or "")
+            doc_id = str(c.get("doc_id") or "")
+            if not source_file and doc_id:
+                source_file = f"{doc_id}.pptx"
+            if source_file:
+                c["download_url"] = f"{download_base}/{source_file}"
+        out.append(c)
+    return out
+
+
 @router.get("/node/{node_id:path}")
 def get_node(node_id: str) -> dict[str, Any]:
     """노드 상세 + backlinks (incoming edges). node_id 예: 'concept:4SS|STI CMP|EASY(W)'."""
@@ -471,6 +499,8 @@ def get_node(node_id: str) -> dict[str, Any]:
     md = dict(nodes[node_id])
     body = md.pop("_body", "")
     ntype = md.get("type", "")
+    if md.get("citations"):
+        md["citations"] = _enrich_citation_urls(md["citations"])
 
     # backlinks = incoming edges (그래프 방향: episode→concept→alias)
     backlinks: list[str] = []
