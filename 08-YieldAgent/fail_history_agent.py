@@ -35,20 +35,21 @@ _fh_model = get_llm(model=os.getenv("RETRIEVE_CHAIN_MODEL"))
 
 
 
-def _extract_cited_doc_ids(answer: str) -> Set[str]:
-    return set(re.findall(r'\[FH-([^\]]+)\]', answer))
+def _extract_cited_indices(answer: str) -> Set[int]:
+    return {int(m) for m in re.findall(r'\[FH-(\d+)\]', answer)}
 
 
-def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) -> str:
+def _format_cited_results(results: List[Dict[str, Any]], cited_indices: Set[int]) -> str:
     if not results:
         return ""
     download_base = os.getenv("DOWNLOAD_BASE_URL", "").rstrip("/")
-    display = [r for r in results if r.get("doc_id") in cited_ids] if cited_ids else results
+    indexed = list(enumerate(results, start=1))
+    display = [(i, r) for i, r in indexed if i in cited_indices] if cited_indices else indexed
     if not display:
-        display = results
+        display = indexed
 
     lines = [f"### 🔍 출처 (총 {len(display)}건)\n"]
-    for i, r in enumerate(display, start=1):
+    for i, r in display:
         product = r.get("product") or "-"
         fail_type = r.get("fail_type") or "-"
         oper = r.get("cause_oper") or "-"
@@ -92,9 +93,10 @@ def _synthesize_answer(
         system_prompt += f"\n\n[조회 컨텍스트] {', '.join(ctx_parts)}"
 
     results = raw.get("results", [])
+    results_for_llm = [{"idx": i, **r} for i, r in enumerate(results, start=1)]
     input_parts = [
         f"[사용자 쿼리]\n{query}",
-        f"[검색 결과 ({len(results)}건)]\n" + json.dumps(results, ensure_ascii=False, indent=2),
+        f"[검색 결과 ({len(results)}건)]\n" + json.dumps(results_for_llm, ensure_ascii=False, indent=2),
     ]
     if raw.get("retrieval_mode") == "wiki-assisted":
         wiki_body = raw.get("wiki_concept_body", "")
@@ -202,8 +204,8 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     answer, agent_suggestion = extract_suggestion(answer)
 
-    cited_ids = _extract_cited_doc_ids(answer)
-    result_block = _format_cited_results(results, cited_ids)
+    cited_indices = _extract_cited_indices(answer)
+    result_block = _format_cited_results(results, cited_indices)
     if result_block:
         message_content = f"### 💡 [답변]\n\n{answer}\n\n---\n\n{result_block}"
     else:

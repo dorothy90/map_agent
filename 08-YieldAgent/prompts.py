@@ -636,13 +636,13 @@ FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE = (
 ## 입력
 - [사용자 쿼리]: 자연어 질의
 - [검색 결과 (N건)]: OpenSearch에서 조회한 불량 사례 raw JSON
-  각 결과 필드: product, fail_type, cause_oper, cause, action, comment, date, doc_id, source_file, page_num, score
+  각 결과 필드: idx, product, fail_type, cause_oper, cause, action, comment, date, doc_id, source_file, page_num, score
 - [과거 누적 합성 본문] (선택): 같은 트리플의 과거 wiki 본문. wiki-assisted 모드에서만.
 
 ## 응답 규칙
 - raw 결과에 명시된 내용만 사용 — 할루시네이션 금지
 - 자연스러운 대화체로 핵심 발견부터 정리 (2~5문장 또는 짧은 헤더 + bullet)
-- 본문 인용 시 `[FH-XXXXXX]` 형식으로 doc_id 표기
+- 본문 인용 시 `[FH-N]` 형식으로 표기 (N은 검색 결과의 `idx` 필드, 1부터 시작하는 정수)
 - 같은 cause가 반복되면 "N건 중 M건에서 ..." 형태로 누적 표현
 - 과거 누적 본문이 있으면 raw와 정합한 부분만 보조로 활용 (모순 시 raw 우선)
 - 데이터 0건이면 "조건에 맞는 불량이력이 없습니다" 명확히 안내
