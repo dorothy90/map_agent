@@ -404,8 +404,12 @@ export function TripDocCard({ doc, index }) {
           {doc.date && <span>{doc.date}</span>}
           {doc.fail_type && <span>· {doc.fail_type}</span>}
           {doc.cause_oper && <span>· {doc.cause_oper}</span>}
-          {doc.download_url && (
-            <a href={doc.download_url} target="_blank" rel="noreferrer">📎 원본</a>
+          {doc.download_url ? (
+            <a href={doc.download_url} target="_blank" rel="noreferrer">
+              📎 {doc.source_file || "원본"}
+            </a>
+          ) : (
+            doc.source_file && <span>📎 {doc.source_file}</span>
           )}
         </div>
       </header>
