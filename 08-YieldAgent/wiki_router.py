@@ -13,6 +13,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import frontmatter
 from fastapi import APIRouter, HTTPException, Query
@@ -467,11 +468,10 @@ def _enrich_citation_urls(citations: list[Any]) -> list[Any]:
     """볼트 citations에 download_url 보강.
 
     합성 경로(wiki_summarizer)는 source_file만 저장하고 download_url은 비워둠.
-    표시 시점에 DOWNLOAD_BASE_URL + source_file 로 조립 — fail_history_tools.
-    _format_user_citations 와 동일 패턴.
+    표시 시점에 source_file을 GET 쿼리로 받는 다운로드 엔드포인트 URL로 조립.
     """
     download_base = os.getenv(
-        "DOWNLOAD_BASE_URL", "https://internal-api.example.com/docs"
+        "DOWNLOAD_BASE_URL", "https://internal-api.example.com/download"
     ).rstrip("/")
     out: list[Any] = []
     for c in citations:
@@ -485,7 +485,7 @@ def _enrich_citation_urls(citations: list[Any]) -> list[Any]:
             if not source_file and doc_id:
                 source_file = f"{doc_id}.pptx"
             if source_file:
-                c["download_url"] = f"{download_base}/{source_file}"
+                c["download_url"] = f"{download_base}?source_file={quote(source_file)}"
         out.append(c)
     return out
 
