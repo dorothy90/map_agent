@@ -1021,7 +1021,10 @@ def supervisor_node(
 
     update_dict = {
         "step_count": step_count,
-        "messages": [result_message],
+        # decision.message가 빈 문자열이면 supervisor 메시지를 history에 넣지 않는다.
+        # (FINISH no-data: worker 메시지가 이미 전달됨 → 재방출 시 답변 중복 + 빈
+        #  AIMessage가 다음 턴 LLM 컨텍스트에 섞이는 것을 방지)
+        "messages": [result_message] if decision.message else [],
         "lotcd": new_lotcd,
         "ref_date": ref_date,
         "wads_start_tm": decision.wads_start_tm or "",
