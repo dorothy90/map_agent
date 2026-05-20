@@ -53,17 +53,37 @@ def _strip_relevant_line(answer: str) -> str:
     return _RELEVANT_LINE_RE.sub('', answer).rstrip()
 
 
-def _format_cited_results(results: List[Dict[str, Any]], cited_indices: Set[int]) -> str:
-    if not results:
+def _resolve_display(
+    results: List[Dict[str, Any]], cited_indices: Set[int]
+) -> tuple[List[tuple[int, Dict[str, Any]]], Dict[int, int]]:
+    """표시할 (새번호, result) 목록과 원본idx→새번호 매핑을 반환.
+
+    원본 검색 순번으로 필터링한 뒤 1..M으로 재넘버링한다.
+    """
+    indexed = list(enumerate(results, start=1))
+    selected = [(i, r) for i, r in indexed if i in cited_indices] if cited_indices else indexed
+    if not selected:
+        selected = indexed
+    idx_map = {orig: new for new, (orig, _) in enumerate(selected, start=1)}
+    display_pairs = [(idx_map[orig], r) for orig, r in selected]
+    return display_pairs, idx_map
+
+
+def _remap_body_citations(answer: str, idx_map: Dict[int, int]) -> str:
+    """본문의 `[FH-N]` 인용을 재넘버링된 각주 번호 `[N]`으로 치환."""
+    def _repl(m: "re.Match[str]") -> str:
+        orig = int(m.group(1))
+        return f"[{idx_map.get(orig, orig)}]"
+    return re.sub(r'\[FH-(\d+)\]', _repl, answer)
+
+
+def _format_cited_results(display_pairs: List[tuple[int, Dict[str, Any]]]) -> str:
+    if not display_pairs:
         return ""
     download_base = os.getenv("DOWNLOAD_BASE_URL", "").rstrip("/")
-    indexed = list(enumerate(results, start=1))
-    display = [(i, r) for i, r in indexed if i in cited_indices] if cited_indices else indexed
-    if not display:
-        display = indexed
 
-    lines = [f"### 🔍 출처 (총 {len(display)}건)\n"]
-    for i, r in display:
+    lines = [f"### 🔍 출처 (총 {len(display_pairs)}건)\n"]
+    for i, r in display_pairs:
         product = r.get("product") or "-"
         fail_type = r.get("fail_type") or "-"
         oper = r.get("cause_oper") or "-"
@@ -80,7 +100,7 @@ def _format_cited_results(results: List[Dict[str, Any]], cited_indices: Set[int]
         if url:
             lines.append(f"- **문서:** [{doc_name}]({url})")
         lines.append("")
-        
+
     return "\n".join(lines).strip()
 
 
@@ -220,7 +240,9 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     cited_indices = _extract_relevant_indices(answer)
     answer = _strip_relevant_line(answer)
-    result_block = _format_cited_results(results, cited_indices)
+    display_pairs, idx_map = _resolve_display(results, cited_indices)
+    answer = _remap_body_citations(answer, idx_map)
+    result_block = _format_cited_results(display_pairs)
     if result_block:
         message_content = f"### 💡 [답변]\n\n{answer}\n\n---\n\n{result_block}"
     else:
