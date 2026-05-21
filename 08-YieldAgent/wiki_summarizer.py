@@ -42,8 +42,8 @@ class SummarizeOut(BaseModel):
 # ── Day 2 신규: 같은 트리플 N건 누적 합성 ────────────────
 class EpisodeRef(BaseModel):
     """plan v3 §C citation tracking — 사용자 향 + 운영 audit 분리."""
-    episode_id: str = Field(description="episode vault ID (예: episode:abc123). doc_id(FH-xxx)와 다름. 직접 합성 시 빈 문자열 가능")
-    doc_id: str = Field(default="", description="OpenSearch raw doc ID (예: FH-000238). FH-로 시작하는 실제 문서 ID를 여기에 채울 것")
+    episode_id: str = Field(description="episode vault ID (예: episode:abc123). doc_id와 다름. 직접 합성 시 빈 문자열 가능")
+    doc_id: str = Field(default="", description="OpenSearch 원본 doc 식별자(_id). 입력 raw docs에 주어진 doc_id 값을 그대로 복사할 것. 임의 ID 생성 금지")
     source_file: str = Field(default="", description="PPT 파일명 (사용자 가시)")
     date: str = Field(default="", description="YYYY-MM-DD")
     natural_label: str = Field(default="", description="사용자 자연어 라벨")
@@ -53,7 +53,7 @@ class EpisodeRef(BaseModel):
 class ConceptSynthesis(BaseModel):
     """plan v3 §A: 같은 트리플 N개 episode → concept body 통합 합성 결과."""
     body_markdown: str = Field(
-        description="## 누적 패턴 / ## 검증된 조치 / ## 미해결 섹션 + inline [ep:xxx] 인용 필수"
+        description="## 누적 패턴 / ## 검증된 조치 / ## 미해결 섹션 + system 프롬프트가 지정한 inline 인용 형식 준수"
     )
     confidence: float = Field(
         ge=0.0, le=1.0,
@@ -71,7 +71,7 @@ _SYSTEM_PROMPT = """당신은 반도체 불량이력 검색 결과를 wiki episo
 [원칙]
 - raw 결과에 명시된 정보만 인용. 추측·일반론 금지
 - episode_body_md는 마크다운, 권장 섹션: `## 원인` / `## 조치` / `## 관찰 패턴`
-- doc_id를 본문에 인용할 때는 `[FH-XXXXXX]` 형식
+- raw 결과를 본문에 인용할 때는 `[doc:<doc_id>]` 형식 (<doc_id>는 입력에 주어진 doc_id 값을 그대로 복사, 임의 생성 금지)
 - alias_pairs는 raw 안에서 같은 엔티티가 두 표기로 등장한 경우만. 일반 동의어/번역어 금지
 - 출력 언어는 한국어
 """
@@ -98,7 +98,7 @@ def summarize(payload: dict[str, Any]) -> dict[str, Any] | None:
     raw_lines = []
     for r in raw[:5]:
         raw_lines.append(
-            f"- doc_id={r.get('doc_id', '')} | cause={(r.get('cause') or '')[:200]} | "
+            f"- [doc:{r.get('doc_id', '')}] | cause={(r.get('cause') or '')[:200]} | "
             f"action={(r.get('action') or '')[:200]} | comment={(r.get('comment') or '')[:120]}"
         )
     raw_block = "\n".join(raw_lines) if raw_lines else "(none)"
@@ -191,7 +191,7 @@ episode마다 1행. Lot/불량유형/공정은 concept_id에서 추출. 없는 �
 - 0.5~0.7: source 3건 이상, 부분 일치
 - <0.5: source 2건 미만 또는 모순 많음
 
-[citations] 본문에 인용한 모든 episode_id + doc_id 필수
+[citations] 본문에 인용한 모든 episode_id를 나열. doc_id 등 나머지 필드는 후처리에서 보강하므로 비워둘 것
 """
 
 
@@ -266,7 +266,7 @@ def synthesize_concept(
     def _enrich(c: EpisodeRef) -> EpisodeRef:
         eid_short = (c.episode_id or "").replace("episode:", "")
         meta = ep_meta_by_id.get(eid_short, {})
-        if not c.doc_id and meta.get("doc_ids"):
+        if meta.get("doc_ids"):
             c.doc_id = meta["doc_ids"][0]
         if not c.date and meta.get("date"):
             c.date = meta["date"]
@@ -395,7 +395,7 @@ _SYNTHESIZE_FROM_DOCS_SYSTEM = """당신은 반도체 메모리 공장 수율팀
 
 [원칙]
 - raw docs에 명시된 cause/action/comment만 사용. 추측·일반론 금지.
-- 각 주장 끝에 반드시 [FH-XXXXXX] 형식 doc_id inline 인용. 인용 없는 주장 출력 금지.
+- 각 주장 끝에 반드시 [doc:<doc_id>] inline 인용. <doc_id>는 입력 raw docs에 주어진 doc_id 값을 그대로 복사할 것(임의 생성 금지). 인용 없는 주장 출력 금지.
 - 출력 언어: 한국어
 - FMMEA(Failure Mode·Mechanism·Effect Analysis) + 8D 구조 준수
 
@@ -419,25 +419,25 @@ flowchart LR
 doc마다 1행. Lot/불량유형/공정은 concept_id에서 추출. 없는 정보는 -
 
 ## 누적 패턴 ({N}건 분석)
-- **주 원인**: ... (X/N건) [FH-...] [FH-...]
-- **기여 인자**: ... [FH-...]
+- **주 원인**: ... (X/N건) [doc:...] [doc:...]
+- **기여 인자**: ... [doc:...]
 
 ## 검증된 조치
-- **영구 조치 (8D D5)**: {조치} → 효과 (X/Y건) [FH-...]
-- **임시 봉쇄 (8D D3)**: {조치} [FH-...]
+- **영구 조치 (8D D5)**: {조치} → 효과 (X/Y건) [doc:...]
+- **임시 봉쇄 (8D D3)**: {조치} [doc:...]
 
 ## 표준화 권고 (Lessons Learned)
-- ... [FH-...]
+- ... [doc:...]
 
 ## 미해결 / 추가 분석 필요
-- ... [FH-...]
+- ... [doc:...]
 
 [confidence 기준]
 - 0.8+: 5건 이상, 일치도 높음, 모순 없음
 - 0.5~0.7: 2~4건, 부분 일치
 - <0.5: 1~2건 또는 모순 많음
 
-[citations] doc_id만 채워라. source_file은 절대 추측하지 말고 반드시 빈 문자열("")로 둘 것.
+[citations] doc_id에는 입력 raw docs에 주어진 doc_id 값을 그대로 채워라(임의 생성 금지). source_file은 절대 추측하지 말고 반드시 빈 문자열("")로 둘 것.
 """
 
 
@@ -467,7 +467,7 @@ def synthesize_concept_from_docs(
         action = (d.get("action") or "").strip()[:600]
         comment = (d.get("comment") or "").strip()[:300]
         blocks.append(
-            f"--- [{did}] date={date} ---\n"
+            f"--- [doc:{did}] date={date} ---\n"
             f"원인: {cause}\n"
             f"조치: {action}\n"
             f"코멘트: {comment}"
@@ -478,7 +478,7 @@ def synthesize_concept_from_docs(
         f"[Raw docs] {len(raw_docs)}건 (상위 {len(blocks)}건 표시)\n\n"
         f"{blocks_str}\n\n"
         f"위 raw docs를 메타 분석해 markdown body + confidence + citations 생성하라.\n"
-        f"각 주장에 [FH-xxx] inline 인용 필수."
+        f"각 주장에 위 doc 블록의 [doc:...] 토큰을 그대로 복사해 inline 인용 필수."
     )
 
     try:
@@ -514,6 +514,8 @@ def synthesize_concept_from_docs(
             c.download_url = f"{base.rstrip('/')}/{c.source_file}"
         return c
 
+    # 환각 가드: doc_id가 실제 raw docs에 없는 citation은 제거 (없는 ID → 404 방지)
+    out.citations = [c for c in out.citations if c.doc_id in doc_by_id]
     if not out.citations:
         out.citations = [
             EpisodeRef(

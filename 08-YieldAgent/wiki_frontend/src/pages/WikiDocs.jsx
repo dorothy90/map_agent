@@ -105,7 +105,10 @@ function FhModal({ docId, onClose }) {
 function addEpLinks(md) {
   return md
     .replace(/\[ep:([a-f0-9]+)\]/g, "[ep:$1](#ep:$1)")
-    .replace(/\[(FH-[A-Z0-9]+)\]/g, "[$1](#fh:$1)");
+    .replace(/\[doc:([^\]]+)\]/g, (_m, id) => {
+      const enc = encodeURIComponent(id).replace(/\(/g, "%28").replace(/\)/g, "%29");
+      return `[doc:${id}](#doc:${enc})`;
+    });
 }
 
 function makeMdComponents(onEpClick, onFhClick) {
@@ -126,8 +129,8 @@ function makeMdComponents(onEpClick, onFhClick) {
           </button>
         );
       }
-      if (href?.startsWith("#fh:")) {
-        const docId = href.slice(4);
+      if (href?.startsWith("#doc:")) {
+        const docId = decodeURIComponent(href.slice(5));
         return (
           <button className="ep-ref-btn" onClick={() => onFhClick(docId)}>
             {children}
@@ -468,7 +471,7 @@ function MetaPane({ data, tripDocs, leaf, loading, onFhClick }) {
               <h2 className="meta-section-title">Citations · {cits.length}</h2>
               {cits.map((c, i) => {
                 const label = c.natural_label || c.doc_id || c.source_file || c.episode_id || `cit-${i}`;
-                const docId = c.doc_id || (c.episode_id?.startsWith("FH-") ? c.episode_id : null);
+                const docId = c.doc_id || null;
                 return (
                   <div className="citation-item" key={i}>
                     {c.download_url ? (
