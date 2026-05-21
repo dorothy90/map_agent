@@ -197,6 +197,7 @@ def main() -> int:
     p.add_argument("--top", type=int, default=200, help="OpenSearch aggregation top-N 트리플 (default 200)")
     p.add_argument("--min-docs", type=int, default=1, help="트리플 채택 최소 doc 수 (default 1)")
     p.add_argument("--max-docs", type=int, default=15, help="트리플당 LLM에 전달할 max docs (default 15)")
+    p.add_argument("--limit", type=int, default=0, help="처리할 트리플 최대 개수 (0=전체)")
     p.add_argument("--skip-existing", action="store_true",
                    help="vault에 이미 합성된 concept(confidence>0)은 skip — 신규 트리플만")
     p.add_argument("--no-lint", action="store_true", help="끝에 lint 실행 안 함")
@@ -244,6 +245,10 @@ def main() -> int:
                 filtered.append(s)
         seeds = filtered
         print(f"  --skip-existing: {before} → {len(seeds)} (이미 합성된 concept 제외)")
+
+    if args.limit > 0 and len(seeds) > args.limit:
+        seeds = seeds[:args.limit]
+        print(f"\n  --limit {args.limit}: 처리 대상 {len(seeds)}개로 제한")
 
     if args.dry_run:
         print("\n--dry-run — 실 실행 X")
