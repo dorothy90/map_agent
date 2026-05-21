@@ -272,7 +272,7 @@ def _search_opensearch(
             "date": src.get("date", ""),
             "source_file": src.get("source_file", ""),
             "page_num": src.get("page_num", 0),
-            "doc_id": src.get("doc_id", ""),
+            "doc_id": src.get("doc_id") or hit.get("_id", ""),
             "filenm": src.get("filenm", ""),
             "score": round(min(score * 100, 100.0), 1),
             "content": src.get("content", "")[:200],
@@ -318,10 +318,19 @@ def _fetch_results_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
     if not doc_ids:
         return []
     client = _get_opensearch_client()
-    # doc_id는 인덱스에서 type=keyword 단일 매핑 — `.keyword` 서브필드 없음
+    # 식별자는 OpenSearch _id (doc_id 필드가 있으면 그 값) — FH-xxx 미사용
+    # 인덱스도 지원하도록 _id / doc_id 양쪽으로 매칭.
     body = {
         "size": min(len(doc_ids), 20),
-        "query": {"terms": {"doc_id": doc_ids}},
+        "query": {
+            "bool": {
+                "should": [
+                    {"ids": {"values": doc_ids}},
+                    {"terms": {"doc_id": doc_ids}},
+                ],
+                "minimum_should_match": 1,
+            }
+        },
     }
     try:
         resp = client.search(index=_OPENSEARCH_INDEX, body=body)
@@ -341,7 +350,7 @@ def _fetch_results_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
             "date": src.get("date", ""),
             "source_file": src.get("source_file", ""),
             "page_num": src.get("page_num", 0),
-            "doc_id": src.get("doc_id", ""),
+            "doc_id": src.get("doc_id") or hit.get("_id", ""),
             "filenm": src.get("filenm", ""),
             "score": 0.0,
             "content": src.get("content", "")[:200],

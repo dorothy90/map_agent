@@ -144,7 +144,14 @@ def fetch_docs_for_triple(
         },
     }
     resp = client.search(index=_OPENSEARCH_INDEX, body=body)
-    return [hit.get("_source", {}) for hit in resp.get("hits", {}).get("hits", [])]
+    docs: list[dict[str, Any]] = []
+    for hit in resp.get("hits", {}).get("hits", []):
+        src = hit.get("_source", {})
+        if not src.get("doc_id"):
+            # FH-xxx 미사용 인덱스: OpenSearch _id를 식별자로 사용
+            src["doc_id"] = hit.get("_id", "")
+        docs.append(src)
+    return docs
 
 
 def process_triple(t: dict[str, Any], max_docs: int) -> tuple[str, str]:

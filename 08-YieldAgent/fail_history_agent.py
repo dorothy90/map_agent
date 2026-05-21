@@ -36,7 +36,7 @@ _fh_model = get_llm(model=os.getenv("RETRIEVE_CHAIN_MODEL"))
 
 
 def _extract_cited_doc_ids(answer: str) -> Set[str]:
-    return set(re.findall(r'\[FH-([^\]]+)\]', answer))
+    return set(re.findall(r'\[doc:([^\]]+)\]', answer))
 
 
 def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) -> str:
