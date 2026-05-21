@@ -1,7 +1,15 @@
 /* Obsidian-like dark theme — yield-agent wiki frontend.
-   팔레트와 spacing 은 Obsidian default dark에서 차용. */
+   팔레트와 spacing 은 Obsidian default dark에서 차용.
 
-:root {
+   사내 배포 시 회사 공통 CSS와 충돌하지 않도록 모든 규칙을 .yield-wiki
+   루트 클래스 아래로 스코핑한다. (main.jsx 에서 앱 전체를 .yield-wiki 로 감쌈)
+   - 맨몸 엘리먼트 셀렉터(button/input/a 등)를 .yield-wiki 하위로 한정 →
+     회사 CSS 와 동일 명시도로 캐스케이드 충돌하지 않음
+   - 일반 클래스명(.sidebar/.chip/.metric 등)에 .yield-wiki 가 붙어 명시도가
+     한 단계 올라가 회사의 동명 셀렉터를 이김
+   - 앱 스타일이 회사 페이지로 새어나가는 것도 방지 */
+
+.yield-wiki {
   --bg-0: #1e1e1e;
   --bg-1: #252525;
   --bg-2: #2a2a2a;
@@ -25,14 +33,8 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --radius: 6px;
   --radius-sm: 4px;
-}
 
-* { box-sizing: border-box; }
-
-html, body, #root { height: 100%; }
-
-body {
-  margin: 0;
+  /* base text — body 가 아니라 앱 루트에 적용해 외부 누출을 막는다 */
   background: var(--bg-0);
   color: var(--text);
   font-family: var(--font-ui);
@@ -41,10 +43,17 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-a { color: var(--accent); text-decoration: none; }
-a:hover { color: var(--accent-hover); text-decoration: underline; }
+/* 단독 배포 시 viewport 가장자리에 기본 body 여백이 생기지 않도록.
+   임베드 배포 시에도 영향 최소(margin:0 은 사실상 표준 리셋). */
+body { margin: 0; }
 
-button {
+.yield-wiki,
+.yield-wiki * { box-sizing: border-box; }
+
+.yield-wiki a { color: var(--accent); text-decoration: none; }
+.yield-wiki a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+.yield-wiki button {
   font-family: inherit;
   font-size: inherit;
   color: inherit;
@@ -54,7 +63,8 @@ button {
   padding: 0;
 }
 
-input, select {
+.yield-wiki input,
+.yield-wiki select {
   font-family: inherit;
   font-size: 13px;
   color: var(--text);
@@ -64,20 +74,21 @@ input, select {
   padding: 4px 8px;
   outline: none;
 }
-input:focus, select:focus { border-color: var(--accent); }
+.yield-wiki input:focus,
+.yield-wiki select:focus { border-color: var(--accent); }
 
-::selection { background: var(--accent-bg); color: var(--text-strong); }
+.yield-wiki ::selection { background: var(--accent-bg); color: var(--text-strong); }
 
 /* ── scrollbar ── */
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 5px; }
-::-webkit-scrollbar-thumb:hover { background: #4a4a4a; }
+.yield-wiki ::-webkit-scrollbar { width: 10px; height: 10px; }
+.yield-wiki ::-webkit-scrollbar-track { background: transparent; }
+.yield-wiki ::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 5px; }
+.yield-wiki ::-webkit-scrollbar-thumb:hover { background: #4a4a4a; }
 
 /* ── layout ── */
-.app-shell { display: flex; height: 100vh; overflow: hidden; }
+.yield-wiki .app-shell { display: flex; height: 100vh; overflow: hidden; }
 
-.sidebar {
+.yield-wiki .sidebar {
   width: 280px;
   flex-shrink: 0;
   background: var(--bg-1);
@@ -87,12 +98,12 @@ input:focus, select:focus { border-color: var(--accent); }
   overflow: hidden;
 }
 
-.sidebar-header {
+.yield-wiki .sidebar-header {
   padding: 14px 16px 10px;
   border-bottom: 1px solid var(--border);
 }
 
-.sidebar-title {
+.yield-wiki .sidebar-title {
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
@@ -101,30 +112,30 @@ input:focus, select:focus { border-color: var(--accent); }
   margin: 0 0 8px;
 }
 
-.sidebar-stat {
+.yield-wiki .sidebar-stat {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-dim);
 }
 
-.sidebar-search {
+.yield-wiki .sidebar-search {
   margin: 10px 16px;
   width: calc(100% - 32px);
 }
 
-.sidebar-body {
+.yield-wiki .sidebar-body {
   flex: 1;
   overflow-y: auto;
   padding: 4px 0 16px;
 }
 
-.main-pane {
+.yield-wiki .main-pane {
   flex: 1;
   overflow-y: auto;
   background: var(--bg-0);
 }
 
-.meta-pane {
+.yield-wiki .meta-pane {
   width: 320px;
   flex-shrink: 0;
   background: var(--bg-1);
@@ -134,7 +145,7 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 
 /* ── topbar ── */
-.topbar {
+.yield-wiki .topbar {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -144,26 +155,26 @@ input:focus, select:focus { border-color: var(--accent); }
   border-bottom: 1px solid var(--border);
 }
 
-.topbar-title {
+.yield-wiki .topbar-title {
   font-size: 14px;
   font-weight: 600;
   margin: 0;
   color: var(--text-strong);
 }
 
-.topbar-section { display: flex; align-items: center; gap: 6px; }
-.topbar-label { font-size: 12px; color: var(--text-muted); }
-.topbar-spacer { flex: 1; }
-.topbar-stat {
+.yield-wiki .topbar-section { display: flex; align-items: center; gap: 6px; }
+.yield-wiki .topbar-label { font-size: 12px; color: var(--text-muted); }
+.yield-wiki .topbar-spacer { flex: 1; }
+.yield-wiki .topbar-stat {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-dim);
 }
 
 /* ── folder tree ── */
-.tree-group { margin: 2px 0; }
+.yield-wiki .tree-group { margin: 2px 0; }
 
-.tree-row {
+.yield-wiki .tree-row {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -174,44 +185,44 @@ input:focus, select:focus { border-color: var(--accent); }
   user-select: none;
   border-radius: 0;
 }
-.tree-row:hover { background: var(--bg-hover); }
-.tree-row.active { background: var(--accent-bg); color: var(--text-strong); }
+.yield-wiki .tree-row:hover { background: var(--bg-hover); }
+.yield-wiki .tree-row.active { background: var(--accent-bg); color: var(--text-strong); }
 
-.tree-row .tri {
+.yield-wiki .tree-row .tri {
   width: 12px;
   flex-shrink: 0;
   color: var(--text-muted);
   font-size: 9px;
   transition: transform 80ms ease;
 }
-.tree-row .tri.open { transform: rotate(0deg); }
-.tree-row .tri.closed { transform: rotate(-90deg); }
+.yield-wiki .tree-row .tri.open { transform: rotate(0deg); }
+.yield-wiki .tree-row .tri.closed { transform: rotate(-90deg); }
 
-.tree-row .icon {
+.yield-wiki .tree-row .icon {
   width: 14px;
   flex-shrink: 0;
   font-size: 11px;
   color: var(--text-muted);
   text-align: center;
 }
-.tree-row.active .icon { color: var(--accent); }
+.yield-wiki .tree-row.active .icon { color: var(--accent); }
 
-.tree-row .label {
+.yield-wiki .tree-row .label {
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.tree-row .count {
+.yield-wiki .tree-row .count {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-dim);
 }
 
-.tree-children { padding-left: 14px; }
+.yield-wiki .tree-children { padding-left: 14px; }
 
-.tree-leaf-button {
+.yield-wiki .tree-leaf-button {
   width: 100%;
   text-align: left;
   display: flex;
@@ -222,37 +233,37 @@ input:focus, select:focus { border-color: var(--accent); }
   color: var(--text);
   border-radius: 0;
 }
-.tree-leaf-button:hover { background: var(--bg-hover); }
-.tree-leaf-button.active { background: var(--accent-bg); color: var(--text-strong); }
-.tree-leaf-button .dot {
+.yield-wiki .tree-leaf-button:hover { background: var(--bg-hover); }
+.yield-wiki .tree-leaf-button.active { background: var(--accent-bg); color: var(--text-strong); }
+.yield-wiki .tree-leaf-button .dot {
   width: 8px; height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
 }
-.tree-leaf-button .dot.on { background: var(--green); box-shadow: 0 0 6px rgba(74, 222, 128, 0.4); }
-.tree-leaf-button .dot.off { background: var(--text-dim); }
-.tree-leaf-button .leaf-label {
+.yield-wiki .tree-leaf-button .dot.on { background: var(--green); box-shadow: 0 0 6px rgba(74, 222, 128, 0.4); }
+.yield-wiki .tree-leaf-button .dot.off { background: var(--text-dim); }
+.yield-wiki .tree-leaf-button .leaf-label {
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tree-leaf-button .leaf-meta {
+.yield-wiki .tree-leaf-button .leaf-meta {
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-dim);
 }
 
 /* ── reader (markdown body) ── */
-.reader {
+.yield-wiki .reader {
   max-width: 760px;
   margin: 0 auto;
   padding: 36px 56px 80px;
 }
 
-.reader-header { margin-bottom: 20px; }
+.yield-wiki .reader-header { margin-bottom: 20px; }
 
-.reader-crumbs {
+.yield-wiki .reader-crumbs {
   display: flex;
   gap: 6px;
   font-family: var(--font-mono);
@@ -260,9 +271,9 @@ input:focus, select:focus { border-color: var(--accent); }
   color: var(--text-dim);
   margin-bottom: 6px;
 }
-.reader-crumbs .sep { color: var(--text-dim); }
+.yield-wiki .reader-crumbs .sep { color: var(--text-dim); }
 
-.reader-title {
+.yield-wiki .reader-title {
   margin: 0;
   font-size: 28px;
   font-weight: 700;
@@ -270,14 +281,14 @@ input:focus, select:focus { border-color: var(--accent); }
   letter-spacing: -0.01em;
 }
 
-.reader-actions {
+.yield-wiki .reader-actions {
   margin-top: 8px;
   display: flex;
   gap: 8px;
   font-size: 12px;
 }
 
-.reader-actions a {
+.yield-wiki .reader-actions a {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -287,29 +298,32 @@ input:focus, select:focus { border-color: var(--accent); }
   border-radius: var(--radius-sm);
   color: var(--text-muted);
 }
-.reader-actions a:hover {
+.yield-wiki .reader-actions a:hover {
   color: var(--accent);
   border-color: var(--accent);
   text-decoration: none;
 }
 
-.reader-body { font-size: 15px; line-height: 1.75; color: var(--text); }
-.reader-body h1, .reader-body h2, .reader-body h3 {
+.yield-wiki .reader-body { font-size: 15px; line-height: 1.75; color: var(--text); }
+.yield-wiki .reader-body h1,
+.yield-wiki .reader-body h2,
+.yield-wiki .reader-body h3 {
   color: var(--text-strong);
   margin: 1.6em 0 0.4em;
   letter-spacing: -0.005em;
 }
-.reader-body h1 { font-size: 22px; }
-.reader-body h2 {
+.yield-wiki .reader-body h1 { font-size: 22px; }
+.yield-wiki .reader-body h2 {
   font-size: 18px;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
 }
-.reader-body h3 { font-size: 15px; }
-.reader-body p { margin: 0.6em 0; }
-.reader-body ul, .reader-body ol { padding-left: 22px; }
-.reader-body li { margin: 0.2em 0; }
-.reader-body code {
+.yield-wiki .reader-body h3 { font-size: 15px; }
+.yield-wiki .reader-body p { margin: 0.6em 0; }
+.yield-wiki .reader-body ul,
+.yield-wiki .reader-body ol { padding-left: 22px; }
+.yield-wiki .reader-body li { margin: 0.2em 0; }
+.yield-wiki .reader-body code {
   font-family: var(--font-mono);
   font-size: 13px;
   background: var(--bg-2);
@@ -317,7 +331,7 @@ input:focus, select:focus { border-color: var(--accent); }
   border-radius: 3px;
   color: var(--accent-hover);
 }
-.reader-body pre {
+.yield-wiki .reader-body pre {
   background: var(--bg-2);
   padding: 12px;
   border-radius: var(--radius);
@@ -325,22 +339,23 @@ input:focus, select:focus { border-color: var(--accent); }
   font-family: var(--font-mono);
   font-size: 13px;
 }
-.reader-body blockquote {
+.yield-wiki .reader-body blockquote {
   margin: 0.8em 0;
   padding: 4px 12px;
   border-left: 3px solid var(--accent);
   color: var(--text-muted);
   background: rgba(167, 139, 250, 0.04);
 }
-.reader-body hr { border: 0; border-top: 1px solid var(--border); margin: 1.6em 0; }
-.reader-body table { border-collapse: collapse; font-size: 13px; }
-.reader-body th, .reader-body td {
+.yield-wiki .reader-body hr { border: 0; border-top: 1px solid var(--border); margin: 1.6em 0; }
+.yield-wiki .reader-body table { border-collapse: collapse; font-size: 13px; }
+.yield-wiki .reader-body th,
+.yield-wiki .reader-body td {
   border: 1px solid var(--border);
   padding: 6px 10px;
 }
-.reader-body th { background: var(--bg-2); color: var(--text-strong); }
+.yield-wiki .reader-body th { background: var(--bg-2); color: var(--text-strong); }
 
-.reader-empty {
+.yield-wiki .reader-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -351,7 +366,7 @@ input:focus, select:focus { border-color: var(--accent); }
   padding: 80px 24px;
   gap: 8px;
 }
-.reader-empty .legend {
+.yield-wiki .reader-empty .legend {
   margin-top: 18px;
   display: flex;
   flex-direction: column;
@@ -361,8 +376,8 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 
 /* ── meta pane cards ── */
-.meta-section { margin-bottom: 20px; }
-.meta-section-title {
+.yield-wiki .meta-section { margin-bottom: 20px; }
+.yield-wiki .meta-section-title {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -371,64 +386,64 @@ input:focus, select:focus { border-color: var(--accent); }
   margin: 0 0 8px;
 }
 
-.metrics-grid {
+.yield-wiki .metrics-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
 }
-.metric {
+.yield-wiki .metric {
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 8px 10px;
 }
-.metric-label {
+.yield-wiki .metric-label {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
 }
-.metric-value {
+.yield-wiki .metric-value {
   font-family: var(--font-mono);
   font-size: 15px;
   color: var(--text-strong);
   margin-top: 2px;
 }
 
-.field-row {
+.yield-wiki .field-row {
   display: flex;
   gap: 8px;
   font-size: 12px;
   padding: 3px 0;
   border-bottom: 1px solid var(--border);
 }
-.field-row:last-child { border-bottom: none; }
-.field-key {
+.yield-wiki .field-row:last-child { border-bottom: none; }
+.yield-wiki .field-key {
   font-family: var(--font-mono);
   color: var(--text-muted);
   width: 100px;
   flex-shrink: 0;
 }
-.field-val {
+.yield-wiki .field-val {
   flex: 1;
   word-break: break-word;
   color: var(--text);
 }
 
-.citation-item {
+.yield-wiki .citation-item {
   font-size: 12px;
   padding: 4px 0;
   border-bottom: 1px solid var(--border);
   color: var(--text);
 }
-.citation-item:last-child { border-bottom: none; }
-.citation-item a {
+.yield-wiki .citation-item:last-child { border-bottom: none; }
+.yield-wiki .citation-item a {
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
 
-.backlink-item {
+.yield-wiki .backlink-item {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-muted);
@@ -436,17 +451,17 @@ input:focus, select:focus { border-color: var(--accent); }
   word-break: break-all;
 }
 
-.empty-meta { color: var(--text-dim); font-size: 12px; }
+.yield-wiki .empty-meta { color: var(--text-dim); font-size: 12px; }
 
 /* ── trip docs (vault 미합성 ⚪ 트리플의 OpenSearch 원본) ── */
-.trip-doc-card {
+.yield-wiki .trip-doc-card {
   background: var(--bg-1);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px 16px;
   margin: 16px 0;
 }
-.trip-doc-head {
+.yield-wiki .trip-doc-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -456,22 +471,22 @@ input:focus, select:focus { border-color: var(--accent); }
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
-.trip-doc-id {
+.yield-wiki .trip-doc-id {
   font-family: var(--font-mono);
   font-size: 13px;
   font-weight: 600;
   color: var(--accent-hover);
 }
-.trip-doc-meta {
+.yield-wiki .trip-doc-meta {
   display: flex;
   gap: 8px;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-muted);
 }
-.trip-doc-meta a { font-size: 11px; }
+.yield-wiki .trip-doc-meta a { font-size: 11px; }
 
-.trip-doc-field {
+.yield-wiki .trip-doc-field {
   display: grid;
   grid-template-columns: 70px 1fr;
   gap: 10px;
@@ -479,18 +494,18 @@ input:focus, select:focus { border-color: var(--accent); }
   font-size: 13px;
   line-height: 1.6;
 }
-.trip-doc-field.long {
+.yield-wiki .trip-doc-field.long {
   grid-template-columns: 1fr;
   margin-top: 6px;
 }
-.trip-doc-field.long .trip-doc-field-label {
+.yield-wiki .trip-doc-field.long .trip-doc-field-label {
   color: var(--text-muted);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-bottom: 4px;
 }
-.trip-doc-field-label {
+.yield-wiki .trip-doc-field-label {
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -498,12 +513,12 @@ input:focus, select:focus { border-color: var(--accent); }
   letter-spacing: 0.05em;
   padding-top: 2px;
 }
-.trip-doc-field-value {
+.yield-wiki .trip-doc-field-value {
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
 }
-.trip-doc-field.long .trip-doc-field-value {
+.yield-wiki .trip-doc-field.long .trip-doc-field-value {
   background: var(--bg-2);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
@@ -513,7 +528,7 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 
 /* ── filter panel (옵시디언 좌측 사이드) ── */
-.filter-panel {
+.yield-wiki .filter-panel {
   width: 260px;
   flex-shrink: 0;
   background: var(--bg-1);
@@ -523,17 +538,17 @@ input:focus, select:focus { border-color: var(--accent); }
   flex-direction: column;
 }
 
-.filter-panel-header {
+.yield-wiki .filter-panel-header {
   padding: 12px 14px 10px;
   border-bottom: 1px solid var(--border);
 }
 
-.filter-section {
+.yield-wiki .filter-section {
   border-bottom: 1px solid var(--border);
 }
-.filter-section:last-child { border-bottom: none; }
+.yield-wiki .filter-section:last-child { border-bottom: none; }
 
-.filter-section-head {
+.yield-wiki .filter-section-head {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -546,39 +561,39 @@ input:focus, select:focus { border-color: var(--accent); }
   cursor: pointer;
   user-select: none;
 }
-.filter-section-head:hover { color: var(--text); background: var(--bg-hover); }
-.filter-section-head .tri {
+.yield-wiki .filter-section-head:hover { color: var(--text); background: var(--bg-hover); }
+.yield-wiki .filter-section-head .tri {
   font-size: 9px;
   color: var(--text-dim);
   transition: transform 80ms ease;
 }
-.filter-section-head .tri.closed { transform: rotate(-90deg); }
-.filter-section-head .badge {
+.yield-wiki .filter-section-head .tri.closed { transform: rotate(-90deg); }
+.yield-wiki .filter-section-head .badge {
   margin-left: auto;
   font-family: var(--font-mono);
   font-size: 10px;
   color: var(--text-dim);
 }
 
-.filter-section-body { padding: 4px 14px 14px; }
+.yield-wiki .filter-section-body { padding: 4px 14px 14px; }
 
-.filter-row {
+.yield-wiki .filter-row {
   margin-bottom: 10px;
 }
-.filter-row:last-child { margin-bottom: 0; }
-.filter-row-label {
+.yield-wiki .filter-row:last-child { margin-bottom: 0; }
+.yield-wiki .filter-row-label {
   display: block;
   font-size: 11px;
   color: var(--text-muted);
   margin-bottom: 4px;
 }
 
-.chip-group {
+.yield-wiki .chip-group {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
 }
-.chip {
+.yield-wiki .chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -593,23 +608,23 @@ input:focus, select:focus { border-color: var(--accent); }
   user-select: none;
   transition: all 80ms ease;
 }
-.chip:hover {
+.yield-wiki .chip:hover {
   border-color: var(--accent);
   color: var(--text);
 }
-.chip.active {
+.yield-wiki .chip.active {
   background: var(--accent-bg);
   border-color: var(--accent);
   color: var(--accent-hover);
 }
-.chip .swatch {
+.yield-wiki .chip .swatch {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
-.toggle-row {
+.yield-wiki .toggle-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -617,7 +632,7 @@ input:focus, select:focus { border-color: var(--accent); }
   color: var(--text);
   padding: 4px 0;
 }
-.toggle-row input[type="checkbox"] {
+.yield-wiki .toggle-row input[type="checkbox"] {
   appearance: none;
   width: 28px;
   height: 16px;
@@ -628,11 +643,11 @@ input:focus, select:focus { border-color: var(--accent); }
   cursor: pointer;
   transition: background 80ms ease;
 }
-.toggle-row input[type="checkbox"]:checked {
+.yield-wiki .toggle-row input[type="checkbox"]:checked {
   background: var(--accent);
   border-color: var(--accent);
 }
-.toggle-row input[type="checkbox"]::after {
+.yield-wiki .toggle-row input[type="checkbox"]::after {
   content: "";
   position: absolute;
   top: 1px;
@@ -643,22 +658,22 @@ input:focus, select:focus { border-color: var(--accent); }
   border-radius: 50%;
   transition: transform 80ms ease;
 }
-.toggle-row input[type="checkbox"]:checked::after {
+.yield-wiki .toggle-row input[type="checkbox"]:checked::after {
   transform: translateX(12px);
   background: #fff;
 }
 
-.slider-row {
+.yield-wiki .slider-row {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
 }
-.slider-row input[type="range"] {
+.yield-wiki .slider-row input[type="range"] {
   flex: 1;
   accent-color: var(--accent);
 }
-.slider-row .value {
+.yield-wiki .slider-row .value {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-muted);
@@ -666,12 +681,12 @@ input:focus, select:focus { border-color: var(--accent); }
   text-align: right;
 }
 
-.radio-row {
+.yield-wiki .radio-row {
   display: flex;
   gap: 6px;
   font-size: 11px;
 }
-.radio-row label {
+.yield-wiki .radio-row label {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -680,15 +695,15 @@ input:focus, select:focus { border-color: var(--accent); }
   padding: 3px 6px;
   border-radius: 3px;
 }
-.radio-row label:hover { color: var(--text); }
-.radio-row input[type="radio"] { display: none; }
-.radio-row input[type="radio"]:checked + span {
+.yield-wiki .radio-row label:hover { color: var(--text); }
+.yield-wiki .radio-row input[type="radio"] { display: none; }
+.yield-wiki .radio-row input[type="radio"]:checked + span {
   color: var(--accent-hover);
   font-weight: 600;
 }
 
 /* ── graph page ── */
-.graph-shell {
+.yield-wiki .graph-shell {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -696,13 +711,13 @@ input:focus, select:focus { border-color: var(--accent); }
   position: relative;
 }
 
-.graph-canvas {
+.yield-wiki .graph-canvas {
   flex: 1;
   position: relative;
   background: #161616;
 }
 
-.graph-empty {
+.yield-wiki .graph-empty {
   position: absolute;
   inset: 0;
   display: flex;
@@ -712,7 +727,7 @@ input:focus, select:focus { border-color: var(--accent); }
   font-size: 13px;
 }
 
-.legend-row {
+.yield-wiki .legend-row {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -720,39 +735,39 @@ input:focus, select:focus { border-color: var(--accent); }
   color: var(--text-muted);
   margin: 3px 0;
 }
-.legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+.yield-wiki .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
 
 /* ── home ── */
-.home-shell {
+.yield-wiki .home-shell {
   height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--bg-0);
 }
-.home-card {
+.yield-wiki .home-card {
   max-width: 720px;
   width: 100%;
   padding: 40px 48px;
 }
-.home-title {
+.yield-wiki .home-title {
   font-size: 36px;
   font-weight: 700;
   color: var(--text-strong);
   margin: 0 0 8px;
   letter-spacing: -0.02em;
 }
-.home-sub {
+.yield-wiki .home-sub {
   color: var(--text-muted);
   font-size: 14px;
   margin: 0 0 28px;
 }
-.home-grid {
+.yield-wiki .home-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
 }
-.home-link {
+.yield-wiki .home-link {
   display: block;
   padding: 24px;
   background: var(--bg-1);
@@ -762,22 +777,22 @@ input:focus, select:focus { border-color: var(--accent); }
   color: inherit;
   transition: border-color 120ms ease, transform 120ms ease;
 }
-.home-link:hover {
+.yield-wiki .home-link:hover {
   border-color: var(--accent);
   transform: translateY(-1px);
   text-decoration: none;
 }
-.home-link-icon { font-size: 22px; margin-bottom: 8px; }
-.home-link-title {
+.yield-wiki .home-link-icon { font-size: 22px; margin-bottom: 8px; }
+.yield-wiki .home-link-title {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-strong);
   margin-bottom: 4px;
 }
-.home-link-sub { font-size: 12px; color: var(--text-muted); }
+.yield-wiki .home-link-sub { font-size: 12px; color: var(--text-muted); }
 
 /* ── misc ── */
-.error-box {
+.yield-wiki .error-box {
   margin: 24px;
   padding: 12px 16px;
   border: 1px solid var(--red);
@@ -786,12 +801,12 @@ input:focus, select:focus { border-color: var(--accent); }
   color: var(--red);
   font-size: 13px;
 }
-.loading-text {
+.yield-wiki .loading-text {
   padding: 24px;
   color: var(--text-muted);
   font-size: 13px;
 }
-.badge-warn {
+.yield-wiki .badge-warn {
   margin-top: 16px;
   padding: 12px 14px;
   background: rgba(250, 204, 21, 0.06);
@@ -802,7 +817,7 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 
 /* ep-ref inline button */
-.ep-ref-btn {
+.yield-wiki .ep-ref-btn {
   display: inline;
   padding: 1px 5px;
   margin: 0 1px;
@@ -815,10 +830,10 @@ input:focus, select:focus { border-color: var(--accent); }
   cursor: pointer;
   line-height: 1;
 }
-.ep-ref-btn:hover { background: rgba(96, 165, 250, 0.25); }
+.yield-wiki .ep-ref-btn:hover { background: rgba(96, 165, 250, 0.25); }
 
 /* episode modal */
-.ep-modal-overlay {
+.yield-wiki .ep-modal-overlay {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.6);
@@ -827,7 +842,7 @@ input:focus, select:focus { border-color: var(--accent); }
   justify-content: center;
   z-index: 1000;
 }
-.ep-modal {
+.yield-wiki .ep-modal {
   width: min(680px, 92vw);
   max-height: 80vh;
   background: var(--bg-2);
@@ -837,7 +852,7 @@ input:focus, select:focus { border-color: var(--accent); }
   flex-direction: column;
   overflow: hidden;
 }
-.ep-modal-header {
+.yield-wiki .ep-modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -845,12 +860,12 @@ input:focus, select:focus { border-color: var(--accent); }
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.ep-modal-title {
+.yield-wiki .ep-modal-title {
   font-family: monospace;
   font-size: 13px;
   color: var(--text-muted);
 }
-.ep-modal-close {
+.yield-wiki .ep-modal-close {
   background: none;
   border: none;
   color: var(--text-muted);
@@ -859,14 +874,14 @@ input:focus, select:focus { border-color: var(--accent); }
   padding: 2px 6px;
   border-radius: 4px;
 }
-.ep-modal-close:hover { background: var(--bg-3); color: var(--text); }
-.ep-modal-body {
+.yield-wiki .ep-modal-close:hover { background: var(--bg-3); color: var(--text); }
+.yield-wiki .ep-modal-body {
   padding: 16px;
   overflow-y: auto;
   font-size: 13px;
   line-height: 1.7;
 }
-.ep-modal-meta {
+.yield-wiki .ep-modal-meta {
   margin-bottom: 12px;
   padding: 10px 12px;
   background: var(--bg-3);
@@ -877,7 +892,7 @@ input:focus, select:focus { border-color: var(--accent); }
   flex-direction: column;
   gap: 4px;
 }
-.mermaid-wrap {
+.yield-wiki .mermaid-wrap {
   margin: 16px 0;
   overflow-x: auto;
 }

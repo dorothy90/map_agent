@@ -31,13 +31,18 @@ function Home() {
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/wiki/docs" element={<WikiDocs />} />
-        <Route path="/wiki/graph" element={<WikiGraph />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
+    {/* .yield-wiki: 사내 배포 시 회사 공통 CSS와 충돌하지 않도록 앱 전체를
+        고유 네임스페이스로 감싼다. theme.css 의 모든 규칙이 이 클래스 하위로
+        스코핑되어 있다. */}
+    <div className="yield-wiki">
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/wiki/docs" element={<WikiDocs />} />
+          <Route path="/wiki/graph" element={<WikiGraph />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </div>
   </StrictMode>,
 );
