@@ -107,7 +107,8 @@ function addEpLinks(md) {
     .replace(/\[ep:([a-f0-9]+)\]/g, "[ep:$1](#ep:$1)")
     .replace(/\[doc:([^\]]+)\]/g, (_m, id) => {
       const enc = encodeURIComponent(id).replace(/\(/g, "%28").replace(/\)/g, "%29");
-      return `[doc:${id}](#doc:${enc})`;
+      const title = id.replace(/"/g, "'");
+      return `[📎참고](#doc:${enc} "${title}")`;
     });
 }
 
@@ -120,7 +121,7 @@ function makeMdComponents(onEpClick, onFhClick) {
       }
       return <code className={className} {...props}>{children}</code>;
     },
-    a({ href, children }) {
+    a({ href, title, children }) {
       if (href?.startsWith("#ep:")) {
         const epId = href.slice(4);
         return (
@@ -132,7 +133,7 @@ function makeMdComponents(onEpClick, onFhClick) {
       if (href?.startsWith("#doc:")) {
         const docId = decodeURIComponent(href.slice(5));
         return (
-          <button className="ep-ref-btn" onClick={() => onFhClick(docId)}>
+          <button className="ep-ref-btn" title={title || docId} onClick={() => onFhClick(docId)}>
             {children}
           </button>
         );
