@@ -102,13 +102,27 @@ function FhModal({ docId, onClose }) {
   );
 }
 
+// 본문 내 [doc:<id>] 인용을 첫 등장 순서로 1,2,3... 번호에 매핑.
+function buildDocNumMap(md) {
+  const map = new Map();
+  if (!md) return map;
+  const re = /\[doc:([^\]]+)\]/g;
+  let m;
+  while ((m = re.exec(md)) !== null) {
+    if (!map.has(m[1])) map.set(m[1], map.size + 1);
+  }
+  return map;
+}
+
 function addEpLinks(md) {
+  const docNums = buildDocNumMap(md);
   return md
     .replace(/\[ep:([a-f0-9]+)\]/g, "[ep:$1](#ep:$1)")
     .replace(/\[doc:([^\]]+)\]/g, (_m, id) => {
+      const n = docNums.get(id);
       const enc = encodeURIComponent(id).replace(/\(/g, "%28").replace(/\)/g, "%29");
       const title = id.replace(/"/g, "'");
-      return `[📎참고](#doc:${enc} "${title}")`;
+      return `[${n}](#doc:${enc} "${title}")`;
     });
 }
 
@@ -134,7 +148,7 @@ function makeMdComponents(onEpClick, onFhClick) {
         const docId = decodeURIComponent(href.slice(5));
         return (
           <button className="ep-ref-btn" title={title || docId} onClick={() => onFhClick(docId)}>
-            {children}
+            [{children}]
           </button>
         );
       }
@@ -434,6 +448,10 @@ export default function WikiDocs() {
 function MetaPane({ data, tripDocs, leaf, loading, onFhClick }) {
   const md = data?.frontmatter || {};
   const cits = md.citations || [];
+  const docNums = buildDocNumMap(data?.body_markdown);
+  const orderedCits = [...cits].sort(
+    (a, b) => (docNums.get(a.doc_id) ?? Infinity) - (docNums.get(b.doc_id) ?? Infinity),
+  );
   const backlinks = data?.backlinks || [];
   const conf = Number(md.confidence || 0);
   const srcEps = (md.source_episode_ids || []).length;
@@ -470,17 +488,19 @@ function MetaPane({ data, tripDocs, leaf, loading, onFhClick }) {
           {cits.length > 0 && (
             <div className="meta-section">
               <h2 className="meta-section-title">Citations · {cits.length}</h2>
-              {cits.map((c, i) => {
+              {orderedCits.map((c, i) => {
                 const label = c.natural_label || c.doc_id || c.source_file || c.episode_id || `cit-${i}`;
                 const docId = c.doc_id || null;
+                const num = docNums.get(c.doc_id);
+                const prefix = num ? `[${num}] ` : "";
                 return (
                   <div className="citation-item" key={i}>
                     {c.download_url ? (
-                      <a href={c.download_url} target="_blank" rel="noreferrer">📎 {label}</a>
+                      <a href={c.download_url} target="_blank" rel="noreferrer">{prefix}📎 {label}</a>
                     ) : docId ? (
-                      <button className="ep-ref-btn" onClick={() => onFhClick(docId)}>📎 {label}</button>
+                      <button className="ep-ref-btn" onClick={() => onFhClick(docId)}>{prefix}📎 {label}</button>
                     ) : (
-                      <span>📎 {label}</span>
+                      <span>{prefix}📎 {label}</span>
                     )}
                   </div>
                 );
