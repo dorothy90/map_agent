@@ -465,16 +465,31 @@ def get_trip_docs(
 
 @router.get("/doc/{doc_id}")
 def get_doc(doc_id: str) -> dict[str, Any]:
-    """doc_id로 OpenSearch 원본 doc 1건 조회 (FH-xxx 인용 클릭 시 사용)."""
+    """doc_id로 OpenSearch 원본 doc 1건 조회 (FH-xxx 또는 filename 인용 클릭 시 사용)."""
     try:
         from fail_history_tools import _OPENSEARCH_INDEX, _get_opensearch_client
         client = _get_opensearch_client()
+        # 문서가 FH-xxx(_id)로만 색인된 게 아니라 filename 기반으로 색인된 경우도
+        # 있어, _id / doc_id / filenm / source_file 어느 필드로든 매칭한다.
+        # (citation의 doc_id는 doc_id 필드가 비면 filenm으로 채워짐 — wiki_queue.py)
         resp = client.search(
             index=_OPENSEARCH_INDEX,
             body={
                 "size": 1,
                 "_source": {"excludes": ["embedding"]},
-                "query": {"ids": {"values": [doc_id]}},
+                "query": {
+                    "bool": {
+                        "should": [
+                            {"ids": {"values": [doc_id]}},
+                            {"term": {"doc_id": doc_id}},
+                            {"term": {"filenm": doc_id}},
+                            {"term": {"filenm.keyword": doc_id}},
+                            {"term": {"source_file": doc_id}},
+                            {"term": {"source_file.keyword": doc_id}},
+                        ],
+                        "minimum_should_match": 1,
+                    }
+                },
             },
         )
     except Exception as e:
