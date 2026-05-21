@@ -31,10 +31,10 @@ function Home() {
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    {/* .yield-wiki: 사내 배포 시 회사 공통 CSS와 충돌하지 않도록 앱 전체를
-        고유 네임스페이스로 감싼다. theme.css 의 모든 규칙이 이 클래스 하위로
-        스코핑되어 있다. */}
-    <div className="yield-wiki">
+    {/* #yield-wiki: 사내 배포 시 회사 공통 CSS와 충돌하지 않도록 앱 전체를
+        고유 ID 네임스페이스로 감싼다. theme.css 의 모든 규칙이 이 ID 하위로
+        스코핑돼 있어 명시도가 높아, 회사의 class/element 셀렉터를 이긴다. */}
+    <div id="yield-wiki">
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Home />} />
