@@ -892,6 +892,10 @@ body { margin: 0; }
   flex-direction: column;
   gap: 4px;
 }
+/* 파일 다운로드 링크 — .ep-modal-meta(회색) 안에 있어 명시도를 한 단계
+   더 올려야 사내 공통 CSS의 래퍼 'a' 규칙(0,1,1 동률)을 이기고 보라색 유지 */
+.yield-wiki .ep-modal-meta a { color: var(--accent); }
+.yield-wiki .ep-modal-meta a:hover { color: var(--accent-hover); }
 .yield-wiki .mermaid-wrap {
   margin: 16px 0;
   overflow-x: auto;
