@@ -43,12 +43,16 @@ TODAY's DATE: {today}
 === AVAILABLE AGENTS & PARAMETERS ===
 
 1. yield_agent: 수율/pt1h 파라미터 데이터 조회
-   params: lotcd(3-4자 제품코드, 예: "4SS"), ref_date(YYYYMMDD), unit("weekly"|"monthly"|"daily"),
+   params: lotcd(3자 제품코드, 예: "4SS"), ref_date(YYYYMMDD), unit("weekly"|"monthly"|"daily"),
            periods(조회 기간 수), filter_params(파라미터 목록, 예: ["VTH","IDSAT"]),
            yield_lot_ids(특정 lot ID, 예: "4SS2DPD,4SSXCEW"), yield_groupkey("lot.wf" 형식)
 
 2. wads_agent: WADS 열화 검출 리포트 / 검출 lot list 조회
-   params: lotcd(3-4자), wads_start_tm(YYYY-MM-DD), wads_end_tm(YYYY-MM-DD), wads_parameter(step코드, 예: "step07")
+   params: lotcd(3자), wads_start_tm(YYYY-MM-DD), wads_end_tm(YYYY-MM-DD), wads_parameter(step코드, 예: "step07")
+   produces: ① detected_parameters (검출된 파라미터명, dh_fail_type enum 동일 모집단)
+                → 후속 fail_history_agent.dh_fail_type에 체이닝 가능
+             ② detected_lot_ids (검출된 lot ID 목록)
+                → 후속 map_agent.map_lot_ids / lot_history_agent.lh_lot_ids에 체이닝 가능
    ※ "검출", "검출된 lot", "step별 검출", "불량 검출" → 반드시 wads_agent
 
 3. map_agent: 웨이퍼 맵 (binmap/cummap) 시각화
@@ -86,7 +90,7 @@ TODAY's DATE: {today}
      - lot ID·코드 없이 공정명만 있으면 → fail_history_agent 또는 wads_agent 우선
 
 === KEY RULES ===
-- lotcd는 3-4자리 제품코드만 (예: 4SS, 5NA). 전체 lot ID(예: 4SS2DPD)는 map_lot_id 또는 yield_lot_ids에 사용
+- lotcd는 3자리 제품코드만 (예: 4SS, 5NA). 전체 lot ID(예: 4SS2DPD)는 map_lot_id 또는 yield_lot_ids에 사용
 - 단순 질문 (하나의 agent로 처리 가능) → task 1개만 생성
 - "각각", "따로", "separately", "비교" 등 분리 표현 → 반드시 별도 task로 분리
 - 복합 질문 (여러 agent 또는 같은 agent 다른 파라미터) → 여러 task 생성
@@ -102,6 +106,7 @@ TODAY's DATE: {today}
 - task_id는 "task_1", "task_2" 형식으로 순번 부여
 - 사용자 메시지가 짧거나 모호한 follow-up이면 직전 대화 히스토리와 [State context]를 활용하여 lot ID·제품코드·필터 등을 task params에 명시 채워라
 - **CRITICAL**: chained input(예: 후속 task의 map_lot_ids, lh_lot_ids 등)이 이전 task 결과에 의존하는 경우 해당 필드를 **빈 문자열 ""** 으로 두거나 **필드 자체를 omit**하라. 절대로 `"<task_1 결과 lot IDs>"`, `"<task_1_result_lot_ids>"`, `"{{from_task_1}}"`, `"task_1 결과"` 같은 placeholder 텍스트를 값으로 넣지 마라. 시스템의 replanner가 이전 task 결과를 보고 자동으로 채운다.
+- **FAN-OUT**: 하나의 task 결과를 여러 후속 task가 동시에 사용할 수 있다. 예: wads_agent 결과의 detected_parameters → fail_history_agent.dh_fail_type, detected_lot_ids → map_agent.map_lot_ids. 후속 task의 체이닝 필드를 각각 ""로 두면 replanner가 각각 자동으로 채운다.
 
 === EXAMPLES ===
 
@@ -191,6 +196,8 @@ TODAY's DATE: {today}
 4. 빈 chained-input을 채워라:
    - map_agent의 map_lot_ids="" → 이전 task(예: wads) 결과의 모든 LOT ID를 쉼표 구분으로 채움
    - lot_history_agent의 lh_lot_ids="" → 동일
+   - fail_history_agent의 dh_fail_type="" 이고 이전 wads_agent 결과에서 검출된 파라미터명이 있으면
+     → dh_fail_type에 채움 (dh_fail_type enum 값과 매칭, 예: "VTH", "IDSAT")
    - fail_history_agent의 dh_query="" → 이전 task의 핵심 키워드로 채움
 5. **모든 LOT ID를 추출해라 (subset 아님)**. 이전 결과에 7개 LOT이 있으면 7개 모두 채워라.
 6. 이미 채워진 params는 변경하지 마라.
@@ -328,7 +335,7 @@ Route to **map_agent** when the user explicitly requests:
   예: "4SS2DPD.01,4SS2DPD.05 비교"  → yield_groupkey="4SS2DPD.01,4SS2DPD.05", next="yield_agent"
   예: "4SS2DPD.01,4SS2DPD.05 수율"  → yield_groupkey="4SS2DPD.01,4SS2DPD.05", next="yield_agent"
   ※ 단, "맵"/"map" 키워드가 없는 경우에만 yield_groupkey 사용
-- yield_lot_ids/yield_groupkey 있으면 lotcd는 lot ID 앞 3-4자에서 자동 추론
+- yield_lot_ids/yield_groupkey 있으면 lotcd는 lot ID 앞 3자에서 자동 추론
   예: "4SS2DPD" → lotcd="4SS"
 - yield_lot_ids/yield_groupkey 없으면 기존 lotcd 기반 period 조회 유지
 
@@ -421,11 +428,11 @@ For wads_agent → wads_start_tm, wads_end_tm (YYYY-MM-DD):
   "저번주"                     → wads_start_tm=지난주 월요일, wads_end_tm=지난주 일요일
 
 === PRODUCT CODE ===
-- lotcd is a SHORT 3-4 character code only: "4SS", "5NA", "6E2"
+- lotcd is a SHORT 3 character code only: "4SS", "5NA", "6E2"
 - A full lot ID (> 5 chars) like "4SS2DPD", "4SSXCEW" is NOT a lotcd
   → for yield/수율 queries:  put it in yield_lot_ids (NOT map_lot_id)
   → for map/맵 queries:     put it in map_lot_id or map_lot_ids
-- When yield_lot_ids is set, auto-infer lotcd from the first 3-4 chars (e.g. "4SS2DPD" → lotcd="4SS")
+- When yield_lot_ids is set, auto-infer lotcd from the first 3 chars (e.g. "4SS2DPD" → lotcd="4SS")
 - lotcd를 추론할 수 없으면 빈 문자열("")로 설정
 - For follow-up queries, keep the same lotcd from conversation history
 
