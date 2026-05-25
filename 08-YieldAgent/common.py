@@ -29,6 +29,25 @@ load_dotenv(override=True)
 logger = logging.getLogger("yield_agent.common")
 
 
+def to_user_message(exc: Exception) -> str:
+    """기술적 예외를 사용자 친화적 한국어 메시지로 변환."""
+    msg = str(exc).lower()
+    if isinstance(exc, (oracledb.DatabaseError, oracledb.OperationalError)) or "ora-" in msg:
+        return "DB 서버 연결에 실패했습니다. 네트워크/VPN 상태를 확인하세요."
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)) or "connection refused" in msg or "timed out" in msg:
+        if "9200" in msg or "opensearch" in msg or "elasticsearch" in msg:
+            return "이력 검색 서비스에 일시적 문제가 있습니다. 잠시 후 다시 시도해 주세요."
+        return "서버 연결에 실패했습니다. 네트워크 상태를 확인하거나 잠시 후 다시 시도해 주세요."
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+        if exc.response.status_code == 429:
+            return "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요."
+        if 500 <= exc.response.status_code < 600:
+            return "LLM 서비스에 일시적 문제가 있습니다. 잠시 후 다시 시도해 주세요."
+    if "json" in msg and ("parse" in msg or "decode" in msg):
+        return "응답 파싱에 실패했습니다. 다시 시도해 주세요."
+    return f"오류가 발생했습니다: {exc}"
+
+
 def is_transient_error(exc: Exception) -> bool:
     """LangGraph RetryPolicy가 재시도해야 할 일시 장애 분류.
 

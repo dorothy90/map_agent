@@ -50,6 +50,7 @@ from models import (  # noqa: E402
     ThinkingEvent,
     TokenEvent,
 )
+from common import to_user_message  # noqa: E402
 from supervisor import workflow  # noqa: E402
 from repl_agent.router import router as repl_router  # noqa: E402
 
@@ -174,6 +175,78 @@ app.include_router(repl_router, prefix="/repl", tags=["repl"])
 from wiki_router import router as wiki_router  # noqa: E402
 
 app.include_router(wiki_router, prefix="/api/wiki", tags=["wiki"])
+
+
+_AGENT_META: dict[str, tuple[str, int, int]] = {
+    "yield_agent":         ("PT1H/PT1C 수율 통계 조회 및 이상 감지", 5,  10),
+    "wads_agent":          ("WADS 열화 파라미터 리포트 조회",        10, 20),
+    "map_agent":           ("웨이퍼 불량 맵 시각화",                  5,  10),
+    "fail_history_agent":  ("Fail 이력 OpenSearch 검색",              5,  10),
+    "ppt_export":          ("분석 결과 PPT 생성",                    20, 30),
+    "lot_history_agent":   ("LOT 이력 조회",                         10, 15),
+    "relation_tree_agent": ("연관 LOT 관계 트리 분석",               10, 20),
+}
+
+
+def _build_plan_review_message(tasks: list[dict], missing_params: list[dict] | None = None) -> str:
+    missing_set = {m["param"] for m in (missing_params or [])}
+    missing_task_ids = {m["task_id"] for m in (missing_params or [])}
+
+    total_lo = total_hi = 0
+    blocks: list[str] = []
+
+    for i, t in enumerate(tasks, 1):
+        agent = t.get("agent", "")
+        goal = t.get("goal", "")
+        task_id = t.get("task_id", "")
+        params: dict = t.get("params") or {}
+
+        desc, lo, hi = _AGENT_META.get(agent, (agent, 5, 10))
+        total_lo += lo
+        total_hi += hi
+
+        def _is_ph(v) -> bool:
+            s = str(v).strip() if v is not None else ""
+            return not s or s.startswith("<") or "task_" in s.lower() or "{{" in s
+
+        clean = {k: v for k, v in params.items() if not _is_ph(v)}
+        # 진짜 누락(state에도 없고 앞 task 제공도 없음) vs 진짜 chaining 구분
+        genuinely_missing = [
+            k for k, v in params.items()
+            if _is_ph(v) and task_id in missing_task_ids and k in missing_set
+        ]
+        chained = [
+            k for k, v in params.items()
+            if _is_ph(v) and k not in genuinely_missing
+        ]
+
+        lines = [f"**{i}단계** `{agent}` — {desc}"]
+        lines.append(f"  - 목표: {goal}")
+        if clean:
+            lines.append("  - 파라미터: " + ", ".join(f"{k}={v}" for k, v in clean.items()))
+        if genuinely_missing:
+            lines.append(f"  - ⚠️ 미입력: {', '.join(genuinely_missing)}")
+        if chained:
+            lines.append(f"  - ↳ {i-1}단계 결과 자동 연결: {', '.join(chained)}")
+        elif i > 1 and not genuinely_missing:
+            lines.append(f"  - ↳ {i-1}단계 완료 후 순차 실행")
+        lines.append(f"  - 예상 소요: {lo}~{hi}초")
+        blocks.append("\n".join(lines))
+
+    header = (
+        f"**분석 계획을 확인해주세요**"
+        f" (총 {len(tasks)}개 작업 · 예상 {total_lo}~{total_hi}초)\n\n"
+    )
+    if missing_set:
+        warning = (
+            f"⚠️ **필수 파라미터 미입력**: {', '.join(sorted(missing_set))}\n"
+            "수정 입력란에 포함해주세요. (예: '4SS로 분석해줘')\n\n"
+        )
+        footer = "\n\n제품코드 등 필수 파라미터를 포함하여 입력해주세요 (예: '4SS로 진행') | '취소' 입력 시 중단"
+    else:
+        warning = ""
+        footer = "\n\n그대로 실행하려면 아무 내용이나 입력 | 수정이 필요하면 직접 입력 (예: 'WADS 기간 1주일로') | '취소' 입력 시 중단"
+    return warning + header + "\n\n".join(blocks) + footer
 
 
 def _sse(event: dict | object) -> str:
@@ -340,6 +413,9 @@ async def chat_stream(request: ChatRequest, req: Request):
             "past_steps": Overwrite([]),
             # step_count만 리셋 (퍼-턴 루프 카운터)
             "step_count": 0,
+            # planner가 매 turn 덮어쓰지만 planner 실패 시 stale 방지
+            "task_plan": [],
+            "pending_tasks": [],
             # canonical plan-and-execute: 이전 턴의 종료 신호가 다음 턴으로 새지 않도록 리셋
             "response": "",
             # Day 4: wiki state는 turn별 overwrite (reducer 없음). 명시적 reset.
@@ -396,7 +472,6 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "pending_tasks": [],
                 "current_task_id": "",
                 "current_task_goal": "",
-                "_last_agent_params": {},
                 "response": "",
             })
 
@@ -577,7 +652,7 @@ async def chat_stream(request: ChatRequest, req: Request):
 
         except Exception as e:
             logger.exception("Graph execution error")
-            yield _sse(ErrorEvent(message=f"[step {step_count}] {str(e)}"))
+            yield _sse(ErrorEvent(message=to_user_message(e)))
             try:
                 get_client().flush()
             except Exception:
@@ -592,11 +667,25 @@ async def chat_stream(request: ChatRequest, req: Request):
                     if hasattr(task, "interrupts") and task.interrupts:
                         for intr in task.interrupts:
                             interrupt_data = intr.value
-                            yield _sse(InterruptEvent(
-                                param=interrupt_data.get("param", ""),
-                                message=interrupt_data.get("message", ""),
-                                route=interrupt_data.get("route", ""),
-                            ))
+                            if interrupt_data.get("type") == "plan_review":
+                                tasks = interrupt_data.get("tasks", [])
+                                missing_params = interrupt_data.get("missing_params", [])
+                                yield _sse(MessageEvent(
+                                    agent="plan_review",
+                                    content=_build_plan_review_message(tasks, missing_params),
+                                ))
+                                yield _sse(InterruptEvent(
+                                    interrupt_type="plan_review",
+                                    param="plan_review",
+                                    message="분석 계획을 승인하시겠습니까?",
+                                    route="",
+                                ))
+                            else:
+                                yield _sse(InterruptEvent(
+                                    param=interrupt_data.get("param", ""),
+                                    message=interrupt_data.get("message", ""),
+                                    route=interrupt_data.get("route", ""),
+                                ))
         except Exception as e:
             logger.warning("Interrupt 감지 실패: %s", e)
 
