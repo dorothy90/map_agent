@@ -237,3 +237,10 @@ image.png
 08-YieldAgent/.omc/state/mission-state.json
 08-YieldAgent/.omc/state/subagent-tracking.json
 08-YieldAgent/repl_agent/mock/data/sample.csv
+08-YieldAgent/wiki_frontend/node_modules
+08-YieldAgent/wiki/episodes
+08-YieldAgent/eval/results/
+.omc/
+08-YieldAgent/eval/datasets/
+08-YieldAgent/wiki/concepts/
+08-YieldAgent/wiki/aliases/

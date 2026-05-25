@@ -1,7 +1,7 @@
 """
 Supervisor Node — Yield/WADS/Map 라우팅 담당
 =============================================
-수동 JSON 파싱 + RouteResponse Pydantic 검증 방식으로 라우팅을 수행합니다.
+planner → queue dispatch 방식으로 라우팅을 수행합니다.
 
 라우팅 대상:
   yield_agent  → pt1h 수율 조회
@@ -12,6 +12,7 @@ Supervisor Node — Yield/WADS/Map 라우팅 담당
 
 from __future__ import annotations
 
+import json
 import operator
 import logging
 from datetime import date
@@ -19,6 +20,7 @@ from typing import Annotated, Any, Dict, Literal, TypedDict
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, trim_messages
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.runnables import RunnableConfig
 from langfuse import get_client, observe
 from langgraph.graph import StateGraph, START, END, add_messages
@@ -29,8 +31,8 @@ from langchain_core.messages import ToolMessage
 
 from common import stream_event, get_llm, extract_json_from_llm, is_transient_error
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
-from models import StatusEvent, ThinkingEvent
-from prompts import PLANNER_SYSTEM_PROMPT, REPLANNER_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT_TEMPLATE, SUPERVISOR_SYSTEM_PROMPT
+from models import StatusEvent
+from prompts import PLANNER_SYSTEM_PROMPT, REPLANNER_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT_TEMPLATE
 from rewrite_tools import REWRITE_TOOLS
 
 load_dotenv(override=True)
@@ -62,54 +64,6 @@ class PlanResponse(BaseModel):
     tasks: list[TaskItem] = Field(description="실행할 작업 목록")
 
 
-class RouteResponse(BaseModel):
-    """Supervisor의 라우팅 결정 — with_structured_output으로 타입 보장"""
-
-    next: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "relation_tree_agent", "FINISH"] = Field(
-        description="다음에 실행할 에이전트"
-    )
-    lotcd: str = Field(default="", description="3~4자리 제품코드만 (예: 4SS, 5NA, 6E2). 전체 lot ID(예: 4SS2DPD)는 절대 입력하지 말 것. 사용자가 미지정 시 빈 문자열")
-    ref_date: str = Field(
-        default="", description="Yield 기준날짜 YYYYMMDD (yield_agent 전용)"
-    )
-    wads_start_tm: str = Field(
-        default="", description="WADS 조회 시작 날짜 YYYY-MM-DD (범위 조회 시, 비어있으면 wads_end_tm 단일 날짜 조회)"
-    )
-    wads_end_tm: str = Field(
-        default="", description="WADS 조회 끝 날짜 YYYY-MM-DD (wads_agent 전용)"
-    )
-    wads_parameter: str = Field(
-        default="", description='WADS step 코드 필터 (예: "step07"). 사용자가 특정 step을 지정한 경우만'
-    )
-    filter_params: list[str] = Field(
-        default=[],
-        description="표시할 파라미터 목록 (비어있으면 전체 표시). 예: ['VTH', 'IDSAT']"
-    )
-    unit: str = Field(default="weekly", description='"weekly" | "monthly" | "daily"')
-    periods: int = Field(default=0, description="조회 기간 수 (0 = 기본값: weekly=4, monthly=3, daily=4)")
-    message: str = Field(description="사용자에게 전달할 한국어 메시지")
-    # Map 파라미터
-    map_lot_id:   str = Field(default="", description="단일 lot ID (예: 'LOTABC123')")
-    map_lot_ids:  str = Field(default="", description="복수 lot IDs, 쉼표 구분")
-    map_wf_ids:   str = Field(default="", description="wafer IDs, 쉼표 구분")
-    map_groupkey: str = Field(default="", description="lot_id.wf_id 형식 (예: 'LOT001.01,LOT001.02')")
-    map_type:     str = Field(default="binmap", description="binmap | cummap | all")
-    map_oper:     str = Field(default="", description="PT1H | PT1C (필수)")
-    # Yield lot 비교 파라미터
-    yield_lot_ids:  str = Field(default="", description="수율 조회용 lot ID 목록, 쉼표 구분 (예: '4SS2DPD,4SSXCEW')")
-    yield_groupkey: str = Field(default="", description="수율 조회용 lot.wf 형식 (예: '4SS2DPD.01,4SS2DPD.05')")
-    # Fail History 파라미터
-    dh_query: str = Field(default="", description="불량이력 검색 쿼리 (자유 텍스트)")
-    dh_fail_type: str = Field(default="", description="불량 유형 필터 (예: TWT, IOFF)")
-    dh_cause_oper: str = Field(default="", description="원인 공정 필터 (예: M0C ETCH)")
-    # Lot History 파라미터
-    lh_lot_ids: str = Field(default="", description="LOT 이력 조회용 lot ID, 쉼표 구분 (예: '4SS2DPD,4SSXCEW')")
-    # Relation Tree 파라미터 (Inline-WT 연관 분석)
-    rt_lot_code: str = Field(default="", description="연관 분석용 LOT 코드 (예: '4SS2DPD')")
-    rt_main_oper_det_desc: str = Field(default="", description="연관 분석용 메인 공정명, 쉼표 구분 (예: 'STEP07,STEP08')")
-
-
-
 
 _MAX_CHECKPOINT_MESSAGES = 30
 
@@ -117,37 +71,8 @@ _MAX_CHECKPOINT_MESSAGES = 30
 _AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "relation_tree_agent"}
 
 
-def _params_signature(d: dict) -> dict:
-    """dup guard 비교용 파라미터 signature.
 
-    LLM-routed 분기와 큐 dispatch 분기 양쪽에서 동일 헬퍼로 추출하여
-    저장(`_last_agent_params`)·비교가 일관되게 작동하도록 한다.
-    누락 필드는 RouteResponse 기본값과 동일하게 채운다.
-    """
-    return {
-        "map_lot_id":    d.get("map_lot_id", ""),
-        "map_lot_ids":   d.get("map_lot_ids", ""),
-        "map_wf_ids":    d.get("map_wf_ids", ""),
-        "map_groupkey":  d.get("map_groupkey", ""),
-        "map_type":      d.get("map_type", "binmap"),
-        "map_oper":      d.get("map_oper", ""),
-        "lotcd":         d.get("lotcd", ""),
-        "ref_date":      d.get("ref_date", ""),
-        "unit":          d.get("unit", "weekly"),
-        "periods":       d.get("periods", 0),
-        "filter_params": tuple(d.get("filter_params") or ()),
-        "yield_lot_ids":  d.get("yield_lot_ids", ""),
-        "yield_groupkey": d.get("yield_groupkey", ""),
-        "wads_start_tm":  d.get("wads_start_tm", ""),
-        "wads_end_tm":    d.get("wads_end_tm", ""),
-        "wads_parameter": d.get("wads_parameter", ""),
-        "dh_query":       d.get("dh_query", ""),
-        "dh_fail_type":  d.get("dh_fail_type", ""),
-        "dh_cause_oper": d.get("dh_cause_oper", ""),
-        "lh_lot_ids":    d.get("lh_lot_ids", ""),
-        "rt_lot_code":            d.get("rt_lot_code", ""),
-        "rt_main_oper_det_desc":  d.get("rt_main_oper_det_desc", ""),
-    }
+_MAX_CONTEXT_TOKENS = 30_000
 
 
 def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMessage | None = None) -> list[dict]:
@@ -155,20 +80,32 @@ def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMes
 
     ToolMessage, SystemMessage 등은 스킵.
     exclude_last로 지정된 메시지는 제외 (rewrite 대상이므로 별도 전달).
+    turn 수 제한 후 토큰 예산 초과 시 오래된 턴부터 추가 제거.
     """
-    filtered = []
-    for m in messages:
-        if exclude_last and m is exclude_last:
-            continue
+    eligible = [
+        m for m in messages
+        if (exclude_last is None or m is not exclude_last)
+        and isinstance(m, (HumanMessage, AIMessage))
+        and (isinstance(m, HumanMessage) or (isinstance(m.content, str) and m.content.strip()))
+    ]
+    # 1차: 턴 수 제한
+    turn_limited = eligible[-(max_turns * 2):]
+    # 2차: 토큰 예산 제한 (SQL 결과·아티팩트 JSON 등 긴 메시지 대응)
+    trimmed = trim_messages(
+        turn_limited,
+        strategy="last",
+        token_counter=count_tokens_approximately,
+        max_tokens=_MAX_CONTEXT_TOKENS,
+    )
+    result = []
+    for m in trimmed:
         if isinstance(m, HumanMessage):
-            filtered.append({"role": "user", "content": m.content})
+            result.append({"role": "user", "content": m.content if isinstance(m.content, str) else str(m.content)})
         elif isinstance(m, AIMessage):
-            # AIMessage content가 텍스트인 경우만 (artifact는 별도 state 필드)
             content = m.content if isinstance(m.content, str) else str(m.content)
             if content.strip():
-                filtered.append({"role": "assistant", "content": content})
-    # 최근 max_turns * 2개 (Human+AI 각 1개 = 1턴)
-    return filtered[-(max_turns * 2):]
+                result.append({"role": "assistant", "content": content})
+    return result
 
 
 def _normalize_map_oper(raw: str) -> str:
@@ -210,7 +147,7 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         return {}
 
     # 최근 5턴 대화 히스토리 추출 (마지막 HumanMessage 제외)
-    recent = _get_recent_turns(messages, max_turns=30, exclude_last=last_human)
+    recent = _get_recent_turns(messages, max_turns=5, exclude_last=last_human)
 
     # state 메타데이터 (lotcd, agent_suggestion 등 — 대화에 없을 수 있는 정보)
     meta_parts = []
@@ -344,6 +281,7 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     invoke_messages.append({"role": "user", "content": last_human.content})
 
     # 수동 JSON 파싱 (with_structured_output은 OpenRouter 호환성 문제)
+    raw_text = ""
     try:
         response = _model.invoke(
             invoke_messages,
@@ -353,8 +291,12 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         plan = extract_json_from_llm(raw_text, PlanResponse)
     except Exception as e:
         logger.error("[Planner] 파싱 실패: %s — 단일 task fallback", e)
-        # fallback: 단일 task 없이 supervisor에게 위임
-        return {"task_plan": [], "pending_tasks": []}
+        # plain text 거절 메시지이면 state에 보존 (supervisor fallback에서 사용)
+        refusal = raw_text if (raw_text and "{" not in raw_text and len(raw_text) < 400) else None
+        result: dict = {"task_plan": [], "pending_tasks": []}
+        if refusal:
+            result["messages"] = [AIMessage(content=refusal, name="planner")]
+        return result
 
     # task 수 상한 제한 — 초과 시 사용자에게 명시적으로 알림 (#22 fix)
     if len(plan.tasks) > _MAX_TASKS:
@@ -370,10 +312,117 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     logger.info("[Planner] %d task(s) 생성: %s", len(tasks_dicts),
                 [(t["task_id"], t["agent"]) for t in tasks_dicts])
 
+    if not tasks_dicts:
+        # LLM이 지원 범위 외로 판단 — planner message를 state에 남겨 supervisor가 relay하도록 함
+        return {
+            "task_plan": [],
+            "pending_tasks": [],
+            "messages": [AIMessage(
+                content="죄송합니다. 수율 분석, WADS 열화 리포트, 웨이퍼 맵, LOT 이력 등의 쿼리만 지원합니다.",
+                name="planner",
+            )],
+        }
+
+    task_summary = " → ".join(
+        f"[{t['task_id']}]{t['agent']}" for t in tasks_dicts
+    )
+    stream_event("status", StatusEvent(
+        message=f"📋 계획 ({len(tasks_dicts)}개): {task_summary}",
+        node="planner",
+    ))
+
     return {
         "task_plan": tasks_dicts,
         "pending_tasks": tasks_dicts,
     }
+
+
+_CANCEL_WORDS = frozenset({"취소", "cancel", "reject", "no", "n", "ㄴ", "아니오", "중단", "그만"})
+
+
+def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
+    """2개 이상 task일 때만 사용자 승인을 기다린다. 단일 task는 즉시 통과.
+
+    missing_params가 있으면 plan_review 전에 별도 missing_param interrupt로 먼저 수집.
+    LangGraph sequential interrupt 패턴: 노드 재시작 시 이미 답변된 interrupt()는 즉시 저장값 반환.
+
+    흐름 (lotcd 없는 경우):
+      interrupt #1 (missing_param) → 사용자 "4SS" → task_plan에 주입
+      interrupt #2 (plan_review)   → 사용자 "응" → planner 재호출 없이 통과
+    """
+    task_plan = state.get("task_plan", [])
+    if len(task_plan) < 2:
+        return {}
+
+    missing_params = _detect_missing_global_params(task_plan, state)
+
+    # Step 1: missing param이 있으면 plan_review 전에 먼저 수집
+    collected: dict[str, str] = {}
+    if missing_params:
+        for mp in missing_params:
+            param = mp["param"]
+            val = interrupt({
+                "type": "missing_param",
+                "param": param,
+                "message": "계획 검토 전에 제품코드를 입력해주세요. (예: 4SS, 5NA, 6E2)",
+                "route": "plan_review",
+            })
+            collected[param] = str(val).strip()
+        # 수집된 params를 task_plan에 주입
+        updated = []
+        for task in task_plan:
+            t = dict(task)
+            if t.get("agent") in ("yield_agent", "wads_agent"):
+                params = dict(t.get("params") or {})
+                params.update(collected)
+                t["params"] = params
+            updated.append(t)
+        task_plan = updated
+
+    # Step 2: plan_review (missing_params는 이미 수집됨)
+    user_response = interrupt({"type": "plan_review", "tasks": task_plan, "missing_params": []})
+    resp = (user_response or "").strip()
+
+    if resp.lower() in _CANCEL_WORDS:
+        return {"response": "사용자가 분석 계획을 취소했습니다."}
+
+    if not resp:
+        # approval — collected params가 주입된 task_plan 반환
+        if collected:
+            return {"task_plan": task_plan, "pending_tasks": task_plan}
+        return {}
+
+    # 수정 요청 — planner LLM 재호출 (task_plan에 이미 lotcd 주입됨)
+    messages = state.get("messages", [])
+    last_human = next(
+        (m for m in reversed(messages)
+         if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
+        None,
+    )
+    original_query = last_human.content if last_human else ""
+    today = date.today()
+    prompt = PLANNER_SYSTEM_PROMPT.format(
+        today=today.strftime("%Y년 %m월 %d일 (%A)"),
+        today_yyyymmdd=today.strftime("%Y%m%d"),
+        today_yyyy_mm_dd=today.strftime("%Y-%m-%d"),
+        year=today.year,
+    )
+    invoke_messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": original_query},
+        {"role": "assistant", "content": f"현재 계획:\n{json.dumps(task_plan, ensure_ascii=False)}"},
+        {"role": "user", "content": f"다음과 같이 계획을 수정해줘: {resp}"},
+    ]
+    try:
+        response = _model.invoke(invoke_messages, config={"callbacks": _lf_callbacks()})
+        new_plan = extract_json_from_llm(response.content.strip(), PlanResponse)
+        new_tasks = [t.model_dump() for t in new_plan.tasks]
+        logger.info("[PlanReview] 수정 계획 %d개: %s", len(new_tasks),
+                    [(t["task_id"], t["agent"]) for t in new_tasks])
+        return {"task_plan": new_tasks, "pending_tasks": new_tasks}
+    except Exception as e:
+        logger.warning("[PlanReview] 수정 계획 파싱 실패 (%s) — 원본 진행", e)
+        return {"task_plan": task_plan, "pending_tasks": task_plan} if collected else {}
 
 
 # ── Replanner 노드 (#8 phase 3a) ──────────────────────────────
@@ -407,6 +456,33 @@ def _is_placeholder_or_empty(val) -> bool:
     if any(k in lower for k in ("task_1", "task_2", "task_3", "결과", "from_task", "result of", "from task")):
         return True
     return False
+
+
+def _detect_missing_global_params(task_plan: list[dict], state: dict) -> list[dict]:
+    """state에도 없고 앞 task가 제공하지도 않는 진짜 누락 파라미터 목록 반환.
+
+    '↳ 0단계 자동 연결'처럼 보이지만 실제로는 입력이 필요한 경우를 구분한다.
+    returns: [{"task_id": ..., "agent": ..., "param": "lotcd"}, ...]
+    """
+    missing = []
+    state_lotcd = state.get("lotcd", "")
+    for i, task in enumerate(task_plan):
+        agent = task.get("agent", "")
+        if agent not in ("yield_agent", "wads_agent"):
+            continue
+        task_lotcd = (task.get("params") or {}).get("lotcd", "")
+        if not _is_placeholder_or_empty(task_lotcd):
+            continue  # planner가 이미 채움
+        if state_lotcd:
+            continue  # 이전 턴 state에 있음
+        # 앞 task 중 yield/wads 실행 결과로 lotcd가 생길 수 있는지 확인
+        earlier_providers = [
+            t for t in task_plan[:i]
+            if t.get("agent") in ("yield_agent", "wads_agent")
+        ]
+        if not earlier_providers:
+            missing.append({"task_id": task["task_id"], "agent": agent, "param": "lotcd"})
+    return missing
 
 
 def _resolve_chained_params(task: dict, state: dict) -> dict:
@@ -507,6 +583,10 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "[Replanner] last_task=%s pending=%d summary=%s",
             last_task_id, len(pending), str(last_summary)[:120],
         )
+        stream_event("status", StatusEvent(
+            message=f"✅ [{last_task_id}] 완료",
+            node="replanner",
+        ))
 
     # ── canonical plan-and-execute 종료 판정 ──
     # 모든 planned task가 실행되었고 남은 pending이 없으면 plan 완료.
@@ -530,7 +610,6 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         )
         return {
             "response": last_agent_msg,
-            "messages": [AIMessage(content=last_agent_msg, name="supervisor")],
         }
 
     # Fast path: 큐 비었거나 past 비었거나 chained-input 의존이 없으면 LLM 호출 생략
@@ -662,52 +741,84 @@ def supervisor_node(
             current_task.get("task_id"), current_task.get("agent"), len(remaining),
         )
 
-        # task params를 state 필드로 projection
-        update_dict = {
+        # task params를 state 필드로 projection — agent별 조건부로 관련 파라미터만 기록.
+        # 전 agent 파라미터를 항상 덮으면 checkpoint의 다른 agent 값이 소실됨.
+        agent = current_task["agent"]
+        update_dict: dict = {
             "step_count": step_count,
             "current_task_id": current_task.get("task_id", ""),
             "current_task_goal": current_task.get("goal", ""),
             "pending_tasks": remaining,
             "messages": [task_message],
-            # Map 파라미터
-            "map_lot_id":   task_params.get("map_lot_id", ""),
-            "map_lot_ids":  task_params.get("map_lot_ids", ""),
-            "map_wf_ids":   task_params.get("map_wf_ids", ""),
-            "map_groupkey": task_params.get("map_groupkey", ""),
-            "map_type":     task_params.get("map_type", "binmap"),
-            # task_params가 비면 state 기존 값 재사용 — 같은 plan 내 task 간 map_oper 계승
-            "map_oper":     task_params.get("map_oper") or state.get("map_oper", ""),
-            # Yield 파라미터
-            "lotcd":          task_params.get("lotcd", state.get("lotcd", "")),
-            "ref_date":       task_params.get("ref_date", state.get("ref_date", "")),
-            "unit":           task_params.get("unit", state.get("unit", "weekly")),
-            "periods":        task_params.get("periods", state.get("periods", 0)),
-            "filter_params":  task_params.get("filter_params", []),
-            "yield_lot_ids":  task_params.get("yield_lot_ids", ""),
-            "yield_groupkey": task_params.get("yield_groupkey", ""),
-            # WADS 파라미터
-            "wads_start_tm":  task_params.get("wads_start_tm", ""),
-            "wads_end_tm":    task_params.get("wads_end_tm", ""),
-            "wads_parameter": task_params.get("wads_parameter") or task_params.get("parameter", ""),
-            # Fail History 파라미터
-            "dh_query":      task_params.get("dh_query", ""),
-            "dh_fail_type":  task_params.get("dh_fail_type", ""),
-            "dh_cause_oper": task_params.get("dh_cause_oper", ""),
-            # Lot History 파라미터
-            "lh_lot_ids":    task_params.get("lh_lot_ids", ""),
-            # Relation Tree 파라미터 — 빈 값이면 직전 turn state 재사용 (prompt가 약속한 lot 계승)
-            "rt_lot_code":            task_params.get("rt_lot_code") or state.get("rt_lot_code", ""),
-            "rt_main_oper_det_desc":  task_params.get("rt_main_oper_det_desc") or state.get("rt_main_oper_det_desc", ""),
-            # 이전 task가 남긴 stateful 필드 정리 — 다음 task에 stale로 영향 차단 (#19 fix).
-            # worker가 정상 종료 시 자체 agent_suggestion을 다시 set하므로 빈 string은 안전.
             "agent_suggestion": "",
         }
-        # 큐 dispatch 후에도 dup guard가 stale 비교를 하지 않도록 signature 갱신
-        update_dict["_last_agent_params"] = _params_signature(update_dict)
 
-        # map_agent 필수 파라미터 검증 (planner 경로)
+        # lotcd는 yield/wads/fail_history가 공유 — 해당 agent 실행 시에만 업데이트
+        if agent in ("yield_agent", "wads_agent", "fail_history_agent"):
+            update_dict["lotcd"] = task_params.get("lotcd") or state.get("lotcd", "")
+
+        if agent == "yield_agent":
+            update_dict.update({
+                "ref_date":       task_params.get("ref_date", state.get("ref_date", "")),
+                "unit":           task_params.get("unit", state.get("unit", "weekly")),
+                "periods":        task_params.get("periods", state.get("periods", 0)),
+                "filter_params":  task_params.get("filter_params", []),
+                "yield_lot_ids":  task_params.get("yield_lot_ids", ""),
+                "yield_groupkey": task_params.get("yield_groupkey", ""),
+            })
+
+        elif agent == "wads_agent":
+            update_dict.update({
+                "wads_start_tm":  task_params.get("wads_start_tm", ""),
+                "wads_end_tm":    task_params.get("wads_end_tm") or date.today().strftime("%Y-%m-%d"),
+                "wads_parameter": task_params.get("wads_parameter") or task_params.get("parameter", ""),
+            })
+
+        elif agent == "map_agent":
+            update_dict.update({
+                "map_lot_id":   task_params.get("map_lot_id", ""),
+                "map_lot_ids":  task_params.get("map_lot_ids", ""),
+                "map_wf_ids":   task_params.get("map_wf_ids", ""),
+                "map_groupkey": task_params.get("map_groupkey", ""),
+                "map_type":     task_params.get("map_type", "binmap"),
+                "map_oper":     task_params.get("map_oper") or state.get("map_oper", ""),
+            })
+
+        elif agent == "fail_history_agent":
+            update_dict.update({
+                "dh_query":      task_params.get("dh_query", ""),
+                "dh_fail_type":  task_params.get("dh_fail_type", ""),
+                "dh_cause_oper": task_params.get("dh_cause_oper", ""),
+            })
+
+        elif agent == "lot_history_agent":
+            update_dict["lh_lot_ids"] = task_params.get("lh_lot_ids", "")
+
+        elif agent == "relation_tree_agent":
+            update_dict.update({
+                "rt_lot_code":           task_params.get("rt_lot_code") or state.get("rt_lot_code", ""),
+                "rt_main_oper_det_desc": task_params.get("rt_main_oper_det_desc") or state.get("rt_main_oper_det_desc", ""),
+            })
+        # map_agent 필수 파라미터 검증 (planner 경로) — LLM-routed 분기(L930-943)와 대칭
         if current_task["agent"] == "map_agent":
-            # task_params에서 먼저 정규화 시도
+            has_lot = (
+                update_dict.get("map_lot_id")
+                or update_dict.get("map_lot_ids")
+                or update_dict.get("map_groupkey")
+            )
+            if not has_lot:
+                user_response = interrupt({
+                    "type": "missing_param",
+                    "param": "map_lot_id",
+                    "message": "맵을 조회할 Lot ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
+                    "route": "map_agent",
+                })
+                resp = str(user_response).strip()
+                if "," in resp:
+                    update_dict["map_lot_ids"] = resp
+                else:
+                    update_dict["map_lot_id"] = resp
+
             normalized = _normalize_map_oper(update_dict.get("map_oper", ""))
             if not normalized:
                 user_response = interrupt({
@@ -738,325 +849,54 @@ def supervisor_node(
                 })
                 update_dict["rt_main_oper_det_desc"] = str(user_response).strip()
 
+        # yield_agent / wads_agent: lotcd 필수
+        if current_task["agent"] in ("yield_agent", "wads_agent"):
+            if not update_dict.get("lotcd"):
+                user_response = interrupt({
+                    "type": "missing_param",
+                    "param": "lotcd",
+                    "message": "제품코드를 입력해주세요. (예: 4SS, 5NA, 6E2)",
+                    "route": current_task["agent"],
+                })
+                update_dict["lotcd"] = str(user_response).strip()
+
+        # lot_history_agent: lh_lot_ids 필수
+        if current_task["agent"] == "lot_history_agent":
+            if not update_dict.get("lh_lot_ids"):
+                user_response = interrupt({
+                    "type": "missing_param",
+                    "param": "lh_lot_ids",
+                    "message": "이력을 조회할 LOT ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
+                    "route": "lot_history_agent",
+                })
+                update_dict["lh_lot_ids"] = str(user_response).strip()
+
+        stream_event("status", StatusEvent(
+            message=f"▶ [{current_task['task_id']}] {current_task.get('goal', '')}",
+            node="supervisor",
+        ))
         return Command(update=update_dict, goto=current_task["agent"])
 
-    configurable = config.get("configurable", {}) if config else {}
+    # planner가 빈 계획 반환 (JSON 파싱 실패 fallback)
+    logger.warning("[Supervisor] pending_tasks 없음 — planner 실패 fallback")
     messages = state.get("messages", [])
-    today = date.today()
-    today_yyyymmdd = today.strftime("%Y%m%d")
-    today_yyyy_mm_dd = today.strftime("%Y-%m-%d")
-
-    prompt = SUPERVISOR_SYSTEM_PROMPT.format(
-        today=today.strftime("%Y년 %m월 %d일 (%A)"),
-        today_yyyymmdd=today_yyyymmdd,
-        today_yyyy_mm_dd=today_yyyy_mm_dd,
+    planner_refusal = next(
+        (m.content for m in reversed(messages)
+         if isinstance(m, AIMessage) and getattr(m, "name", "") == "planner"
+         and isinstance(m.content, str) and m.content.strip()),
+        None,
+    )
+    fallback_content = planner_refusal or "요청을 이해하지 못했습니다. 다시 시도해 주세요."
+    return Command(
+        update={
+            "step_count": step_count,
+            "messages": [AIMessage(content=fallback_content, name="supervisor")],
+            "response": fallback_content,
+        },
+        goto=END,
     )
 
-    # 이전 이상감지 결과가 있으면 컨텍스트 정보로 주입 (라우팅은 rewrite된 메시지 기반)
-    anomaly_params = state.get("anomaly_params", [])
-    if anomaly_params:
-        param_names = ", ".join(a["param"] for a in anomaly_params)
-        prompt += (
-            f"\n\n[이전 분석 결과] 이상 감지된 파라미터 ({len(anomaly_params)}개): {param_names}"
-        )
 
-    # 에이전트 메시지 요약 — 최근 2턴은 full 유지 (멀티스텝 lot ID 전달용)
-    _RECENT_FULL_TURNS = 2
-    _MAX_OLD_MSG_LEN = 300
-
-    agent_indices = [i for i, m in enumerate(messages)
-                     if isinstance(m, AIMessage) and getattr(m, "name", "") in _AGENT_NAMES]
-    full_keep = set(agent_indices[-_RECENT_FULL_TURNS:])
-
-    condensed = []
-    for i, m in enumerate(messages):
-        agent_name = getattr(m, "name", "")
-        if i in full_keep:
-            condensed.append(m)  # 최근 2턴: full 유지
-        elif isinstance(m, AIMessage) and agent_name in _AGENT_NAMES and len(m.content) > _MAX_OLD_MSG_LEN:
-            summary = m.content[:_MAX_OLD_MSG_LEN].rsplit("\n", 1)[0]
-            condensed.append(AIMessage(
-                content=f"[AGENT_RESULT:{agent_name}] {summary}...(결과 생략)",
-                name=agent_name,
-            ))
-        else:
-            condensed.append(m)
-
-    # C1: supervisor LLM 호출 직전에 내부 전달용 메시지(name="wads_sql_result" 등)를 제거.
-    # state.messages와 _resolve_chained_params 접근에는 유지되지만 LLM API에는 전달하지 않음
-    # ('name' 필드가 OpenAI-호환 provider에서 노이즈/경고를 유발할 수 있음 — LangGraph docs 확인).
-    # SM-10 fix: trim **이전**에 filter 적용. internal relay 메시지가 50-message cap
-    # 경쟁에 참여하지 않도록 함. long multi-turn session(turn 8+)에서 `wads_sql_result`가
-    # FIFO drop으로 사라지는 것을 방지. 단 `_resolve_chained_params`는 여전히 state.messages
-    # 원본을 읽으므로 동작에는 영향 없음 — 순수 LLM 컨텍스트 window 최적화.
-    _INTERNAL_MSG_NAMES = {"wads_sql_result", "lot_history_sql_result"}
-    filtered_condensed = [
-        m for m in condensed
-        if not (isinstance(m, AIMessage) and getattr(m, "name", "") in _INTERNAL_MSG_NAMES)
-    ]
-    # token_counter=len → 메시지 개수 기준 (문자수 아님). 최근 50개 메시지만 전달.
-    # #21 fix: 위 condensation(_RECENT_FULL_TURNS=2, _MAX_OLD_MSG_LEN=300)이 이미 오래된
-    # agent 메시지를 축약하므로 trim limit이 너무 작으면 condensation 작업이 무의미.
-    # _MAX_TASKS=5 plan 처리 시 task_message + agent_result + supervisor_decision이
-    # 빠르게 20개를 초과하므로 50으로 상향. follow-up 다중 turn에서도 컨텍스트 보존.
-    trimmed_messages = trim_messages(filtered_condensed, max_tokens=50, strategy="last", token_counter=len)
-    # ── 수동 JSON 파싱 방식 (with_structured_output 사용 금지) ──
-    # 이유: gpt-oss-120b는 function calling을 지원하지만, OpenRouter 프록시가
-    #       structured output 파라미터를 제대로 전달하지 못함.
-    #       _model.with_structured_output(RouteResponse).invoke() 사용 시
-    #       예외 발생 → fallback "요청을 이해하지 못했습니다" 반환되는 버그 발생.
-    # 해결: LLM에게 raw JSON 출력을 요청하고, regex로 추출 후 Pydantic 검증.
-    # 참고: with_structured_output 재도입 시 OpenRouter 호환성 먼저 확인할 것.
-    try:
-        # ── stream() 루프: <think> 구간은 실시간 전송, 나머지는 누적 (#20 fix) ──
-        # 견고성: ① 닫는 </think> 누락 시 post-loop fallback emit, ② 다중 <think> 블록 지원
-        # (search_offset으로 처리된 블록 이후만 검색), ③ 같은 chunk 안 open+close 처리.
-        # raw_text 자체는 가공 안 함 — extract_json_from_llm이 자체적으로 think 태그 제거.
-        raw_text = ""
-        search_offset = 0    # 이미 처리된 think 블록 이후 검색 시작 위치
-        think_open_idx = -1  # 현재 열린 <think>의 raw_text 내 위치 (-1 = 없음)
-        think_emit_len = 0   # 현재 open 블록에서 emit한 char 수
-
-        def _emit_thinking(content: str) -> None:
-            if content:
-                stream_event("thinking", ThinkingEvent(
-                    content=content, agent="supervisor", node="supervisor",
-                ))
-
-        for chunk in _model.stream(
-            [{"role": "system", "content": prompt}, *trimmed_messages],
-            config={"callbacks": _lf_callbacks()},
-        ):
-            token = chunk.content or ""
-            if not token:
-                continue
-            raw_text += token
-
-            # 누적된 raw_text에서 처리 가능한 만큼의 think 블록을 처리
-            while True:
-                if think_open_idx == -1:
-                    idx = raw_text.find("<think>", search_offset)
-                    if idx == -1:
-                        break
-                    think_open_idx = idx
-                    think_emit_len = 0
-
-                content_start = think_open_idx + len("<think>")
-                close_idx = raw_text.find("</think>", content_start)
-                if close_idx >= 0:
-                    # 완전한 think 블록: 미전송 부분만 emit, 다음 블록 검색 준비
-                    full = raw_text[content_start:close_idx]
-                    _emit_thinking(full[think_emit_len:])
-                    search_offset = close_idx + len("</think>")
-                    think_open_idx = -1
-                    think_emit_len = 0
-                    # while loop 계속 — 같은 chunk에 다음 <think>가 있을 수 있음
-                else:
-                    # 아직 닫히지 않음 — 새로 추가된 부분만 emit하되, 마지막 7글자는 보류
-                    # (다음 chunk에서 '</think>'(8자)의 시작 조각으로 판명될 수 있음)
-                    current = raw_text[content_start:]
-                    safe_len = max(0, len(current) - (len("</think>") - 1))
-                    if safe_len > think_emit_len:
-                        _emit_thinking(current[think_emit_len:safe_len])
-                        think_emit_len = safe_len
-                    break
-
-        # stream 종료 후 fallback: 닫는 </think> 없이 끝났으면 남은 thinking emit
-        if think_open_idx >= 0:
-            content_start = think_open_idx + len("<think>")
-            full = raw_text[content_start:]
-            _emit_thinking(full[think_emit_len:])
-            logger.warning("[Supervisor] <think> 닫는 태그 누락 — fallback emit (len=%d)", len(full))
-
-        raw_text = raw_text.strip()
-        logger.debug("[Supervisor] raw LLM response: %s", raw_text[:500])
-
-        decision = extract_json_from_llm(raw_text, RouteResponse)
-    except (ConnectionError, TimeoutError, OSError):
-        raise  # Tier 1: RetryPolicy가 재시도
-    except Exception as e:
-        logger.error(
-            "Supervisor JSON 파싱 실패: %s | raw_len=%d has_think_open=%s "
-            "has_think_close=%s has_open_brace=%s has_close_brace=%s",
-            e, len(raw_text), "<think>" in raw_text, "</think>" in raw_text,
-            "{" in raw_text, "}" in raw_text,
-        )
-        logger.error("[Supervisor] raw LLM response (full): %r", raw_text)
-        decision = RouteResponse(
-            next="FINISH",
-            lotcd=state.get("lotcd", ""),
-            ref_date=today_yyyymmdd,
-            wads_end_tm="",
-            message="요청을 이해하지 못했습니다. 다시 시도해 주세요.",
-        )
-
-    # 동일 에이전트 + 동일 파라미터 재호출 방지: 파라미터가 바뀌면 허용
-    # step_count > 1 조건: 첫 스텝은 새 질의이므로 이전 대화 히스토리의 에이전트와 겹쳐도 허용
-    if step_count > 1 and decision.next not in ("FINISH",):
-        last_agent = next(
-            (getattr(m, "name", "") for m in reversed(messages)
-             if isinstance(m, AIMessage) and getattr(m, "name", "") in _AGENT_NAMES),
-            None,
-        )
-        if last_agent == decision.next:
-            prev_params = state.get("_last_agent_params", {})
-            curr_params = _params_signature(decision.model_dump())
-            if prev_params == curr_params:
-                logger.info("[Supervisor] 동일 에이전트+파라미터(%s) 재호출 방지 → FINISH", last_agent)
-                decision = RouteResponse(
-                    next="FINISH",
-                    lotcd=decision.lotcd,
-                    ref_date=decision.ref_date,
-                    wads_end_tm=decision.wads_end_tm,
-                    message=decision.message or "분석을 완료했습니다.",
-                )
-            else:
-                logger.info("[Supervisor] 동일 에이전트(%s) 파라미터 변경 → 재호출 허용", last_agent)
-
-    # lotcd: 이전 State 값 유지 (follow-up 대화)
-    prev_lotcd = state.get("lotcd", "")
-    new_lotcd = decision.lotcd or prev_lotcd
-
-    # ── 필수 파라미터 검증 + interrupt (HITL) ──
-    if decision.next in ("yield_agent", "wads_agent") and not new_lotcd:
-        user_response = interrupt({
-            "type": "missing_param",
-            "param": "lotcd",
-            "message": "제품코드(lotcd)를 입력해주세요. (예: 4SS, 5NA, 6E2)",
-            "route": decision.next,
-        })
-        new_lotcd = str(user_response).strip()
-
-    if decision.next == "map_agent":
-        has_lot = decision.map_lot_id or decision.map_lot_ids or decision.map_groupkey
-        if not has_lot:
-            user_response = interrupt({
-                "type": "missing_param",
-                "param": "map_lot_id",
-                "message": "맵을 조회할 Lot ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
-                "route": "map_agent",
-            })
-            resp = str(user_response).strip()
-            if "," in resp:
-                decision.map_lot_ids = resp
-            else:
-                decision.map_lot_id = resp
-
-        if not decision.map_oper:
-            user_response = interrupt({
-                "type": "missing_param",
-                "param": "map_oper",
-                "message": "PT1H / PT1C 중 어떤 공정의 맵을 조회할까요?",
-                "route": "map_agent",
-            })
-            decision.map_oper = _normalize_map_oper(str(user_response)) or "PT1H"
-
-    if decision.next == "relation_tree_agent" and not decision.rt_lot_code:
-        user_response = interrupt({
-            "type": "missing_param",
-            "param": "rt_lot_code",
-            "message": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
-            "route": "relation_tree_agent",
-        })
-        decision.rt_lot_code = str(user_response).strip()
-
-    # Langfuse — 라우팅 결정 후 메타데이터 기록
-    try:
-        get_client().update_current_span(
-            metadata={
-                "anomaly_count": configurable.get("anomaly_count", 0),
-                "route": decision.next,
-                "lotcd": new_lotcd,
-                "step": step_count,
-            }
-        )
-    except Exception:
-        pass
-
-    # 빈 문자열 기본값 처리
-    ref_date = decision.ref_date or today_yyyymmdd
-    wads_end_tm = decision.wads_end_tm or (
-        today_yyyy_mm_dd if decision.next == "wads_agent" else ""
-    )
-
-    # FINISH 메시지 relay (#X1 fix): supervisor LLM이 worker의 에러 결과를 보고도
-    # 엉뚱한 메시지(예: "PT1H/PT1C 선택해주세요")를 hallucinate하는 경우가 있다.
-    # FINISH 결정 + 직전 worker가 "데이터 없음" 류 응답이면 worker 메시지를 그대로 사용자에게 전달.
-    if decision.next == "FINISH":
-        last_agent_msg = next(
-            (m.content for m in reversed(messages)
-             if isinstance(m, AIMessage) and getattr(m, "name", "") in _AGENT_NAMES
-             and isinstance(m.content, str)),
-            None,
-        )
-        _NO_DATA_KEYWORDS = (
-            "데이터가 없습니다", "데이터 없음", "조회된 데이터", "조회할 수 없습니다",
-            "오류가 발생했습니다", "실행 실패", "조회 실패",
-        )
-        if last_agent_msg and any(kw in last_agent_msg for kw in _NO_DATA_KEYWORDS):
-            logger.info("[Supervisor] FINISH 메시지 relay: LLM 메시지 대신 worker 마지막 응답 사용")
-            decision.message = last_agent_msg
-
-    result_message = AIMessage(content=decision.message, name="supervisor")
-
-    logger.info(
-        "[Supervisor] step=%d next=%-18s lotcd=%-6s ref_date=%s wads_end_tm=%s periods=%s unit=%s filter_params=%s map_lot_id=%r map_lot_ids=%r map_wf_ids=%r map_groupkey=%r yield_lot_ids=%r dh_query=%r lh_lot_ids=%r",
-        step_count,
-        decision.next,
-        new_lotcd,
-        ref_date,
-        wads_end_tm,
-        decision.periods,
-        decision.unit,
-        decision.filter_params,
-        decision.map_lot_id,
-        decision.map_lot_ids,
-        decision.map_wf_ids,
-        decision.map_groupkey,
-        decision.yield_lot_ids,
-        decision.dh_query,
-        decision.lh_lot_ids,
-    )
-
-    update_dict = {
-        "step_count": step_count,
-        "messages": [result_message],
-        "lotcd": new_lotcd,
-        "ref_date": ref_date,
-        "wads_start_tm": decision.wads_start_tm or "",
-        "wads_end_tm": wads_end_tm,
-        "wads_parameter": decision.wads_parameter,
-        "filter_params": decision.filter_params,
-        "unit": decision.unit or "weekly",
-        "periods": decision.periods,
-        "map_lot_id":   decision.map_lot_id,
-        "map_lot_ids":  decision.map_lot_ids,
-        "map_wf_ids":   decision.map_wf_ids,
-        "map_groupkey": decision.map_groupkey,
-        "map_type":     decision.map_type or "binmap",
-        "map_oper":     decision.map_oper,
-        "yield_lot_ids":  decision.yield_lot_ids,
-        "yield_groupkey": decision.yield_groupkey,
-        "dh_query":      decision.dh_query,
-        "dh_fail_type":  decision.dh_fail_type,
-        "dh_cause_oper": decision.dh_cause_oper,
-        "lh_lot_ids":    decision.lh_lot_ids,
-        "rt_lot_code":           decision.rt_lot_code,
-        "rt_main_oper_det_desc": decision.rt_main_oper_det_desc,
-        # LLM-routed 분기는 planner task가 아니므로 task goal 없음 (#12 fix)
-        "current_task_goal": "",
-        # SM-2 fix: planner turn 이후 LLM-routed turn에서 이전 task_id 누수 방지
-        "current_task_id": "",
-        # SM-4 fix: #19 fix(큐 dispatch line 671)를 LLM-routed에도 대칭 적용 —
-        # 이전 worker의 agent_suggestion이 이번 turn SSE에 그대로 emit되는 것을 차단
-        "agent_suggestion": "",
-        "_last_agent_params": _params_signature(decision.model_dump()),
-    }
-
-    if decision.next == "FINISH":
-        return Command(update=update_dict, goto=END)
-
-    return Command(update=update_dict, goto=decision.next)
 
 
 # ── 공유 State 정의 ──────────────────────────────────────
@@ -1140,9 +980,6 @@ class YieldQueryState(TypedDict):
     # 에이전트 제안 (UI 렌더링용)
     agent_suggestion: str
 
-    # 동일 에이전트 재호출 방지용 파라미터 스냅샷
-    _last_agent_params: dict
-
     # Planner 관련
     task_plan: list[dict]           # planner가 생성한 전체 계획 (overwrite)
     pending_tasks: list[dict]       # 아직 실행 안 된 TaskItem들 (overwrite)
@@ -1177,6 +1014,7 @@ _retry = RetryPolicy(max_attempts=3, initial_interval=1.0, retry_on=is_transient
 workflow = StateGraph(YieldQueryState)
 workflow.add_node("rewrite", rewrite_node, retry_policy=_retry)
 workflow.add_node("planner", planner_node, retry_policy=_retry)
+workflow.add_node("plan_review", plan_review_node)
 workflow.add_node("supervisor", supervisor_node, retry_policy=_retry)
 workflow.add_node("replanner", replanner_node, retry_policy=_retry)
 workflow.add_node("yield_agent", yield_agent_node, retry_policy=_retry)
@@ -1189,7 +1027,8 @@ workflow.add_node("relation_tree_agent", relation_tree_agent_node, retry_policy=
 
 workflow.add_edge(START, "rewrite")
 workflow.add_edge("rewrite", "planner")        # rewrite → planner
-workflow.add_edge("planner", "supervisor")     # planner → supervisor
+workflow.add_edge("planner", "plan_review")    # planner → plan_review → supervisor
+workflow.add_edge("plan_review", "supervisor")
 # supervisor → agent: Command(goto=...)가 처리 (conditional_edges 불필요)
 # agent → replanner → supervisor: 공식 plan-and-execute 패턴 (#8 phase 2)
 workflow.add_edge("yield_agent", "replanner")

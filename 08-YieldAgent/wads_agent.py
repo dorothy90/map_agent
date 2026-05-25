@@ -232,8 +232,11 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     logger.info("[WADS Agent] lotcd=%s, start_tm=%s, end_tm=%s, parameter=%r", lotcd, start_tm, end_tm, parameter)
 
-    # 요청별 격리된 저장소 초기화
-    storage: Dict[str, Any] = {"reports": []}
+    # 요청별 격리된 저장소 초기화 — _defaults로 LLM 누락 파라미터 보완
+    storage: Dict[str, Any] = {
+        "reports": [],
+        "_defaults": {"lotcd": lotcd, "start_tm": start_tm, "end_tm": end_tm, "parameter": parameter},
+    }
     _tool_payload_var.set(storage)
 
     # query 우선순위: planner가 만든 task goal > 사용자 last_human (#12 fix)
@@ -250,25 +253,8 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     # query에 별도 embed 불필요. WADS_SYSTEM_PROMPT의 TASK SCOPE 룰이 ReAct 1회 호출 종료를 강제.
     logger.info("[WADS Agent] 쿼리: %s (task_goal=%r)", query, task_goal)
 
-    # task_goal이 있으면 ReAct에 task_goal만 단일 user message로 전달 (L2 fix).
-    # 사용자 원본 메시지 전체를 보여주면 ReAct LLM이 다른 task 영역까지 시도하여
-    # recursion_limit 도달 위험. task scope를 좁히기 위해 wads_history 우회.
-    # task_goal이 없는 LLM-routed 경로에서는 기존 wads_history 패턴 유지.
-    if task_goal:
-        wads_history: List[Any] = [HumanMessage(content=query)]
-    else:
-        wads_history = []
-        turn_count = 0
-        for m in reversed(messages):
-            if turn_count >= 3:
-                break
-            if isinstance(m, HumanMessage):
-                wads_history.insert(0, m)
-                turn_count += 1
-            elif isinstance(m, AIMessage) and getattr(m, "name", "") == "wads_agent":
-                wads_history.insert(0, m)
-        if not wads_history or wads_history[-1].content != query:
-            wads_history.append(HumanMessage(content=query))
+    # ReAct에 task_goal만 단일 user message로 전달 — scope를 wads task로 좁혀 recursion 방지.
+    wads_history: List[Any] = [HumanMessage(content=query)]
 
     logger.info("[WADS Agent] ReAct 그래프 invoke 시작 (history=%d msgs, recursion_limit=20)", len(wads_history))
     try:

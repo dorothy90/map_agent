@@ -215,6 +215,9 @@ if query:
                                     token_placeholder = None
                                     token_agent = None
                                     token_buffer = ""
+                                elif content:
+                                    # 토큰 스트림 없는 메시지 (plan_review 등) — 직접 렌더링
+                                    st.markdown(content)
                                 collected_messages.append(
                                     {
                                         "agent": agent,
@@ -237,6 +240,9 @@ if query:
 
                             elif etype == "suggestion":
                                 collected_suggestion = event.get("content", "")
+
+                            elif etype == "status":
+                                st.write(event.get("message", ""))
 
                             elif etype == "interrupt":
                                 st.session_state.pending_interrupt = {

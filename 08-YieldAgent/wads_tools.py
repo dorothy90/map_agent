@@ -125,8 +125,13 @@ def wads_query_data(
     Returns:
         조회 결과 요약 메시지 (실제 데이터는 별도 저장됨)
     """
-    logger.info("[wads_query_data] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s", lotcd, end_tm, start_tm, parameter)
     storage = _get_tool_payload()
+    defaults = storage.get("_defaults", {})
+    lotcd = lotcd or defaults.get("lotcd")
+    end_tm = end_tm or defaults.get("end_tm")
+    start_tm = start_tm or defaults.get("start_tm")
+    parameter = parameter or defaults.get("parameter")
+    logger.info("[wads_query_data] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s", lotcd, end_tm, start_tm, parameter)
 
     try:
         filtered_df = _query_wads_data(
@@ -184,8 +189,13 @@ def wads_get_html_report(
     Returns:
         조회 결과 요약 메시지 (실제 HTML은 별도 저장됨)
     """
-    logger.info("[wads_get_html_report] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s", lotcd, end_tm, start_tm, parameter)
     storage = _get_tool_payload()
+    defaults = storage.get("_defaults", {})
+    lotcd = lotcd or defaults.get("lotcd")
+    end_tm = end_tm or defaults.get("end_tm")
+    start_tm = start_tm or defaults.get("start_tm")
+    parameter = parameter or defaults.get("parameter")
+    logger.info("[wads_get_html_report] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s", lotcd, end_tm, start_tm, parameter)
 
     try:
         filtered_df = _query_wads_data(
