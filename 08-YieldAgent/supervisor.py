@@ -64,6 +64,12 @@ class PlanResponse(BaseModel):
     tasks: list[TaskItem] = Field(description="실행할 작업 목록")
 
 
+class PlanReviewResult(BaseModel):
+    """plan_review LLM의 출력 스키마"""
+    action: Literal["approve", "cancel", "modify"]
+    tasks: list[TaskItem] = Field(default=[], description="최종 task 목록 (approve 시 현재 계획 그대로, modify 시 수정된 전체 목록)")
+
+
 
 _MAX_CHECKPOINT_MESSAGES = 30
 
@@ -337,18 +343,28 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     }
 
 
-_CANCEL_WORDS = frozenset({"취소", "cancel", "reject", "no", "n", "ㄴ", "아니오", "중단", "그만"})
+_PLAN_REVIEW_SYSTEM = """
+현재 분석 계획과 사용자 응답을 보고 최종 계획을 JSON으로 반환해라.
+
+action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
+- "approve" : 승인 (응/ok/확인/좋아/네/그렇게 해/빈 응답 등)
+- "cancel"  : 취소 (취소/cancel/no/그만/중단 등)
+- "modify"  : 수정 요청 (구체적인 변경 지시)
+
+출력 형식:
+{"action": "approve"|"cancel"|"modify", "tasks": [...]}
+
+규칙:
+- tasks는 항상 전체 task 목록 (수정 안 한 task도 포함)
+- task_id, agent, params, goal 필드 유지
+- approve/cancel 시에도 tasks 필드 필수 (approve → 현재 계획 그대로, cancel → [])
+""".strip()
 
 
 def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     """2개 이상 task일 때만 사용자 승인을 기다린다. 단일 task는 즉시 통과.
 
-    missing_params가 있으면 plan_review 전에 별도 missing_param interrupt로 먼저 수집.
-    LangGraph sequential interrupt 패턴: 노드 재시작 시 이미 답변된 interrupt()는 즉시 저장값 반환.
-
-    흐름 (lotcd 없는 경우):
-      interrupt #1 (missing_param) → 사용자 "4SS" → task_plan에 주입
-      interrupt #2 (plan_review)   → 사용자 "응" → planner 재호출 없이 통과
+    missing_params → interrupt 수집 → plan_review interrupt → LLM이 approve/cancel/modify 판단.
     """
     task_plan = state.get("task_plan", [])
     if len(task_plan) < 2:
@@ -357,6 +373,14 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     missing_params = _detect_missing_global_params(task_plan, state)
 
     # Step 1: missing param이 있으면 plan_review 전에 먼저 수집
+    _MISSING_PARAM_MESSAGES = {
+        "lotcd":   "계획 검토 전에 제품코드를 입력해주세요. (예: 4SS, 5NA, 6E2)",
+        "map_oper": "계획 검토 전에 공정을 선택해주세요. PT1H / PT1C",
+    }
+    _MISSING_PARAM_AGENTS = {
+        "lotcd":   ("yield_agent", "wads_agent"),
+        "map_oper": ("map_agent",),
+    }
     collected: dict[str, str] = {}
     if missing_params:
         for mp in missing_params:
@@ -364,65 +388,56 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             val = interrupt({
                 "type": "missing_param",
                 "param": param,
-                "message": "계획 검토 전에 제품코드를 입력해주세요. (예: 4SS, 5NA, 6E2)",
+                "message": _MISSING_PARAM_MESSAGES.get(param, f"{param}을 입력해주세요."),
                 "route": "plan_review",
             })
             collected[param] = str(val).strip()
-        # 수집된 params를 task_plan에 주입
         updated = []
         for task in task_plan:
             t = dict(task)
-            if t.get("agent") in ("yield_agent", "wads_agent"):
-                params = dict(t.get("params") or {})
-                params.update(collected)
-                t["params"] = params
+            agent = t.get("agent", "")
+            t_params = dict(t.get("params") or {})
+            for param, val in collected.items():
+                if agent in _MISSING_PARAM_AGENTS.get(param, ()):
+                    if param == "map_oper":
+                        normalized = _normalize_map_oper(val)
+                        t_params["map_oper"] = normalized or val
+                    else:
+                        t_params[param] = val
+            t["params"] = t_params
             updated.append(t)
         task_plan = updated
 
-    # Step 2: plan_review (missing_params는 이미 수집됨)
-    user_response = interrupt({"type": "plan_review", "tasks": task_plan, "missing_params": []})
-    resp = (user_response or "").strip()
+    # Step 2: plan_review 루프 — approve/cancel/modify 반복 가능
+    # sequential interrupt 패턴: 루프 각 반복마다 새 interrupt() 생성 → resume 시 순서대로 재생
+    while True:
+        user_response = interrupt({"type": "plan_review", "tasks": task_plan, "missing_params": []})
+        resp = (user_response or "").strip()
 
-    if resp.lower() in _CANCEL_WORDS:
-        return {"response": "사용자가 분석 계획을 취소했습니다."}
+        if not resp:
+            break  # 빈 응답 → approve, LLM 호출 없이 즉시 통과
 
-    if not resp:
-        # approval — collected params가 주입된 task_plan 반환
-        if collected:
-            return {"task_plan": task_plan, "pending_tasks": task_plan}
-        return {}
+        try:
+            raw = _model.invoke([
+                {"role": "system", "content": _PLAN_REVIEW_SYSTEM},
+                {"role": "user", "content": f"현재 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n사용자 응답: \"{resp}\""},
+            ]).content.strip()
+            result = extract_json_from_llm(raw, PlanReviewResult)
+        except Exception as e:
+            logger.warning("[PlanReview] LLM 판단 실패 (%s) — 계획 재표시", e)
+            continue  # interrupt 재호출 → 사용자에게 계획 다시 표시
 
-    # 수정 요청 — planner LLM 재호출 (task_plan에 이미 lotcd 주입됨)
-    messages = state.get("messages", [])
-    last_human = next(
-        (m for m in reversed(messages)
-         if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
-        None,
-    )
-    original_query = last_human.content if last_human else ""
-    today = date.today()
-    prompt = PLANNER_SYSTEM_PROMPT.format(
-        today=today.strftime("%Y년 %m월 %d일 (%A)"),
-        today_yyyymmdd=today.strftime("%Y%m%d"),
-        today_yyyy_mm_dd=today.strftime("%Y-%m-%d"),
-        year=today.year,
-    )
-    invoke_messages = [
-        {"role": "system", "content": prompt},
-        {"role": "user", "content": original_query},
-        {"role": "assistant", "content": f"현재 계획:\n{json.dumps(task_plan, ensure_ascii=False)}"},
-        {"role": "user", "content": f"다음과 같이 계획을 수정해줘: {resp}"},
-    ]
-    try:
-        response = _model.invoke(invoke_messages, config={"callbacks": _lf_callbacks()})
-        new_plan = extract_json_from_llm(response.content.strip(), PlanResponse)
-        new_tasks = [t.model_dump() for t in new_plan.tasks]
-        logger.info("[PlanReview] 수정 계획 %d개: %s", len(new_tasks),
-                    [(t["task_id"], t["agent"]) for t in new_tasks])
-        return {"task_plan": new_tasks, "pending_tasks": new_tasks}
-    except Exception as e:
-        logger.warning("[PlanReview] 수정 계획 파싱 실패 (%s) — 원본 진행", e)
-        return {"task_plan": task_plan, "pending_tasks": task_plan} if collected else {}
+        logger.info("[PlanReview] action=%s tasks=%s", result.action,
+                    [(t.task_id, t.agent) for t in result.tasks])
+
+        if result.action == "cancel":
+            return {"response": "사용자가 분석 계획을 취소했습니다.", "task_plan": [], "pending_tasks": []}
+        if result.action == "approve":
+            break
+        # modify → task_plan 갱신 후 루프 재시작 (새 interrupt로 수정된 플랜 재표시)
+        task_plan = [t.model_dump() for t in result.tasks]
+
+    return {"task_plan": task_plan, "pending_tasks": task_plan}
 
 
 # ── Replanner 노드 (#8 phase 3a) ──────────────────────────────
@@ -466,22 +481,30 @@ def _detect_missing_global_params(task_plan: list[dict], state: dict) -> list[di
     """
     missing = []
     state_lotcd = state.get("lotcd", "")
+    state_map_oper = state.get("map_oper", "")
     for i, task in enumerate(task_plan):
         agent = task.get("agent", "")
-        if agent not in ("yield_agent", "wads_agent"):
-            continue
-        task_lotcd = (task.get("params") or {}).get("lotcd", "")
-        if not _is_placeholder_or_empty(task_lotcd):
-            continue  # planner가 이미 채움
-        if state_lotcd:
-            continue  # 이전 턴 state에 있음
-        # 앞 task 중 yield/wads 실행 결과로 lotcd가 생길 수 있는지 확인
-        earlier_providers = [
-            t for t in task_plan[:i]
-            if t.get("agent") in ("yield_agent", "wads_agent")
-        ]
-        if not earlier_providers:
-            missing.append({"task_id": task["task_id"], "agent": agent, "param": "lotcd"})
+        params = task.get("params") or {}
+
+        if agent in ("yield_agent", "wads_agent"):
+            task_lotcd = params.get("lotcd", "")
+            if not _is_placeholder_or_empty(task_lotcd):
+                continue
+            if state_lotcd:
+                continue
+            earlier_providers = [
+                t for t in task_plan[:i]
+                if t.get("agent") in ("yield_agent", "wads_agent")
+            ]
+            if not earlier_providers:
+                missing.append({"task_id": task["task_id"], "agent": agent, "param": "lotcd"})
+
+        elif agent == "map_agent":
+            # map_oper(PT1H/PT1C)가 없고 앞 task에서 공정 정보가 올 수 없는 경우 수집
+            task_oper = params.get("map_oper", "")
+            if _is_placeholder_or_empty(task_oper) and not _normalize_map_oper(state_map_oper):
+                missing.append({"task_id": task["task_id"], "agent": agent, "param": "map_oper"})
+
     return missing
 
 
@@ -594,7 +617,7 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     # should_end conditional edge가 `state["response"]`를 보고 END 분기.
     # TODO(phase 3b): replanner가 pending_tasks를 확장하는 단계 도입 시 이 조건을 ID 기반으로 교체.
     #   현재는 plan 크기 고정 가정. ID 기반 예: {t["task_id"] for t in task_plan} <= {tid for tid, _ in past}
-    if not pending and task_plan and len(past) >= len(task_plan):
+    if not pending and task_plan:
         messages = state.get("messages", [])
         last_agent_msg = next(
             (m.content for m in reversed(messages)
@@ -688,6 +711,12 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         return {}
     if new_tasks == pending:
         logger.info("[Replanner] LLM 결과 변경 없음 (pass-through)")
+        return {}
+
+    # R3 fix: LLM이 채운 params에 여전히 placeholder가 있으면 거부
+    # (예: "task_1의 결과를 사용하세요" 같은 narrative placeholder)
+    if _needs_replan(new_tasks):
+        logger.warning("[Replanner] LLM 결과에 여전히 빈 chained params 존재 — 거부, supervisor interrupt로 위임")
         return {}
 
     logger.info(
@@ -876,6 +905,10 @@ def supervisor_node(
             node="supervisor",
         ))
         return Command(update=update_dict, goto=current_task["agent"])
+
+    # plan_review cancel 등으로 이미 response가 설정된 경우 바로 종료
+    if state.get("response"):
+        return Command(update={"step_count": step_count}, goto=END)
 
     # planner가 빈 계획 반환 (JSON 파싱 실패 fallback)
     logger.warning("[Supervisor] pending_tasks 없음 — planner 실패 fallback")

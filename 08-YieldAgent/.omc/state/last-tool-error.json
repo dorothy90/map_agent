@@ -1,7 +1,7 @@
 {
-  "tool_name": "Read",
-  "tool_input_preview": "{\"file_path\":\"/Users/daehwankim/yield-agent/map_agent/08-YieldAgent/repl_agent/05-Data-Analysis-Agent/01_04_preprocessing_tabular_data.ipynb\",\"limit\":500}",
-  "error": "File content (50547 tokens) exceeds maximum allowed tokens (10000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
-  "timestamp": "2026-04-15T14:06:38.586Z",
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"kill $(lsof -ti :8001) 2>/dev/null; sleep 1\\ncd /Users/daehwankim/yield-agent/map_agent/08-YieldAgent\\nnohup /opt/anaconda3/bin/python3.13 /opt/anaconda3/bin/uvicorn agent_server:app --por...",
+  "error": "Exit code 7",
+  "timestamp": "2026-05-25T15:07:24.217Z",
   "retry_count": 1
 }
