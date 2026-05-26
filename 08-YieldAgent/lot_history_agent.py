@@ -690,7 +690,7 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     langgraph v1에서 deprecated이고, lot_history는 reasoning 자체가 불필요 → deterministic
     function 전환. C1 패턴(lot_history_sql_result AIMessage)으로 downstream chained 확장 지원.
     """
-    lh_lot_ids = state.get("lh_lot_ids", "")
+    lh_lot_ids = ",".join(state.get("lot_ids") or [])
     current_task_id = state.get("current_task_id", "")
     logger.info("[LOT History Agent] lot_ids=%s", lh_lot_ids)
 

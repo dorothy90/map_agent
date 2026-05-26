@@ -226,7 +226,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     lotcd = state.get("lotcd", "4SS")
     end_tm = state.get("wads_end_tm", "")
     start_tm = state.get("wads_start_tm", "")
-    parameter = state.get("wads_parameter", "")
+    parameter = state.get("fail_type", "")
     if not end_tm:
         end_tm = date.today().strftime("%Y-%m-%d")
 
@@ -379,7 +379,14 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         "messages": out_messages,
         "wads_artifacts": artifacts,
         "agent_suggestion": agent_suggestion,
-        "past_steps": [(state.get("current_task_id", ""), answer[:300])],
+        "past_steps": [(
+            state.get("current_task_id", ""),
+            answer[:300] + (
+                f" | detected_lots({len(wads_lot_ids)}): {wads_lot_ids[:5]}"
+                f", detected_params: {[parameter] if parameter else []}"
+                if wads_lot_ids else ""
+            ),
+        )],
     }
 
 

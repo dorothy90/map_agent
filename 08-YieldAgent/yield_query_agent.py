@@ -153,8 +153,8 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     filter_params = state.get("filter_params") or None
     unit    = state.get("unit", "weekly")
     periods = int(state.get("periods", 0) or 0)
-    yield_lot_ids  = state.get("yield_lot_ids", "")
-    yield_groupkey = state.get("yield_groupkey", "")
+    yield_lot_ids  = ",".join(state.get("lot_ids") or [])
+    yield_groupkey = state.get("groupkey", "")
 
     # ── LOT 비교 모드 ────────────────────────────────────────
     if yield_lot_ids or yield_groupkey:
@@ -318,5 +318,12 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         "yield_artifacts": yield_artifacts,
         "anomaly_params": anomaly_params,
         "agent_suggestion": agent_suggestion,
-        "past_steps": [(state.get("current_task_id", ""), result_msg[:300])],
+        "past_steps": [(
+            state.get("current_task_id", ""),
+            result_msg[:300] + (
+                f" | anomaly_params: 열화={[p['param'] for p in anomaly_params if p.get('direction') == '열화']}"
+                f", 개선={[p['param'] for p in anomaly_params if p.get('direction') == '개선']}"
+                if anomaly_params else ""
+            ),
+        )],
     }

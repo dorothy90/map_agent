@@ -159,10 +159,10 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     meta_parts = []
     if state.get("lotcd"):
         meta_parts.append(f"현재 제품: {state['lotcd']}")
-    if state.get("rt_lot_code"):
-        meta_parts.append(f"이전 relation_tree lot: {state['rt_lot_code']}")
-    if state.get("rt_main_oper_det_desc"):
-        meta_parts.append(f"이전 relation_tree main_oper: {state['rt_main_oper_det_desc']}")
+    if state.get("lotcd"):
+        meta_parts.append(f"이전 relation_tree lot: {state['lotcd']}")
+    if state.get("cause_oper"):
+        meta_parts.append(f"이전 relation_tree main_oper: {state['cause_oper']}")
     if state.get("agent_suggestion"):
         meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
     meta = "\n".join(meta_parts) if meta_parts else ""
@@ -267,15 +267,11 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     meta_parts: list[str] = []
     if state.get("lotcd"):
         meta_parts.append(f"현재 제품: {state['lotcd']}")
-    prev_lot = state.get("map_lot_id") or state.get("map_lot_ids")
-    if prev_lot:
-        meta_parts.append(f"이전 map lot: {prev_lot}")
-    if state.get("yield_lot_ids"):
-        meta_parts.append(f"이전 yield lot: {state['yield_lot_ids']}")
-    if state.get("rt_lot_code"):
-        meta_parts.append(f"이전 relation_tree lot: {state['rt_lot_code']}")
-    if state.get("rt_main_oper_det_desc"):
-        meta_parts.append(f"이전 relation_tree main_oper: {state['rt_main_oper_det_desc']}")
+    prev_lots = state.get("lot_ids") or []
+    if prev_lots:
+        meta_parts.append(f"이전 lot: {','.join(prev_lots)}")
+    if state.get("cause_oper"):
+        meta_parts.append(f"이전 main_oper: {state['cause_oper']}")
     if state.get("agent_suggestion"):
         meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
     meta = "\n".join(meta_parts)
@@ -447,6 +443,28 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 # DO NOT 추가/삭제/순서변경 — 단순 input 채우기. Phase 3b에서 plan 전체 재구성 추가 예정.
 # 그래프 wiring: agent → replanner → supervisor (#8 phase 2에서 이미 wiring 완료).
 
+def _parse_lot_ids(params: dict) -> list[str]:
+    val = (params.get("lot_ids") or params.get("map_lot_ids") or params.get("lh_lot_ids")
+           or params.get("yield_lot_ids") or params.get("map_lot_id") or "")
+    if isinstance(val, list):
+        return [v.strip() for v in val if v.strip()]
+    return [v.strip() for v in str(val).split(",") if v.strip()]
+
+def _parse_wf_ids(params: dict) -> list[str]:
+    val = params.get("wf_ids") or params.get("map_wf_ids") or ""
+    if isinstance(val, list):
+        return [v.strip() for v in val if v.strip()]
+    return [v.strip() for v in str(val).split(",") if v.strip()]
+
+def _parse_fail_type(params: dict) -> str:
+    return (params.get("fail_type") or params.get("wads_parameter")
+            or params.get("dh_fail_type") or "")
+
+def _parse_cause_oper(params: dict) -> str:
+    return (params.get("cause_oper") or params.get("dh_cause_oper")
+            or params.get("rt_main_oper_det_desc") or "")
+
+
 def _is_placeholder_or_empty(val) -> bool:
     """빈 값 + LLM이 흔히 출력하는 placeholder 패턴 감지 (#L1+L2 fix).
 
@@ -509,19 +527,10 @@ def _detect_missing_global_params(task_plan: list[dict], state: dict) -> list[di
 
 
 def _resolve_chained_params(task: dict, state: dict) -> dict:
-    """task.params의 빈 chained 필드를 state.messages의 structured tool result에서 코드로 자동 채움.
-
-    LangGraph native 패턴 (C1 / 카테고리 3): state.messages 안의
-    `AIMessage(name='wads_sql_result', additional_kwargs={'wads_result': {...}})`을 찾아
-    lot_ids를 downstream task(map/lot_history)의 빈 input에 주입.
-
-    LLM 없이 결정적 코드 해소. replanner LLM은 코드 해소 실패 시 fallback으로 여전히 실행.
-    """
-    agent = task.get("agent", "")
+    """task.params의 빈 chained 필드를 state.messages의 structured tool result에서 코드로 자동 채움."""
     params = dict(task.get("params") or {})
     messages = state.get("messages", [])
 
-    # 최신 wads_sql_result 메시지의 structured data 추출
     wads_data: dict = {}
     for m in reversed(messages):
         if isinstance(m, AIMessage) and getattr(m, "name", "") == "wads_sql_result":
@@ -531,55 +540,37 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
 
     lot_ids = wads_data.get("lot_ids") or []
 
-    if agent == "map_agent":
-        if all(_is_placeholder_or_empty(params.get(k)) for k in ("map_lot_id", "map_lot_ids", "map_groupkey")):
-            if lot_ids:
-                params["map_lot_ids"] = ",".join(lot_ids)
-                logger.info("[ResolveChained] map_agent.map_lot_ids ← wads_sql_result (%d lots)", len(lot_ids))
-    elif agent == "lot_history_agent":
-        if _is_placeholder_or_empty(params.get("lh_lot_ids")) and lot_ids:
-            params["lh_lot_ids"] = ",".join(lot_ids)
-            logger.info("[ResolveChained] lot_history_agent.lh_lot_ids ← wads_sql_result (%d lots)", len(lot_ids))
-    elif agent == "relation_tree_agent":
-        # relation_tree는 단일 lot — wads 결과의 첫 번째 lot 사용
-        if _is_placeholder_or_empty(params.get("rt_lot_code")) and lot_ids:
-            params["rt_lot_code"] = lot_ids[0]
-            logger.info("[ResolveChained] relation_tree_agent.rt_lot_code ← wads_sql_result[0] (of %d)", len(lot_ids))
-        # main_oper는 직전 wads_parameter 또는 state의 rt_main_oper_det_desc로 폴백
-        if _is_placeholder_or_empty(params.get("rt_main_oper_det_desc")):
-            fallback = state.get("wads_parameter") or state.get("rt_main_oper_det_desc")
-            if fallback:
-                params["rt_main_oper_det_desc"] = fallback
-                logger.info("[ResolveChained] relation_tree_agent.rt_main_oper_det_desc ← %s", fallback)
+    if _is_placeholder_or_empty(params.get("lot_ids")) and lot_ids:
+        params["lot_ids"] = lot_ids
+        logger.info("[ResolveChained] lot_ids ← wads_sql_result (%d lots)", len(lot_ids))
+
+    if _is_placeholder_or_empty(params.get("cause_oper")):
+        fallback = state.get("cause_oper")
+        if fallback:
+            params["cause_oper"] = fallback
+            logger.info("[ResolveChained] cause_oper ← %s", fallback)
 
     return params
 
 
 def _needs_replan(pending: list[dict]) -> bool:
-    """Phase 3a 휴리스틱: 어떤 pending task가 빈/placeholder chained-input을 가지면 LLM 호출 필요.
-
-    독립 task만 남았으면 LLM 호출 생략 — 불필요한 latency·비용 절감.
-    """
+    """Phase 3a 휴리스틱: pending task에 빈 chained-input이 있으면 LLM 호출 필요."""
     for task in pending:
         agent = task.get("agent", "")
         params = task.get("params", {}) or {}
-        if agent == "map_agent":
-            if all(_is_placeholder_or_empty(params.get(k)) for k in ("map_lot_id", "map_lot_ids", "map_groupkey")):
-                return True
-        elif agent == "lot_history_agent":
-            if _is_placeholder_or_empty(params.get("lh_lot_ids")):
-                return True
-        elif agent == "fail_history_agent":
-            if all(_is_placeholder_or_empty(params.get(k)) for k in ("dh_query", "dh_fail_type", "dh_cause_oper")):
+        if agent in ("map_agent", "lot_history_agent"):
+            if _is_placeholder_or_empty(params.get("lot_ids")) and all(
+                _is_placeholder_or_empty(params.get(k))
+                for k in ("map_lot_id", "map_lot_ids", "lh_lot_ids")
+            ):
                 return True
         elif agent == "relation_tree_agent":
-            if _is_placeholder_or_empty(params.get("rt_lot_code")):
+            # relation_tree_agent는 lot_ids 아닌 lotcd+cause_oper 사용
+            if _is_placeholder_or_empty(params.get("cause_oper")) and _is_placeholder_or_empty(params.get("rt_main_oper_det_desc")):
                 return True
-            if _is_placeholder_or_empty(params.get("rt_main_oper_det_desc")):
+        elif agent == "fail_history_agent":
+            if all(_is_placeholder_or_empty(params.get(k)) for k in ("dh_query", "fail_type", "dh_fail_type", "cause_oper")):
                 return True
-        elif agent == "yield_agent":
-            # yield는 lotcd만 있어도 동작하므로 chained input 의존도 낮음 — 패스
-            pass
     return False
 
 
@@ -694,19 +685,32 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     if not new_tasks:
         logger.warning("[Replanner] LLM이 빈 tasks 반환 — pass-through")
         return {}
-    # R2 fix: LLM이 phase 3a 룰("DO NOT add tasks")을 어기고 task 추가/대체하는 경우 거부
-    if len(new_tasks) > len(pending):
-        logger.warning(
-            "[Replanner] LLM이 task 수 증가 (%d → %d) — 거부, 기존 plan 유지",
-            len(pending), len(new_tasks),
-        )
-        return {}
+    import re as _re
     orig_ids = {t.get("task_id") for t in pending}
     new_ids = {t.get("task_id") for t in new_tasks}
-    if not new_ids.issubset(orig_ids):
+    # R2 fix: task 추가는 fan-out(_p{n} suffix) 패턴만 허용, 그 외 거부
+    if len(new_tasks) > len(pending):
+        _fanout_ok = all(
+            tid in orig_ids
+            or (
+                bool(_re.match(r"^(.+)_p\d+$", tid))
+                and _re.match(r"^(.+)_p\d+$", tid).group(1) in orig_ids
+            )
+            for tid in new_ids
+        )
+        if not _fanout_ok:
+            logger.warning(
+                "[Replanner] 허용되지 않은 task 추가 (%d → %d) — 거부",
+                len(pending), len(new_tasks),
+            )
+            return {}
+        logger.info("[Replanner] fan-out 허용: %d → %d tasks", len(pending), len(new_tasks))
+    # base task_id 기반 subset 검증 (_p{n} suffix 허용)
+    _base_ids = {_re.sub(r"_p\d+$", "", tid) for tid in new_ids}
+    if not _base_ids.issubset(orig_ids):
         logger.warning(
-            "[Replanner] LLM이 새 task_id 추가 %s — 거부, 기존 plan 유지",
-            sorted(new_ids - orig_ids),
+            "[Replanner] 새 base task_id 추가 %s — 거부",
+            sorted(_base_ids - orig_ids),
         )
         return {}
     if new_tasks == pending:
@@ -786,67 +790,50 @@ def supervisor_node(
         if agent in ("yield_agent", "wads_agent", "fail_history_agent"):
             update_dict["lotcd"] = task_params.get("lotcd") or state.get("lotcd", "")
 
+        # 통합 필드: 모든 agent에 공통 적용
+        update_dict["lot_ids"]    = _parse_lot_ids(task_params)
+        update_dict["wf_ids"]     = _parse_wf_ids(task_params)
+        update_dict["groupkey"]   = task_params.get("groupkey") or task_params.get("map_groupkey") or task_params.get("yield_groupkey") or ""
+        update_dict["fail_type"]  = _parse_fail_type(task_params)
+        update_dict["cause_oper"] = _parse_cause_oper(task_params)
+
         if agent == "yield_agent":
             update_dict.update({
-                "ref_date":       task_params.get("ref_date", state.get("ref_date", "")),
-                "unit":           task_params.get("unit", state.get("unit", "weekly")),
-                "periods":        task_params.get("periods", state.get("periods", 0)),
-                "filter_params":  task_params.get("filter_params", []),
-                "yield_lot_ids":  task_params.get("yield_lot_ids", ""),
-                "yield_groupkey": task_params.get("yield_groupkey", ""),
+                "ref_date":      task_params.get("ref_date", state.get("ref_date", "")),
+                "unit":          task_params.get("unit", state.get("unit", "weekly")),
+                "periods":       task_params.get("periods", state.get("periods", 0)),
+                "filter_params": task_params.get("filter_params", []),
             })
 
         elif agent == "wads_agent":
             update_dict.update({
-                "wads_start_tm":  task_params.get("wads_start_tm", ""),
-                "wads_end_tm":    task_params.get("wads_end_tm") or date.today().strftime("%Y-%m-%d"),
-                "wads_parameter": task_params.get("wads_parameter") or task_params.get("parameter", ""),
+                "wads_start_tm": task_params.get("wads_start_tm", ""),
+                "wads_end_tm":   task_params.get("wads_end_tm") or date.today().strftime("%Y-%m-%d"),
             })
 
         elif agent == "map_agent":
             update_dict.update({
-                "map_lot_id":   task_params.get("map_lot_id", ""),
-                "map_lot_ids":  task_params.get("map_lot_ids", ""),
-                "map_wf_ids":   task_params.get("map_wf_ids", ""),
-                "map_groupkey": task_params.get("map_groupkey", ""),
-                "map_type":     task_params.get("map_type", "binmap"),
-                "map_oper":     task_params.get("map_oper") or state.get("map_oper", ""),
+                "map_type": task_params.get("map_type", "binmap"),
+                "map_oper": task_params.get("map_oper") or state.get("map_oper", ""),
             })
 
         elif agent == "fail_history_agent":
-            update_dict.update({
-                "dh_query":      task_params.get("dh_query", ""),
-                "dh_fail_type":  task_params.get("dh_fail_type", ""),
-                "dh_cause_oper": task_params.get("dh_cause_oper", ""),
-            })
-
-        elif agent == "lot_history_agent":
-            update_dict["lh_lot_ids"] = task_params.get("lh_lot_ids", "")
+            update_dict["dh_query"] = task_params.get("dh_query", "")
 
         elif agent == "relation_tree_agent":
-            update_dict.update({
-                "rt_lot_code":           task_params.get("rt_lot_code") or state.get("rt_lot_code", ""),
-                "rt_main_oper_det_desc": task_params.get("rt_main_oper_det_desc") or state.get("rt_main_oper_det_desc", ""),
-            })
-        # map_agent 필수 파라미터 검증 (planner 경로) — LLM-routed 분기(L930-943)와 대칭
+            # lotcd(3자)는 rt_lot_code와 동일 개념 — 구 필드 fallback 포함
+            if not update_dict.get("lotcd"):
+                update_dict["lotcd"] = (task_params.get("rt_lot_code") or state.get("lotcd", ""))
+        # map_agent 필수 파라미터 검증
         if current_task["agent"] == "map_agent":
-            has_lot = (
-                update_dict.get("map_lot_id")
-                or update_dict.get("map_lot_ids")
-                or update_dict.get("map_groupkey")
-            )
-            if not has_lot:
+            if not update_dict.get("lot_ids") and not update_dict.get("groupkey"):
                 user_response = interrupt({
                     "type": "missing_param",
-                    "param": "map_lot_id",
+                    "param": "lot_ids",
                     "message": "맵을 조회할 Lot ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
                     "route": "map_agent",
                 })
-                resp = str(user_response).strip()
-                if "," in resp:
-                    update_dict["map_lot_ids"] = resp
-                else:
-                    update_dict["map_lot_id"] = resp
+                update_dict["lot_ids"] = _parse_lot_ids({"lot_ids": str(user_response).strip()})
 
             normalized = _normalize_map_oper(update_dict.get("map_oper", ""))
             if not normalized:
@@ -859,24 +846,24 @@ def supervisor_node(
                 normalized = _normalize_map_oper(str(user_response))
             update_dict["map_oper"] = normalized or "PT1H"
 
-        # relation_tree_agent 필수 파라미터 검증 (planner 경로) — LLM-routed 분기와 대칭
+        # relation_tree_agent 필수 파라미터 검증
         if current_task["agent"] == "relation_tree_agent":
-            if not update_dict.get("rt_lot_code"):
+            if not update_dict.get("lotcd"):
                 user_response = interrupt({
                     "type": "missing_param",
-                    "param": "rt_lot_code",
+                    "param": "lotcd",
                     "message": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
                     "route": "relation_tree_agent",
                 })
-                update_dict["rt_lot_code"] = str(user_response).strip()
-            if not update_dict.get("rt_main_oper_det_desc"):
+                update_dict["lotcd"] = str(user_response).strip()
+            if not update_dict.get("cause_oper"):
                 user_response = interrupt({
                     "type": "missing_param",
-                    "param": "rt_main_oper_det_desc",
+                    "param": "cause_oper",
                     "message": "연관 분석할 main 공정명을 입력해주세요. (예: STEP07 또는 STEP07,STEP08)",
                     "route": "relation_tree_agent",
                 })
-                update_dict["rt_main_oper_det_desc"] = str(user_response).strip()
+                update_dict["cause_oper"] = str(user_response).strip()
 
         # yield_agent / wads_agent: lotcd 필수
         if current_task["agent"] in ("yield_agent", "wads_agent"):
@@ -889,16 +876,16 @@ def supervisor_node(
                 })
                 update_dict["lotcd"] = str(user_response).strip()
 
-        # lot_history_agent: lh_lot_ids 필수
+        # lot_history_agent: lot_ids 필수
         if current_task["agent"] == "lot_history_agent":
-            if not update_dict.get("lh_lot_ids"):
+            if not update_dict.get("lot_ids"):
                 user_response = interrupt({
                     "type": "missing_param",
-                    "param": "lh_lot_ids",
+                    "param": "lot_ids",
                     "message": "이력을 조회할 LOT ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
                     "route": "lot_history_agent",
                 })
-                update_dict["lh_lot_ids"] = str(user_response).strip()
+                update_dict["lot_ids"] = _parse_lot_ids({"lot_ids": str(user_response).strip()})
 
         stream_event("status", StatusEvent(
             message=f"▶ [{current_task['task_id']}] {current_task.get('goal', '')}",
@@ -960,7 +947,6 @@ class YieldQueryState(TypedDict):
     # WADS 관련
     wads_start_tm: str
     wads_end_tm: str
-    wads_parameter: str   # WADS step code 필터 (#13 fix)
     wads_artifacts: Annotated[list, operator.add]
 
     # 이상감지
@@ -969,22 +955,19 @@ class YieldQueryState(TypedDict):
     # 파라미터 필터
     filter_params: list  # 표시할 파라미터 필터 (빈 list = 전체)
 
-    # Map Agent 파라미터
-    map_lot_id:   str
-    map_lot_ids:  str
-    map_wf_ids:   str
-    map_groupkey: str
-    map_type:     str
-    map_oper:     str
+    # 통합 파라미터 (agent별 분산 → 공통)
+    lot_ids:    list[str]   # 7자 lot 번호 목록
+    wf_ids:     list[str]   # wafer ID 목록
+    groupkey:   str         # 그룹 집계 키
+    fail_type:  str         # 파라미터/불량유형 코드
+    cause_oper: str         # 원인 공정/step명
 
-    # Yield lot 비교 파라미터
-    yield_lot_ids:  str
-    yield_groupkey: str
+    # Map Agent 파라미터 (map-specific)
+    map_type: str
+    map_oper: str
 
     # Fail History 파라미터
     dh_query: str
-    dh_fail_type: str
-    dh_cause_oper: str
 
     # Fail History 결과
     fail_history_artifacts: Annotated[list, operator.add]
@@ -994,13 +977,10 @@ class YieldQueryState(TypedDict):
     wiki_hit_ids: list[str]              # 이번 turn에 wiki_memory가 참조한 노드 id (eval/디버그용)
     wiki_update_status: str              # "queued" | "summarized" | "persisted" | "dropped" | "skipped"
 
-    # Lot History 파라미터 & 결과
-    lh_lot_ids: str
+    # Lot History 결과
     lot_history_artifacts: Annotated[list, operator.add]
 
-    # Relation Tree (Inline-WT 연관 분석) 파라미터 & 결과
-    rt_lot_code: str
-    rt_main_oper_det_desc: str
+    # Relation Tree (Inline-WT 연관 분석) 결과
     relation_tree_artifacts: Annotated[list, operator.add]
 
     # Map 결과

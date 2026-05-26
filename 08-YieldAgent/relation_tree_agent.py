@@ -24,8 +24,8 @@ logger = logging.getLogger("yield_agent.relation_tree_agent")
 @observe(name="relation_tree_agent_node")
 @timed
 def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
-    lot_code = (state.get("rt_lot_code") or "").strip()
-    main_oper = (state.get("rt_main_oper_det_desc") or "").strip()
+    lot_code  = (state.get("lotcd") or "").strip()
+    main_oper = (state.get("cause_oper") or "").strip()
     current_task_id = state.get("current_task_id", "")
 
     logger.info("[Relation Tree Agent] lot_code=%s main_oper=%s", lot_code, main_oper)

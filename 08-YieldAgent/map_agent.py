@@ -612,10 +612,11 @@ def map_agent_node(state: dict, config: RunnableConfig) -> dict:
 
 def _handle_standard_map(state: dict) -> dict:
     """기존 binmap/cummap 생성 로직"""
-    lot_id   = state.get("map_lot_id", "")
-    lot_ids  = state.get("map_lot_ids", "")
-    wf_ids   = state.get("map_wf_ids", "")
-    groupkey = state.get("map_groupkey", "")
+    lot_ids_list = state.get("lot_ids") or []
+    lot_id   = lot_ids_list[0] if len(lot_ids_list) == 1 else ""
+    lot_ids  = ",".join(lot_ids_list)
+    wf_ids   = ",".join(state.get("wf_ids") or [])
+    groupkey = state.get("groupkey", "")
     map_type = state.get("map_type", "binmap")
     oper     = state.get("map_oper", "")
 

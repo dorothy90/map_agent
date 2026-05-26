@@ -119,8 +119,8 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     """함수형 노드: search → (wiki-first 즉시 / 아니면 LLM 1회 합성) → 인용 문서 표시."""
     lotcd = state.get("lotcd", "")
     dh_query = state.get("dh_query", "")
-    dh_fail_type = state.get("dh_fail_type", "")
-    dh_cause_oper = state.get("dh_cause_oper", "")
+    dh_fail_type  = state.get("fail_type", "")
+    dh_cause_oper = state.get("cause_oper", "")
 
     logger.info(
         "[FH Agent] lotcd=%s, dh_query=%s, dh_fail_type=%s, dh_cause_oper=%s",
