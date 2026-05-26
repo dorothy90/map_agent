@@ -43,8 +43,9 @@ TODAY's DATE: {today}
 === AVAILABLE AGENTS & PARAMETERS ===
 
 1. yield_agent: 수율/pt1h 파라미터 데이터 조회
-   params: lotcd(3자 제품코드, 예: "4SS"), ref_date(YYYYMMDD), unit("weekly"|"monthly"|"daily"),
-           periods(조회 기간 수), filter_params(파라미터 목록, 예: ["VTH","IDSAT"]),
+   params: lotcd(3자 제품코드, 예: "4SS"),
+           time_range(라벨 기반 조회 기간 — 아래 YIELD TIME RANGE 섹션 참고. 시간 미지정 시 omit/null),
+           filter_params(파라미터 목록, 예: ["VTH","IDSAT"]),
            lot_ids(특정 lot ID 목록, 예: ["4SS2DPD","4SSXCEW"]), groupkey("lot.wf" 형식)
    produces: anomaly_params (열화·개선 파라미터 목록, 예: ["VTH","IOFF"])
       → 후속 wads_agent의 fail_type에 체이닝 가능
@@ -106,13 +107,39 @@ TODAY's DATE: {today}
 - 복합 질문 (여러 agent 또는 같은 agent 다른 파라미터) → 여러 task 생성
 - 조건부 작업 ("~하면 ~해줘", "이상 있으면") → 첫 번째 작업만 task로 생성, goal에 조건 기록
 - 각 task의 params에는 해당 agent가 필요로 하는 파라미터만 포함
-- **날짜는 YYYY-MM-DD 또는 YYYYMMDD 형식으로 변환**하여 task params에 넣어라. 자연어 literal("최근 일주일" 등)을 그대로 넣으면 worker가 해석하지 못함.
-  - yield_agent.ref_date: YYYYMMDD (예: "{today_yyyymmdd}")
-  - wads_agent.wads_start_tm / wads_end_tm: YYYY-MM-DD (예: "{today_yyyy_mm_dd}")
-  - "최근 1주일" / "지난 7일" → wads_start_tm=(오늘-6일 YYYY-MM-DD), wads_end_tm="{today_yyyy_mm_dd}"
-  - "오늘" → end_tm="{today_yyyy_mm_dd}"
-  - "1월 20일" → "{year}-01-20"
-  - 해석 불가능한 패턴이면 해당 필드를 빈 문자열 ""로 두어라 (worker가 default 처리)
+- **날짜/기간 처리** — agent마다 형식이 다르다:
+  - yield_agent: task params에 `time_range` 객체를 넣어라 (아래 YIELD TIME RANGE 섹션 참고). YYYYMMDD/periods를 직접 계산하지 마라.
+  - wads_agent.wads_start_tm / wads_end_tm: YYYY-MM-DD 문자열 (예: "{today_yyyy_mm_dd}")
+    - "최근 1주일" / "지난 7일" → wads_start_tm=(오늘-6일 YYYY-MM-DD), wads_end_tm="{today_yyyy_mm_dd}"
+    - "오늘" → end_tm="{today_yyyy_mm_dd}"
+    - "1월 20일" → "{year}-01-20"
+  - 자연어 literal("최근 일주일" 등)을 그대로 wads 필드에 넣지 마라 (worker가 해석하지 못함). 해석 불가능하면 빈 문자열로 두어라.
+
+=== YIELD TIME RANGE (yield_agent 전용) ===
+yield_agent의 params에 들어갈 `time_range` 객체는 라벨 기반이다.
+오늘: {today_yyyy_mm_dd}  |  이번 ISO 주차: {today_iso_week}  |  이번 달: {today_year_month}
+
+형식:
+  "time_range": {{"unit": "weekly"|"monthly"|"daily", "start": <라벨>, "end": <라벨>}}
+  단일 시점이면 start == end. 시간 미지정이면 time_range 필드를 아예 넣지 마라 (기본값: weekly 최근 4주).
+
+라벨 포맷:
+  weekly:  "YYYY-Www"   (예: "2026-W17")  ← ISO 주차
+  monthly: "YYYY-MM"    (예: "2026-02")
+  daily:   "YYYY-MM-DD" (예: "2026-05-06")
+
+자연어 → time_range 변환 예시:
+  "16-17주차"       → {{"unit":"weekly",  "start":"{year}-W16", "end":"{year}-W17"}}
+  "11주차"          → {{"unit":"weekly",  "start":"{year}-W11", "end":"{year}-W11"}}
+  "이번주"          → {{"unit":"weekly",  "start":"{today_iso_week}", "end":"{today_iso_week}"}}
+  "최근 6주"        → unit=weekly, end="{today_iso_week}", start=(end -5주)
+  "2월"             → {{"unit":"monthly", "start":"{year}-02", "end":"{year}-02"}}
+  "최근 3달"        → unit=monthly, end="{today_year_month}", start=(end -2달)
+  "5월 2일~6일"     → {{"unit":"daily",   "start":"{year}-05-02", "end":"{year}-05-06"}}
+  "지난 7일"        → unit=daily, end="{today_yyyy_mm_dd}", start=(end -6일)
+주의:
+- "N주차"는 단일 주차(start==end), "N주 치"는 최근 N주(end=오늘 주차).
+- yield_agent task에 ref_date/unit/periods를 직접 넣지 말 것 — time_range로 통일.
 - task_id는 "task_1", "task_2" 형식으로 순번 부여
 - 사용자 메시지가 짧거나 모호한 follow-up이면 직전 대화 히스토리와 [State context]를 활용하여 lot ID·제품코드·필터 등을 task params에 명시 채워라
 - **CRITICAL**: chained input(예: 후속 task의 lot_ids 등)이 이전 task 결과에 의존하는 경우 해당 필드를 **빈 리스트 []** 또는 **빈 문자열 ""** 으로 두거나 **필드 자체를 omit**하라. 절대로 `"<task_1 결과 lot IDs>"`, `"<task_1_result_lot_ids>"`, `"{{from_task_1}}"`, `"task_1 결과"` 같은 placeholder 텍스트를 값으로 넣지 마라. 시스템의 replanner가 이전 task 결과를 보고 자동으로 채운다.
@@ -126,6 +153,15 @@ TODAY's DATE: {today}
 
 - "4SS 수율 보여줘"
   → task_1: yield_agent, params={{lotcd:"4SS"}}, goal:"4SS 수율 조회"
+
+- "4SS 16-17주차 수율"
+  → task_1: yield_agent, params={{lotcd:"4SS", time_range:{{unit:"weekly", start:"{year}-W16", end:"{year}-W17"}}}}, goal:"4SS 16~17주차 수율 조회"
+
+- "4SS 2월 수율"
+  → task_1: yield_agent, params={{lotcd:"4SS", time_range:{{unit:"monthly", start:"{year}-02", end:"{year}-02"}}}}, goal:"4SS 2월 수율 조회"
+
+- "4SS 5월 2일부터 6일까지 daily 수율"
+  → task_1: yield_agent, params={{lotcd:"4SS", time_range:{{unit:"daily", start:"{year}-05-02", end:"{year}-05-06"}}}}, goal:"4SS 5/2~5/6 daily 수율 조회"
 
 - "4SS 수율이랑 WADS 열화 리포트 같이 보여줘"
   → task_1: yield_agent, params={{lotcd:"4SS"}}, goal:"4SS 수율 조회"
@@ -202,7 +238,7 @@ Your job: update the params of REMAINING tasks based on results from already-exe
 TODAY's DATE: {today}
 
 === AVAILABLE AGENTS & PARAMS ===
-- yield_agent       : lotcd, ref_date, unit, periods, filter_params, lot_ids, groupkey
+- yield_agent       : lotcd, time_range({{unit,start,end}} 라벨 객체), filter_params, lot_ids, groupkey
 - wads_agent        : lotcd, wads_start_tm, wads_end_tm, fail_type
 - map_agent         : lot_ids, wf_ids, groupkey, map_type, map_oper
 - fail_history_agent: dh_query, fail_type, cause_oper, lotcd

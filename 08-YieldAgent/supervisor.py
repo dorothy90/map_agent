@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import operator
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Any, Dict, Literal, TypedDict
 
 from dotenv import load_dotenv
@@ -69,6 +69,81 @@ class PlanReviewResult(BaseModel):
     action: Literal["approve", "cancel", "modify"]
     tasks: list[TaskItem] = Field(default=[], description="최종 task 목록 (approve 시 현재 계획 그대로, modify 시 수정된 전체 목록)")
 
+
+class TimeRange(BaseModel):
+    """yield_agent 조회 기간을 라벨 기반으로 표현.
+
+    LLM이 YYYYMMDD/periods 산술을 직접 하지 않도록 단위별 자연 라벨로만 받는다.
+    supervisor가 라벨을 ref_date(YYYYMMDD)/periods/unit으로 변환한다.
+
+    라벨 포맷:
+      weekly:  "YYYY-Www"   (예: "2026-W17") — ISO 주차
+      monthly: "YYYY-MM"    (예: "2026-02")
+      daily:   "YYYY-MM-DD" (예: "2026-05-06")
+    단일 시점이면 start == end.
+    """
+
+    unit: Literal["weekly", "monthly", "daily"] = Field(description="시간 단위")
+    start: str = Field(description="시작 라벨 (포함)")
+    end: str = Field(description="끝 라벨 (포함)")
+
+
+def _parse_iso_week_label(label: str) -> tuple[int, int]:
+    """'2026-W17' / '2026-w17' → (2026, 17)"""
+    year_s, week_s = label.strip().replace("w", "W").split("-W", 1)
+    return int(year_s), int(week_s)
+
+
+def _parse_year_month_label(label: str) -> tuple[int, int]:
+    """'2026-02' → (2026, 2)"""
+    year_s, month_s = label.strip().split("-", 1)
+    return int(year_s), int(month_s)
+
+
+def resolve_time_range(tr: TimeRange) -> tuple[str, int, str]:
+    """TimeRange 라벨 → (ref_date YYYYMMDD, periods, unit)."""
+    unit = tr.unit
+    start, end = (tr.start or "").strip(), (tr.end or "").strip()
+    if not start or not end:
+        raise ValueError(f"time_range start/end empty: start={start!r} end={end!r}")
+
+    if unit == "weekly":
+        sy, sw = _parse_iso_week_label(start)
+        ey, ew = _parse_iso_week_label(end)
+        start_monday = date.fromisocalendar(sy, sw, 1)
+        end_monday = date.fromisocalendar(ey, ew, 1)
+        weeks = ((end_monday - start_monday).days // 7) + 1
+        return end_monday.strftime("%Y%m%d"), max(1, weeks), "weekly"
+
+    if unit == "monthly":
+        sy, sm = _parse_year_month_label(start)
+        ey, em = _parse_year_month_label(end)
+        months = (ey - sy) * 12 + (em - sm) + 1
+        return f"{ey:04d}{em:02d}01", max(1, months), "monthly"
+
+    if unit == "daily":
+        sd = datetime.strptime(start, "%Y-%m-%d").date()
+        ed = datetime.strptime(end, "%Y-%m-%d").date()
+        days = (ed - sd).days + 1
+        return ed.strftime("%Y%m%d"), max(1, days), "daily"
+
+    raise ValueError(f"unknown time_range.unit: {unit!r}")
+
+
+def _apply_time_range_dict(params: dict) -> None:
+    """task_params dict 안의 time_range를 ref_date/periods/unit으로 변환·치환 (in-place)."""
+    tr_data = params.get("time_range")
+    if not isinstance(tr_data, dict):
+        return
+    try:
+        tr_obj = TimeRange(**tr_data)
+        ref, periods, unit = resolve_time_range(tr_obj)
+    except Exception as e:
+        logger.warning("[Supervisor] task_params.time_range 변환 실패: %s | data=%r", e, tr_data)
+        return
+    params["ref_date"] = ref
+    params["periods"] = periods
+    params["unit"] = unit
 
 
 _MAX_CHECKPOINT_MESSAGES = 30
@@ -254,10 +329,13 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         return {}
 
     today = date.today()
+    _iy, _iw, _ = today.isocalendar()
     prompt = PLANNER_SYSTEM_PROMPT.format(
         today=today.strftime("%Y년 %m월 %d일 (%A)"),
         today_yyyymmdd=today.strftime("%Y%m%d"),
         today_yyyy_mm_dd=today.strftime("%Y-%m-%d"),
+        today_iso_week=f"{_iy}-W{_iw:02d}",
+        today_year_month=today.strftime("%Y-%m"),
         year=today.year,
     )
 
@@ -764,6 +842,8 @@ def supervisor_node(
         remaining = pending[1:]
         # C1: 코드 기반 chained input 해소 — wads_sql_result 메시지에서 lot_ids 자동 주입 (LLM 불필요)
         task_params = _resolve_chained_params(current_task, state)
+        # planner가 time_range를 자연 라벨로 넘긴 경우 → ref_date/periods/unit으로 변환 (in-place)
+        _apply_time_range_dict(task_params)
 
         task_message = AIMessage(
             content=f"[Task {current_task.get('task_id', '?')}] {current_task.get('goal', '')}",
