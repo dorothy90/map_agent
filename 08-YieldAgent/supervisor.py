@@ -540,16 +540,22 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
 
     lot_ids = wads_data.get("lot_ids") or []
     wf_ids = wads_data.get("wf_ids") or []
+    groupkey = wads_data.get("groupkey") or ""
 
     if _is_placeholder_or_empty(params.get("lot_ids")) and lot_ids:
         params["lot_ids"] = lot_ids
         logger.info("[ResolveChained] lot_ids ← wads_sql_result (%d lots)", len(lot_ids))
 
-    # PR0/PR2 schema: WADS 는 wafer 단위 식별자(GROUPKEY) 만 갖는다.
-    # 하류가 wf_ids 를 비운 채 받으면 wads_sql_result.wf_ids 로 자동 채움.
     if _is_placeholder_or_empty(params.get("wf_ids")) and wf_ids:
         params["wf_ids"] = wf_ids
         logger.info("[ResolveChained] wf_ids ← wads_sql_result (%d wafers)", len(wf_ids))
+
+    # PR0/PR2 schema: WADS 의 진짜 wafer 식별자는 DF_WADS_WF_LIST.GROUPKEY ("lot.wf" 형식).
+    # map_agent 는 lot.wf 통합 식별자를 groupkey 채널로 받으므로 그 자리에 자동 주입.
+    if _is_placeholder_or_empty(params.get("groupkey")) and groupkey:
+        params["groupkey"] = groupkey
+        n = len([s for s in groupkey.split(",") if s.strip()])
+        logger.info("[ResolveChained] groupkey ← wads_sql_result (%d wafers, lot.wf)", n)
 
     if _is_placeholder_or_empty(params.get("cause_oper")):
         fallback = state.get("cause_oper")

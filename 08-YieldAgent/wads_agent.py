@@ -629,10 +629,11 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     # LangGraph native 패턴 — 새 state field 없이 additional_kwargs로 downstream에 structured data 전달.
     # `_resolve_chained_params`가 state.messages에서 이 메시지를 찾아 chained input 해소.
     #
-    # 식별자 의미 (PR0/PR2 schema):
+    # 식별자 의미 (PR0/PR2 schema + 확인된 GROUPKEY 포맷):
     #   LOTCD/LOT_CD = 제품코드 (예: "4SS") — lot 단위 식별자 아님
-    #   GROUPKEY     = 진짜 wafer 단위 식별자 (DF_WADS_WF_LIST 에만 존재)
-    # 따라서 chain output 의 lot_ids 는 비워두고, wafer 단위 chain 은 wf_ids 로 발사.
+    #   GROUPKEY     = "lot_id.wf_id" 형식 (예: "4SS2DPD.03") — 진짜 wafer 식별자
+    # map_agent 는 lot.wf 통합 식별자를 `groupkey` 채널로 받으므로 (wf_ids 는 wafer slot 번호 int 만),
+    # chain output 의 wafer 식별자는 groupkey 콤마구분 string 으로 발사한다.
     out_messages: list = [result_message]
     wads_group_keys: list[str] = []
     wads_lot_cds: list[str] = []
@@ -653,6 +654,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         wads_lot_cds = sorted({str(r.get("lotcd")) for r in src if r.get("lotcd")})
 
     if wads_group_keys or wads_lot_cds:
+        groupkey_str = ",".join(wads_group_keys)
         parts = []
         if wads_group_keys:
             parts.append(f"GROUPKEY {len(wads_group_keys)}건: {','.join(wads_group_keys[:10])}")
@@ -667,9 +669,10 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             name="wads_sql_result",  # supervisor LLM 호출 전 filter 대상 (내부 전달용)
             additional_kwargs={
                 "wads_result": {
-                    "wf_ids": wads_group_keys,        # wafer 단위 chain (진짜 식별자)
+                    "groupkey": groupkey_str,         # ← map_agent.groupkey 채널 (lot.wf 콤마구분)
                     "lot_cds": wads_lot_cds,          # 제품코드 (참고용 — lot id 아님)
-                    "lot_ids": [],                    # WADS schema 에 lot id 없음 — 명시적으로 빈 리스트
+                    "wf_ids": [],                     # WADS 는 wafer slot 번호 따로 회수 안 함 — 명시적 빈
+                    "lot_ids": [],                    # WADS schema 에 lot id 없음 — 명시적 빈
                     "parameter_filter": parameter or "",
                     "date_range": [start_tm or "", end_tm or ""],
                     "detected_count": len(wads_group_keys) or len(wads_lot_cds),

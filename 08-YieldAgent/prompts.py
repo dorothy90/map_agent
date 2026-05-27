@@ -51,13 +51,16 @@ TODAY's DATE: {today}
       → 후속 fail_history_agent의 fail_type에 체이닝 가능
    ※ 수율 결과에서 "열화 파라미터 [조사/분석]" → yield_agent 먼저, wads_agent 불필요
 
-2. wads_agent: WADS 열화 검출 리포트 / 검출 lot list 조회
-   params: lotcd(3자), wads_start_tm(YYYY-MM-DD), wads_end_tm(YYYY-MM-DD), fail_type(step코드, 예: "step07")
-   produces: ① detected_parameters (검출된 파라미터명, fail_type enum 동일 모집단)
+2. wads_agent: WADS 열화 검출 리포트 / 검출 wafer (GROUPKEY) 조회
+   params: lotcd(3자, 제품코드), wads_start_tm(YYYY-MM-DD), wads_end_tm(YYYY-MM-DD),
+           fail_type(PARAMETER 값, 예: "EASY", "TWT")
+   produces: ① detected_parameters (검출된 fail_type)
                 → 후속 fail_history_agent의 fail_type에 체이닝 가능
-             ② detected_lot_ids (검출된 lot ID 목록)
-                → 후속 map_agent / lot_history_agent의 lot_ids에 체이닝 가능
-   ※ "검출", "검출된 lot", "step별 검출", "불량 검출" → 반드시 wads_agent
+             ② detected_groupkey (검출된 wafer GROUPKEY, "lot.wf" 콤마구분 string)
+                → 후속 map_agent의 groupkey에 체이닝 가능
+   ※ "검출", "검출된 lot", "검출된 wafer", "GROUPKEY", "PARAMETER별 검출" → 반드시 wads_agent
+   ※ WADS schema 에는 lot ID 가 없음 (LOTCD 는 제품코드 "4SS" 류). 후속 시각화 chain 은
+     groupkey ("lot.wf" 형식) 기반 — map_agent.groupkey 자리로 들어감.
 
 3. map_agent: 웨이퍼 맵 (binmap/cummap) 시각화
    params: lot_ids(lot ID 목록, 예: ["4SS2DPD"]), wf_ids(wafer IDs, 예: ["03","06"]),
@@ -116,7 +119,7 @@ TODAY's DATE: {today}
 - task_id는 "task_1", "task_2" 형식으로 순번 부여
 - 사용자 메시지가 짧거나 모호한 follow-up이면 직전 대화 히스토리와 [State context]를 활용하여 lot ID·제품코드·필터 등을 task params에 명시 채워라
 - **CRITICAL**: chained input(예: 후속 task의 lot_ids 등)이 이전 task 결과에 의존하는 경우 해당 필드를 **빈 리스트 []** 또는 **빈 문자열 ""** 으로 두거나 **필드 자체를 omit**하라. 절대로 `"<task_1 결과 lot IDs>"`, `"<task_1_result_lot_ids>"`, `"{{from_task_1}}"`, `"task_1 결과"` 같은 placeholder 텍스트를 값으로 넣지 마라. 시스템의 replanner가 이전 task 결과를 보고 자동으로 채운다.
-- **FAN-OUT**: 하나의 task 결과를 여러 후속 task가 동시에 사용할 수 있다. 예: wads_agent 결과의 detected_parameters → fail_history_agent의 fail_type, detected_lot_ids → map_agent / lot_history_agent의 lot_ids. 후속 task의 체이닝 필드를 각각 []/"" 로 두면 replanner가 각각 자동으로 채운다.
+- **FAN-OUT**: 하나의 task 결과를 여러 후속 task가 동시에 사용할 수 있다. 예: wads_agent 결과의 detected_parameters → fail_history_agent의 fail_type, detected_groupkey → map_agent의 groupkey. 후속 task의 체이닝 필드(groupkey 등)를 각각 "" 로 두면 replanner가 wads_sql_result 메시지에서 자동으로 채운다.
 
 === EXAMPLES ===
 
@@ -130,6 +133,19 @@ TODAY's DATE: {today}
 - "4SS 수율이랑 WADS 열화 리포트 같이 보여줘"
   → task_1: yield_agent, params={{lotcd:"4SS"}}, goal:"4SS 수율 조회"
   → task_2: wads_agent, params={{lotcd:"4SS"}}, goal:"4SS WADS 열화 리포트 조회"
+
+- "최근 3일동안 EASY에서 검출된 랏들 map 보여줘"  (WADS chain → map_agent)
+  → task_1: wads_agent, params={{fail_type:"EASY", wads_start_tm:"<3일전>", wads_end_tm:"{today_yyyy_mm_dd}"}},
+            goal:"최근 3일 EASY 검출 wafer GROUPKEY 회수 (후속 map_agent chain)"
+  → task_2: map_agent, params={{groupkey:"", map_type:"all"}},
+            goal:"검출된 wafer (lot.wf) map 시각화"
+  ※ task_2.groupkey 는 "" 로 두면 replanner 가 task_1 의 wads_sql_result.groupkey ("lot.wf" 콤마구분) 로 자동 채움.
+  ※ map_agent 는 groupkey 단일 채널만으로 lot+wafer 식별 충분 — lot_ids/wf_ids 비워둘 것.
+
+- "5NA WADS 검출 wafer 이력 확인"  (WADS chain → lot_history_agent)
+  → task_1: wads_agent, params={{lotcd:"5NA"}}, goal:"5NA WADS 검출 wafer GROUPKEY 회수 (후속 lot_history chain)"
+  → task_2: lot_history_agent, params={{lot_ids:[]}}, goal:"검출 wafer 의 lot 이력 조회"
+  ※ lot_history_agent 는 lot 단위라 groupkey 의 lot 부분(앞자리) 사용 — replanner 또는 lot_history_agent 측에서 split.
 
 - "4SS2DPD PT1H binmap이랑 cummap 둘 다 보여줘"
   → task_1: map_agent, params={{lot_ids:["4SS2DPD"], map_type:"all", map_oper:"PT1H"}}, goal:"4SS2DPD PT1H binmap+cummap 전체 조회"
@@ -533,6 +549,15 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 - 당신은 멀티-task plan의 한 task만 처리한다. 현재 task의 goal에 명시된 범위만 수행하라.
 - 사용자 원본 질문에 다른 의도(예: cummap 시각화, lot 이력 조회 등)가 있어도 무시하라. 다른 agent가 처리한다.
 - 첫 도구 호출이 성공하면 그 결과로 종료하라. 같은 결과를 다른 방법으로 재검증하지 말 것.
+
+[CHAIN 시나리오 — task goal 에 다음 키워드가 있으면 추가 도구 호출 필수]
+- "wafer 회수" / "GROUPKEY 회수" / "후속 chain" / "후속 map_agent" / "후속 lot_history"
+  → **wads_query_wf_list 를 반드시 호출**. 이게 storage["wf_list"] 를 채워야 chain output 의
+    groupkey (lot.wf 콤마구분) 가 발사되고, 하류 task 가 빈 입력 없이 받음.
+- "검출된 lot 으로 map" / "검출 wafer cummap" 등 후속 시각화가 따라오면
+  → wads_query_data 가 아니라 **wads_query_wf_list 우선** 호출.
+- chain 시나리오에서는 답변 본문은 짧게 (1-2문장 + GROUPKEY 개수), [RENDER: text] 로 artifact 생략.
+  하류 agent 가 진짜 결과물을 만들 거라 WADS 카드는 불필요.
 
 ## 데이터 구조 (WADS Oracle 2개 테이블)
 - **DF_WADS_REPORT** — 리포트 1행 단위 (lotcd × category × parameter × end_tm), HTML 본문 보유
