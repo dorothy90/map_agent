@@ -53,8 +53,12 @@ def _get_tool_payload() -> Dict[str, Any]:
         return storage
 
 
-# DF_WADS_REPORT 의 END_TM 은 "YY/MM/DD ..." 포맷. SUBSTR(END_TM, 1, 8) + TO_DATE(..., 'YY/MM/DD') 로 정규화.
-_END_TM_DATE_EXPR = "TO_DATE(SUBSTR(END_TM, 1, 8), 'YY/MM/DD')"
+# DF_WADS_REPORT / DF_WADS_WF_LIST 의 END_TM 은 "YY/MM/DD ..." 로 시작.
+# 'yy/mm/dd' 는 lexicographic 정렬 == chronological 정렬이므로 TO_DATE 거치지 않고
+# SUBSTR(END_TM, 1, 8) 의 문자열 BETWEEN 으로 비교한다.
+# (END_TM 이 DATE 타입이면 implicit TO_CHAR 가 NLS_DATE_FORMAT 의 영향을 받아 SUBSTR 가
+#  잘못된 부분을 자르는 문제를 회피.)
+_END_TM_RANGE_CLAUSE = "SUBSTR(END_TM, 1, 8) BETWEEN :start_tm AND :end_tm_range"
 
 
 def _normalize_date_input(s: str) -> str:
@@ -159,10 +163,7 @@ def _query_wads_data(
         conditions.append(c)
 
     if start_tm and end_tm:
-        conditions.append(
-            f"TRUNC({_END_TM_DATE_EXPR}) "
-            "BETWEEN TO_DATE(:start_tm, 'YY/MM/DD') AND TO_DATE(:end_tm_range, 'YY/MM/DD')"
-        )
+        conditions.append(_END_TM_RANGE_CLAUSE)
         bind_vars["start_tm"] = _normalize_date_input(start_tm)
         bind_vars["end_tm_range"] = _normalize_date_input(end_tm)
     elif end_tm:
@@ -510,7 +511,7 @@ Rules:
 - Safe columns: LOTCD, CATEGORY, PARAMETER, END_TM (DF_WADS_REPORT);
                 OPER_PARA, GROUPKEY, END_TM, LOT_CD (DF_WADS_WF_LIST).
 - Use UPPER() for case-insensitive LOTCD/CATEGORY/PARAMETER/OPER_PARA comparisons.
-- Date filtering: TRUNC(TO_DATE(SUBSTR(END_TM,1,8),'YY/MM/DD'))
+- Date filtering: SUBSTR(END_TM, 1, 8) BETWEEN :start AND :end  -- 'yy/mm/dd' 문자열 비교 (TO_DATE 금지: NLS_DATE_FORMAT 차이로 silent 0 rows 가능)
 - JOIN guidance: r.LOTCD = w.LOT_CD AND r.END_TM = w.END_TM
 - Always add FETCH FIRST 500 ROWS ONLY.
 - Output ONLY the SQL statement (or the ERROR string), no explanation.
@@ -747,10 +748,7 @@ def _query_wf_list_data(
         conditions.append(c)
 
     if start_tm and end_tm:
-        conditions.append(
-            f"TRUNC({_END_TM_DATE_EXPR}) "
-            "BETWEEN TO_DATE(:start_tm, 'YY/MM/DD') AND TO_DATE(:end_tm_range, 'YY/MM/DD')"
-        )
+        conditions.append(_END_TM_RANGE_CLAUSE)
         bind_vars["start_tm"] = _normalize_date_input(start_tm)
         bind_vars["end_tm_range"] = _normalize_date_input(end_tm)
     elif end_tm:
