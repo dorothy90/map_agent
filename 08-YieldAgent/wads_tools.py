@@ -551,8 +551,41 @@ def wads_query_sql(query_description: str) -> str:
     safe_cols = [c for c in col_names if c.lower() != "html"]
     safe_result = [{c: r.get(c) for c in safe_cols} for r in result]
     storage["sql_result"] = safe_result
+    # 결과 shape 로부터 layout 힌트 결정 (wads_agent_node 가 사용)
+    storage["render_layout"] = _suggest_layout_hint(safe_result, safe_cols)
 
     return _summarize_sql_result(safe_result, safe_cols)
+
+
+def _suggest_layout_hint(rows: List[Dict[str, Any]], cols: List[str]) -> str:
+    """SQL 결과 shape 로부터 적절한 layout 자동 추천.
+
+    반환: 'kpi' | 'distribution' | 'pivot' | 'trend' | 'table'
+    wads_agent.py 의 _detect_layout 과 동일한 규칙 — 단일 truth 유지.
+    """
+    if not rows:
+        return "table"
+    first = rows[0]
+    nrows, ncols = len(rows), len(cols)
+    is_num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)
+    is_date_col = lambda c: ("end_tm" in c.lower()) or ("date" in c.lower()) or c.lower().endswith("_tm")
+
+    if nrows == 1 and 1 <= ncols <= 3 and any(is_num(first.get(c)) for c in cols):
+        return "kpi"
+
+    has_date = any(is_date_col(c) for c in cols)
+    has_num = any(is_num(first.get(c)) for c in cols if not is_date_col(c))
+    if has_date and has_num and nrows >= 2:
+        return "trend"
+
+    if ncols == 2 and 2 <= nrows <= 30:
+        if sum(1 for c in cols if is_num(first.get(c))) == 1:
+            return "distribution"
+
+    if ncols >= 3 and all(not is_num(first.get(cols[i])) for i in range(2)):
+        return "pivot"
+
+    return "table"
 
 
 def _is_numeric(v: Any) -> bool:

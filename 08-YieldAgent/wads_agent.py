@@ -113,15 +113,9 @@ def _render_wads_query_html(payload: List[Dict[str, Any]]) -> str:
     return style + header + sub + table + footer
 
 
-def _render_wads_sql_html(payload: List[Dict[str, Any]]) -> str:
-    """wads_query_sql 결과를 동적 컬럼 HTML로 렌더링 (I-2)"""
-    if not payload:
-        return "<div class='wads-empty'>SQL 쿼리 결과가 없습니다.</div>"
+# ── SQL 결과 HTML 렌더링 — 레이아웃 레지스트리 ──────────────────────
 
-    first = payload[0]
-    is_error = bool(first.get("error"))
-
-    style = """<style>
+_WADS_STYLE = """<style>
 .wads-card{border:1px solid #e5e7eb;border-radius:12px;padding:12px;background:#fff}
 .wads-title{font-weight:700;margin-bottom:8px;color:#1a1a2e}
 .wads-sub{color:#6b7280;font-size:12px;margin-bottom:10px}
@@ -130,43 +124,241 @@ def _render_wads_sql_html(payload: List[Dict[str, Any]]) -> str:
 .wads-table th{background:#f8f9fa}
 .wads-badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#e0f2fe;color:#0369a1;font-size:12px}
 .wads-empty{color:#6b7280}
+.wads-kpi-grid{display:flex;gap:12px;flex-wrap:wrap}
+.wads-kpi{flex:1;min-width:120px;border:1px solid #e5e7eb;border-radius:10px;padding:14px;background:#f8fafc;text-align:center}
+.wads-kpi-num{font-size:28px;font-weight:700;color:#0f172a;line-height:1.2}
+.wads-kpi-cap{font-size:12px;color:#64748b;margin-top:4px;text-transform:uppercase;letter-spacing:.04em}
+.wads-bar-row{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:13px}
+.wads-bar-label{flex:0 0 30%;color:#334155;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wads-bar-track{flex:1;background:#f1f5f9;border-radius:6px;height:18px;position:relative;overflow:hidden}
+.wads-bar-fill{background:#3b82f6;height:100%;border-radius:6px}
+.wads-bar-num{flex:0 0 auto;font-variant-numeric:tabular-nums;color:#1f2937;min-width:56px;text-align:right}
+.wads-trend-svg{width:100%;height:120px;display:block}
 </style>"""
 
-    header = (
-        "<div class='wads-card'><div class='wads-title'>WADS: SQL 쿼리 결과</div>"
+
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _looks_like_date_col(name: str) -> bool:
+    n = name.lower()
+    return ("end_tm" in n) or ("date" in n) or n.endswith("_tm")
+
+
+def _detect_layout(payload: List[Dict[str, Any]]) -> str:
+    """SQL 결과 shape 로부터 적절한 layout 자동 감지.
+
+    반환: 'kpi' | 'distribution' | 'pivot' | 'trend' | 'table'
+    """
+    if not payload:
+        return "table"
+    first = payload[0]
+    cols = list(first.keys())
+    ncols = len(cols)
+    nrows = len(payload)
+
+    # kpi: 1행 × 1-3 컬럼, 대부분 숫자
+    if nrows == 1 and 1 <= ncols <= 3:
+        num_cnt = sum(1 for c in cols if _is_number(first.get(c)))
+        if num_cnt >= 1:
+            return "kpi"
+
+    # trend: END_TM/date 컬럼 + 수치 컬럼이 있는 경우
+    has_date = any(_looks_like_date_col(c) for c in cols)
+    has_num = any(_is_number(payload[0].get(c)) for c in cols if not _looks_like_date_col(c))
+    if has_date and has_num and nrows >= 2:
+        return "trend"
+
+    # distribution: 2 컬럼 (범주, 숫자), 행 2-30개
+    if ncols == 2 and 2 <= nrows <= 30:
+        num_cols = [c for c in cols if _is_number(first.get(c))]
+        if len(num_cols) == 1:
+            return "distribution"
+
+    # pivot: 3+ 컬럼, 앞 2개 범주축 (모두 문자열) — 단순 휴리스틱
+    if ncols >= 3:
+        first_two_str = all(
+            not _is_number(first.get(cols[i])) for i in range(2)
+        )
+        if first_two_str:
+            return "pivot"
+
+    return "table"
+
+
+def _render_kpi(payload: List[Dict[str, Any]]) -> str:
+    row = payload[0]
+    cells = []
+    for k, v in row.items():
+        if _is_number(v):
+            num = f"{v:,}"
+        elif v is None:
+            num = "—"
+        else:
+            num = _html_escape(v)
+        cells.append(
+            f"<div class='wads-kpi'><div class='wads-kpi-num'>{num}</div>"
+            f"<div class='wads-kpi-cap'>{_html_escape(k.upper())}</div></div>"
+        )
+    return f"<div class='wads-kpi-grid'>{''.join(cells)}</div>"
+
+
+def _render_distribution(payload: List[Dict[str, Any]]) -> str:
+    cols = list(payload[0].keys())
+    cat_col = next(c for c in cols if not _is_number(payload[0].get(c)))
+    num_col = next(c for c in cols if _is_number(payload[0].get(c)))
+    sorted_rows = sorted(payload, key=lambda r: r.get(num_col) or 0, reverse=True)
+    max_v = max((r.get(num_col) or 0) for r in sorted_rows) or 1
+    total = sum((r.get(num_col) or 0) for r in sorted_rows) or 1
+    bars = []
+    for r in sorted_rows:
+        v = r.get(num_col) or 0
+        pct_track = (v / max_v) * 100
+        pct_total = (v / total) * 100
+        bars.append(
+            "<div class='wads-bar-row'>"
+            f"<div class='wads-bar-label'>{_html_escape(r.get(cat_col))}</div>"
+            f"<div class='wads-bar-track'><div class='wads-bar-fill' style='width:{pct_track:.1f}%'></div></div>"
+            f"<div class='wads-bar-num'>{v:,} ({pct_total:.1f}%)</div>"
+            "</div>"
+        )
+    return (
+        f"<div style='font-size:12px;color:#64748b;margin-bottom:6px'>{_html_escape(num_col.upper())} by {_html_escape(cat_col.upper())}</div>"
+        + "".join(bars)
     )
-    footer = "</div>"
 
-    if is_error:
-        msg = first.get("detail") or first.get("error") or "오류가 발생했습니다."
-        body = f"<div class='wads-empty'>{_html_escape(msg)}</div>"
-        return style + header + body + footer
 
-    sub = f"<div class='wads-sub'>총 <span class='wads-badge'>{len(payload)}건</span> 조회됨</div>"
+def _render_pivot(payload: List[Dict[str, Any]]) -> str:
+    # 단순 휴리스틱: 앞 2개 컬럼이 범주, 마지막 컬럼이 값
+    cols = list(payload[0].keys())
+    if len(cols) < 3:
+        return _render_table(payload)
+    row_col, col_col = cols[0], cols[1]
+    val_col = cols[-1]
+    row_keys: list = []
+    col_keys: list = []
+    pivot: Dict[Any, Dict[Any, Any]] = {}
+    for r in payload:
+        rk, ck, v = r.get(row_col), r.get(col_col), r.get(val_col)
+        if rk not in row_keys:
+            row_keys.append(rk)
+        if ck not in col_keys:
+            col_keys.append(ck)
+        pivot.setdefault(rk, {})[ck] = v
+    header = "<th>" + _html_escape(row_col.upper()) + "</th>" + "".join(
+        f"<th>{_html_escape(c)}</th>" for c in col_keys
+    )
+    body = ""
+    for rk in row_keys:
+        cells = "<td>" + _html_escape(rk) + "</td>"
+        for ck in col_keys:
+            v = pivot.get(rk, {}).get(ck, "")
+            cells += (
+                f"<td style='text-align:right'>{v:,}</td>" if _is_number(v) else f"<td>{_html_escape(v)}</td>"
+            )
+        body += f"<tr>{cells}</tr>"
+    return (
+        f"<table class='wads-table'><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>"
+    )
 
-    # 동적 컬럼 헤더 생성
-    col_names = list(first.keys())
+
+def _render_trend(payload: List[Dict[str, Any]]) -> str:
+    cols = list(payload[0].keys())
+    date_col = next(c for c in cols if _looks_like_date_col(c))
+    num_col = next(c for c in cols if c != date_col and _is_number(payload[0].get(c)))
+    points = [(str(r.get(date_col)), float(r.get(num_col) or 0)) for r in payload]
+    if not points:
+        return _render_table(payload)
+    vals = [v for _, v in points]
+    vmax = max(vals) or 1
+    n = len(points)
+    width, height, pad = 600, 120, 8
+    inner_w = width - pad * 2
+    inner_h = height - pad * 2
+    coords = []
+    for i, (_, v) in enumerate(points):
+        x = pad + (inner_w * (i / max(n - 1, 1)))
+        y = pad + (inner_h * (1 - v / vmax))
+        coords.append((x, y))
+    path = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+    dots = "".join(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='3' fill='#3b82f6'/>" for x, y in coords)
+    labels_html = " · ".join(
+        f"<span>{_html_escape(d)}: <b>{v:,.0f}</b></span>" for d, v in points
+    )
+    svg = (
+        f"<svg class='wads-trend-svg' viewBox='0 0 {width} {height}' preserveAspectRatio='none'>"
+        f"<polyline fill='none' stroke='#3b82f6' stroke-width='2' points='{path}'/>"
+        f"{dots}</svg>"
+    )
+    return (
+        f"<div style='font-size:12px;color:#64748b;margin-bottom:6px'>{_html_escape(num_col.upper())} over {_html_escape(date_col.upper())}</div>"
+        + svg
+        + f"<div style='font-size:11px;color:#475569;margin-top:6px;line-height:1.6'>{labels_html}</div>"
+    )
+
+
+def _render_table(payload: List[Dict[str, Any]]) -> str:
+    col_names = list(payload[0].keys())
     th_html = "".join(f"<th>{_html_escape(c.upper())}</th>" for c in col_names)
-
     rows_html = ""
     for row in payload:
         cells = ""
         for c in col_names:
             val = row.get(c, "")
-            # 숫자 포맷팅
-            if isinstance(val, (int, float)):
+            if _is_number(val):
                 cells += f"<td style='text-align:right'>{val:,}</td>"
             else:
                 cells += f"<td>{_html_escape(val)}</td>"
         rows_html += f"<tr>{cells}</tr>"
-
-    table = (
-        "<table class='wads-table'>"
-        f"<thead><tr>{th_html}</tr></thead>"
+    return (
+        f"<table class='wads-table'><thead><tr>{th_html}</tr></thead>"
         f"<tbody>{rows_html}</tbody></table>"
     )
 
-    return style + header + sub + table + footer
+
+_LAYOUT_DISPATCH = {
+    "kpi": _render_kpi,
+    "distribution": _render_distribution,
+    "pivot": _render_pivot,
+    "trend": _render_trend,
+    "table": _render_table,
+}
+
+
+def _render_wads_sql_html(payload: List[Dict[str, Any]], layout: str = "") -> str:
+    """wads_query_sql 결과를 layout 별로 렌더링.
+
+    layout 가 비어있으면 _detect_layout 으로 자동 결정.
+    """
+    if not payload:
+        return _WADS_STYLE + "<div class='wads-card'><div class='wads-empty'>SQL 쿼리 결과가 없습니다.</div></div>"
+
+    first = payload[0]
+    if first.get("error"):
+        msg = first.get("detail") or first.get("error") or "오류가 발생했습니다."
+        return (
+            _WADS_STYLE
+            + "<div class='wads-card'><div class='wads-title'>WADS: SQL 쿼리 결과</div>"
+            + f"<div class='wads-empty'>{_html_escape(msg)}</div></div>"
+        )
+
+    layout = (layout or "").lower()
+    if layout not in _LAYOUT_DISPATCH:
+        layout = _detect_layout(payload)
+
+    body = _LAYOUT_DISPATCH[layout](payload)
+    sub = (
+        f"<div class='wads-sub'>총 <span class='wads-badge'>{len(payload)}건</span>"
+        f" · layout=<span class='wads-badge'>{layout}</span></div>"
+    )
+    return (
+        _WADS_STYLE
+        + "<div class='wads-card'><div class='wads-title'>WADS: SQL 쿼리 결과</div>"
+        + sub
+        + body
+        + "</div>"
+    )
 
 
 def _render_wads_report_html(payload: Any) -> str:
@@ -345,15 +537,26 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             }
         )
     elif render_mode == "table" and (has_sql or has_query):
-        payload = sql_result_payload if has_sql else query_payload
-        artifacts.append(
-            {
-                "type": "html",
-                "mime": "text/html",
-                "data": _render_wads_sql_html(payload) if has_sql else _render_wads_query_html(payload),
-                "title": "wads_sql_result" if has_sql else "wads_query",
-            }
-        )
+        if has_sql:
+            # LLM 지정 layout > 도구 측 힌트 > 자동 감지 (_render_wads_sql_html 내부)
+            layout = render_layout or storage.get("render_layout", "")
+            artifacts.append(
+                {
+                    "type": "html",
+                    "mime": "text/html",
+                    "data": _render_wads_sql_html(sql_result_payload, layout=layout),
+                    "title": "wads_sql_result",
+                }
+            )
+        else:
+            artifacts.append(
+                {
+                    "type": "html",
+                    "mime": "text/html",
+                    "data": _render_wads_query_html(query_payload),
+                    "title": "wads_query",
+                }
+            )
     else:
         # render_mode == "auto" 또는 LLM 이 태그를 안 단 경우 → 기존 우선순위 분기
         if has_reports:
@@ -366,11 +569,12 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
                 }
             )
         elif has_sql:
+            layout = render_layout or storage.get("render_layout", "")
             artifacts.append(
                 {
                     "type": "html",
                     "mime": "text/html",
-                    "data": _render_wads_sql_html(sql_result_payload),
+                    "data": _render_wads_sql_html(sql_result_payload, layout=layout),
                     "title": "wads_sql_result",
                 }
             )
