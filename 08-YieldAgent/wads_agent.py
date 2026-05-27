@@ -644,7 +644,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         wads_group_keys = sorted({str(r.get("groupkey")) for r in wf_payload if r.get("groupkey")})
         wads_lot_cds = sorted({str(r.get("lot_cd")) for r in wf_payload if r.get("lot_cd")})
 
-    # wf_list 없을 때라도 lot_cds (제품코드) 는 REPORT/SQL 에서 회수 가능
+    # wf_list 가 비어있어도 lot_cds (제품코드) 는 REPORT/SQL 결과에서 추출 가능
     if not wads_lot_cds:
         src = []
         if query_payload and isinstance(query_payload, list):
@@ -671,7 +671,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
                 "wads_result": {
                     "groupkey": groupkey_str,         # ← map_agent.groupkey 채널 (lot.wf 콤마구분)
                     "lot_cds": wads_lot_cds,          # 제품코드 (참고용 — lot id 아님)
-                    "wf_ids": [],                     # WADS 는 wafer slot 번호 따로 회수 안 함 — 명시적 빈
+                    "wf_ids": [],                     # WADS 에 wafer slot 번호 단독 컬럼 없음 — 명시적 빈
                     "lot_ids": [],                    # WADS schema 에 lot id 없음 — 명시적 빈
                     "parameter_filter": parameter or "",
                     "date_range": [start_tm or "", end_tm or ""],

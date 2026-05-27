@@ -136,14 +136,14 @@ TODAY's DATE: {today}
 
 - "최근 3일동안 EASY에서 검출된 랏들 map 보여줘"  (WADS chain → map_agent)
   → task_1: wads_agent, params={{fail_type:"EASY", wads_start_tm:"<3일전>", wads_end_tm:"{today_yyyy_mm_dd}"}},
-            goal:"최근 3일 EASY 검출 wafer GROUPKEY 회수 (후속 map_agent chain)"
+            goal:"최근 3일 EASY 검출 wafer (lot.wf) 목록 조회 (후속 map_agent chain)"
   → task_2: map_agent, params={{groupkey:"", map_type:"all"}},
             goal:"검출된 wafer (lot.wf) map 시각화"
   ※ task_2.groupkey 는 "" 로 두면 replanner 가 task_1 의 wads_sql_result.groupkey ("lot.wf" 콤마구분) 로 자동 채움.
   ※ map_agent 는 groupkey 단일 채널만으로 lot+wafer 식별 충분 — lot_ids/wf_ids 비워둘 것.
 
 - "5NA WADS 검출 wafer 이력 확인"  (WADS chain → lot_history_agent)
-  → task_1: wads_agent, params={{lotcd:"5NA"}}, goal:"5NA WADS 검출 wafer GROUPKEY 회수 (후속 lot_history chain)"
+  → task_1: wads_agent, params={{lotcd:"5NA"}}, goal:"5NA WADS 검출 wafer (lot.wf) 목록 조회 (후속 lot_history chain)"
   → task_2: lot_history_agent, params={{lot_ids:[]}}, goal:"검출 wafer 의 lot 이력 조회"
   ※ lot_history_agent 는 lot 단위라 groupkey 의 lot 부분(앞자리) 사용 — replanner 또는 lot_history_agent 측에서 split.
 
@@ -551,12 +551,12 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 - 첫 도구 호출이 성공하면 그 결과로 종료하라. 같은 결과를 다른 방법으로 재검증하지 말 것.
 
 [CHAIN 시나리오 — task goal 에 다음 키워드가 있으면 추가 도구 호출 필수]
-- "wafer 회수" / "GROUPKEY 회수" / "후속 chain" / "후속 map_agent" / "후속 lot_history"
+- "wafer 목록" / "검출된 wafer" / "GROUPKEY" / "lot.wf" / "후속 map_agent" / "후속 lot_history"
   → **wads_query_wf_list 를 반드시 호출**. 이게 storage["wf_list"] 를 채워야 chain output 의
     groupkey (lot.wf 콤마구분) 가 발사되고, 하류 task 가 빈 입력 없이 받음.
 - "검출된 lot 으로 map" / "검출 wafer cummap" 등 후속 시각화가 따라오면
   → wads_query_data 가 아니라 **wads_query_wf_list 우선** 호출.
-- chain 시나리오에서는 답변 본문은 짧게 (1-2문장 + GROUPKEY 개수), [RENDER: text] 로 artifact 생략.
+- chain 시나리오에서는 답변 본문은 짧게 (1-2문장 + wafer 개수), [RENDER: text] 로 artifact 생략.
   하류 agent 가 진짜 결과물을 만들 거라 WADS 카드는 불필요.
 
 ## 데이터 구조 (WADS Oracle 2개 테이블)
