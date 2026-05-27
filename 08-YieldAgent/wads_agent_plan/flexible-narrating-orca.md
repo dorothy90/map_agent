@@ -296,6 +296,85 @@ WADS 외 같은 레포의 자산 (모두 read-only adapter):
 
 ---
 
+### 2.7 [HIGH] HTML 컬럼 격리 가드 — "열화 리포트" 의도일 때만 HTML 노출
+
+**문제**: `wads_query_sql` 은 LLM 이 생성한 SQL 을 실행한다. `_SQL_GEN_PROMPT` (`wads_tools.py:295-312`) 에 "Do NOT include HTML column unless explicitly requested" 가 있지만 **soft 규칙** — LLM 이 어기면 그대로 통과한다. 그리고 `_validate_sql` (`wads_tools.py:251-283`) 의 4계층 검증에는 HTML 차단 없음. 결과:
+
+- "4SS step 자세히 보여줘" → LLM 이 SQL 에 HTML 슬쩍 끼움 → CLOB 수십 KB ×N행이 ContextVar 에 적재.
+- §2.1(b) 변경 후엔 그 결과가 그대로 LLM 회신 텍스트(≤20행 전체 JSON 노출)에도 흘러들어가 **컨텍스트 폭발**.
+- §2.5.A markdown artifact 경로에서도 LLM 본문에 raw HTML 토큰이 섞일 위험.
+
+**원칙**: HTML CLOB 을 반환하는 경로는 단 하나여야 한다 — **`wads_get_html_report`**. 그 외 모든 도구(`wads_query_data`, `wads_query_sql`, `wads_query_wf_list`, 모든 lookup) 는 HTML 컬럼을 절대 SELECT 하지 않는다. 코드 레벨로 강제한다.
+
+#### 2.7.A SQL 검증에 HTML 차단 계층 추가 (계층5)
+
+`_validate_sql` (`wads_tools.py:251`) 에 새 계층 추가:
+
+```python
+# 계층5: HTML 컬럼 금지 (wads_query_sql 진입점 한정)
+_HTML_TOKEN = re.compile(r"\bHTML\b", re.IGNORECASE)
+if _HTML_TOKEN.search(cleaned):
+    return False, (
+        "HTML 컬럼은 wads_query_sql 로 조회할 수 없습니다. "
+        "열화 리포트가 필요하면 wads_get_html_report 도구를 사용하세요."
+    )
+```
+
+- 적용 위치: `wads_query_sql` (`wads_tools.py:317`) 의 검증 단계에서만 호출. `wads_get_html_report` 의 하드코딩된 SELECT 는 영향 없음.
+- 부수효과: `\bHTML\b` 토큰이 컬럼 alias / 테이블명에 등장하면 false positive. 현 스키마(§0)에는 HTML 외 다른 곳에서 등장하지 않으므로 안전.
+
+#### 2.7.B `SELECT *` 금지 — `*` 가 곧 HTML 누출 통로
+
+DF_WADS_REPORT 는 HTML 컬럼을 보유하므로 `SELECT *` 는 의도와 무관하게 HTML 을 반환. 두 가지 옵션:
+
+- **권장**: `wads_query_sql` 에서 `SELECT *` 자체를 금지. 검증 메시지: "컬럼을 명시적으로 나열해주세요. LOTCD, CATEGORY, PARAMETER, END_TM 중 필요한 것만 선택하세요."
+- 대안: `*` 를 자동 rewrite — 테이블별 안전 컬럼 목록으로 치환. 복잡도 ↑ 권장 안 함.
+
+```python
+if re.search(r"SELECT\s+\*", cleaned, re.IGNORECASE):
+    return False, "SELECT * 는 허용되지 않습니다. 컬럼을 명시적으로 나열하세요."
+```
+
+#### 2.7.C `_SQL_GEN_PROMPT` 강화
+
+soft 규칙도 함께 강화 — LLM 이 검증에서 튕긴 뒤 재시도할 때 빨리 수렴하도록.
+
+`wads_tools.py:295-312` 의 `_SQL_GEN_PROMPT` 의 `Rules:` 블록에 추가:
+
+```
+- NEVER select the HTML column. HTML is a large CLOB; if the user needs
+  the report HTML, do NOT generate SQL — return an error message
+  telling the user to call wads_get_html_report instead.
+- NEVER use SELECT *. Always list columns explicitly.
+- Safe columns for SELECT: LOTCD, CATEGORY, PARAMETER, END_TM (DF_WADS_REPORT)
+                          OPER_PARA, GROUPKEY, END_TM, LOT_CD (DF_WADS_WF_LIST)
+```
+
+#### 2.7.D 시스템 프롬프트의 도구 선택 가이드 명시
+
+`prompts.py:526-616` WADS 시스템 프롬프트에 도구 선택 가드 한 줄:
+
+```
+- "리포트 보여줘" / "열화 리포트" / "HTML" / "내용 자세히" 등 본문 요청 → wads_get_html_report (유일한 HTML 경로).
+- 통계 / 건수 / 분포 / 비교 / 추세 / lot 리스트 → wads_query_data 또는 wads_query_sql. 이 경로는 HTML 컬럼을 반환하지 않습니다.
+- 두 의도가 섞이면 도구를 **두 번** 호출하세요 (먼저 통계, 그다음 리포트).
+```
+
+#### 2.7.E 회복 경로
+
+검증에서 튕긴 SQL 은 어떻게 처리되나?
+
+1. `_validate_sql` 가 reason 문자열 반환 → `wads_query_sql` 의 검증 실패 분기 (`wads_tools.py:354`) 가 ReAct LLM 에 그대로 회신.
+2. WADS 시스템 프롬프트의 retry 규칙 ("wads_query_sql 실패 시 1회만 query_description 수정", `prompts.py:560`) 에 따라 LLM 이 HTML 없이 재생성.
+3. 재시도도 실패하면 `wads_query_data` 로 폴백. 이미 §2.1(a) 에서 풍부한 요약을 회신하므로 답변 가능.
+4. 사용자 의도가 진짜 "리포트" 였으면 LLM 이 `wads_get_html_report` 로 전환 (§2.7.D 가이드).
+
+#### 2.7.F 부차 가드: `wads_query_data` / `wads_query_wf_list` 도 HTML 컬럼 노출 차단
+
+이 두 도구는 `columns` 인자를 외부에 노출하지 않고 내부에서 하드코딩하므로 이미 안전 (`wads_tools.py:142`, §2.4.0 신규 도구도 동일 패턴). **단**, 향후 누군가 `columns` 인자를 LLM 에 노출하지 않도록 `_query_wads_data` (`wads_tools.py:49`) 의 docstring 에 "columns 는 내부 호출 전용. LLM/도구에 직접 노출 금지" 주석 추가.
+
+---
+
 ### 2.6 [MEDIUM] 응답 합성 단계 (선택적 강화)
 
 **현재**: ReAct 한 사이클에서 LLM이 도구 호출 → 곧장 사용자 답변 생성.
@@ -333,6 +412,8 @@ WADS 외 같은 레포의 자산 (모두 read-only adapter):
 ### D-1. 도구 결과를 LLM 메시지에 HTML 그대로 흘리지 말 것
 LLM 컨텍스트가 HTML 폭탄을 맞으면 다음 턴에서 환각 / 응답 폭주 위험. 현재도 별도 카드로 격리되어 있으니 그대로 둘 것. §2.1 (a)/(c) 가드 유지.
 
+**§2.7 과 정합성**: D-1 (HTML 을 LLM 메시지로 흘리지 말 것) 의 강제 메커니즘이 §2.7. 그동안은 프롬프트 soft 규칙뿐이었으나, §2.1(b) 로 SQL 결과 전체 JSON 을 LLM 에 노출하게 되면 HTML 한 행이 곧 D-1 위반 → 둘은 같은 PR 에서 함께 머지돼야 한다.
+
 ### D-2. "표 금지" 강제 규칙 완전 제거 금지
 artifact 카드가 이미 표인 경우(report/table 모드)에는 LLM이 본문에서 같은 표를 또 그리지 않도록 **조건부 금지**는 유지. 무조건 금지는 풀고, "artifact가 발사된 모드에서는 본문 표 금지" 로 좁힘.
 
@@ -353,6 +434,10 @@ OpenRouter 호환성 문제로 폐기됨 (기존 플랜 D-3 그대로 적용).
 | **P0** | §0-3 | env var 분리: `WADS_REPORT_TABLE`, `WADS_WF_LIST_TABLE` + SQL allowlist 2개 | wads_tools.py:25, 278-282 |
 | HIGH | R-1 (a) | `wads_query_data` LLM 회신에 CATEGORY/PARAMETER/LOTCD 분포 + 일평균 추가 + `category` 필터 | wads_tools.py:128-169 |
 | HIGH | R-1 (b) | `wads_query_sql` 결과 ≤20행은 전체 JSON, 초과시 top10 + 통계 메타 | wads_tools.py:391-411 |
+| HIGH | §2.7.A | **SQL 검증 계층5 추가 — HTML 토큰 차단** (wads_query_sql 전용) | wads_tools.py:251-283 |
+| HIGH | §2.7.B | **`SELECT *` 금지** (wads_query_sql) | wads_tools.py:251-283 |
+| HIGH | §2.7.C | `_SQL_GEN_PROMPT` 에 "NEVER HTML / NEVER *" 강화 | wads_tools.py:295-312 |
+| HIGH | §2.7.D | 시스템 프롬프트에 "HTML 경로는 wads_get_html_report 유일" 가드 | prompts.py:576-591 |
 | HIGH | R-2 | `[RENDER:]` 태그 파싱 (`text/md/report/table/auto`) + `wads_agent_node` 분기 | wads_agent.py:302-345, common.py |
 | HIGH | R-2' (A) | **artifact 기본형 markdown 전환** — `[RENDER: md]` 케이스에서 본문을 markdown artifact 로 발사 | wads_agent.py, models.py:29 |
 | HIGH | R-2' (B) | **레이아웃 레지스트리** — `_render_wads_sql_html` 을 kpi/distribution/pivot/trend/table 5종으로 분기 + 도구 측 자동 감지 | wads_agent.py:116-169, wads_tools.py |
@@ -381,13 +466,14 @@ OpenRouter 호환성 문제로 폐기됨 (기존 플랜 D-3 그대로 적용).
 5. `_SQL_GEN_PROMPT` 스키마 블록 전면 교체.
 6. 운영에서 LOTID/CTN_DESC view alias 가 있는지 확인 — 있다면 호환성 alias 한 줄 추가.
 
-### PR1 — 기반: 데이터 가시성 + 모드 시그널 + markdown artifact (R-1 + R-2 + R-2'.A + R-2'.D + R-3)
-**한 PR에 묶음 — 셋이 분리되면 사용자 체감 변화 없음.**
+### PR1 — 기반: 데이터 가시성 + 모드 시그널 + markdown artifact + HTML 격리 (R-1 + R-2 + R-2'.A + R-2'.D + R-3 + §2.7)
+**한 PR에 묶음 — 셋이 분리되면 사용자 체감 변화 없음. §2.7 가드도 함께 — R-1(b) 가 SQL 결과를 LLM 에 노출하기 때문에 HTML 누출 차단이 같은 PR 에서 강제돼야 함.**
 1. `extract_render_mode` 헬퍼 추가 (`common.py`). 태그 집합: `text | md | report | table | auto`.
 2. `wads_query_data` / `wads_query_sql` 회신 텍스트 강화 (§2.1) + multi-value 시그너처 확장 (§2.5.D).
 3. `wads_agent_node` 에 `[RENDER:]` 분기 추가 (§2.2) + **`md` 케이스에서 본문을 `ArtifactType.markdown` 로 발사** (§2.5.A).
-4. WADS 시스템 프롬프트 자유도 확대 + `[RENDER:]` 사용 가이드 (특히 통계/분포는 기본 `md` 권장) + step → PARAMETER 예시 교체 (§2.3).
-5. **검증**: 7가지 의도(통계/리포트/해석/리스트/카테고리 비교/wafer/명시적 표) 케이스 수동 확인. 같은 질의 5종 입력 시 **artifact 종류가 의도별로 달라지는지** 명시적으로 체크.
+4. WADS 시스템 프롬프트 자유도 확대 + `[RENDER:]` 사용 가이드 (특히 통계/분포는 기본 `md` 권장) + step → PARAMETER 예시 교체 (§2.3) + **HTML 경로 가드 (§2.7.D)**.
+5. **HTML 가드 (§2.7)**: `_validate_sql` 계층5 (HTML 토큰 차단) + `SELECT *` 금지 + `_SQL_GEN_PROMPT` 강화.
+6. **검증**: 7가지 의도(통계/리포트/해석/리스트/카테고리 비교/wafer/명시적 표) 케이스 + **HTML 누출 negative test 3종**: (a) "4SS step 자세히" → SQL 에 HTML 안 들어가야, (b) "SELECT * FROM ..." 자연어 요청 → 거부, (c) "리포트 본문 보여줘" → `wads_get_html_report` 로 routing.
 
 ### PR1.5 — 레이아웃 레지스트리 (R-2'.B)
 PR1 만으로도 `[RENDER: md]` 경로는 다양해지지만, `table`/`auto` 경로가 여전히 단조롭다면 곧장 이 PR.
@@ -429,6 +515,9 @@ PR1 만으로도 `[RENDER: md]` 경로는 다양해지지만, `table`/`auto` 경
 | 7 | "5NA 4SS 어떤 GROUPKEY가 검출됐어?" | wads_query_wf_list → GROUPKEY 리스트 + LOTCD 분포. `[RENDER: md]`. |
 | 8 | "4SS 일자별 검출 추이" | wads_query_sql(group by end_tm) → `[RENDER: table:trend]` → **시계열 layout** (PR5 에선 image artifact). |
 | 9 | "현재 5NA EASY 건수만 딱 알려줘" | wads_query_sql(COUNT) → 단일 행 1숫자 → `[RENDER: table:kpi]` → **큰 숫자 카드 1개**. |
+| 10 | "4SS step 자세히 보여줘" (모호한 의도) | LLM 이 HTML 끼운 SQL 생성하면 검증 거부 → "wads_get_html_report 사용하세요" → 재시도에서 올바른 도구 선택. **HTML 누출 0**. |
+| 11 | "전체 컬럼 다 SELECT *" (의도적 우회) | `_validate_sql` 가 `SELECT *` 거부 → "컬럼을 명시적으로 나열" 안내. |
+| 12 | "4SS EASY 리포트 + 통계 같이" | 도구 2회 호출: 통계는 `wads_query_data` (HTML 없음), 리포트는 `wads_get_html_report`. artifact 2개 (markdown + html report). |
 
 ---
 
