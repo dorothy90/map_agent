@@ -831,6 +831,125 @@ def wads_lookup_param_context(
     return "\n".join(lines)
 
 
+# ── 외부 데이터: Fail History 사례 lookup ──────────────────────
+
+
+@tool
+@observe(name="wads_lookup_related_failures")
+def wads_lookup_related_failures(
+    lotcd: str,
+    parameter: str,
+    top_k: int = 3,
+) -> str:
+    """동일 product(lotcd) + fail_type(parameter) 의 과거 불량 사례를 OpenSearch 에서 lookup.
+
+    "원인이 뭘까?", "비슷한 사례 있어?" 류 질의에 한해 1회 호출. 본문 보강용 — artifact 없음.
+
+    Args:
+        lotcd: 제품 로트코드 (예: "5NA").
+        parameter: fail_type (예: "EASY", "TWT").
+        top_k: 반환 사례 개수 (기본 3, 최대 5).
+
+    Returns:
+        과거 사례 N건 요약 (doc_id / cause / action / date). 없으면 빈 결과 안내.
+    """
+    try:
+        from fail_history_tools import _search_opensearch
+    except Exception as e:
+        logger.warning("[wads_lookup_related_failures] import 실패: %s", e)
+        return f"fail_history 모듈을 사용할 수 없습니다: {e}"
+
+    top_k = max(1, min(top_k, 5))
+    try:
+        hits = _search_opensearch(
+            query=f"{lotcd} {parameter}",
+            product=lotcd,
+            fail_type=parameter,
+            top_k=top_k,
+        )
+    except Exception as e:
+        logger.warning("[wads_lookup_related_failures] OpenSearch 실패: %s", e)
+        return f"OpenSearch 조회 실패: {e}"
+
+    if not hits:
+        return f"'{lotcd} / {parameter}' 에 대한 과거 불량 사례가 없습니다."
+
+    lines = [f"과거 불량 사례 {len(hits)}건 (product={lotcd}, fail_type={parameter}):"]
+    for h in hits:
+        cause = (h.get("cause") or "").strip().replace("\n", " ")[:120]
+        action = (h.get("action") or "").strip().replace("\n", " ")[:120]
+        date = h.get("date", "")
+        doc_id = h.get("doc_id", "")
+        cause_oper = h.get("cause_oper", "")
+        lines.append(
+            f"- [{doc_id}] {date} cause_oper={cause_oper}"
+            + (f"\n    cause: {cause}" if cause else "")
+            + (f"\n    action: {action}" if action else "")
+        )
+    return "\n".join(lines)
+
+
+# ── 외부 데이터: Yield 상관 분석 ───────────────────────────────
+
+
+@tool
+@observe(name="wads_correlate_with_yield")
+def wads_correlate_with_yield(
+    lotcd: str,
+    ref_date: Optional[str] = None,
+    unit: str = "weekly",
+    periods: int = 4,
+) -> str:
+    """같은 lotcd 의 yield 추세를 yield_db 에서 조회 → WADS 검출과의 상관 분석용 요약 반환.
+
+    "검출이 늘었는데 수율은?", "yield 같이 떨어졌나?" 류 질의에 사용. 본문 보강용 — artifact 없음.
+
+    Args:
+        lotcd: 제품 로트코드 (예: "5NA").
+        ref_date: 기준 날짜 "YYYY-MM-DD" (선택, 기본=오늘).
+        unit: "weekly" | "monthly" | "daily" (기본 weekly).
+        periods: 조회 기간 수 (기본 4).
+
+    Returns:
+        기간별 yield 요약. pt1h, pt1c, gms 등 핵심 지표만 추려서.
+    """
+    try:
+        from yield_db import _fetch_periods
+        from common import PARA_COLUMNS
+    except Exception as e:
+        logger.warning("[wads_correlate_with_yield] import 실패: %s", e)
+        return f"yield_db 모듈을 사용할 수 없습니다: {e}"
+
+    from datetime import date as _date, datetime as _dt
+    try:
+        ref = _dt.strptime(ref_date, "%Y-%m-%d").date() if ref_date else _date.today()
+    except Exception:
+        ref = _date.today()
+    periods = max(1, min(periods, 12))
+
+    try:
+        rows = _fetch_periods(lotcd, ref, unit=unit, periods=periods)
+    except Exception as e:
+        logger.warning("[wads_correlate_with_yield] yield_db 실패: %s", e)
+        return f"yield 조회 실패: {e}"
+
+    if not rows:
+        return f"yield 데이터가 없습니다 (lotcd={lotcd}, unit={unit}, periods={periods})."
+
+    # 핵심 지표만 — 노이즈 줄이기
+    key_cols = ["lotcount", "wfCount"] + [c for c in PARA_COLUMNS if c in {"VTH", "IDSAT", "PT1H"}]
+    lines = [f"yield 추세 (lotcd={lotcd}, unit={unit}, n={len(rows)}):"]
+    for r in rows:
+        period = r.get("week", "?")
+        parts = [f"period={period}"]
+        for c in key_cols:
+            v = r.get(c, "-")
+            if v not in ("-", None, ""):
+                parts.append(f"{c}={v}")
+        lines.append("- " + ", ".join(parts))
+    return "\n".join(lines)
+
+
 # ── WADS 전용 도구 리스트 ─────────────────────────────────────
 WADS_TOOLS = [
     wads_query_data,
@@ -838,4 +957,6 @@ WADS_TOOLS = [
     wads_query_sql,
     wads_query_wf_list,
     wads_lookup_param_context,
+    wads_lookup_related_failures,
+    wads_correlate_with_yield,
 ]

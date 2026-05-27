@@ -569,6 +569,15 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
    - "EASY 가 뭐야?", "PT1H 와 PT1C 차이?", "왜 늘었지?" 등 **해석성** 질의에만 1회 호출.
    - 통계/리스트 단순 조회에서는 호출하지 마세요 (불필요한 비용).
    - 반환은 LLM 본문 보강용 — 별도 artifact 가 발사되지 않습니다.
+6. **wads_lookup_related_failures** (fail_history OpenSearch — 본문 보강용)
+   - 인자: lotcd (필수), parameter (필수), top_k=3
+   - "원인이 뭘까?", "비슷한 사례 있어?" 류 질의에만 1회 호출.
+   - 같은 product + fail_type 의 과거 cause/action 사례.
+7. **wads_correlate_with_yield** (yield_db — 본문 보강용)
+   - 인자: lotcd (필수), ref_date "YYYY-MM-DD" (선택), unit (weekly|monthly|daily), periods
+   - "검출이 늘었는데 수율은?", "yield 같이 떨어졌나?" 류 상관 질의에만 1회 호출.
+
+**lookup 도구 호출 가드**: 5/6/7 은 합쳐서 최대 2회. 단순 통계/리스트 조회에서는 모두 호출하지 말 것.
 
 ## 도구 선택 가드 (반드시 지킬 것)
 - "리포트 / HTML / 본문 / 내용 자세히" → **wads_get_html_report** (유일).
