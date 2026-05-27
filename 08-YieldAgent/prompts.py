@@ -554,9 +554,15 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
    - 인자: lotcd, category, parameter, start_tm, end_tm
    - 사용자가 "리포트 보여줘", "열화 리포트", "내용 자세히" 처럼 본문을 명시적으로 요청할 때만 사용.
    - 여러 조건의 리포트를 비교하려면 도구를 여러 번 호출 (누적 표시).
-3. **wads_query_sql** (복잡한 SQL — HTML 절대 반환 불가)
+3. **wads_query_wf_list** (DF_WADS_WF_LIST — wafer/GROUPKEY 단위)
+   - 인자: lotcd, category, parameter, start_tm, end_tm
+   - "검출된 wafer 몇 개", "어떤 GROUPKEY 가 검출됐어" 류 질의에 사용.
+   - DF_WADS_REPORT 가 (lotcd × category × parameter × end_tm) 단위라면,
+     이 테이블은 그 리포트에 포함된 **개별 wafer** 단위.
+4. **wads_query_sql** (복잡한 SQL — HTML 절대 반환 불가)
    - GROUP BY 집계, 여러 PARAMETER OR/AND, NOT LIKE, 서브쿼리 등에만 사용.
    - query_description 에 자연어로 조회 의도 설명.
+   - 두 테이블 모두 SELECT 가능 (FROM DF_WADS_REPORT 또는 DF_WADS_WF_LIST, JOIN 가능).
    - 실패하면 1회만 재시도 후 wads_query_data 로 폴백.
 
 ## 도구 선택 가드 (반드시 지킬 것)

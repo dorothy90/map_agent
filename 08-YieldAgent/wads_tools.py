@@ -634,5 +634,137 @@ def _summarize_sql_result(rows: List[Dict[str, Any]], col_names: List[str]) -> s
     )
 
 
+# ── DF_WADS_WF_LIST 조회 ─────────────────────────────────────
+
+
+@observe(name="wads_query_wf_list_oracle")
+def _query_wf_list_data(
+    lot_cd: Optional[str] = None,
+    category: Optional[str] = None,
+    parameter: Optional[str] = None,
+    start_tm: Optional[str] = None,
+    end_tm: Optional[str] = None,
+    columns: str = "LOT_CD, OPER_PARA, GROUPKEY, END_TM",
+) -> pd.DataFrame:
+    """DF_WADS_WF_LIST 조회. category + parameter 는 OPER_PARA LIKE 합성."""
+    logger.info(
+        "[_query_wf_list_data] 조회: lot_cd=%s, category=%s, parameter=%s, start=%s, end=%s",
+        lot_cd, category, parameter, start_tm, end_tm,
+    )
+    conditions = []
+    bind_vars = {}
+
+    if lot_cd:
+        conditions.append("UPPER(LOT_CD) LIKE UPPER(:lot_cd)")
+        bind_vars["lot_cd"] = f"%{lot_cd}%"
+    # OPER_PARA 는 "{CATEGORY}_{PARAMETER}" 결합 — 두 인자를 합쳐서 LIKE
+    if category and parameter:
+        conditions.append("UPPER(OPER_PARA) LIKE UPPER(:oper_para)")
+        bind_vars["oper_para"] = f"%{category}_{parameter}%"
+    elif category:
+        conditions.append("UPPER(OPER_PARA) LIKE UPPER(:oper_para)")
+        bind_vars["oper_para"] = f"%{category}_%"
+    elif parameter:
+        conditions.append("UPPER(OPER_PARA) LIKE UPPER(:oper_para)")
+        bind_vars["oper_para"] = f"%_{parameter}%"
+
+    if start_tm and end_tm:
+        conditions.append(
+            f"TRUNC({_END_TM_DATE_EXPR}) "
+            "BETWEEN TO_DATE(:start_tm, 'YY/MM/DD') AND TO_DATE(:end_tm_range, 'YY/MM/DD')"
+        )
+        bind_vars["start_tm"] = _normalize_date_input(start_tm)
+        bind_vars["end_tm_range"] = _normalize_date_input(end_tm)
+    elif end_tm:
+        conditions.append("END_TM LIKE :end_tm")
+        bind_vars["end_tm"] = f"%{_normalize_date_input(end_tm)}%"
+
+    where_clause = " AND ".join(conditions) if conditions else "1=1"
+    sql = f"SELECT {columns} FROM {_WF_LIST_TABLE} WHERE {where_clause}"
+    logger.info("[_query_wf_list_data] SQL: %s | bind: %s", sql, bind_vars)
+
+    conn = _get_oracle_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sql, bind_vars)
+        col_names = [desc[0].lower() for desc in cursor.description]
+        rows = cursor.fetchall()
+        cursor.close()
+        df = pd.DataFrame(rows, columns=col_names)
+        logger.info("[_query_wf_list_data] 완료: %d rows", len(df))
+        return df
+    finally:
+        conn.close()
+
+
+@tool
+def wads_query_wf_list(
+    lotcd: Optional[str] = None,
+    category: Optional[str] = None,
+    parameter: Optional[str] = None,
+    start_tm: Optional[str] = None,
+    end_tm: Optional[str] = None,
+) -> str:
+    """DF_WADS_WF_LIST(검출된 wafer 목록)를 조회합니다.
+
+    DF_WADS_REPORT 는 리포트 단위(lotcd×category×parameter×end_tm)인 반면
+    이 테이블은 그 리포트에 포함된 **개별 wafer(GROUPKEY)** 단위입니다.
+    "검출된 wafer 몇 개", "어떤 GROUPKEY" 류 질의에 사용하세요.
+
+    Args:
+        lotcd: 로트코드 필터 (DF_WADS_WF_LIST.LOT_CD, 부분 일치). 미입력시 전체.
+        category: 테스트 카테고리 ("PT1H_TEST" 또는 "PT1C_TEST"). OPER_PARA 합성에 사용.
+        parameter: fail_type 필터 (예: "EASY", "TWT"). OPER_PARA 합성에 사용.
+        start_tm: 시작 날짜 (YYYY-MM-DD 또는 YY/MM/DD). end_tm 과 함께 범위.
+        end_tm: 종료 날짜.
+
+    Returns:
+        조회 결과 요약 (총 wafer 수 + LOT_CD/OPER_PARA 분포 + 대표 GROUPKEY 샘플).
+    """
+    storage = _get_tool_payload()
+    defaults = storage.get("_defaults", {})
+    lotcd = lotcd or defaults.get("lotcd")
+    category = category or defaults.get("category")
+    parameter = parameter or defaults.get("parameter")
+    start_tm = start_tm or defaults.get("start_tm")
+    end_tm = end_tm or defaults.get("end_tm")
+    logger.info(
+        "[wads_query_wf_list] 호출: lotcd=%s, category=%s, parameter=%s, start_tm=%s, end_tm=%s",
+        lotcd, category, parameter, start_tm, end_tm,
+    )
+
+    try:
+        df = _query_wf_list_data(
+            lot_cd=lotcd,
+            category=category,
+            parameter=parameter,
+            start_tm=start_tm,
+            end_tm=end_tm,
+        )
+    except Exception as e:
+        logger.error("[wads_query_wf_list] Oracle 오류: %s", e, exc_info=True)
+        storage["wf_list"] = [{"error": "DBError", "detail": f"Oracle 연결/조회 오류: {e}"}]
+        return f"오류: Oracle 연결/조회에 실패했습니다. ({e})"
+
+    if df.empty:
+        logger.info("[wads_query_wf_list] 결과 없음")
+        storage["wf_list"] = [{"error": "NoMatch", "detail": "조건에 맞는 wafer 검출 기록이 없습니다."}]
+        return "조건에 맞는 wafer 검출 기록이 없습니다."
+
+    result = df.to_dict(orient="records")
+    storage["wf_list"] = result
+    n = len(result)
+
+    lines = [f"WADS 검출 wafer 조회 완료: 총 {n}개 (DF_WADS_WF_LIST)"]
+    if start_tm and end_tm:
+        lines.append(f"- 기간: {start_tm} ~ {end_tm}")
+    lines.append(f"- LOT_CD 분포: {_top_counts([r.get('lot_cd', '') for r in result])}")
+    lines.append(f"- OPER_PARA 분포: {_top_counts([r.get('oper_para', '') for r in result])}")
+    sample_keys = [r.get("groupkey") for r in result[:5] if r.get("groupkey")]
+    if sample_keys:
+        lines.append(f"- 대표 GROUPKEY 5개: {', '.join(map(str, sample_keys))}")
+    return "\n".join(lines)
+
+
 # ── WADS 전용 도구 리스트 ─────────────────────────────────────
-WADS_TOOLS = [wads_query_data, wads_get_html_report, wads_query_sql]
+WADS_TOOLS = [wads_query_data, wads_get_html_report, wads_query_sql, wads_query_wf_list]

@@ -497,10 +497,12 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     query_payload = storage.get("query")
     reports_payload = storage.get("reports", [])
     sql_result_payload = storage.get("sql_result")
+    wf_list_payload = storage.get("wf_list")
 
     logger.debug(
-        "[WADS Agent] query_payload: %s, reports_payload count: %d, sql_result: %s",
-        query_payload is not None, len(reports_payload), sql_result_payload is not None,
+        "[WADS Agent] query_payload: %s, reports_payload count: %d, sql_result: %s, wf_list: %s",
+        query_payload is not None, len(reports_payload),
+        sql_result_payload is not None, wf_list_payload is not None,
     )
 
     # [RENDER: <mode>[:layout]] 파싱 — LLM 이 답변 본문에서 artifact 모드를 결정
@@ -510,6 +512,12 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     has_reports = bool(reports_payload)
     has_sql = bool(sql_result_payload)
     has_query = bool(query_payload)
+    has_wf_list = bool(wf_list_payload) and not (
+        isinstance(wf_list_payload, list)
+        and wf_list_payload
+        and isinstance(wf_list_payload[0], dict)
+        and wf_list_payload[0].get("error")
+    )
 
     # 모드별 artifact 발사 결정
     artifacts: list = []
@@ -536,7 +544,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
                 "title": "wads_report",
             }
         )
-    elif render_mode == "table" and (has_sql or has_query):
+    elif render_mode == "table" and (has_sql or has_query or has_wf_list):
         if has_sql:
             # LLM 지정 layout > 도구 측 힌트 > 자동 감지 (_render_wads_sql_html 내부)
             layout = render_layout or storage.get("render_layout", "")
@@ -546,6 +554,16 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
                     "mime": "text/html",
                     "data": _render_wads_sql_html(sql_result_payload, layout=layout),
                     "title": "wads_sql_result",
+                }
+            )
+        elif has_wf_list:
+            # WF_LIST 결과도 SQL 렌더러 재활용 — table layout 강제
+            artifacts.append(
+                {
+                    "type": "html",
+                    "mime": "text/html",
+                    "data": _render_wads_sql_html(wf_list_payload, layout=render_layout or "table"),
+                    "title": "wads_wf_list",
                 }
             )
         else:
@@ -578,6 +596,15 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
                     "title": "wads_sql_result",
                 }
             )
+        elif has_wf_list:
+            artifacts.append(
+                {
+                    "type": "html",
+                    "mime": "text/html",
+                    "data": _render_wads_sql_html(wf_list_payload, layout=render_layout or "table"),
+                    "title": "wads_wf_list",
+                }
+            )
         elif has_query:
             artifacts.append(
                 {
@@ -589,8 +616,9 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             )
 
     logger.info(
-        "[WADS Agent] render_mode=%s layout=%s artifacts=%d (reports=%s sql=%s query=%s)",
-        render_mode, render_layout, len(artifacts), has_reports, has_sql, has_query,
+        "[WADS Agent] render_mode=%s layout=%s artifacts=%d (reports=%s sql=%s query=%s wf_list=%s)",
+        render_mode, render_layout, len(artifacts),
+        has_reports, has_sql, has_query, has_wf_list,
     )
 
     result_message = AIMessage(content=answer, name="wads_agent")
