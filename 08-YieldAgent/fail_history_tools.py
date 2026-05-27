@@ -177,6 +177,18 @@ def _expand_acronyms(query: str) -> str:
     return expanded
 
 
+# fail_type 입력에서 PT1H_TEST_ / PT1C_TEST_ 접두를 제거 (대소문자 무시).
+# 인덱스의 fail_type 값은 접두 없이 저장되므로, 외부에서 stage 접두가 붙어
+# 들어와도 prefix filter 가 0-hit 나지 않도록 정규화한다.
+_FAIL_TYPE_STAGE_PREFIX_RE = re.compile(r"^(?:PT1[HC]_TEST_)+", re.IGNORECASE)
+
+
+def _normalize_fail_type(fail_type: str) -> str:
+    if not fail_type:
+        return fail_type
+    return _FAIL_TYPE_STAGE_PREFIX_RE.sub("", fail_type)
+
+
 # ── OpenSearch 하이브리드 검색 ────────────────────────────────
 @observe(name="fh_search_opensearch")
 def _search_opensearch(
@@ -188,6 +200,8 @@ def _search_opensearch(
 ) -> List[Dict[str, Any]]:
     """BM25 + kNN 하이브리드 검색 실행"""
     client = _get_opensearch_client()
+
+    fail_type = _normalize_fail_type(fail_type)
 
     # 약어 확장 후 임베딩 생성
     expanded_query = _expand_acronyms(query)
