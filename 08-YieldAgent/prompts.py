@@ -583,6 +583,9 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 - "리포트 / HTML / 본문 / 내용 자세히" → **wads_get_html_report** (유일).
 - "통계 / 건수 / 분포 / 비교 / 추세 / lot 리스트 / GROUPKEY" → wads_query_data 또는 wads_query_sql. 이 두 경로는 HTML 을 절대 반환하지 않습니다.
 - 두 의도가 섞이면 도구를 **분리해 두 번** 호출 (통계 1회 + 리포트 1회).
+- **"A 와 B 둘 다" / "A 또는 B" / "X 제외"** 같은 단순 OR/NOT 조건은 wads_query_sql 이 아니라
+  wads_query_data / wads_query_wf_list 의 **list 인자**(`parameter=["EASY","TWT"]`) 또는
+  **exclude_parameter** 로 처리하세요. SQL 도구는 GROUP BY / COUNT / 서브쿼리 등 진짜 집계에만.
 
 ## 사용 예시
 - 전체 조회: wads_query_data()
@@ -591,8 +594,12 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 - 날짜 범위: wads_query_data(lotcd="5NA", start_tm="2026-03-19", end_tm="2026-03-25")
 - 특정 fail_type 리포트: wads_get_html_report(parameter="EASY")
 - 복합 리포트: wads_get_html_report(lotcd="5NA", category="PT1C_TEST", parameter="TWT")
-- PARAMETER별 집계: wads_query_sql(query_description="5NA 의 3월 PARAMETER 별 건수 집계")
-- 특정 fail_type 제외: wads_query_sql(query_description="TWT 제외한 PT1H_TEST 전체 PARAMETER 목록")
+- **여러 카테고리 비교**: wads_query_data(lotcd="4SS", category=["PT1H_TEST","PT1C_TEST"])
+- **여러 fail_type OR**: wads_query_data(lotcd="5NA", parameter=["EASY","TWT"])
+- **특정 fail_type 제외**: wads_query_data(lotcd="5NA", exclude_parameter=["TWT"])
+- **여러 로트 비교**: wads_query_data(lotcd=["4SS","5NA"], parameter="EASY")
+- **wafer 단위 multi**: wads_query_wf_list(category=["PT1H_TEST","PT1C_TEST"], parameter="EASY")
+- PARAMETER별 집계 (진짜 GROUP BY 필요시): wads_query_sql(query_description="5NA 의 3월 PARAMETER 별 건수 집계")
 
 ## 응답 형식 — 의도에 맞게 적응 (가장 중요)
 사용자 의도에 따라 답변과 artifact 종류를 적응적으로 결정하세요. 답변 마지막 줄에 반드시 다음 두 토큰을 한 줄에 하나씩 출력:

@@ -9,7 +9,10 @@ from __future__ import annotations
 import contextvars
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+# 필터 인자 타입: 단일 str 또는 list[str] 모두 허용 (multi-value OR 결합 지원).
+FilterVal = Union[str, List[str], None]
 
 import oracledb
 import pandas as pd
@@ -74,31 +77,86 @@ def _normalize_date_input(s: str) -> str:
     return s
 
 
+def _ensure_list(v: FilterVal) -> List[str]:
+    """None / 빈문자열 / 단일 str / list[str] 어떤 입력이든 cleaned list[str] 로 정규화."""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        s = v.strip()
+        return [s] if s else []
+    return [x.strip() for x in v if isinstance(x, str) and x.strip()]
+
+
+def _build_like_or(
+    col: str,
+    values: List[str],
+    bind_prefix: str,
+    bind_vars: Dict[str, Any],
+    *,
+    negate: bool = False,
+) -> str:
+    """다중 값을 `(UPPER(col) LIKE UPPER(:p_0) OR ...)` 로 합성.
+
+    negate=True 면 `(UPPER(col) NOT LIKE UPPER(:p_0) AND ...)`.
+    bind_vars 에 `:p_0`, `:p_1`, ... 형식으로 in-place 추가.
+    """
+    if not values:
+        return ""
+    op = "NOT LIKE" if negate else "LIKE"
+    glue = " AND " if negate else " OR "
+    clauses = []
+    for i, v in enumerate(values):
+        key = f"{bind_prefix}_{i}"
+        clauses.append(f"UPPER({col}) {op} UPPER(:{key})")
+        bind_vars[key] = f"%{v}%"
+    return "(" + glue.join(clauses) + ")"
+
+
 # ── Oracle 조회 ───────────────────────────────────────────────
 @observe(name="wads_query_oracle")
 def _query_wads_data(
-    lotcd: Optional[str] = None,
+    lotcd: FilterVal = None,
     end_tm: Optional[str] = None,
     start_tm: Optional[str] = None,
-    parameter: Optional[str] = None,
-    category: Optional[str] = None,
+    parameter: FilterVal = None,
+    category: FilterVal = None,
+    exclude_parameter: Optional[List[str]] = None,
     columns: str = "LOTCD, CATEGORY, PARAMETER, END_TM",
 ) -> pd.DataFrame:
     """DF_WADS_REPORT 조회 (SQL WHERE + LIKE 필터링).
 
-    columns 는 내부 호출 전용. LLM/도구 인자로 직접 노출 금지 (HTML 누출 방지).
-    """
-    logger.info("[_query_wads_data] 조회 시작: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s, category=%s, columns=%s",
-                lotcd, end_tm, start_tm, parameter, category, columns)
-    conditions = []
-    bind_vars = {}
+    필터 인자(lotcd / category / parameter)는 단일 str 또는 list[str] 모두 허용.
+    list 일 경우 OR 결합 (`UPPER(col) LIKE :v0 OR UPPER(col) LIKE :v1`).
+    exclude_parameter 는 NOT LIKE 로 제외.
 
-    if lotcd:
-        conditions.append("UPPER(LOTCD) LIKE UPPER(:lotcd)")
-        bind_vars["lotcd"] = f"%{lotcd}%"
-    if category:
-        conditions.append("UPPER(CATEGORY) LIKE UPPER(:category)")
-        bind_vars["category"] = f"%{category}%"
+    columns 는 내부 호출 전용 — LLM/도구 인자로 직접 노출 금지 (HTML 누출 방지).
+    """
+    logger.info(
+        "[_query_wads_data] 조회: lotcd=%s, category=%s, parameter=%s, exclude=%s, "
+        "start=%s, end=%s, columns=%s",
+        lotcd, category, parameter, exclude_parameter, start_tm, end_tm, columns,
+    )
+    lotcd_l = _ensure_list(lotcd)
+    category_l = _ensure_list(category)
+    parameter_l = _ensure_list(parameter)
+    exclude_l = _ensure_list(exclude_parameter)
+
+    conditions: List[str] = []
+    bind_vars: Dict[str, Any] = {}
+
+    c = _build_like_or("LOTCD", lotcd_l, "lotcd", bind_vars)
+    if c:
+        conditions.append(c)
+    c = _build_like_or("CATEGORY", category_l, "category", bind_vars)
+    if c:
+        conditions.append(c)
+    c = _build_like_or("PARAMETER", parameter_l, "parameter", bind_vars)
+    if c:
+        conditions.append(c)
+    c = _build_like_or("PARAMETER", exclude_l, "excl_param", bind_vars, negate=True)
+    if c:
+        conditions.append(c)
+
     if start_tm and end_tm:
         conditions.append(
             f"TRUNC({_END_TM_DATE_EXPR}) "
@@ -109,9 +167,6 @@ def _query_wads_data(
     elif end_tm:
         conditions.append("END_TM LIKE :end_tm")
         bind_vars["end_tm"] = f"%{_normalize_date_input(end_tm)}%"
-    if parameter:
-        conditions.append("UPPER(PARAMETER) LIKE UPPER(:parameter)")
-        bind_vars["parameter"] = f"%{parameter}%"
 
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     sql = f"SELECT {columns} FROM {_REPORT_TABLE} WHERE {where_clause}"
@@ -145,22 +200,26 @@ def _query_wads_data(
 # ── @tool 함수 ────────────────────────────────────────────────
 @tool
 def wads_query_data(
-    lotcd: Optional[str] = None,
-    end_tm: Optional[str] = None,
+    lotcd: FilterVal = None,
+    category: FilterVal = None,
+    parameter: FilterVal = None,
+    exclude_parameter: Optional[List[str]] = None,
     start_tm: Optional[str] = None,
-    parameter: Optional[str] = None,
-    category: Optional[str] = None,
+    end_tm: Optional[str] = None,
 ) -> str:
     """
     DF_WADS_REPORT 조회. 선택적 필터를 적용하여 매칭되는 리포트의 메타정보를 반환합니다.
     HTML 컬럼은 절대 반환하지 않습니다 (리포트 본문은 wads_get_html_report 사용).
 
+    필터 인자는 단일 str 또는 list[str] 모두 허용 — list 일 경우 OR 결합.
+
     Args:
-        lotcd: 로트코드 필터 (예: "5NA", "4SS"). 부분 일치. 미입력시 전체.
-        end_tm: 종료시간 필터 (예: "2026-01-01" 또는 "26/01/01"). 부분 일치. 단독 사용시.
+        lotcd: 로트코드(제품) 필터. "4SS" 또는 ["4SS","5NA"]. 부분 일치.
+        category: 테스트 카테고리. "PT1H_TEST" 또는 ["PT1H_TEST","PT1C_TEST"]. 부분 일치.
+        parameter: fail_type 필터. "EASY" 또는 ["EASY","TWT"]. 부분 일치, OR 결합.
+        exclude_parameter: NOT LIKE 로 제외할 fail_type 목록 (예: ["TWT"]).
         start_tm: 시작 날짜 ("YYYY-MM-DD" 또는 "YY/MM/DD"). end_tm 과 함께 사용하면 날짜 범위.
-        parameter: fail_type 필터 (예: "EASY", "TWT"). 부분 일치. 미입력시 전체.
-        category: 테스트 카테고리 필터 ("PT1H_TEST" 또는 "PT1C_TEST"). 부분 일치. 미입력시 전체.
+        end_tm: 종료 날짜 (또는 부분 일치용 단일 날짜).
 
     Returns:
         조회 결과 요약 (실제 데이터는 별도 저장됨)
@@ -172,16 +231,19 @@ def wads_query_data(
     start_tm = start_tm or defaults.get("start_tm")
     parameter = parameter or defaults.get("parameter")
     category = category or defaults.get("category")
-    logger.info("[wads_query_data] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s, category=%s",
-                lotcd, end_tm, start_tm, parameter, category)
+    logger.info(
+        "[wads_query_data] 호출: lotcd=%s, category=%s, parameter=%s, exclude=%s, start=%s, end=%s",
+        lotcd, category, parameter, exclude_parameter, start_tm, end_tm,
+    )
 
     try:
         filtered_df = _query_wads_data(
             lotcd=lotcd,
-            end_tm=end_tm,
-            start_tm=start_tm,
-            parameter=parameter,
             category=category,
+            parameter=parameter,
+            exclude_parameter=exclude_parameter,
+            start_tm=start_tm,
+            end_tm=end_tm,
             columns="LOTCD, CATEGORY, PARAMETER, END_TM",
         )
     except Exception as e:
@@ -224,7 +286,7 @@ def _top_counts(values: List[str], top_k: int = 5) -> str:
 
 def _summarize_query_result(
     rows: List[Dict[str, Any]],
-    lotcd: Optional[str],
+    lotcd: FilterVal,
     start_tm: Optional[str],
     end_tm: Optional[str],
 ) -> str:
@@ -264,23 +326,25 @@ def _summarize_query_result(
 
 @tool
 def wads_get_html_report(
-    lotcd: Optional[str] = None,
-    end_tm: Optional[str] = None,
+    lotcd: FilterVal = None,
+    category: FilterVal = None,
+    parameter: FilterVal = None,
     start_tm: Optional[str] = None,
-    parameter: Optional[str] = None,
-    category: Optional[str] = None,
+    end_tm: Optional[str] = None,
 ) -> str:
     """
     DF_WADS_REPORT 의 열화 리포트 본문(HTML)을 조회합니다.
     **HTML 본문이 필요한 경우 유일한 통로** — 통계/건수/리스트는 wads_query_data 사용.
     여러 번 호출하면 리포트가 누적되어 표시됩니다.
 
+    필터 인자는 단일 str 또는 list[str] 모두 허용 — list 일 경우 OR 결합.
+
     Args:
-        lotcd: 로트코드 필터 (예: "5NA", "4SS"). 부분 일치.
-        end_tm: 종료시간 필터 (예: "2026-01-01" 또는 "26/01/01"). 부분 일치.
+        lotcd: 로트코드(제품) 필터. "4SS" 또는 ["4SS","5NA"]. 부분 일치.
+        category: 테스트 카테고리. "PT1H_TEST" 또는 ["PT1H_TEST","PT1C_TEST"]. 부분 일치.
+        parameter: fail_type 필터. "EASY" 또는 ["EASY","TWT"]. 부분 일치, OR 결합.
         start_tm: 시작 날짜. end_tm 과 함께 사용하면 날짜 범위.
-        parameter: fail_type 필터 (예: "EASY", "TWT"). 부분 일치.
-        category: 테스트 카테고리 ("PT1H_TEST" 또는 "PT1C_TEST"). 부분 일치.
+        end_tm: 종료 날짜 (또는 부분 일치용 단일 날짜).
 
     Returns:
         조회 결과 요약 (실제 HTML은 별도 저장됨)
@@ -292,16 +356,18 @@ def wads_get_html_report(
     start_tm = start_tm or defaults.get("start_tm")
     parameter = parameter or defaults.get("parameter")
     category = category or defaults.get("category")
-    logger.info("[wads_get_html_report] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s, category=%s",
-                lotcd, end_tm, start_tm, parameter, category)
+    logger.info(
+        "[wads_get_html_report] 호출: lotcd=%s, category=%s, parameter=%s, start=%s, end=%s",
+        lotcd, category, parameter, start_tm, end_tm,
+    )
 
     try:
         filtered_df = _query_wads_data(
             lotcd=lotcd,
-            end_tm=end_tm,
-            start_tm=start_tm,
-            parameter=parameter,
             category=category,
+            parameter=parameter,
+            start_tm=start_tm,
+            end_tm=end_tm,
             columns="LOTCD, CATEGORY, PARAMETER, END_TM, HTML",
         )
     except Exception as e:
@@ -639,34 +705,45 @@ def _summarize_sql_result(rows: List[Dict[str, Any]], col_names: List[str]) -> s
 
 @observe(name="wads_query_wf_list_oracle")
 def _query_wf_list_data(
-    lot_cd: Optional[str] = None,
-    category: Optional[str] = None,
-    parameter: Optional[str] = None,
+    lot_cd: FilterVal = None,
+    category: FilterVal = None,
+    parameter: FilterVal = None,
     start_tm: Optional[str] = None,
     end_tm: Optional[str] = None,
     columns: str = "LOT_CD, OPER_PARA, GROUPKEY, END_TM",
 ) -> pd.DataFrame:
-    """DF_WADS_WF_LIST 조회. category + parameter 는 OPER_PARA LIKE 합성."""
+    """DF_WADS_WF_LIST 조회.
+
+    category + parameter 는 `{CATEGORY}_{PARAMETER}` 카르테시안으로 합성하여
+    OPER_PARA LIKE 매칭. 두 인자 모두 단일/리스트 허용.
+    """
     logger.info(
         "[_query_wf_list_data] 조회: lot_cd=%s, category=%s, parameter=%s, start=%s, end=%s",
         lot_cd, category, parameter, start_tm, end_tm,
     )
-    conditions = []
-    bind_vars = {}
+    lotcd_l = _ensure_list(lot_cd)
+    category_l = _ensure_list(category)
+    parameter_l = _ensure_list(parameter)
 
-    if lot_cd:
-        conditions.append("UPPER(LOT_CD) LIKE UPPER(:lot_cd)")
-        bind_vars["lot_cd"] = f"%{lot_cd}%"
-    # OPER_PARA 는 "{CATEGORY}_{PARAMETER}" 결합 — 두 인자를 합쳐서 LIKE
-    if category and parameter:
-        conditions.append("UPPER(OPER_PARA) LIKE UPPER(:oper_para)")
-        bind_vars["oper_para"] = f"%{category}_{parameter}%"
-    elif category:
-        conditions.append("UPPER(OPER_PARA) LIKE UPPER(:oper_para)")
-        bind_vars["oper_para"] = f"%{category}_%"
-    elif parameter:
-        conditions.append("UPPER(OPER_PARA) LIKE UPPER(:oper_para)")
-        bind_vars["oper_para"] = f"%_{parameter}%"
+    conditions: List[str] = []
+    bind_vars: Dict[str, Any] = {}
+
+    c = _build_like_or("LOT_CD", lotcd_l, "lot_cd", bind_vars)
+    if c:
+        conditions.append(c)
+
+    # OPER_PARA = "{CATEGORY}_{PARAMETER}". 두 list 의 카르테시안으로 LIKE 패턴 생성.
+    if category_l and parameter_l:
+        pairs = [f"{cat}_{p}" for cat in category_l for p in parameter_l]
+    elif category_l:
+        pairs = [f"{cat}_" for cat in category_l]
+    elif parameter_l:
+        pairs = [f"_{p}" for p in parameter_l]
+    else:
+        pairs = []
+    c = _build_like_or("OPER_PARA", pairs, "oper_para", bind_vars)
+    if c:
+        conditions.append(c)
 
     if start_tm and end_tm:
         conditions.append(
@@ -699,9 +776,9 @@ def _query_wf_list_data(
 
 @tool
 def wads_query_wf_list(
-    lotcd: Optional[str] = None,
-    category: Optional[str] = None,
-    parameter: Optional[str] = None,
+    lotcd: FilterVal = None,
+    category: FilterVal = None,
+    parameter: FilterVal = None,
     start_tm: Optional[str] = None,
     end_tm: Optional[str] = None,
 ) -> str:
@@ -711,10 +788,14 @@ def wads_query_wf_list(
     이 테이블은 그 리포트에 포함된 **개별 wafer(GROUPKEY)** 단위입니다.
     "검출된 wafer 몇 개", "어떤 GROUPKEY" 류 질의에 사용하세요.
 
+    필터 인자는 단일 str 또는 list[str] 모두 허용 — list 일 경우 OR 결합.
+    category 와 parameter 가 둘 다 list 면 카르테시안 (예: ["PT1H_TEST","PT1C_TEST"] × ["EASY"]
+    → "PT1H_TEST_EASY" OR "PT1C_TEST_EASY").
+
     Args:
-        lotcd: 로트코드 필터 (DF_WADS_WF_LIST.LOT_CD, 부분 일치). 미입력시 전체.
-        category: 테스트 카테고리 ("PT1H_TEST" 또는 "PT1C_TEST"). OPER_PARA 합성에 사용.
-        parameter: fail_type 필터 (예: "EASY", "TWT"). OPER_PARA 합성에 사용.
+        lotcd: 로트코드(제품) 필터. "4SS" 또는 ["4SS","5NA"]. 부분 일치 (DF_WADS_WF_LIST.LOT_CD).
+        category: 테스트 카테고리. "PT1H_TEST" 또는 ["PT1H_TEST","PT1C_TEST"]. OPER_PARA 합성.
+        parameter: fail_type. "EASY" 또는 ["EASY","TWT"]. OPER_PARA 합성.
         start_tm: 시작 날짜 (YYYY-MM-DD 또는 YY/MM/DD). end_tm 과 함께 범위.
         end_tm: 종료 날짜.
 
