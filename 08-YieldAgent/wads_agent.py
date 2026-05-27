@@ -17,6 +17,7 @@ from lf_utils import lf_callbacks as _lf_callbacks
 from common import timed, get_llm, html_escape as _html_escape, extract_suggestion, is_transient_error
 from prompts import WADS_SYSTEM_PROMPT_TEMPLATE
 from wads_tools import WADS_TOOLS, _tool_payload_var, _get_tool_payload
+from yield_viz import _save_html_to_file
 
 # .env 로드 및 모델 설정
 load_dotenv(override=True)
@@ -312,6 +313,8 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     )
 
     # 렌더링 우선순위: reports > sql_result > query (S-1, I-2)
+    # HTML은 디스크에 저장하고 file:// 경로만 state에 보관 — MongoDB checkpoint BSON 16MB 한도 초과 방지.
+    # agent_server.py가 file://를 읽어 SSE로 전송 후 파일 삭제.
     artifacts = []
     if reports_payload:
         html = _render_wads_report_html(reports_payload)
@@ -319,7 +322,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             {
                 "type": "html",
                 "mime": "text/html",
-                "data": html,
+                "data": _save_html_to_file(html, "wads_report"),
                 "title": "wads_report",
             }
         )
@@ -329,7 +332,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             {
                 "type": "html",
                 "mime": "text/html",
-                "data": html,
+                "data": _save_html_to_file(html, "wads_sql_result"),
                 "title": "wads_sql_result",
             }
         )
@@ -339,7 +342,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             {
                 "type": "html",
                 "mime": "text/html",
-                "data": html,
+                "data": _save_html_to_file(html, "wads_query"),
                 "title": "wads_query",
             }
         )
