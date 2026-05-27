@@ -231,14 +231,79 @@ WADS 외 같은 레포의 자산 (모두 read-only adapter):
 
 ---
 
-### 2.5 [MEDIUM] 응답 합성 단계 (선택적 강화)
+### 2.5 [HIGH] R-2': 동일 HTML 카드 한 종류만 떨어지는 문제 해소
+
+**문제 명확화**: §2.2 의 `[RENDER: text|report|table|auto]` 태그는 **artifact 채널의 on/off + 종류**만 결정한다. 그러나 `table` 또는 `auto` 가 선택돼 카드가 발사되는 경우, 카드의 시각적 포맷은 여전히 `_render_wads_sql_html` (`wads_agent.py:116-169`) 한 종류 — 제목 / 건수 배지 / 컬럼 동적 표 — 로 고정. 단일 COUNT, 분포, 피벗, 시계열 모두 같은 표 박스로 표시된다. 또한 SQL 도구로 가는 입력(`query_description` 자연어)도 자유롭지만, 진입 도구(`wads_query_data`)의 **조건 시그너처가 lotcd/start_tm/end_tm/parameter 4개로 고정**돼 있어 "PT1H 만", "EASY 와 TWT 둘 다", "lotcd LIKE '4S%'" 같은 조건은 모두 `wads_query_sql` 로 강제 우회 → 결과적으로 항상 SQL 카드 한 종류만 나옴.
+
+#### 2.5.A 1순위: artifact 기본형을 **markdown** 으로 전환
+
+- `ArtifactType.markdown` 이 이미 존재 (`models.py:29`). 프런트엔드는 이미 다룰 줄 안다.
+- 통계 / 분포 / 비교 / 추세 / lot 리스트 → LLM 본문 자체가 곧 artifact. 별도 카드 chrome / 표 박스 / "총 N건 조회됨" 배지 모두 사라진다.
+- 시그널: `[RENDER: md]` 추가 (§2.2 의 태그 집합 확장 → `text | md | report | table | auto`).
+  - `text` = artifact 0개, 메시지만.
+  - `md` = LLM 본문을 `ArtifactType.markdown` 으로 1개 발사 (오른쪽 패널에 본문 그대로).
+  - `report` = HTML report (DF_WADS_REPORT.HTML).
+  - `table` = 정형 표 카드 (의도된 표 출력).
+  - `auto` = 이전 로직 fallback.
+- `wads_agent_node:314-345` 분기에 `md` 케이스 추가:
+  ```python
+  if render_mode == "md":
+      artifacts = [{
+          "type": "markdown", "mime": "text/markdown",
+          "data": answer, "title": "wads_summary",
+      }]
+  ```
+
+#### 2.5.B 2순위: HTML 카드가 필요한 경우 **레이아웃 레지스트리** 도입
+
+`table` / `auto` 로 HTML 카드가 발사되는 경우, 단일 렌더러를 5종 레이아웃으로 분기:
+
+| 레이아웃 | 자동 감지 규칙 | 시각화 |
+|---------|----------------|--------|
+| `kpi` | 행 1개, 컬럼 1-3개 (대부분 숫자) | 큰 숫자 + 캡션 카드 (1-3개) |
+| `distribution` | 컬럼 2개 (범주 + 숫자), 행 2-20개 | 가로 막대 (텍스트 또는 inline SVG) + 비율% |
+| `pivot` | 컬럼 ≥3개, 첫 2개가 범주축 | 피벗 표 (헤더 강조) |
+| `trend` | END_TM 컬럼 + 숫자 컬럼 | 시계열 라인 (matplotlib PNG, 또는 sparkline ascii) |
+| `table` | 위 어디에도 안 맞음 (fallback) | 현재 동적 컬럼 표 |
+
+- 감지는 **도구 측**에서 (LLM 부담 ↓). `wads_query_sql` 결과 dict 리스트의 shape 보고 `storage["render_layout"]` 에 힌트 저장.
+- LLM 이 시그널을 덮어쓸 수 있음: `[RENDER: table:distribution]` 처럼 콜론으로 layout 지정 (옵션).
+- 구현 위치: `wads_agent.py` 의 `_render_wads_sql_html` 을 `_render_kpi` / `_render_distribution` / `_render_pivot` / `_render_trend` / `_render_table` 5개 함수 + dispatcher 로 분리.
+
+#### 2.5.C 3순위: chart artifact (선택)
+
+- `distribution` / `trend` 는 matplotlib PNG → `ArtifactType.image` 로 발사하면 시각적 차별성 최대.
+- `yield_viz.py` 패턴(이미 PNG base64 다루는 코드 있음) 재활용.
+- 1차 PR 범위 밖. PR4 이후로.
+
+#### 2.5.D 진입 도구 시그너처 확장 — 조건 표현 자유도
+
+`wads_query_data` (`wads_tools.py:110-127`) 의 시그너처 한정이 사용자 조건을 SQL 도구로 강제 우회시키는 근원:
+
+- `category: Optional[str | list[str]]` 추가 (§2.1 (a) 에 이미 단일 str 추가 — multi-value 로 확장).
+- `parameter: Optional[str | list[str]]` (multi-value: SQL 내부에서 `OR` 결합).
+- `lotcd: Optional[str | list[str]]` (multi-lot 비교 시).
+- `exclude_parameter: Optional[list[str]]` (NOT LIKE).
+- 동일 변경을 `wads_query_wf_list` (§2.4.0) 에도 적용 — 처음부터 다중값 받게 설계.
+
+→ 결과: 단순 조건(다중값 / NOT)도 `wads_query_sql` 거치지 않고 처리. `wads_query_sql` 의 사용 빈도는 줄고, SQL 카드의 단조로움도 자연히 줄어듦.
+
+#### 2.5.E LLM 작성형 artifact (가장 자유로운 옵션 — 보류)
+
+- 신규 `@tool wads_render_custom(body_md: str, kind: Literal["md","html","mermaid"])` — LLM 이 도구 결과를 보고 직접 artifact 본문 작성.
+- 위험: 환각 / ContextVar 와 cross-check 못 함 / 토큰 비용.
+- 권장: 1차 도입 안 함. 자유도가 여전히 부족하면 PR5 (§2.6) 합성 LLM 단계와 함께 도입.
+
+---
+
+### 2.6 [MEDIUM] 응답 합성 단계 (선택적 강화)
 
 **현재**: ReAct 한 사이클에서 LLM이 도구 호출 → 곧장 사용자 답변 생성.
 
 **옵션**: yield_agent 패턴(`yield_query_agent._analyze_with_llm`)처럼, 도구 결과가 모이면 **별도 합성 LLM 호출**로 자연어 답을 만든다.
 - 장점: 도구 호출용 모델(빠른 모델)과 분석용 모델(강한 모델)을 분리 가능 (`WADS_SYNTH_MODEL` 환경변수).
 - 단점: 지연 +1-2초, 호출 수 +1.
-- **권장**: 우선 §2.1–2.4 만으로 검증 후, 자유 답변 품질이 더 필요할 때 도입. 1차 PR에는 포함하지 않음.
+- **권장**: 우선 §2.1–2.5 만으로 검증 후, 자유 답변 품질이 더 필요할 때 도입. 1차 PR에는 포함하지 않음.
 
 ---
 
@@ -288,14 +353,19 @@ OpenRouter 호환성 문제로 폐기됨 (기존 플랜 D-3 그대로 적용).
 | **P0** | §0-3 | env var 분리: `WADS_REPORT_TABLE`, `WADS_WF_LIST_TABLE` + SQL allowlist 2개 | wads_tools.py:25, 278-282 |
 | HIGH | R-1 (a) | `wads_query_data` LLM 회신에 CATEGORY/PARAMETER/LOTCD 분포 + 일평균 추가 + `category` 필터 | wads_tools.py:128-169 |
 | HIGH | R-1 (b) | `wads_query_sql` 결과 ≤20행은 전체 JSON, 초과시 top10 + 통계 메타 | wads_tools.py:391-411 |
-| HIGH | R-2 | `[RENDER:]` 태그 파싱 + `wads_agent_node` 분기 추가 | wads_agent.py:302-345, common.py |
-| HIGH | R-3 | WADS 시스템 프롬프트 자유도 확대 + step→PARAMETER(fail_type) 예시 교체 | prompts.py:526-616 |
+| HIGH | R-2 | `[RENDER:]` 태그 파싱 (`text/md/report/table/auto`) + `wads_agent_node` 분기 | wads_agent.py:302-345, common.py |
+| HIGH | R-2' (A) | **artifact 기본형 markdown 전환** — `[RENDER: md]` 케이스에서 본문을 markdown artifact 로 발사 | wads_agent.py, models.py:29 |
+| HIGH | R-2' (B) | **레이아웃 레지스트리** — `_render_wads_sql_html` 을 kpi/distribution/pivot/trend/table 5종으로 분기 + 도구 측 자동 감지 | wads_agent.py:116-169, wads_tools.py |
+| HIGH | R-2' (D) | `wads_query_data` / `wads_query_wf_list` 시그너처 multi-value 확장 (`list[str]` + exclude) | wads_tools.py:110-127 |
+| HIGH | R-3 | WADS 시스템 프롬프트 자유도 확대 + step→PARAMETER(fail_type) 예시 교체 + `[RENDER: md]` 가이드 | prompts.py:526-616 |
 | HIGH | R-4 (0) | **`wads_query_wf_list` 신규 도구 (DF_WADS_WF_LIST)** — wafer/GROUPKEY 차원 | wads_tools.py |
 | HIGH | R-4 (1) | `wads_lookup_param_context` 신규 도구 | wads_tools.py, wiki_store.py |
 | MEDIUM | R-4 (2) | `wads_lookup_related_failures` (parameter=fail_type 직결) | wads_tools.py, fail_history_tools.py |
 | MEDIUM | R-4 (3) | `wads_correlate_with_yield` 신규 도구 | wads_tools.py, yield_db.py |
-| MEDIUM | S-3 | 의도별 평가 골든셋 추가 (CATEGORY/WF_LIST 케이스 포함) | eval/ |
-| LOW | 2.5 | 별도 합성 LLM 단계 (선택) | wads_agent.py |
+| MEDIUM | R-2' (C) | chart artifact (matplotlib PNG → `ArtifactType.image`) | wads_agent.py, yield_viz.py |
+| MEDIUM | S-3 | 의도별 평가 골든셋 추가 (CATEGORY/WF_LIST/layout 케이스 포함) | eval/ |
+| LOW | 2.6 | 별도 합성 LLM 단계 (선택) | wads_agent.py |
+| LOW | 2.5.E | `wads_render_custom` LLM 작성형 artifact (보류) | wads_tools.py |
 | LOW | D-2 | "본문 표 금지" 조건부화 (artifact 있을 때만) | prompts.py |
 
 ---
@@ -311,13 +381,20 @@ OpenRouter 호환성 문제로 폐기됨 (기존 플랜 D-3 그대로 적용).
 5. `_SQL_GEN_PROMPT` 스키마 블록 전면 교체.
 6. 운영에서 LOTID/CTN_DESC view alias 가 있는지 확인 — 있다면 호환성 alias 한 줄 추가.
 
-### PR1 — 기반: 데이터 가시성 + 모드 시그널 (R-1 + R-2 + R-3)
+### PR1 — 기반: 데이터 가시성 + 모드 시그널 + markdown artifact (R-1 + R-2 + R-2'.A + R-2'.D + R-3)
 **한 PR에 묶음 — 셋이 분리되면 사용자 체감 변화 없음.**
-1. `extract_render_mode` 헬퍼 추가 (`common.py`).
-2. `wads_query_data` / `wads_query_sql` 회신 텍스트 강화 (§2.1) + `category` 필터 인자 추가.
-3. `wads_agent_node` 에 `[RENDER:]` 분기 추가 (§2.2 옵션 A).
-4. WADS 시스템 프롬프트 자유도 확대 + `[RENDER:]` 사용 가이드 + step → PARAMETER(fail_type) 예시 교체 (§2.3).
-5. **검증**: 5가지 의도(통계/리포트/해석/리스트/카테고리 비교) 케이스 수동 확인.
+1. `extract_render_mode` 헬퍼 추가 (`common.py`). 태그 집합: `text | md | report | table | auto`.
+2. `wads_query_data` / `wads_query_sql` 회신 텍스트 강화 (§2.1) + multi-value 시그너처 확장 (§2.5.D).
+3. `wads_agent_node` 에 `[RENDER:]` 분기 추가 (§2.2) + **`md` 케이스에서 본문을 `ArtifactType.markdown` 로 발사** (§2.5.A).
+4. WADS 시스템 프롬프트 자유도 확대 + `[RENDER:]` 사용 가이드 (특히 통계/분포는 기본 `md` 권장) + step → PARAMETER 예시 교체 (§2.3).
+5. **검증**: 7가지 의도(통계/리포트/해석/리스트/카테고리 비교/wafer/명시적 표) 케이스 수동 확인. 같은 질의 5종 입력 시 **artifact 종류가 의도별로 달라지는지** 명시적으로 체크.
+
+### PR1.5 — 레이아웃 레지스트리 (R-2'.B)
+PR1 만으로도 `[RENDER: md]` 경로는 다양해지지만, `table`/`auto` 경로가 여전히 단조롭다면 곧장 이 PR.
+1. `_render_wads_sql_html` 을 `_render_kpi` / `_render_distribution` / `_render_pivot` / `_render_trend` / `_render_table` + dispatcher 로 분리.
+2. `wads_query_sql` 결과 dict 리스트 shape 자동 감지 → `storage["render_layout"]` 힌트.
+3. `[RENDER: table:distribution]` 같은 콜론 override 파싱.
+4. 검증: 동일 데이터의 다른 shape 입력으로 카드가 시각적으로 달라지는지.
 
 ### PR2 — wafer 차원: DF_WADS_WF_LIST 도구 (R-4 (0))
 - `wads_query_wf_list` 단독.
@@ -333,8 +410,9 @@ OpenRouter 호환성 문제로 폐기됨 (기존 플랜 D-3 그대로 적용).
 - 두 도구를 함께 (둘 다 "원인/맥락" 질의에 같이 쓰이는 경우 많음).
 - TASK SCOPE 가드: "lookup 도구는 합쳐서 최대 2회 호출".
 
-### PR5 (선택) — 합성 LLM 단계 (§2.5)
+### PR5 (선택) — 합성 LLM 단계 (§2.6) + chart artifact (§2.5.C)
 - 자유 답변 품질 정량 평가 후 도입 결정.
+- distribution/trend layout 에 한해 matplotlib PNG → `ArtifactType.image` 발사 (`yield_viz.py` 패턴 재활용).
 
 ---
 
@@ -342,13 +420,15 @@ OpenRouter 호환성 문제로 폐기됨 (기존 플랜 D-3 그대로 적용).
 
 | # | 사용자 입력 | 기대 동작 |
 |---|------------|----------|
-| 1 | "4SS 최근 3일치 검출 통계 알려줘" | wads_query_data → 본문: 일평균 / CATEGORY 분포 / PARAMETER 분포 / LOTCD 분포 자연어 인용. `[RENDER: text]` → **artifact 없음**. |
+| 1 | "4SS 최근 3일치 검출 통계 알려줘" | wads_query_data → 본문: 일평균 / CATEGORY / PARAMETER / LOTCD 분포 자연어 인용. `[RENDER: md]` → markdown artifact (오른쪽 패널에 본문). |
 | 2 | "4SS EASY 리포트 보여줘" | wads_get_html_report(parameter="EASY") → 본문 1-2문장. `[RENDER: report]` → HTML artifact 1개. |
-| 3 | "왜 5NA TWT가 늘었지?" | wads_query_sql + wads_lookup_param_context + wads_lookup_related_failures → 본문 단락형 해석. `[RENDER: text]`. |
-| 4 | "지난주 검출된 wafer 몇 개?" | **wads_query_wf_list(start_tm=..., end_tm=...)** → 본문에 총 N개 + LOTCD/CATEGORY 분포. `[RENDER: text]`. |
-| 5 | "PARAMETER별 건수 집계 표로 보여줘" | wads_query_sql(group by parameter) → `[RENDER: table]` 동적 컬럼 카드. 본문은 한 줄 코멘트. |
-| 6 | "PT1H와 PT1C 어느 쪽이 더 많아?" (CATEGORY 비교) | wads_query_data(category=...) ×2 또는 wads_query_sql → 본문에 비율/건수 인용. `[RENDER: text]`. |
-| 7 | "5NA 4SS 어떤 GROUPKEY가 검출됐어?" | wads_query_wf_list → GROUPKEY 리스트 + LOTCD 분포. `[RENDER: text]`. |
+| 3 | "왜 5NA TWT가 늘었지?" | wads_query_sql + wads_lookup_param_context + wads_lookup_related_failures → 본문 단락형 해석. `[RENDER: md]`. |
+| 4 | "지난주 검출된 wafer 몇 개?" | wads_query_wf_list → 본문에 총 N개 + LOTCD/CATEGORY 분포. `[RENDER: md]`. 검출 0건이면 `[RENDER: text]` (artifact 0개). |
+| 5 | "PARAMETER별 건수 집계 표로 보여줘" | wads_query_sql(group by parameter) → `[RENDER: table:distribution]` → **가로 막대 레이아웃** (현재의 일반 표 ❌). |
+| 6 | "PT1H와 PT1C 어느 쪽이 더 많아?" (CATEGORY 비교) | wads_query_data(category=["PT1H_TEST","PT1C_TEST"]) → 본문에 비율/건수 인용. `[RENDER: md]`. |
+| 7 | "5NA 4SS 어떤 GROUPKEY가 검출됐어?" | wads_query_wf_list → GROUPKEY 리스트 + LOTCD 분포. `[RENDER: md]`. |
+| 8 | "4SS 일자별 검출 추이" | wads_query_sql(group by end_tm) → `[RENDER: table:trend]` → **시계열 layout** (PR5 에선 image artifact). |
+| 9 | "현재 5NA EASY 건수만 딱 알려줘" | wads_query_sql(COUNT) → 단일 행 1숫자 → `[RENDER: table:kpi]` → **큰 숫자 카드 1개**. |
 
 ---
 
