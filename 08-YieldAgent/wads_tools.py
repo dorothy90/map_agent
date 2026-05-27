@@ -22,7 +22,12 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
-_ORACLE_TABLE = os.getenv("WADS_TABLE", "WADS_TABLE")
+# 실제 WADS 스키마는 2개 테이블로 분리:
+#   DF_WADS_REPORT  — 리포트(lotcd × category × parameter × end_tm 단위), HTML 보유
+#   DF_WADS_WF_LIST — 검출된 wafer(GROUPKEY) 단위, HTML 없음
+_REPORT_TABLE = os.getenv("WADS_REPORT_TABLE", "DF_WADS_REPORT")
+_WF_LIST_TABLE = os.getenv("WADS_WF_LIST_TABLE", "DF_WADS_WF_LIST")
+_ALLOWED_TABLES = {_REPORT_TABLE.upper(), _WF_LIST_TABLE.upper()}
 _SQL_GEN_MODEL = os.getenv("WADS_SQL_GEN_MODEL", os.getenv("RETRIEVE_CHAIN_MODEL"))
 
 logger = logging.getLogger("yield_agent.wads_tools")
@@ -44,6 +49,31 @@ def _get_tool_payload() -> Dict[str, Any]:
         return storage
 
 
+# DF_WADS_REPORT 의 END_TM 은 "YY/MM/DD ..." 포맷. SUBSTR(END_TM, 1, 8) + TO_DATE(..., 'YY/MM/DD') 로 정규화.
+_END_TM_DATE_EXPR = "TO_DATE(SUBSTR(END_TM, 1, 8), 'YY/MM/DD')"
+
+
+def _normalize_date_input(s: str) -> str:
+    """사용자 입력 'YYYY-MM-DD' / 'YY/MM/DD' 모두 받아 Oracle TO_DATE 용 'YY/MM/DD' 로 정규화."""
+    s = (s or "").strip()
+    if not s:
+        return s
+    # YYYY-MM-DD → YY/MM/DD
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return f"{s[2:4]}/{s[5:7]}/{s[8:10]}"
+    # YY/MM/DD → 그대로
+    if re.match(r"^\d{2}/\d{2}/\d{2}$", s):
+        return s
+    # 그 외(예: 'YYYY/MM/DD', 'YY-MM-DD') 도 best-effort
+    digits = re.findall(r"\d+", s)
+    if len(digits) >= 3:
+        y, m, d = digits[0], digits[1], digits[2]
+        if len(y) == 4:
+            y = y[2:]
+        return f"{y.zfill(2)}/{m.zfill(2)}/{d.zfill(2)}"
+    return s
+
+
 # ── Oracle 조회 ───────────────────────────────────────────────
 @observe(name="wads_query_oracle")
 def _query_wads_data(
@@ -51,33 +81,40 @@ def _query_wads_data(
     end_tm: Optional[str] = None,
     start_tm: Optional[str] = None,
     parameter: Optional[str] = None,
-    columns: str = "*",
+    category: Optional[str] = None,
+    columns: str = "LOTCD, CATEGORY, PARAMETER, END_TM",
 ) -> pd.DataFrame:
-    """Oracle에서 WADS 데이터 조회 (SQL WHERE + LIKE 필터링)"""
-    logger.info("[_query_wads_data] 조회 시작: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s, columns=%s",
-                lotcd, end_tm, start_tm, parameter, columns)
+    """DF_WADS_REPORT 조회 (SQL WHERE + LIKE 필터링).
+
+    columns 는 내부 호출 전용. LLM/도구 인자로 직접 노출 금지 (HTML 누출 방지).
+    """
+    logger.info("[_query_wads_data] 조회 시작: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s, category=%s, columns=%s",
+                lotcd, end_tm, start_tm, parameter, category, columns)
     conditions = []
     bind_vars = {}
 
     if lotcd:
         conditions.append("UPPER(LOTCD) LIKE UPPER(:lotcd)")
         bind_vars["lotcd"] = f"%{lotcd}%"
+    if category:
+        conditions.append("UPPER(CATEGORY) LIKE UPPER(:category)")
+        bind_vars["category"] = f"%{category}%"
     if start_tm and end_tm:
         conditions.append(
-            "TRUNC(TO_DATE(SUBSTR(END_TM, 1, 10), 'YYYY-MM-DD')) "
-            "BETWEEN TO_DATE(:start_tm, 'YYYY-MM-DD') AND TO_DATE(:end_tm_range, 'YYYY-MM-DD')"
+            f"TRUNC({_END_TM_DATE_EXPR}) "
+            "BETWEEN TO_DATE(:start_tm, 'YY/MM/DD') AND TO_DATE(:end_tm_range, 'YY/MM/DD')"
         )
-        bind_vars["start_tm"] = start_tm
-        bind_vars["end_tm_range"] = end_tm
+        bind_vars["start_tm"] = _normalize_date_input(start_tm)
+        bind_vars["end_tm_range"] = _normalize_date_input(end_tm)
     elif end_tm:
         conditions.append("END_TM LIKE :end_tm")
-        bind_vars["end_tm"] = f"%{end_tm}%"
+        bind_vars["end_tm"] = f"%{_normalize_date_input(end_tm)}%"
     if parameter:
-        conditions.append("UPPER(CTN_DESC) LIKE UPPER(:parameter)")
+        conditions.append("UPPER(PARAMETER) LIKE UPPER(:parameter)")
         bind_vars["parameter"] = f"%{parameter}%"
 
     where_clause = " AND ".join(conditions) if conditions else "1=1"
-    sql = f"SELECT {columns} FROM {_ORACLE_TABLE} WHERE {where_clause}"
+    sql = f"SELECT {columns} FROM {_REPORT_TABLE} WHERE {where_clause}"
     logger.info("[_query_wads_data] SQL: %s | bind: %s", sql, bind_vars)
 
     conn = _get_oracle_connection()
@@ -112,18 +149,21 @@ def wads_query_data(
     end_tm: Optional[str] = None,
     start_tm: Optional[str] = None,
     parameter: Optional[str] = None,
+    category: Optional[str] = None,
 ) -> str:
     """
-    WADS 데이터를 조회합니다. 선택적 필터를 적용하여 매칭되는 데이터의 메타정보를 반환합니다.
+    DF_WADS_REPORT 조회. 선택적 필터를 적용하여 매칭되는 리포트의 메타정보를 반환합니다.
+    HTML 컬럼은 절대 반환하지 않습니다 (리포트 본문은 wads_get_html_report 사용).
 
     Args:
-        lotcd: 랏코드 필터 (예: "5NA", "4SA"). 부분 일치 검색. 미입력시 전체 조회.
-        end_tm: 종료시간 필터 (예: "2026-01-01", "18:07"). 부분 일치 검색. 미입력시 전체 조회.
-        start_tm: 시작 날짜 필터 (예: "2026-03-19"). end_tm과 함께 사용하면 날짜 범위 조회. 미입력시 end_tm 단일 필터.
-        parameter: 스텝 설명 필터 (예: "step01", "step02"). 부분 일치 검색. 미입력시 전체 조회.
+        lotcd: 로트코드 필터 (예: "5NA", "4SS"). 부분 일치. 미입력시 전체.
+        end_tm: 종료시간 필터 (예: "2026-01-01" 또는 "26/01/01"). 부분 일치. 단독 사용시.
+        start_tm: 시작 날짜 ("YYYY-MM-DD" 또는 "YY/MM/DD"). end_tm 과 함께 사용하면 날짜 범위.
+        parameter: fail_type 필터 (예: "EASY", "TWT"). 부분 일치. 미입력시 전체.
+        category: 테스트 카테고리 필터 ("PT1H_TEST" 또는 "PT1C_TEST"). 부분 일치. 미입력시 전체.
 
     Returns:
-        조회 결과 요약 메시지 (실제 데이터는 별도 저장됨)
+        조회 결과 요약 (실제 데이터는 별도 저장됨)
     """
     storage = _get_tool_payload()
     defaults = storage.get("_defaults", {})
@@ -131,7 +171,9 @@ def wads_query_data(
     end_tm = end_tm or defaults.get("end_tm")
     start_tm = start_tm or defaults.get("start_tm")
     parameter = parameter or defaults.get("parameter")
-    logger.info("[wads_query_data] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s", lotcd, end_tm, start_tm, parameter)
+    category = category or defaults.get("category")
+    logger.info("[wads_query_data] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s, category=%s",
+                lotcd, end_tm, start_tm, parameter, category)
 
     try:
         filtered_df = _query_wads_data(
@@ -139,7 +181,8 @@ def wads_query_data(
             end_tm=end_tm,
             start_tm=start_tm,
             parameter=parameter,
-            columns="LOTID, LOTCD, END_TM, CTN_DESC AS PARAMETER",
+            category=category,
+            columns="LOTCD, CATEGORY, PARAMETER, END_TM",
         )
     except Exception as e:
         logger.error("[wads_query_data] Oracle 오류: %s", e, exc_info=True)
@@ -158,14 +201,16 @@ def wads_query_data(
         ]
         return "조건에 맞는 WADS 데이터가 없습니다."
 
-    result = filtered_df[["lotid", "lotcd", "end_tm", "parameter"]].to_dict(orient="records")
+    result = filtered_df[["lotcd", "category", "parameter", "end_tm"]].to_dict(orient="records")
     storage["query"] = result
     logger.info("[wads_query_data] 완료: %d건", len(result))
 
-    # LLM에게 실제 데이터(LOTID 포함)를 반환하여 lot list 질문에 답변 가능하게 함
-    lines = [f"WADS 데이터 조회 완료: 총 {len(result)}건 (데이터는 화면에 별도 표시됩니다)"]
+    lines = [f"WADS 리포트 조회 완료: 총 {len(result)}건 (DF_WADS_REPORT)"]
     for r in result[:50]:
-        lines.append(f"- LOTID={r.get('lotid')}, LOTCD={r.get('lotcd')}, END_TM={r.get('end_tm')}, STEP={r.get('parameter')}")
+        lines.append(
+            f"- LOTCD={r.get('lotcd')}, CATEGORY={r.get('category')}, "
+            f"PARAMETER={r.get('parameter')}, END_TM={r.get('end_tm')}"
+        )
     return "\n".join(lines)
 
 
@@ -175,19 +220,22 @@ def wads_get_html_report(
     end_tm: Optional[str] = None,
     start_tm: Optional[str] = None,
     parameter: Optional[str] = None,
+    category: Optional[str] = None,
 ) -> str:
     """
-    WADS HTML 리포트를 조회합니다. 선택적 필터를 적용하여 매칭되는 데이터의 HTML 콘텐츠를 반환합니다.
-    여러 번 호출하면 모든 리포트가 누적되어 표시됩니다.
+    DF_WADS_REPORT 의 열화 리포트 본문(HTML)을 조회합니다.
+    **HTML 본문이 필요한 경우 유일한 통로** — 통계/건수/리스트는 wads_query_data 사용.
+    여러 번 호출하면 리포트가 누적되어 표시됩니다.
 
     Args:
-        lotcd: 로트코드 필터 (예: "5NA", "4SA"). 부분 일치 검색. 미입력시 전체 조회.
-        end_tm: 종료시간 필터 (예: "2026-01-01", "18:07"). 부분 일치 검색. 미입력시 전체 조회.
-        start_tm: 시작 날짜 필터 (예: "2026-03-19"). end_tm과 함께 사용하면 날짜 범위 조회. 미입력시 end_tm 단일 필터.
-        parameter: 스텝 설명 필터 (예: "step01", "step02"). 부분 일치 검색. 미입력시 전체 조회.
+        lotcd: 로트코드 필터 (예: "5NA", "4SS"). 부분 일치.
+        end_tm: 종료시간 필터 (예: "2026-01-01" 또는 "26/01/01"). 부분 일치.
+        start_tm: 시작 날짜. end_tm 과 함께 사용하면 날짜 범위.
+        parameter: fail_type 필터 (예: "EASY", "TWT"). 부분 일치.
+        category: 테스트 카테고리 ("PT1H_TEST" 또는 "PT1C_TEST"). 부분 일치.
 
     Returns:
-        조회 결과 요약 메시지 (실제 HTML은 별도 저장됨)
+        조회 결과 요약 (실제 HTML은 별도 저장됨)
     """
     storage = _get_tool_payload()
     defaults = storage.get("_defaults", {})
@@ -195,7 +243,9 @@ def wads_get_html_report(
     end_tm = end_tm or defaults.get("end_tm")
     start_tm = start_tm or defaults.get("start_tm")
     parameter = parameter or defaults.get("parameter")
-    logger.info("[wads_get_html_report] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s", lotcd, end_tm, start_tm, parameter)
+    category = category or defaults.get("category")
+    logger.info("[wads_get_html_report] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s, category=%s",
+                lotcd, end_tm, start_tm, parameter, category)
 
     try:
         filtered_df = _query_wads_data(
@@ -203,7 +253,8 @@ def wads_get_html_report(
             end_tm=end_tm,
             start_tm=start_tm,
             parameter=parameter,
-            columns="LOTCD, END_TM, CTN_DESC AS PARAMETER, HTML",
+            category=category,
+            columns="LOTCD, CATEGORY, PARAMETER, END_TM, HTML",
         )
     except Exception as e:
         logger.error("[wads_get_html_report] Oracle 오류: %s", e, exc_info=True)
@@ -220,6 +271,7 @@ def wads_get_html_report(
         storage["reports"].append(
             {
                 "lotcd": row["lotcd"],
+                "category": row["category"],
                 "end_tm": row["end_tm"],
                 "parameter": row["parameter"],
                 "html": row["html"],
@@ -228,7 +280,7 @@ def wads_get_html_report(
 
     count = len(filtered_df)
     summary = ", ".join(
-        f"lotcd={r['lotcd']} parameter={r['parameter']}"
+        f"lotcd={r['lotcd']} category={r['category']} parameter={r['parameter']}"
         for r in storage["reports"][-count:]
     )
     return f"WADS HTML 리포트 조회 완료: {count}건 — {summary} (리포트는 화면에 별도 표시됩니다)"
@@ -272,13 +324,12 @@ def _validate_sql(sql: str) -> Tuple[bool, str]:
     if match:
         return False, f"금지 키워드 감지: {match.group()}"
 
-    # 계층3: 테이블 허용목록
+    # 계층3: 테이블 허용목록 (DF_WADS_REPORT, DF_WADS_WF_LIST)
     table_refs = re.findall(r"\bFROM\s+(\w+)", cleaned, re.IGNORECASE)
     table_refs += re.findall(r"\bJOIN\s+(\w+)", cleaned, re.IGNORECASE)
-    allowed = _ORACLE_TABLE.upper()
     for tbl in table_refs:
-        if tbl.upper() != allowed:
-            return False, f"허용되지 않은 테이블: {tbl} (허용: {_ORACLE_TABLE})"
+        if tbl.upper() not in _ALLOWED_TABLES:
+            return False, f"허용되지 않은 테이블: {tbl} (허용: {', '.join(sorted(_ALLOWED_TABLES))})"
 
     return True, ""
 
@@ -291,23 +342,37 @@ def _ensure_row_limit(sql: str, limit: int = 500) -> str:
     return f"{sql.rstrip().rstrip(';')} FETCH FIRST {limit} ROWS ONLY"
 
 
-# ── SQL 생성 프롬프트 (D-4: 도구 내부 캡슐화) ────────────────
-_SQL_GEN_PROMPT = """You are an Oracle SQL generator for the {table_name} table.
+# ── SQL 생성 프롬프트 (도구 내부 캡슐화) ──────────────────────
+_SQL_GEN_PROMPT = """You are an Oracle SQL generator for WADS tables.
 
-Schema:
-  LOTID     VARCHAR2  -- individual lot ID (e.g., "4SS7TB2", "4SSMBL9")
-  LOTCD     VARCHAR2  -- product code (e.g., "4SS", "5NA")
-  END_TM    VARCHAR2  -- end time "YYYY-MM-DD HH:MM:SS"
-  CTN_DESC  VARCHAR2  -- step description (e.g., "step01", "step02")
-  HTML      CLOB      -- report HTML (do NOT select unless explicitly requested)
+Tables:
+  {report_table} (per-report row, with HTML)
+    LOTCD      VARCHAR2  -- product code (e.g., "4SS", "5NA")
+    CATEGORY   VARCHAR2  -- test category: "PT1H_TEST" or "PT1C_TEST"
+    PARAMETER  VARCHAR2  -- fail_type (e.g., "EASY", "TWT")
+    END_TM     VARCHAR2  -- end time in "YY/MM/DD ..." format
+    HTML       CLOB      -- report body (FORBIDDEN — see Rules)
+
+  {wf_list_table} (per-wafer detection row, no HTML)
+    OPER_PARA  VARCHAR2  -- "{{CATEGORY}}_{{PARAMETER}}" e.g. "PT1H_TEST_EASY(W)"
+    GROUPKEY   VARCHAR2  -- individual wafer key
+    END_TM     VARCHAR2  -- end time in "YY/MM/DD ..." format
+    LOT_CD     VARCHAR2  -- product code (same semantics as LOTCD)
 
 Rules:
-- SELECT statements ONLY
-- Do NOT include HTML column unless explicitly requested
-- Use UPPER() for case-insensitive LOTCD, CTN_DESC comparisons
-- Date filtering: TRUNC(TO_DATE(SUBSTR(END_TM,1,10),'YYYY-MM-DD'))
-- Always add FETCH FIRST 500 ROWS ONLY
-- Output ONLY the SQL statement, no explanation
+- SELECT statements ONLY (no INSERT/UPDATE/DELETE/DDL).
+- NEVER select the HTML column. HTML is a large CLOB and is provided
+  only via wads_get_html_report. If the user wants the report body,
+  do NOT generate SQL — return the literal string:
+    ERROR: use wads_get_html_report
+- NEVER use SELECT *. Always list columns explicitly.
+- Safe columns: LOTCD, CATEGORY, PARAMETER, END_TM (DF_WADS_REPORT);
+                OPER_PARA, GROUPKEY, END_TM, LOT_CD (DF_WADS_WF_LIST).
+- Use UPPER() for case-insensitive LOTCD/CATEGORY/PARAMETER/OPER_PARA comparisons.
+- Date filtering: TRUNC(TO_DATE(SUBSTR(END_TM,1,8),'YY/MM/DD'))
+- JOIN guidance: r.LOTCD = w.LOT_CD AND r.END_TM = w.END_TM
+- Always add FETCH FIRST 500 ROWS ONLY.
+- Output ONLY the SQL statement (or the ERROR string), no explanation.
 
 Request: {query_description}"""
 
@@ -334,7 +399,8 @@ def wads_query_sql(query_description: str) -> str:
     try:
         llm = get_llm(model=_SQL_GEN_MODEL)
         prompt = _SQL_GEN_PROMPT.format(
-            table_name=_ORACLE_TABLE,
+            report_table=_REPORT_TABLE,
+            wf_list_table=_WF_LIST_TABLE,
             query_description=query_description,
         )
         response = llm.invoke(prompt)
