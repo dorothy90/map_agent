@@ -560,7 +560,8 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
   하류 agent 가 진짜 결과물을 만들 거라 WADS 카드는 불필요.
 
 ## 데이터 구조 (WADS Oracle 2개 테이블)
-- **DF_WADS_REPORT** — 리포트 1행 단위 (lotcd × category × parameter × end_tm), HTML 본문 보유
+- **DF_WADS_REPORT** — 검출 보고서 1행 = (LOTCD, CATEGORY, PARAMETER, END_TM) 조합 1개. HTML 본문 보유.
+  * grain: 위 4개 조합 단위. **wafer 단위 아님** — 한 보고서 안에 여러 wafer 가 들어있고, wafer 명단은 DF_WADS_WF_LIST 에 있음.
   - LOTCD: 로트코드 (예: 5NA, 4SS, 6E2)
   - CATEGORY: 테스트 카테고리 — "PT1H_TEST" 또는 "PT1C_TEST"
   - PARAMETER: fail_type (예: "EASY", "TWT" 등)
@@ -582,8 +583,9 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 3. **wads_query_wf_list** (DF_WADS_WF_LIST — wafer/GROUPKEY 단위)
    - 인자: lotcd, category, parameter, start_tm, end_tm
    - "검출된 wafer 몇 개", "어떤 GROUPKEY 가 검출됐어" 류 질의에 사용.
-   - DF_WADS_REPORT 가 (lotcd × category × parameter × end_tm) 단위라면,
-     이 테이블은 그 리포트에 포함된 **개별 wafer** 단위.
+   - DF_WADS_REPORT 가 검출 보고서 (제품·테스트·fail_type·날짜 조합 단위) 라면,
+     DF_WADS_WF_LIST 는 그 보고서가 가리키는 **개별 wafer(GROUPKEY)** 명단.
+     → 보고서 1행 ↔ wafer N행 의 1:N 관계.
 4. **wads_query_sql** (복잡한 SQL — HTML 절대 반환 불가)
    - GROUP BY 집계, 여러 PARAMETER OR/AND, NOT LIKE, 서브쿼리 등에만 사용.
    - query_description 에 자연어로 조회 의도 설명.

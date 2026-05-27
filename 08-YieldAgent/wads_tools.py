@@ -26,8 +26,9 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 # 실제 WADS 스키마는 2개 테이블로 분리:
-#   DF_WADS_REPORT  — 리포트(lotcd × category × parameter × end_tm 단위), HTML 보유
-#   DF_WADS_WF_LIST — 검출된 wafer(GROUPKEY) 단위, HTML 없음
+#   DF_WADS_REPORT  — 검출 보고서 grain: (LOTCD, CATEGORY, PARAMETER, END_TM) 조합. HTML 보유.
+#   DF_WADS_WF_LIST — 보고서에 포함된 개별 wafer grain: GROUPKEY ("lot.wf"). HTML 없음.
+#                     (REPORT 1행 ↔ WF_LIST N행, 1:N — 보고서 1건이 wafer 여러 개를 가리킴)
 _REPORT_TABLE = os.getenv("WADS_REPORT_TABLE", "DF_WADS_REPORT")
 _WF_LIST_TABLE = os.getenv("WADS_WF_LIST_TABLE", "DF_WADS_WF_LIST")
 _ALLOWED_TABLES = {_REPORT_TABLE.upper(), _WF_LIST_TABLE.upper()}
@@ -784,8 +785,9 @@ def wads_query_wf_list(
 ) -> str:
     """DF_WADS_WF_LIST(검출된 wafer 목록)를 조회합니다.
 
-    DF_WADS_REPORT 는 리포트 단위(lotcd×category×parameter×end_tm)인 반면
-    이 테이블은 그 리포트에 포함된 **개별 wafer(GROUPKEY)** 단위입니다.
+    DF_WADS_REPORT 의 한 행은 (LOTCD, CATEGORY, PARAMETER, END_TM) 조합당 검출 보고서 1건이고,
+    이 테이블(DF_WADS_WF_LIST) 의 한 행은 그 보고서에 포함된 wafer 1개 (GROUPKEY = "lot.wf").
+    → REPORT 1행 ↔ WF_LIST N행 (1:N).
     "검출된 wafer 몇 개", "어떤 GROUPKEY" 류 질의에 사용하세요.
 
     필터 인자는 단일 str 또는 list[str] 모두 허용 — list 일 경우 OR 결합.
