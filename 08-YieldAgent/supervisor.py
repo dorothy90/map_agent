@@ -539,10 +539,17 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
                 break
 
     lot_ids = wads_data.get("lot_ids") or []
+    wf_ids = wads_data.get("wf_ids") or []
 
     if _is_placeholder_or_empty(params.get("lot_ids")) and lot_ids:
         params["lot_ids"] = lot_ids
         logger.info("[ResolveChained] lot_ids ← wads_sql_result (%d lots)", len(lot_ids))
+
+    # PR0/PR2 schema: WADS 는 wafer 단위 식별자(GROUPKEY) 만 갖는다.
+    # 하류가 wf_ids 를 비운 채 받으면 wads_sql_result.wf_ids 로 자동 채움.
+    if _is_placeholder_or_empty(params.get("wf_ids")) and wf_ids:
+        params["wf_ids"] = wf_ids
+        logger.info("[ResolveChained] wf_ids ← wads_sql_result (%d wafers)", len(wf_ids))
 
     if _is_placeholder_or_empty(params.get("cause_oper")):
         fallback = state.get("cause_oper")

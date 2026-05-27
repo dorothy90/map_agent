@@ -97,16 +97,18 @@ def _render_wads_query_html(payload: List[Dict[str, Any]]) -> str:
     for row in payload:
         rows_html += (
             "<tr>"
-            f"<td>{_html_escape(row.get('lotid'))}</td>"
             f"<td>{_html_escape(row.get('lotcd'))}</td>"
-            f"<td>{_html_escape(row.get('end_tm'))}</td>"
+            f"<td>{_html_escape(row.get('category'))}</td>"
             f"<td>{_html_escape(row.get('parameter'))}</td>"
+            f"<td>{_html_escape(row.get('end_tm'))}</td>"
             "</tr>"
         )
 
     table = (
         "<table class='wads-table'>"
-        "<thead><tr><th>LOT ID</th><th>LOT코드</th><th>종료시간</th><th>스텝</th></tr></thead>"
+        "<thead><tr>"
+        "<th>LOTCD</th><th>CATEGORY</th><th>PARAMETER</th><th>END_TM</th>"
+        "</tr></thead>"
         f"<tbody>{rows_html}</tbody></table>"
     )
 
@@ -623,28 +625,54 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     result_message = AIMessage(content=answer, name="wads_agent")
 
-    # C1 (#카테고리 3): SQL 결과를 structured AIMessage로 messages에 push.
+    # 검출 결과를 structured AIMessage로 messages에 push.
     # LangGraph native 패턴 — 새 state field 없이 additional_kwargs로 downstream에 structured data 전달.
     # `_resolve_chained_params`가 state.messages에서 이 메시지를 찾아 chained input 해소.
+    #
+    # 식별자 의미 (PR0/PR2 schema):
+    #   LOTCD/LOT_CD = 제품코드 (예: "4SS") — lot 단위 식별자 아님
+    #   GROUPKEY     = 진짜 wafer 단위 식별자 (DF_WADS_WF_LIST 에만 존재)
+    # 따라서 chain output 의 lot_ids 는 비워두고, wafer 단위 chain 은 wf_ids 로 발사.
     out_messages: list = [result_message]
-    wads_lot_ids: list[str] = []
-    if query_payload:
-        wads_lot_ids = [r.get("lotid", "") for r in query_payload if r.get("lotid")]
-    elif sql_result_payload:
-        wads_lot_ids = [r.get("lotid", "") for r in sql_result_payload if r.get("lotid")]
-    if wads_lot_ids:
+    wads_group_keys: list[str] = []
+    wads_lot_cds: list[str] = []
+
+    wf_payload = storage.get("wf_list") or []
+    wf_payload = [r for r in wf_payload if isinstance(r, dict) and not r.get("error")]
+    if wf_payload:
+        wads_group_keys = sorted({str(r.get("groupkey")) for r in wf_payload if r.get("groupkey")})
+        wads_lot_cds = sorted({str(r.get("lot_cd")) for r in wf_payload if r.get("lot_cd")})
+
+    # wf_list 없을 때라도 lot_cds (제품코드) 는 REPORT/SQL 에서 회수 가능
+    if not wads_lot_cds:
+        src = []
+        if query_payload and isinstance(query_payload, list):
+            src += [r for r in query_payload if isinstance(r, dict) and not r.get("error")]
+        if sql_result_payload and isinstance(sql_result_payload, list):
+            src += [r for r in sql_result_payload if isinstance(r, dict) and not r.get("error")]
+        wads_lot_cds = sorted({str(r.get("lotcd")) for r in src if r.get("lotcd")})
+
+    if wads_group_keys or wads_lot_cds:
+        parts = []
+        if wads_group_keys:
+            parts.append(f"GROUPKEY {len(wads_group_keys)}건: {','.join(wads_group_keys[:10])}")
+        if wads_lot_cds:
+            parts.append(f"LOTCD {len(wads_lot_cds)}건: {','.join(wads_lot_cds[:10])}")
         sql_result_msg = AIMessage(
             content=(
-                f"[WADS SQL 결과] LOT ID {len(wads_lot_ids)}건: {','.join(wads_lot_ids)}"
-                f" | 기간 {start_tm or '전체'}~{end_tm or '전체'} | step={parameter or '전체'}"
+                f"[WADS 결과] " + " | ".join(parts)
+                + f" | 기간 {start_tm or '전체'}~{end_tm or '전체'}"
+                + f" | parameter={parameter or '전체'}"
             ),
             name="wads_sql_result",  # supervisor LLM 호출 전 filter 대상 (내부 전달용)
             additional_kwargs={
                 "wads_result": {
-                    "lot_ids": wads_lot_ids,
-                    "step_filter": parameter or "",
+                    "wf_ids": wads_group_keys,        # wafer 단위 chain (진짜 식별자)
+                    "lot_cds": wads_lot_cds,          # 제품코드 (참고용 — lot id 아님)
+                    "lot_ids": [],                    # WADS schema 에 lot id 없음 — 명시적으로 빈 리스트
+                    "parameter_filter": parameter or "",
                     "date_range": [start_tm or "", end_tm or ""],
-                    "detected_count": len(wads_lot_ids),
+                    "detected_count": len(wads_group_keys) or len(wads_lot_cds),
                 },
             },
         )
