@@ -766,5 +766,76 @@ def wads_query_wf_list(
     return "\n".join(lines)
 
 
+# ── 외부 데이터: Wiki 컨텍스트 lookup ────────────────────────
+
+
+@tool
+@observe(name="wads_lookup_param_context")
+def wads_lookup_param_context(
+    parameter: str,
+    category: Optional[str] = None,
+) -> str:
+    """PARAMETER(=fail_type) 또는 CATEGORY 의 의미·정의·과거 누적 본문을 wiki 에서 lookup.
+
+    "EASY가 뭐야?", "PT1H_TEST 와 PT1C_TEST 차이?", "왜 늘었지?" 류 해석성 질의에
+    한해 1회 호출. 본문 보강용 — artifact 발사 안 함.
+
+    Args:
+        parameter: fail_type (예: "EASY", "TWT").
+        category: 테스트 카테고리 (선택, 예: "PT1H_TEST").
+
+    Returns:
+        wiki 본문(있으면) + alias / 최근 episode 메타 요약. 없으면 빈 결과 안내.
+    """
+    try:
+        import wiki_store
+    except Exception as e:
+        logger.warning("[wads_lookup_param_context] wiki_store import 실패: %s", e)
+        return f"wiki 모듈을 사용할 수 없습니다: {e}"
+
+    lines: list[str] = []
+
+    # 1) super_concept 노드 (가장 정제된 정의)
+    try:
+        sc = wiki_store.lookup_super_concept(axis="fail_type", axis_value=parameter)
+        if sc and (sc.get("body") or "").strip():
+            body = sc["body"].strip()
+            lines.append(f"[wiki super_concept fail_type={parameter}]")
+            lines.append(body[:1200])
+    except Exception as e:
+        logger.warning("[wads_lookup_param_context] super_concept lookup 실패: %s", e)
+
+    # 2) 일반 lookup — alias / recent episodes
+    try:
+        query = f"{category} {parameter}".strip() if category else parameter
+        res = wiki_store.lookup(query=query, filters={}, max_episodes=3)
+        if res.get("concepts"):
+            lines.append("[관련 concept]")
+            for c in res["concepts"]:
+                summary = c.get("summary_1line", "")
+                seen = c.get("seen_count", 0)
+                lines.append(f"- {c.get('id')} (seen={seen}): {summary}")
+        if res.get("aliases"):
+            ali = ", ".join(f"{a.get('variant')}→{a.get('canonical')}" for a in res["aliases"][:5])
+            lines.append(f"[alias] {ali}")
+        if res.get("recent_episodes"):
+            lines.append("[최근 episode]")
+            for e in res["recent_episodes"][:3]:
+                q = e.get("query", "")[:60]
+                lines.append(f"- {e.get('id')}: {q}")
+    except Exception as e:
+        logger.warning("[wads_lookup_param_context] lookup 실패: %s", e)
+
+    if not lines:
+        return f"wiki 에 '{parameter}' 관련 정보가 없습니다. (외부 컨텍스트 보강 없이 진행하세요)"
+    return "\n".join(lines)
+
+
 # ── WADS 전용 도구 리스트 ─────────────────────────────────────
-WADS_TOOLS = [wads_query_data, wads_get_html_report, wads_query_sql, wads_query_wf_list]
+WADS_TOOLS = [
+    wads_query_data,
+    wads_get_html_report,
+    wads_query_sql,
+    wads_query_wf_list,
+    wads_lookup_param_context,
+]

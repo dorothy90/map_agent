@@ -564,6 +564,11 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
    - query_description 에 자연어로 조회 의도 설명.
    - 두 테이블 모두 SELECT 가능 (FROM DF_WADS_REPORT 또는 DF_WADS_WF_LIST, JOIN 가능).
    - 실패하면 1회만 재시도 후 wads_query_data 로 폴백.
+5. **wads_lookup_param_context** (wiki — 본문 보강용, artifact 없음)
+   - 인자: parameter (필수), category (선택)
+   - "EASY 가 뭐야?", "PT1H 와 PT1C 차이?", "왜 늘었지?" 등 **해석성** 질의에만 1회 호출.
+   - 통계/리스트 단순 조회에서는 호출하지 마세요 (불필요한 비용).
+   - 반환은 LLM 본문 보강용 — 별도 artifact 가 발사되지 않습니다.
 
 ## 도구 선택 가드 (반드시 지킬 것)
 - "리포트 / HTML / 본문 / 내용 자세히" → **wads_get_html_report** (유일).
