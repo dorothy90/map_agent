@@ -14,7 +14,7 @@ from langgraph.prebuilt import create_react_agent
 from langfuse import observe
 
 from lf_utils import lf_callbacks as _lf_callbacks
-from common import timed, get_llm, html_escape as _html_escape, extract_suggestion, is_transient_error
+from common import timed, get_llm, html_escape as _html_escape, extract_suggestion, extract_render_mode, is_transient_error
 from prompts import WADS_SYSTEM_PROMPT_TEMPLATE
 from wads_tools import WADS_TOOLS, _tool_payload_var, _get_tool_payload
 
@@ -311,40 +311,83 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         query_payload is not None, len(reports_payload), sql_result_payload is not None,
     )
 
-    # 렌더링 우선순위: reports > sql_result > query (S-1, I-2)
-    artifacts = []
-    if reports_payload:
-        html = _render_wads_report_html(reports_payload)
+    # [RENDER: <mode>[:layout]] 파싱 — LLM 이 답변 본문에서 artifact 모드를 결정
+    answer, render_mode, render_layout = extract_render_mode(answer, default="auto")
+    answer, agent_suggestion = extract_suggestion(answer)
+
+    has_reports = bool(reports_payload)
+    has_sql = bool(sql_result_payload)
+    has_query = bool(query_payload)
+
+    # 모드별 artifact 발사 결정
+    artifacts: list = []
+    if render_mode == "text":
+        # 명시적 text 모드 — artifact 0개. LLM 본문만.
+        pass
+    elif render_mode == "md":
+        # markdown artifact — LLM 본문을 그대로 패널에 표시
+        if answer:
+            artifacts.append(
+                {
+                    "type": "markdown",
+                    "mime": "text/markdown",
+                    "data": answer,
+                    "title": "wads_summary",
+                }
+            )
+    elif render_mode == "report" and has_reports:
         artifacts.append(
             {
                 "type": "html",
                 "mime": "text/html",
-                "data": html,
+                "data": _render_wads_report_html(reports_payload),
                 "title": "wads_report",
             }
         )
-    elif sql_result_payload:
-        html = _render_wads_sql_html(sql_result_payload)
+    elif render_mode == "table" and (has_sql or has_query):
+        payload = sql_result_payload if has_sql else query_payload
         artifacts.append(
             {
                 "type": "html",
                 "mime": "text/html",
-                "data": html,
-                "title": "wads_sql_result",
+                "data": _render_wads_sql_html(payload) if has_sql else _render_wads_query_html(payload),
+                "title": "wads_sql_result" if has_sql else "wads_query",
             }
         )
-    elif query_payload:
-        html = _render_wads_query_html(query_payload)
-        artifacts.append(
-            {
-                "type": "html",
-                "mime": "text/html",
-                "data": html,
-                "title": "wads_query",
-            }
-        )
+    else:
+        # render_mode == "auto" 또는 LLM 이 태그를 안 단 경우 → 기존 우선순위 분기
+        if has_reports:
+            artifacts.append(
+                {
+                    "type": "html",
+                    "mime": "text/html",
+                    "data": _render_wads_report_html(reports_payload),
+                    "title": "wads_report",
+                }
+            )
+        elif has_sql:
+            artifacts.append(
+                {
+                    "type": "html",
+                    "mime": "text/html",
+                    "data": _render_wads_sql_html(sql_result_payload),
+                    "title": "wads_sql_result",
+                }
+            )
+        elif has_query:
+            artifacts.append(
+                {
+                    "type": "html",
+                    "mime": "text/html",
+                    "data": _render_wads_query_html(query_payload),
+                    "title": "wads_query",
+                }
+            )
 
-    answer, agent_suggestion = extract_suggestion(answer)
+    logger.info(
+        "[WADS Agent] render_mode=%s layout=%s artifacts=%d (reports=%s sql=%s query=%s)",
+        render_mode, render_layout, len(artifacts), has_reports, has_sql, has_query,
+    )
 
     result_message = AIMessage(content=answer, name="wads_agent")
 

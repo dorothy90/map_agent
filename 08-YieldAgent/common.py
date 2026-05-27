@@ -215,6 +215,24 @@ def extract_suggestion(text: str) -> tuple[str, str]:
     return cleaned, suggestion
 
 
+def extract_render_mode(text: str, default: str = "auto") -> tuple[str, str, str]:
+    """[RENDER: <mode>[:<layout>]] 패턴을 추출하고 본문에서 제거.
+
+    지원 모드: text | md | report | table | auto
+    레이아웃(table 모드 한정): kpi | distribution | pivot | trend | table
+
+    Returns:
+        (cleaned_text, mode, layout)  — layout 은 콜론 뒤가 없으면 빈 문자열.
+    """
+    match = re.search(r'\[RENDER:\s*([a-zA-Z_]+)(?::\s*([a-zA-Z_]+))?\s*\]', text)
+    if not match:
+        return text, default, ""
+    mode = match.group(1).strip().lower()
+    layout = (match.group(2) or "").strip().lower()
+    cleaned = re.sub(r'\[RENDER:[^\]]*\]', '', text).strip()
+    return cleaned, mode, layout
+
+
 def extract_json_from_llm(raw_text: str, model_class: Type[BaseModel]) -> BaseModel:
     """LLM 응답에서 <think> 태그 제거 후 JSON 추출 → Pydantic 모델 파싱.
 

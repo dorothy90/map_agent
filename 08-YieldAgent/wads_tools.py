@@ -205,12 +205,60 @@ def wads_query_data(
     storage["query"] = result
     logger.info("[wads_query_data] 완료: %d건", len(result))
 
-    lines = [f"WADS 리포트 조회 완료: 총 {len(result)}건 (DF_WADS_REPORT)"]
-    for r in result[:50]:
-        lines.append(
-            f"- LOTCD={r.get('lotcd')}, CATEGORY={r.get('category')}, "
-            f"PARAMETER={r.get('parameter')}, END_TM={r.get('end_tm')}"
-        )
+    return _summarize_query_result(result, lotcd, start_tm, end_tm)
+
+
+def _top_counts(values: List[str], top_k: int = 5) -> str:
+    """문자열 리스트의 빈도수 상위 top_k 를 '값=cnt, ...' 형태로 직렬화."""
+    from collections import Counter
+    counts = Counter(v for v in values if v)
+    if not counts:
+        return "(없음)"
+    items = counts.most_common(top_k)
+    extra = len(counts) - len(items)
+    s = ", ".join(f"{k}={v}건" for k, v in items)
+    if extra > 0:
+        s += f", … (+{extra}종)"
+    return s
+
+
+def _summarize_query_result(
+    rows: List[Dict[str, Any]],
+    lotcd: Optional[str],
+    start_tm: Optional[str],
+    end_tm: Optional[str],
+) -> str:
+    """wads_query_data 결과를 LLM 이 본문에서 직접 인용할 수 있는 풍부한 요약 텍스트로 변환."""
+    n = len(rows)
+    lines = [f"WADS 리포트 조회 완료: 총 {n}건 (DF_WADS_REPORT)"]
+
+    # 기간 / 일평균
+    end_tms = [r.get("end_tm") for r in rows if r.get("end_tm")]
+    unique_days = {str(t)[:8] for t in end_tms if t}
+    if start_tm and end_tm:
+        if unique_days:
+            avg = n / max(len(unique_days), 1)
+            lines.append(f"- 기간: {start_tm} ~ {end_tm} ({len(unique_days)}일치, 일평균 {avg:.1f}건)")
+        else:
+            lines.append(f"- 기간: {start_tm} ~ {end_tm}")
+    elif end_tm:
+        lines.append(f"- 날짜: {end_tm}")
+
+    # 분포
+    lines.append(f"- CATEGORY 분포: {_top_counts([r.get('category', '') for r in rows])}")
+    lines.append(f"- PARAMETER(fail_type) 분포: {_top_counts([r.get('parameter', '') for r in rows])}")
+    lines.append(f"- LOTCD 분포: {_top_counts([r.get('lotcd', '') for r in rows])}")
+
+    # 최신 3건 샘플
+    sample = rows[:3]
+    if sample:
+        lines.append("- 최신 3건:")
+        for r in sample:
+            lines.append(
+                f"    · LOTCD={r.get('lotcd')}, CATEGORY={r.get('category')}, "
+                f"PARAMETER={r.get('parameter')}, END_TM={r.get('end_tm')}"
+            )
+
     return "\n".join(lines)
 
 
@@ -300,18 +348,28 @@ def _strip_sql_comments(sql: str) -> str:
     return sql
 
 
+def _strip_string_literals(sql: str) -> str:
+    """작은따옴표 문자열 리터럴을 빈 문자열로 치환 — HTML/* 토큰 검사 false positive 방지."""
+    return re.sub(r"'(?:''|[^'])*'", "''", sql)
+
+
+_HTML_TOKEN = re.compile(r"\bHTML\b", re.IGNORECASE)
+_SELECT_STAR = re.compile(r"\bSELECT\s+\*", re.IGNORECASE)
+
+
 def _validate_sql(sql: str) -> Tuple[bool, str]:
     """
-    4계층 SQL 검증. (ok, reason) 반환.
-    계층1: 주석 제거, 계층2: SELECT 확인, 계층3: 테이블 허용목록, 금지 키워드
+    5계층 SQL 검증. (ok, reason) 반환.
+    계층1: 주석 제거, 계층2: SELECT 확인, 계층3: 테이블 허용목록 + 금지 키워드,
+    계층4: 쿼리 타임아웃(cursor-side), 계층5: HTML 컬럼 차단 + SELECT * 차단.
     """
     cleaned = _strip_sql_comments(sql).strip()
-    # E3 fix: trailing 단일 세미콜론은 LLM의 흔한 습관이므로 자동 제거 (multi-statement 검사는 유지)
+    # trailing 단일 세미콜론은 LLM의 흔한 습관이므로 자동 제거 (multi-statement 검사는 유지)
     cleaned = cleaned.rstrip(";").strip()
     if not cleaned:
         return False, "빈 SQL"
 
-    # 세미콜론 금지 (multi-statement 방지) — trailing은 위에서 strip 했으므로 여기 ;는 multi-statement
+    # 세미콜론 금지 (multi-statement 방지)
     if ";" in cleaned:
         return False, "세미콜론(;)은 허용되지 않습니다"
 
@@ -330,6 +388,22 @@ def _validate_sql(sql: str) -> Tuple[bool, str]:
     for tbl in table_refs:
         if tbl.upper() not in _ALLOWED_TABLES:
             return False, f"허용되지 않은 테이블: {tbl} (허용: {', '.join(sorted(_ALLOWED_TABLES))})"
+
+    # 계층5-a: SELECT * 금지 — DF_WADS_REPORT 에 HTML 이 있으므로 * 는 잠재적 누출 통로
+    if _SELECT_STAR.search(cleaned):
+        return False, (
+            "SELECT * 는 허용되지 않습니다. 컬럼을 명시적으로 나열하세요 "
+            "(예: LOTCD, CATEGORY, PARAMETER, END_TM)."
+        )
+
+    # 계층5-b: HTML 컬럼 차단 — wads_query_sql 은 HTML 본문을 반환할 수 없음.
+    # 문자열 리터럴 안의 'HTML' 은 토큰이 아니므로 검사 전에 제거.
+    cleaned_no_strings = _strip_string_literals(cleaned)
+    if _HTML_TOKEN.search(cleaned_no_strings):
+        return False, (
+            "HTML 컬럼은 wads_query_sql 로 조회할 수 없습니다. "
+            "열화 리포트 본문이 필요하면 wads_get_html_report 도구를 사용하세요."
+        )
 
     return True, ""
 
@@ -383,15 +457,16 @@ def wads_query_sql(query_description: str) -> str:
     """WADS 데이터에 대한 복잡한 SQL 쿼리를 생성하고 실행합니다.
     wads_query_data/wads_get_html_report로 처리할 수 없는 복잡한 조건에만 사용하세요.
     이 도구는 내부 LLM 호출이 추가되어 다른 도구보다 느립니다.
+    HTML 컬럼은 반환하지 않습니다 (열화 리포트 본문은 wads_get_html_report 사용).
 
     Args:
         query_description: 조회 내용을 자연어로 설명
-            (예: "4SS 로트의 3월 step01, step02 건수를 step별 집계")
-            (예: "step03 제외한 전체 스텝 목록")
-            (예: "로트별 HIGH severity 건수 비교")
+            (예: "4SS 로트의 3월 EASY, TWT 건수를 PARAMETER별 집계")
+            (예: "TWT 제외한 PT1H_TEST 전체 PARAMETER 목록")
+            (예: "lotcd별 PT1H_TEST 건수 비교")
 
     Returns:
-        조회 결과 요약 (건수 + 컬럼 정보). 실제 데이터는 화면에 별도 표시됩니다.
+        조회 결과 요약 (작은 결과는 전체 JSON, 큰 결과는 top10 + 통계 메타).
     """
     storage = _get_tool_payload()
 
@@ -409,11 +484,18 @@ def wads_query_sql(query_description: str) -> str:
         if raw_sql.startswith("```"):
             raw_sql = re.sub(r"^```\w*\n?", "", raw_sql)
             raw_sql = re.sub(r"\n?```$", "", raw_sql)
-        # E3 fix: trailing 단일 세미콜론 제거 — LLM이 SQL 끝에 ;를 자동으로 붙이는 습관 대응
         raw_sql = raw_sql.strip().rstrip(";").strip()
     except Exception as e:
         logger.error("[wads_query_sql] SQL 생성 실패: %s", e)
         return f"SQL 생성 실패: {e}. wads_query_data 도구를 대신 사용하세요."
+
+    # 1.5. SQL 생성 LLM 이 ERROR 응답을 낸 경우 (예: 사용자가 HTML 본문 요청)
+    if raw_sql.upper().startswith("ERROR"):
+        logger.info("[wads_query_sql] SQL 생성 LLM 가드 응답: %s", raw_sql)
+        return (
+            "이 요청은 wads_query_sql 로 처리할 수 없습니다. "
+            "열화 리포트 본문이 필요하면 wads_get_html_report 를 사용하세요."
+        )
 
     # 2. SQL 검증
     ok, reason = _validate_sql(raw_sql)
@@ -446,7 +528,11 @@ def wads_query_sql(query_description: str) -> str:
         error_obj = e.args[0] if e.args else e
         error_code = getattr(error_obj, "code", 0)
         if error_code in (904, 942):
-            return f"컬럼/테이블 오류: {e}. 사용 가능 컬럼: LOTCD, END_TM, CTN_DESC, HTML"
+            return (
+                f"컬럼/테이블 오류: {e}. 사용 가능 컬럼: "
+                "DF_WADS_REPORT(LOTCD, CATEGORY, PARAMETER, END_TM), "
+                "DF_WADS_WF_LIST(OPER_PARA, GROUPKEY, END_TM, LOT_CD)"
+            )
         return f"SQL 실행 오류: {e}. query_description을 수정하여 재시도하세요."
     except Exception as e:
         logger.error("[wads_query_sql] 예기치 않은 오류: %s", e)
@@ -460,21 +546,59 @@ def wads_query_sql(query_description: str) -> str:
         return "조건에 맞는 데이터가 없습니다."
 
     result = [dict(zip(col_names, row)) for row in rows]
+    # _validate_sql 의 계층5 가 HTML 컬럼을 차단했으므로, 여기까지 도달했다면 HTML 없음.
+    # (혹시 우회로 들어왔더라도 방어선 한 번 더 — HTML 컬럼은 sql_result 에 저장하지 않음.)
+    safe_cols = [c for c in col_names if c.lower() != "html"]
+    safe_result = [{c: r.get(c) for c in safe_cols} for r in result]
+    storage["sql_result"] = safe_result
 
-    # HTML 컬럼 포함 여부에 따라 reports 또는 sql_result에 저장
-    if "html" in col_names:
-        for r in result:
-            storage.setdefault("reports", []).append({
-                "lotcd": r.get("lotcd", ""),
-                "end_tm": r.get("end_tm", ""),
-                "parameter": r.get("ctn_desc", ""),
-                "html": r.get("html", ""),
-            })
-        return f"WADS SQL 리포트 조회 완료: 총 {len(result)}건 (리포트는 화면에 별도 표시됩니다)"
-    else:
-        storage["sql_result"] = result
-        col_info = ", ".join(col_names)
-        return f"WADS SQL 쿼리 실행 완료: 총 {len(result)}건 조회됨. 컬럼: {col_info} (데이터는 화면에 별도 표시됩니다)"
+    return _summarize_sql_result(safe_result, safe_cols)
+
+
+def _is_numeric(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _summarize_sql_result(rows: List[Dict[str, Any]], col_names: List[str]) -> str:
+    """SQL 결과를 LLM 이 인용 가능한 형태로 직렬화.
+
+    - ≤20행: 전체 JSON 그대로 (LLM 이 숫자 직접 인용)
+    - >20행: 상위 10행 + 통계 메타 (수치 컬럼 sum/min/max/avg)
+    """
+    import json
+    n = len(rows)
+    col_info = ", ".join(col_names)
+    if n == 0:
+        return "조건에 맞는 데이터가 없습니다."
+
+    if n <= 20:
+        body = json.dumps(rows, ensure_ascii=False, default=str)
+        return (
+            f"WADS SQL 결과: 총 {n}건, 컬럼=[{col_info}]\n"
+            f"전체 데이터:\n{body}"
+        )
+
+    # 큰 결과: 상위 10 + 통계 메타
+    head = rows[:10]
+    head_body = json.dumps(head, ensure_ascii=False, default=str)
+
+    # 수치 컬럼별 통계
+    stats_lines = []
+    for c in col_names:
+        nums = [r.get(c) for r in rows if _is_numeric(r.get(c))]
+        if not nums:
+            continue
+        stats_lines.append(
+            f"  · {c}: n={len(nums)}, sum={sum(nums):,}, "
+            f"min={min(nums):,}, max={max(nums):,}, avg={sum(nums)/len(nums):.2f}"
+        )
+    stats_block = "\n".join(stats_lines) if stats_lines else "  (수치 컬럼 없음)"
+
+    return (
+        f"WADS SQL 결과: 총 {n}건, 컬럼=[{col_info}]\n"
+        f"상위 10건:\n{head_body}\n"
+        f"수치 컬럼 통계:\n{stats_block}"
+    )
 
 
 # ── WADS 전용 도구 리스트 ─────────────────────────────────────
