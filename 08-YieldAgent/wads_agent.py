@@ -688,9 +688,10 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         "past_steps": [(
             state.get("current_task_id", ""),
             answer[:300] + (
-                f" | detected_lots({len(wads_lot_ids)}): {wads_lot_ids[:5]}"
+                f" | detected_wafers({len(wads_group_keys)}): {wads_group_keys[:5]}"
+                f", lot_cds: {wads_lot_cds[:5]}"
                 f", detected_params: {[parameter] if parameter else []}"
-                if wads_lot_ids else ""
+                if (wads_group_keys or wads_lot_cds) else ""
             ),
         )],
     }
