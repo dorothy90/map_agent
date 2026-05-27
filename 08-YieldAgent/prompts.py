@@ -565,7 +565,7 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
   - LOTCD: 로트코드 (예: 5NA, 4SS, 6E2)
   - CATEGORY: 테스트 카테고리 — "PT1H_TEST" 또는 "PT1C_TEST"
   - PARAMETER: fail_type (예: "EASY", "TWT" 등)
-  - END_TM: 종료 시간, "YY/MM/DD ..." 포맷 (예: "26/02/13")
+  - END_TM: 종료 시간 (Oracle DATE 타입). 도구 인자에는 "YYYY-MM-DD" / "YY/MM/DD" 모두 허용 — 내부에서 정규화.
   - HTML: 열화 리포트 본문 (대용량 CLOB — 별도 경로로만 접근)
 - **DF_WADS_WF_LIST** — 검출된 wafer 단위 (HTML 없음)
   - OPER_PARA: "{{CATEGORY}}_{{PARAMETER}}" 결합 (예: "PT1H_TEST_EASY(W)")

@@ -53,32 +53,39 @@ def _get_tool_payload() -> Dict[str, Any]:
         return storage
 
 
-# DF_WADS_REPORT / DF_WADS_WF_LIST 의 END_TM 은 "YY/MM/DD ..." 로 시작.
-# 'yy/mm/dd' 는 lexicographic 정렬 == chronological 정렬이므로 TO_DATE 거치지 않고
-# SUBSTR(END_TM, 1, 8) 의 문자열 BETWEEN 으로 비교한다.
-# (END_TM 이 DATE 타입이면 implicit TO_CHAR 가 NLS_DATE_FORMAT 의 영향을 받아 SUBSTR 가
-#  잘못된 부분을 자르는 문제를 회피.)
-_END_TM_RANGE_CLAUSE = "SUBSTR(END_TM, 1, 8) BETWEEN :start_tm AND :end_tm_range"
+# DF_WADS_REPORT / DF_WADS_WF_LIST 의 END_TM 은 Oracle DATE 타입.
+# (SQL Developer 등에서 "yy/mm/dd" 로 보이는 건 NLS_DATE_FORMAT 의 display 일 뿐, 저장은 DATE.)
+# DATE 컬럼이라 SUBSTR/implicit TO_CHAR 를 거치지 않고, TRUNC 로 시간 부분만 떼어내
+# explicit TO_DATE(:bind, 'YYYY-MM-DD') 와 BETWEEN — NLS_DATE_FORMAT 의존성 0.
+_END_TM_RANGE_CLAUSE = (
+    "TRUNC(END_TM) BETWEEN TO_DATE(:start_tm, 'YYYY-MM-DD') "
+    "AND TO_DATE(:end_tm_range, 'YYYY-MM-DD')"
+)
+_END_TM_SINGLE_CLAUSE = "TRUNC(END_TM) = TO_DATE(:end_tm, 'YYYY-MM-DD')"
 
 
 def _normalize_date_input(s: str) -> str:
-    """사용자 입력 'YYYY-MM-DD' / 'YY/MM/DD' 모두 받아 Oracle TO_DATE 용 'YY/MM/DD' 로 정규화."""
+    """사용자 입력을 Oracle TO_DATE(:bind, 'YYYY-MM-DD') 용 'YYYY-MM-DD' 로 정규화.
+
+    허용: 'YYYY-MM-DD', 'YY/MM/DD', 'YYYY/M/D', 'YY-M-D' 등 best-effort.
+    2자리 연도는 20YY 로 확장.
+    """
     s = (s or "").strip()
     if not s:
         return s
-    # YYYY-MM-DD → YY/MM/DD
+    # YYYY-MM-DD → 그대로
     if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-        return f"{s[2:4]}/{s[5:7]}/{s[8:10]}"
-    # YY/MM/DD → 그대로
-    if re.match(r"^\d{2}/\d{2}/\d{2}$", s):
         return s
-    # 그 외(예: 'YYYY/MM/DD', 'YY-MM-DD') 도 best-effort
+    # YY/MM/DD → 20YY-MM-DD
+    if re.match(r"^\d{2}/\d{2}/\d{2}$", s):
+        return f"20{s[0:2]}-{s[3:5]}-{s[6:8]}"
+    # 그 외 (예: 'YYYY/MM/DD', 'YY-M-D') best-effort
     digits = re.findall(r"\d+", s)
     if len(digits) >= 3:
         y, m, d = digits[0], digits[1], digits[2]
-        if len(y) == 4:
-            y = y[2:]
-        return f"{y.zfill(2)}/{m.zfill(2)}/{d.zfill(2)}"
+        if len(y) == 2:
+            y = "20" + y
+        return f"{y.zfill(4)}-{m.zfill(2)}-{d.zfill(2)}"
     return s
 
 
@@ -167,8 +174,8 @@ def _query_wads_data(
         bind_vars["start_tm"] = _normalize_date_input(start_tm)
         bind_vars["end_tm_range"] = _normalize_date_input(end_tm)
     elif end_tm:
-        conditions.append("END_TM LIKE :end_tm")
-        bind_vars["end_tm"] = f"%{_normalize_date_input(end_tm)}%"
+        conditions.append(_END_TM_SINGLE_CLAUSE)
+        bind_vars["end_tm"] = _normalize_date_input(end_tm)
 
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     sql = f"SELECT {columns} FROM {_REPORT_TABLE} WHERE {where_clause}"
@@ -492,13 +499,13 @@ Tables:
     LOTCD      VARCHAR2  -- product code (e.g., "4SS", "5NA")
     CATEGORY   VARCHAR2  -- test category: "PT1H_TEST" or "PT1C_TEST"
     PARAMETER  VARCHAR2  -- fail_type (e.g., "EASY", "TWT")
-    END_TM     VARCHAR2  -- end time in "YY/MM/DD ..." format
+    END_TM     DATE      -- end time (Oracle DATE column; display format depends on NLS_DATE_FORMAT)
     HTML       CLOB      -- report body (FORBIDDEN — see Rules)
 
   {wf_list_table} (per-wafer detection row, no HTML)
     OPER_PARA  VARCHAR2  -- "{{CATEGORY}}_{{PARAMETER}}" e.g. "PT1H_TEST_EASY(W)"
     GROUPKEY   VARCHAR2  -- individual wafer key
-    END_TM     VARCHAR2  -- end time in "YY/MM/DD ..." format
+    END_TM     DATE      -- end time (Oracle DATE column; display format depends on NLS_DATE_FORMAT)
     LOT_CD     VARCHAR2  -- product code (same semantics as LOTCD)
 
 Rules:
@@ -511,7 +518,10 @@ Rules:
 - Safe columns: LOTCD, CATEGORY, PARAMETER, END_TM (DF_WADS_REPORT);
                 OPER_PARA, GROUPKEY, END_TM, LOT_CD (DF_WADS_WF_LIST).
 - Use UPPER() for case-insensitive LOTCD/CATEGORY/PARAMETER/OPER_PARA comparisons.
-- Date filtering: SUBSTR(END_TM, 1, 8) BETWEEN :start AND :end  -- 'yy/mm/dd' 문자열 비교 (TO_DATE 금지: NLS_DATE_FORMAT 차이로 silent 0 rows 가능)
+- Date filtering: TRUNC(END_TM) BETWEEN TO_DATE(:start, 'YYYY-MM-DD') AND TO_DATE(:end, 'YYYY-MM-DD')
+  (END_TM is a DATE column. Do NOT wrap it in SUBSTR or TO_CHAR — that triggers
+  implicit NLS_DATE_FORMAT conversion and can silently return 0 rows when the
+  app's session NLS differs from SQL Developer's. Let TRUNC strip the time.)
 - JOIN guidance: r.LOTCD = w.LOT_CD AND r.END_TM = w.END_TM
 - Always add FETCH FIRST 500 ROWS ONLY.
 - Output ONLY the SQL statement (or the ERROR string), no explanation.
@@ -752,8 +762,8 @@ def _query_wf_list_data(
         bind_vars["start_tm"] = _normalize_date_input(start_tm)
         bind_vars["end_tm_range"] = _normalize_date_input(end_tm)
     elif end_tm:
-        conditions.append("END_TM LIKE :end_tm")
-        bind_vars["end_tm"] = f"%{_normalize_date_input(end_tm)}%"
+        conditions.append(_END_TM_SINGLE_CLAUSE)
+        bind_vars["end_tm"] = _normalize_date_input(end_tm)
 
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     sql = f"SELECT {columns} FROM {_WF_LIST_TABLE} WHERE {where_clause}"
