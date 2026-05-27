@@ -10,6 +10,40 @@
 2. LLM 응답은 "조회 완료. 총 N건. [SUGGESTION: ...]" 수준의 한 줄짜리 요약뿐 — 정작 숫자/패턴을 말로 풀어주지 않음.
 3. WADS 외부 지식(wiki 개념 설명, 과거 fail history, yield 추세)과의 연계가 전혀 없어 "왜 늘었는지", "step01이 뭔지" 같은 후속 맥락 제공 불가.
 
+## 0. 실제 스키마 (선행 정정 — 본 플랜의 모든 도구/프롬프트 기준)
+
+WADS 관련 Oracle 테이블은 **2개**다. 현재 코드(`wads_tools.py:25`)는 단일 `WADS_TABLE` env var 한 개만 가정하고, 컬럼명도 `LOTID`/`CTN_DESC`/`HTML` 5종으로 가정하지만 **실제와 다르다**.
+
+### DF_WADS_REPORT (현 `_query_wads_data`가 대상으로 삼는 테이블)
+| 컬럼 | 의미 | 비고 |
+|------|------|------|
+| LOTCD | 제품 로트코드 | "4SS", "5NA" 등 |
+| CATEGORY | 테스트 카테고리 | `PT1H_TEST` 또는 `PT1C_TEST` (2종) |
+| PARAMETER | fail_type | 예: "EASY", "TWT" 등 (현 코드의 "step01..09" 가정은 잘못됨) |
+| END_TM | 종료 시각 | "YY/MM/DD" 포맷 (예: "26/02/13") — 현 코드의 "YYYY-MM-DD HH:MM:SS" 가정과 다름 |
+| HTML | 레포트 본문 | CLOB |
+
+**LOTID 컬럼 없음** — 현 `wads_query_data` 가 `LOTID` 를 SELECT 하는 구문(`wads_tools.py:142`)은 실행 실패하거나, 운영 환경에 view 가 래핑돼 있어 우연히 통과 중일 가능성 있음. 확인 필요.
+
+### DF_WADS_WF_LIST (신규 — 본 플랜에서 추가로 활용)
+| 컬럼 | 의미 | 비고 |
+|------|------|------|
+| OPER_PARA | `{CATEGORY}_{PARAMETER}` 결합 | 예: `PT1H_TEST_EASY(W)` |
+| GROUPKEY | 웨이퍼 식별 키 | 검출된 개별 wafer |
+| END_TM | 종료 시각 | DF_WADS_REPORT 와 조인 키 |
+| LOT_CD | 로트코드 | DF_WADS_REPORT.LOTCD 와 동일 의미(컬럼명만 다름 — 언더스코어) |
+
+→ DF_WADS_REPORT 가 "(lotcd, category, parameter, end_tm) 단위 리포트 1행"이라면 DF_WADS_WF_LIST 는 그 리포트에 포함된 **wafer N개의 explode**.
+
+### 본 스키마가 플랜에 미치는 영향
+1. **CATEGORY 가 새 필터 차원**: 현 도구/프롬프트에는 PT1H_TEST/PT1C_TEST 개념이 없음. 통계 질문 ("PT1H 검출만 알려줘") 처리 불가 → 필터 + 분포 요약에 반드시 포함.
+2. **PARAMETER 는 fail_type**: 시스템 프롬프트의 "step01..09" 예시 (현 `prompts.py:545-547, 583-591`) 전면 교체. 동시에 §2.4 R-4(2) `wads_lookup_related_failures` 와 의미적으로 정합 — 같은 fail_type 축으로 wiki/fail_history 연결 가능.
+3. **wafer 단위 차원 추가**: "몇 개 wafer가 검출됐어?" / "어떤 GROUPKEY?" 류 질의는 DF_WADS_REPORT 만으로는 답 불가. WF_LIST 도구가 필요.
+4. **END_TM 포맷 정정**: `_query_wads_data` (`wads_tools.py:65-74`) 의 `TO_DATE(..., 'YYYY-MM-DD')` 가정은 실제 "YY/MM/DD" 와 충돌. 별도 P0 fix 필요 (본 플랜의 사전 작업으로 §6 PR1 에 포함).
+5. **테이블 이름 env var 분리**: 단일 `WADS_TABLE` → `WADS_REPORT_TABLE` + `WADS_WF_LIST_TABLE` 2개. SQL 검증 allowlist 도 2개로 확장 (`wads_tools.py:278-282`).
+
+---
+
 ## 핵심 파일 / 라인
 
 - `wads_agent.py:57-61` — `create_react_agent` 그래프 정의 (도구 3개)
@@ -53,22 +87,29 @@
 
 **구체 변경**:
 
-#### (a) `wads_query_data` (현 `wads_tools.py:128-169`)
+#### (a) `wads_query_data` (현 `wads_tools.py:128-169`) — DF_WADS_REPORT 대상
 - 현재: 상위 50건 LOT 라인 나열만 — 통계 정보 0.
-- 변경: 데이터 후처리하여 LLM 반환 텍스트에 아래 요약 블록 추가
+- 변경: 데이터 후처리하여 LLM 반환 텍스트에 아래 요약 블록 추가 (스키마 §0 반영)
   ```
-  WADS 데이터 조회 완료: 총 N건
+  WADS 리포트 조회 완료: 총 N건 (DF_WADS_REPORT)
   - 기간: {start_tm} ~ {end_tm}, 일평균 {avg_per_day:.1f}건
-  - step 분포: step01=12건, step02=8건, ...   (상위 5개)
-  - lotcd 분포: 4SS=20건, 5NA=7건, ...        (상위 5개)
-  - 최신 3건: LOTID/STEP/END_TM ...
+  - CATEGORY 분포: PT1H_TEST=18건, PT1C_TEST=9건
+  - PARAMETER(fail_type) 분포: EASY=12건, TWT=8건, ...   (상위 5개)
+  - LOTCD 분포: 4SS=20건, 5NA=7건, ...                   (상위 5개)
+  - 최신 3건: LOTCD/CATEGORY/PARAMETER/END_TM ...
   ```
 - 이러면 "최근 3일 검출 통계 알려줘"에 LLM이 직접 숫자 인용 가능.
+- **필터 시그니처 확장**: `category: Optional[str]` 추가 (PT1H_TEST | PT1C_TEST, 부분일치).
 
 #### (b) `wads_query_sql` (현 `wads_tools.py:391-411`)
 - 현재: `"WADS SQL 쿼리 실행 완료: 총 47건. 컬럼: ctn_desc, cnt"` 한 줄.
 - 변경: **결과 행 수가 작으면 (≤ 20행) 전체 JSON을 그대로 LLM에 노출**. 그 이상이면 상위 10행 + 통계 메타(`n_rows`, `n_cols`, 수치 컬럼의 sum/min/max/avg)를 직렬화.
 - ContextVar 저장(=artifact용)은 그대로 유지 — 호환성 깨지지 않음.
+- **SQL 생성 프롬프트 정정** (`wads_tools.py:295-312` `_SQL_GEN_PROMPT`):
+  - 테이블 2개 (`DF_WADS_REPORT`, `DF_WADS_WF_LIST`) + 컬럼 정정.
+  - END_TM 포맷 `'YY/MM/DD'` 기반 `TO_DATE(SUBSTR(END_TM,1,8),'YY/MM/DD')`.
+  - JOIN 가이드: `r.LOTCD = w.LOT_CD AND r.END_TM = w.END_TM` (필요 시).
+  - allowlist 도 두 테이블로 확장 (`wads_tools.py:278-282`).
 
 #### (c) (신규) HTML 컬럼은 LLM 반환에서 제외
 `wads_get_html_report` 의 LLM 회신 텍스트에 절대 HTML 본문이 섞이지 않도록 명시(현재도 그렇지만, SQL 경로에서 누락 위험 있음 — guard 추가).
@@ -123,26 +164,59 @@
 
 ---
 
-### 2.4 [HIGH] R-4 해소: 외부 데이터 연계 — 신규 도구 3종
+### 2.4 [HIGH] R-4 해소: 외부 데이터 연계 — 신규 도구 (내부 WF_LIST + 외부 지식)
 
-WADS 외 같은 레포의 자산 (모두 read-only adapter 만 추가하면 됨):
+#### 2.4.0 (선행, 신규) `wads_query_wf_list` — DF_WADS_WF_LIST 전용 도구
+스키마 §0 의 **wafer 단위 차원**을 노출하는 도구. 본 플랜의 가장 큰 신규 정보원.
+
+```python
+@tool
+def wads_query_wf_list(
+    lotcd: Optional[str] = None,
+    category: Optional[str] = None,       # PT1H_TEST | PT1C_TEST
+    parameter: Optional[str] = None,      # fail_type (예: EASY, TWT)
+    start_tm: Optional[str] = None,       # YY/MM/DD
+    end_tm: Optional[str] = None,
+    group_by: Optional[str] = None,       # "lotcd" | "category" | "parameter" | "end_tm" — None이면 raw
+) -> str:
+    """WADS 웨이퍼 단위 검출 목록(DF_WADS_WF_LIST) 조회/집계."""
+```
+
+- 필터 조합 (1):
+  - `category`, `parameter` 따로 주면 → SQL에서 `OPER_PARA LIKE '{category}_{parameter}%'` 로 합성.
+  - `category` 만 → `OPER_PARA LIKE '{category}_%'`.
+  - `parameter` 만 → `OPER_PARA LIKE '%_{parameter}%'`.
+- LLM 회신 텍스트 (§2.1 (a) 와 동일 원칙 — **수치 인용 가능하게**):
+  ```
+  WF 검출 wafer: 총 N개 (DF_WADS_WF_LIST)
+  - LOTCD 분포: 4SS=18, 5NA=4, ...
+  - CATEGORY 분포: PT1H_TEST=14, PT1C_TEST=8
+  - PARAMETER 분포: EASY=10, TWT=8, ...
+  - 대표 GROUPKEY 5개: ...
+  ```
+- artifact: `group_by` 주어진 집계 결과만 표 카드로 렌더링(§2.2 의 `[RENDER: table]` 시), raw 리스트는 본문 인용으로 충분.
+- **현재 `wads_query_data` 가 LOTID 를 회신**(`wads_tools.py:161-169`) 하던 동작의 진짜 자리는 사실상 이 도구임. supervisor 의 chained input 패턴 (`wads_agent.py:354-376`) 도 LOT_CD/GROUPKEY 회수 시 본 도구로 옮길지 검토 필요.
+
+#### 2.4.1 외부 지식 lookup (이전 플랜의 R-4 (1)(2)(3) 그대로, fail_type 정합성으로 더 강해짐)
+
+WADS 외 같은 레포의 자산 (모두 read-only adapter):
 
 | 데이터원 | 모듈 | 무엇을 줄 수 있나 |
 |---------|------|--------------------|
-| Wiki / Super-concept | `wiki_store.lookup`, `wiki_store.lookup_super_concept` | step / fail_type / cause_oper 의 의미·정의·과거 누적 본문 |
-| Fail History (OpenSearch) | `fail_history_tools._search_opensearch`, `do_search` | 같은 product+step 의 과거 cause/action 사례 |
+| Wiki / Super-concept | `wiki_store.lookup`, `wiki_store.lookup_super_concept` | **PARAMETER(=fail_type) / CATEGORY** 의 의미·정의·과거 누적 본문 |
+| Fail History (OpenSearch) | `fail_history_tools._search_opensearch`, `do_search` | 같은 product + fail_type 의 과거 cause/action 사례 (PARAMETER 가 fail_type 이므로 직결) |
 | Yield DB | `yield_db` / `yield_query_agent` 보조 함수 | 같은 lotcd의 같은 주의 yield 수치 — 상관 분석용 |
 | Lot history (Inline-WT) | `lot_history_tools` | 검출된 lot의 inline-WT 이력 |
 
-**제안: WADS에 추가할 도구 (모두 read-only, 결과는 LLM 회신 텍스트로만 노출 — artifact 발사 안 함)**
+**제안: WADS에 추가할 lookup 도구 (모두 read-only, 결과는 LLM 회신 텍스트로만 노출 — artifact 발사 안 함)**
 
-1. **`wads_lookup_step_context(step: str)`**
-   - `wiki_store.lookup_super_concept(axis="fail_type", axis_value=step)` 또는 fallback `lookup(query=step)` 호출.
-   - LLM에 step의 의미 / 측정 위치 / 관찰 포인트를 텍스트로 회신.
-   - 사용 시점: 사용자가 "step01이 뭔데?" / "왜 늘었지?" 류 질의.
+1. **`wads_lookup_param_context(parameter: str, category: Optional[str]=None)`**
+   - `wiki_store.lookup_super_concept(axis="fail_type", axis_value=parameter)` 또는 fallback `lookup(query=f"{category} {parameter}")` 호출.
+   - LLM에 PARAMETER(=fail_type) 의 의미 / 측정 위치 / 관찰 포인트를 텍스트로 회신.
+   - 사용 시점: "EASY가 뭐야?" / "PT1H_TEST와 PT1C_TEST 차이?" / "왜 늘었지?" 류 질의.
 
-2. **`wads_lookup_related_failures(lotcd: str, step: str, top_k: int=3)`**
-   - `fail_history_tools._search_opensearch` 를 product/cause_oper로 좁혀 호출.
+2. **`wads_lookup_related_failures(lotcd: str, parameter: str, top_k: int=3)`**
+   - `fail_history_tools._search_opensearch` 를 product=lotcd, fail_type=parameter 로 좁혀 호출.
    - 회신: 과거 doc_id 리스트 + 한 줄 요약(cause/action).
    - 사용 시점: "원인이 뭘까?" 류 질의.
 
@@ -209,14 +283,18 @@ OpenRouter 호환성 문제로 폐기됨 (기존 플랜 D-3 그대로 적용).
 
 | 우선순위 | ID | 내용 | 파일 |
 |---------|-----|------|------|
-| HIGH | R-1 (a) | `wads_query_data` LLM 회신에 step/lotcd 분포 + 일평균 추가 | wads_tools.py:128-169 |
+| **P0** | §0-1 | END_TM 포맷 'YY/MM/DD' 로 정정 (TO_DATE 인자) | wads_tools.py:65-74 |
+| **P0** | §0-2 | 컬럼명 정정: LOTID 제거, CTN_DESC → PARAMETER, CATEGORY 추가 | wads_tools.py:80, 142, 206, 295-312 |
+| **P0** | §0-3 | env var 분리: `WADS_REPORT_TABLE`, `WADS_WF_LIST_TABLE` + SQL allowlist 2개 | wads_tools.py:25, 278-282 |
+| HIGH | R-1 (a) | `wads_query_data` LLM 회신에 CATEGORY/PARAMETER/LOTCD 분포 + 일평균 추가 + `category` 필터 | wads_tools.py:128-169 |
 | HIGH | R-1 (b) | `wads_query_sql` 결과 ≤20행은 전체 JSON, 초과시 top10 + 통계 메타 | wads_tools.py:391-411 |
 | HIGH | R-2 | `[RENDER:]` 태그 파싱 + `wads_agent_node` 분기 추가 | wads_agent.py:302-345, common.py |
-| HIGH | R-3 | WADS 시스템 프롬프트 자유도 확대 (표 금지 조건부화, 길이 적응) | prompts.py:594-613 |
-| HIGH | R-4 (1) | `wads_lookup_step_context` 신규 도구 | wads_tools.py, wiki_store.py |
-| MEDIUM | R-4 (2) | `wads_lookup_related_failures` 신규 도구 | wads_tools.py, fail_history_tools.py |
+| HIGH | R-3 | WADS 시스템 프롬프트 자유도 확대 + step→PARAMETER(fail_type) 예시 교체 | prompts.py:526-616 |
+| HIGH | R-4 (0) | **`wads_query_wf_list` 신규 도구 (DF_WADS_WF_LIST)** — wafer/GROUPKEY 차원 | wads_tools.py |
+| HIGH | R-4 (1) | `wads_lookup_param_context` 신규 도구 | wads_tools.py, wiki_store.py |
+| MEDIUM | R-4 (2) | `wads_lookup_related_failures` (parameter=fail_type 직결) | wads_tools.py, fail_history_tools.py |
 | MEDIUM | R-4 (3) | `wads_correlate_with_yield` 신규 도구 | wads_tools.py, yield_db.py |
-| MEDIUM | S-3 | 의도별 평가 골든셋 추가 | eval/ |
+| MEDIUM | S-3 | 의도별 평가 골든셋 추가 (CATEGORY/WF_LIST 케이스 포함) | eval/ |
 | LOW | 2.5 | 별도 합성 LLM 단계 (선택) | wads_agent.py |
 | LOW | D-2 | "본문 표 금지" 조건부화 (artifact 있을 때만) | prompts.py |
 
@@ -224,24 +302,38 @@ OpenRouter 호환성 문제로 폐기됨 (기존 플랜 D-3 그대로 적용).
 
 ## 6. 구현 순서 (PR 분할 권장)
 
+### PR0 — 스키마 정정 (§0)
+**선행 필수.** 본 PR이 머지되지 않으면 PR1 이후 변경은 의미 없음.
+1. `_ORACLE_TABLE` 단일 변수 → `_REPORT_TABLE` + `_WF_LIST_TABLE` 두 변수.
+2. `_query_wads_data` SQL: `SELECT LOTCD, CATEGORY, PARAMETER, END_TM` 로 컬럼 정정, LOTID 제거.
+3. END_TM TO_DATE 포맷 `'YY/MM/DD'` 로 변경 + SUBSTR 길이 8.
+4. SQL 검증 allowlist 2개 테이블로 확장.
+5. `_SQL_GEN_PROMPT` 스키마 블록 전면 교체.
+6. 운영에서 LOTID/CTN_DESC view alias 가 있는지 확인 — 있다면 호환성 alias 한 줄 추가.
+
 ### PR1 — 기반: 데이터 가시성 + 모드 시그널 (R-1 + R-2 + R-3)
 **한 PR에 묶음 — 셋이 분리되면 사용자 체감 변화 없음.**
 1. `extract_render_mode` 헬퍼 추가 (`common.py`).
-2. `wads_query_data` / `wads_query_sql` 회신 텍스트 강화 (§2.1).
+2. `wads_query_data` / `wads_query_sql` 회신 텍스트 강화 (§2.1) + `category` 필터 인자 추가.
 3. `wads_agent_node` 에 `[RENDER:]` 분기 추가 (§2.2 옵션 A).
-4. WADS 시스템 프롬프트 자유도 확대 + `[RENDER:]` 사용 가이드 추가 (§2.3).
-5. **검증**: 4가지 의도(통계/리포트/해석/리스트) 케이스 수동 확인.
+4. WADS 시스템 프롬프트 자유도 확대 + `[RENDER:]` 사용 가이드 + step → PARAMETER(fail_type) 예시 교체 (§2.3).
+5. **검증**: 5가지 의도(통계/리포트/해석/리스트/카테고리 비교) 케이스 수동 확인.
 
-### PR2 — 외부 데이터: wiki lookup (R-4 (1))
-- `wads_lookup_step_context` 단독.
+### PR2 — wafer 차원: DF_WADS_WF_LIST 도구 (R-4 (0))
+- `wads_query_wf_list` 단독.
+- `OPER_PARA LIKE '{category}_{parameter}%'` 합성 로직 + group_by 옵션.
+- 시스템 프롬프트에 "wafer 수 / GROUPKEY 질의는 wf_list 도구 사용" 가이드.
+
+### PR3 — 외부 데이터: wiki lookup (R-4 (1))
+- `wads_lookup_param_context` 단독.
 - 시스템 프롬프트에 "해석성 질의에만 1회 호출" 가이드.
-- 평가: "step01이 뭐야" 응답에 wiki 정의가 인용되는지.
+- 평가: "EASY가 뭐야" / "PT1H vs PT1C 차이" 응답에 wiki 정의가 인용되는지.
 
-### PR3 — 외부 데이터: fail_history + yield (R-4 (2),(3))
+### PR4 — 외부 데이터: fail_history + yield (R-4 (2),(3))
 - 두 도구를 함께 (둘 다 "원인/맥락" 질의에 같이 쓰이는 경우 많음).
 - TASK SCOPE 가드: "lookup 도구는 합쳐서 최대 2회 호출".
 
-### PR4 (선택) — 합성 LLM 단계 (§2.5)
+### PR5 (선택) — 합성 LLM 단계 (§2.5)
 - 자유 답변 품질 정량 평가 후 도입 결정.
 
 ---
@@ -250,11 +342,13 @@ OpenRouter 호환성 문제로 폐기됨 (기존 플랜 D-3 그대로 적용).
 
 | # | 사용자 입력 | 기대 동작 |
 |---|------------|----------|
-| 1 | "4SS 최근 3일치 검출 통계 알려줘" | wads_query_data → 본문: 일평균/step분포/lot분포 자연어 인용. `[RENDER: text]` → **artifact 없음**. |
-| 2 | "4SS step01 리포트 보여줘" | wads_get_html_report → 본문 1-2문장. `[RENDER: report]` → HTML artifact 1개. |
-| 3 | "왜 5NA step02가 늘었지?" | wads_query_sql + wads_lookup_step_context + wads_lookup_related_failures → 본문 단락형 해석. `[RENDER: text]`. |
-| 4 | "지난주 검출된 lot id 알려줘" | wads_query_data → 본문에 LOTID 나열 + 한 줄 코멘트. `[RENDER: text]` (또는 `[RENDER: table]` LLM 판단). |
-| 5 | "step별 건수 집계 표로 보여줘" (명시적 표 요청) | wads_query_sql → `[RENDER: table]` 동적 컬럼 카드. 본문은 한 줄 코멘트. |
+| 1 | "4SS 최근 3일치 검출 통계 알려줘" | wads_query_data → 본문: 일평균 / CATEGORY 분포 / PARAMETER 분포 / LOTCD 분포 자연어 인용. `[RENDER: text]` → **artifact 없음**. |
+| 2 | "4SS EASY 리포트 보여줘" | wads_get_html_report(parameter="EASY") → 본문 1-2문장. `[RENDER: report]` → HTML artifact 1개. |
+| 3 | "왜 5NA TWT가 늘었지?" | wads_query_sql + wads_lookup_param_context + wads_lookup_related_failures → 본문 단락형 해석. `[RENDER: text]`. |
+| 4 | "지난주 검출된 wafer 몇 개?" | **wads_query_wf_list(start_tm=..., end_tm=...)** → 본문에 총 N개 + LOTCD/CATEGORY 분포. `[RENDER: text]`. |
+| 5 | "PARAMETER별 건수 집계 표로 보여줘" | wads_query_sql(group by parameter) → `[RENDER: table]` 동적 컬럼 카드. 본문은 한 줄 코멘트. |
+| 6 | "PT1H와 PT1C 어느 쪽이 더 많아?" (CATEGORY 비교) | wads_query_data(category=...) ×2 또는 wads_query_sql → 본문에 비율/건수 인용. `[RENDER: text]`. |
+| 7 | "5NA 4SS 어떤 GROUPKEY가 검출됐어?" | wads_query_wf_list → GROUPKEY 리스트 + LOTCD 분포. `[RENDER: text]`. |
 
 ---
 
