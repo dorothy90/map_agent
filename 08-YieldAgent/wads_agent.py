@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from dotenv import load_dotenv
 import os
 from datetime import date
@@ -412,6 +413,37 @@ def _render_wads_report_html(payload: Any) -> str:
     return "<div>HTML 콘텐츠가 없습니다.</div>"
 
 
+# ── HTML artifact → file:// swap (MongoDB BSON 16MB 한계 우회) ───────────
+# WADS report HTML (Oracle CLOB) 이 state["wads_artifacts"] 에 그대로 누적되면
+# LangGraph MongoDBSaver 가 체크포인트 직렬화 시 BSON 한계를 초과한다. 대신
+# generated/ 에 파일로 dump 하고 state 에는 짧은 file:// reference 만 남긴 뒤,
+# agent_server.py 의 SSE 발사 로직이 file:// 를 자동으로 read + inline + 삭제.
+_WADS_GEN_DIR = os.path.join(os.path.dirname(__file__), "generated")
+os.makedirs(_WADS_GEN_DIR, exist_ok=True)
+
+
+def _save_artifact_html(html: str, prefix: str = "wads") -> str:
+    """HTML 문자열을 임시 파일로 저장하고 'file://<abs_path>' 를 반환."""
+    fname = f"{prefix}_{uuid.uuid4().hex[:8]}.html"
+    fpath = os.path.join(_WADS_GEN_DIR, fname)
+    with open(fpath, "w", encoding="utf-8") as f:
+        f.write(html)
+    return f"file://{fpath}"
+
+
+def _make_html_artifact(html: str, title: str) -> Dict[str, Any]:
+    """HTML 카드를 file:// reference 형태의 artifact dict 로 변환.
+
+    state 에 들어가는 dict 의 data 는 짧은 file:// 한 줄뿐 — MongoDB BSON 부담 0.
+    """
+    return {
+        "type": "html",
+        "mime": "text/html",
+        "data": _save_artifact_html(html, prefix=title),
+        "title": title,
+    }
+
+
 # -------------------- WADS Agent Node (LangGraph 노드용) --------------------
 @observe(name="wads_agent_node")
 @timed
@@ -538,84 +570,46 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
                 }
             )
     elif render_mode == "report" and has_reports:
-        artifacts.append(
-            {
-                "type": "html",
-                "mime": "text/html",
-                "data": _render_wads_report_html(reports_payload),
-                "title": "wads_report",
-            }
-        )
+        artifacts.append(_make_html_artifact(
+            _render_wads_report_html(reports_payload), "wads_report",
+        ))
     elif render_mode == "table" and (has_sql or has_query or has_wf_list):
         if has_sql:
             # LLM 지정 layout > 도구 측 힌트 > 자동 감지 (_render_wads_sql_html 내부)
             layout = render_layout or storage.get("render_layout", "")
-            artifacts.append(
-                {
-                    "type": "html",
-                    "mime": "text/html",
-                    "data": _render_wads_sql_html(sql_result_payload, layout=layout),
-                    "title": "wads_sql_result",
-                }
-            )
+            artifacts.append(_make_html_artifact(
+                _render_wads_sql_html(sql_result_payload, layout=layout), "wads_sql_result",
+            ))
         elif has_wf_list:
             # WF_LIST 결과도 SQL 렌더러 재활용 — table layout 강제
-            artifacts.append(
-                {
-                    "type": "html",
-                    "mime": "text/html",
-                    "data": _render_wads_sql_html(wf_list_payload, layout=render_layout or "table"),
-                    "title": "wads_wf_list",
-                }
-            )
+            artifacts.append(_make_html_artifact(
+                _render_wads_sql_html(wf_list_payload, layout=render_layout or "table"),
+                "wads_wf_list",
+            ))
         else:
-            artifacts.append(
-                {
-                    "type": "html",
-                    "mime": "text/html",
-                    "data": _render_wads_query_html(query_payload),
-                    "title": "wads_query",
-                }
-            )
+            artifacts.append(_make_html_artifact(
+                _render_wads_query_html(query_payload), "wads_query",
+            ))
     else:
         # render_mode == "auto" 또는 LLM 이 태그를 안 단 경우 → 기존 우선순위 분기
         if has_reports:
-            artifacts.append(
-                {
-                    "type": "html",
-                    "mime": "text/html",
-                    "data": _render_wads_report_html(reports_payload),
-                    "title": "wads_report",
-                }
-            )
+            artifacts.append(_make_html_artifact(
+                _render_wads_report_html(reports_payload), "wads_report",
+            ))
         elif has_sql:
             layout = render_layout or storage.get("render_layout", "")
-            artifacts.append(
-                {
-                    "type": "html",
-                    "mime": "text/html",
-                    "data": _render_wads_sql_html(sql_result_payload, layout=layout),
-                    "title": "wads_sql_result",
-                }
-            )
+            artifacts.append(_make_html_artifact(
+                _render_wads_sql_html(sql_result_payload, layout=layout), "wads_sql_result",
+            ))
         elif has_wf_list:
-            artifacts.append(
-                {
-                    "type": "html",
-                    "mime": "text/html",
-                    "data": _render_wads_sql_html(wf_list_payload, layout=render_layout or "table"),
-                    "title": "wads_wf_list",
-                }
-            )
+            artifacts.append(_make_html_artifact(
+                _render_wads_sql_html(wf_list_payload, layout=render_layout or "table"),
+                "wads_wf_list",
+            ))
         elif has_query:
-            artifacts.append(
-                {
-                    "type": "html",
-                    "mime": "text/html",
-                    "data": _render_wads_query_html(query_payload),
-                    "title": "wads_query",
-                }
-            )
+            artifacts.append(_make_html_artifact(
+                _render_wads_query_html(query_payload), "wads_query",
+            ))
 
     logger.info(
         "[WADS Agent] render_mode=%s layout=%s artifacts=%d (reports=%s sql=%s query=%s wf_list=%s)",
