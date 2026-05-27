@@ -51,13 +51,16 @@ TODAY's DATE: {today}
       → 후속 fail_history_agent의 fail_type에 체이닝 가능
    ※ 수율 결과에서 "열화 파라미터 [조사/분석]" → yield_agent 먼저, wads_agent 불필요
 
-2. wads_agent: WADS 열화 검출 리포트 / 검출 lot list 조회
-   params: lotcd(3자), wads_start_tm(YYYY-MM-DD), wads_end_tm(YYYY-MM-DD), fail_type(step코드, 예: "step07")
-   produces: ① detected_parameters (검출된 파라미터명, fail_type enum 동일 모집단)
+2. wads_agent: WADS 열화 검출 리포트 / 검출 wafer (GROUPKEY) 조회
+   params: lotcd(3자, 제품코드), wads_start_tm(YYYY-MM-DD), wads_end_tm(YYYY-MM-DD),
+           fail_type(PARAMETER 값, 예: "EASY", "TWT")
+   produces: ① detected_parameters (검출된 fail_type)
                 → 후속 fail_history_agent의 fail_type에 체이닝 가능
-             ② detected_lot_ids (검출된 lot ID 목록)
-                → 후속 map_agent / lot_history_agent의 lot_ids에 체이닝 가능
-   ※ "검출", "검출된 lot", "step별 검출", "불량 검출" → 반드시 wads_agent
+             ② detected_groupkey (검출된 wafer GROUPKEY, "lot.wf" 콤마구분 string)
+                → 후속 map_agent의 groupkey에 체이닝 가능
+   ※ "검출", "검출된 lot", "검출된 wafer", "GROUPKEY", "PARAMETER별 검출" → 반드시 wads_agent
+   ※ WADS schema 에는 lot ID 가 없음 (LOTCD 는 제품코드 "4SS" 류). 후속 시각화 chain 은
+     groupkey ("lot.wf" 형식) 기반 — map_agent.groupkey 자리로 들어감.
 
 3. map_agent: 웨이퍼 맵 (binmap/cummap) 시각화
    params: lot_ids(lot ID 목록, 예: ["4SS2DPD"]), wf_ids(wafer IDs, 예: ["03","06"]),
@@ -116,7 +119,7 @@ TODAY's DATE: {today}
 - task_id는 "task_1", "task_2" 형식으로 순번 부여
 - 사용자 메시지가 짧거나 모호한 follow-up이면 직전 대화 히스토리와 [State context]를 활용하여 lot ID·제품코드·필터 등을 task params에 명시 채워라
 - **CRITICAL**: chained input(예: 후속 task의 lot_ids 등)이 이전 task 결과에 의존하는 경우 해당 필드를 **빈 리스트 []** 또는 **빈 문자열 ""** 으로 두거나 **필드 자체를 omit**하라. 절대로 `"<task_1 결과 lot IDs>"`, `"<task_1_result_lot_ids>"`, `"{{from_task_1}}"`, `"task_1 결과"` 같은 placeholder 텍스트를 값으로 넣지 마라. 시스템의 replanner가 이전 task 결과를 보고 자동으로 채운다.
-- **FAN-OUT**: 하나의 task 결과를 여러 후속 task가 동시에 사용할 수 있다. 예: wads_agent 결과의 detected_parameters → fail_history_agent의 fail_type, detected_lot_ids → map_agent / lot_history_agent의 lot_ids. 후속 task의 체이닝 필드를 각각 []/"" 로 두면 replanner가 각각 자동으로 채운다.
+- **FAN-OUT**: 하나의 task 결과를 여러 후속 task가 동시에 사용할 수 있다. 예: wads_agent 결과의 detected_parameters → fail_history_agent의 fail_type, detected_groupkey → map_agent의 groupkey. 후속 task의 체이닝 필드(groupkey 등)를 각각 "" 로 두면 replanner가 wads_sql_result 메시지에서 자동으로 채운다.
 
 === EXAMPLES ===
 
@@ -130,6 +133,19 @@ TODAY's DATE: {today}
 - "4SS 수율이랑 WADS 열화 리포트 같이 보여줘"
   → task_1: yield_agent, params={{lotcd:"4SS"}}, goal:"4SS 수율 조회"
   → task_2: wads_agent, params={{lotcd:"4SS"}}, goal:"4SS WADS 열화 리포트 조회"
+
+- "최근 3일동안 EASY에서 검출된 랏들 map 보여줘"  (WADS chain → map_agent)
+  → task_1: wads_agent, params={{fail_type:"EASY", wads_start_tm:"<3일전>", wads_end_tm:"{today_yyyy_mm_dd}"}},
+            goal:"최근 3일 EASY 검출 wafer (lot.wf) 목록 조회 (후속 map_agent chain)"
+  → task_2: map_agent, params={{groupkey:"", map_type:"all"}},
+            goal:"검출된 wafer (lot.wf) map 시각화"
+  ※ task_2.groupkey 는 "" 로 두면 replanner 가 task_1 의 wads_sql_result.groupkey ("lot.wf" 콤마구분) 로 자동 채움.
+  ※ map_agent 는 groupkey 단일 채널만으로 lot+wafer 식별 충분 — lot_ids/wf_ids 비워둘 것.
+
+- "5NA WADS 검출 wafer 이력 확인"  (WADS chain → lot_history_agent)
+  → task_1: wads_agent, params={{lotcd:"5NA"}}, goal:"5NA WADS 검출 wafer (lot.wf) 목록 조회 (후속 lot_history chain)"
+  → task_2: lot_history_agent, params={{lot_ids:[]}}, goal:"검출 wafer 의 lot 이력 조회"
+  ※ lot_history_agent 는 lot 단위라 groupkey 의 lot 부분(앞자리) 사용 — replanner 또는 lot_history_agent 측에서 split.
 
 - "4SS2DPD PT1H binmap이랑 cummap 둘 다 보여줘"
   → task_1: map_agent, params={{lot_ids:["4SS2DPD"], map_type:"all", map_oper:"PT1H"}}, goal:"4SS2DPD PT1H binmap+cummap 전체 조회"
@@ -532,84 +548,122 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 === TASK SCOPE (반드시 지킬 것) ===
 - 당신은 멀티-task plan의 한 task만 처리한다. 현재 task의 goal에 명시된 범위만 수행하라.
 - 사용자 원본 질문에 다른 의도(예: cummap 시각화, lot 이력 조회 등)가 있어도 무시하라. 다른 agent가 처리한다.
-- task goal이 "lot list 조회"이면 wads_query_data 1회 호출로 lot ID들만 추출하고 즉시 종료하라. 추가 도구 호출 금지.
-- task goal이 "step별 검출 리포트"이면 wads_get_html_report만 호출하고 종료하라.
-- 같은 결과를 다른 방법으로 검증하려고 추가 호출하지 마라. 첫 호출이 성공하면 그 결과로 종료하라.
+- 첫 도구 호출이 성공하면 그 결과로 종료하라. 같은 결과를 다른 방법으로 재검증하지 말 것.
 
-사용자가 주간 집계 데이터, 변곡점 분석, Layer1 리포트에 대해 질문하면 적절한 도구를 사용하여 정보를 조회하고 답변합니다.
+[CHAIN 시나리오 — task goal 에 다음 키워드가 있으면 추가 도구 호출 필수]
+- "wafer 목록" / "검출된 wafer" / "GROUPKEY" / "lot.wf" / "후속 map_agent" / "후속 lot_history"
+  → **wads_query_wf_list 를 반드시 호출**. 이게 storage["wf_list"] 를 채워야 chain output 의
+    groupkey (lot.wf 콤마구분) 가 발사되고, 하류 task 가 빈 입력 없이 받음.
+- "검출된 lot 으로 map" / "검출 wafer cummap" 등 후속 시각화가 따라오면
+  → wads_query_data 가 아니라 **wads_query_wf_list 우선** 호출.
+- chain 시나리오에서는 답변 본문은 짧게 (1-2문장 + wafer 개수), [RENDER: text] 로 artifact 생략.
+  하류 agent 가 진짜 결과물을 만들 거라 WADS 카드는 불필요.
 
-## 사용 가능한 도구:
-1. **wads_query_data**: WADS 데이터 메타정보 조회
-   - lotcd, end_tm, start_tm, parameter로 필터링하여 매칭되는 데이터 목록 반환
-   - HTML 콘텐츠는 제외하고 메타정보만 반환
-   - 날짜 범위 조회: start_tm과 end_tm을 함께 지정 (예: start_tm="2026-03-19", end_tm="2026-03-25")
-   - 단일 날짜 조회: end_tm만 지정 (기존 방식)
+## 데이터 구조 (WADS Oracle 2개 테이블)
+- **DF_WADS_REPORT** — 검출 보고서 1행 = (LOTCD, CATEGORY, PARAMETER, END_TM) 조합 1개. HTML 본문 보유.
+  * grain: 위 4개 조합 단위. **wafer 단위 아님** — 한 보고서 안에 여러 wafer 가 들어있고, wafer 명단은 DF_WADS_WF_LIST 에 있음.
+  - LOTCD: 로트코드 (예: 5NA, 4SS, 6E2)
+  - CATEGORY: 테스트 카테고리 — "PT1H_TEST" 또는 "PT1C_TEST"
+  - PARAMETER: fail_type (예: "EASY", "TWT" 등)
+  - END_TM: 종료 시간 (Oracle DATE 타입). 도구 인자에는 "YYYY-MM-DD" / "YY/MM/DD" 모두 허용 — 내부에서 정규화.
+  - HTML: 열화 리포트 본문 (대용량 CLOB — 별도 경로로만 접근)
+- **DF_WADS_WF_LIST** — 검출된 wafer 단위 (HTML 없음)
+  - OPER_PARA: "{{CATEGORY}}_{{PARAMETER}}" 결합 (예: "PT1H_TEST_EASY(W)")
+  - GROUPKEY: 개별 wafer 키
+  - END_TM, LOT_CD
 
-2. **wads_get_html_report**: WADS HTML 리포트 조회
-   - lotcd, end_tm, start_tm, parameter로 필터링하여 HTML 리포트 반환
-   - 날짜 범위 조회: start_tm과 end_tm을 함께 지정
-   - **여러 리포트 요청 시**: 각 조건별로 도구를 여러 번 호출하세요. 모든 리포트가 누적되어 표시됩니다.
-   - 예: step01, step02 리포트 요청 시 → wads_get_html_report(parameter="step01") + wads_get_html_report(parameter="step02")
+## 사용 가능한 도구
+1. **wads_query_data** (DF_WADS_REPORT 메타 조회 — HTML 없음)
+   - 인자: lotcd, category, parameter, start_tm, end_tm
+   - 통계/건수/리스트/분포 질의에 가장 먼저 시도.
+2. **wads_get_html_report** (DF_WADS_REPORT 의 HTML 본문 — **유일한 HTML 경로**)
+   - 인자: lotcd, category, parameter, start_tm, end_tm
+   - 사용자가 "리포트 보여줘", "열화 리포트", "내용 자세히" 처럼 본문을 명시적으로 요청할 때만 사용.
+   - 여러 조건의 리포트를 비교하려면 도구를 여러 번 호출 (누적 표시).
+3. **wads_query_wf_list** (DF_WADS_WF_LIST — wafer/GROUPKEY 단위)
+   - 인자: lotcd, category, parameter, start_tm, end_tm
+   - "검출된 wafer 몇 개", "어떤 GROUPKEY 가 검출됐어" 류 질의에 사용.
+   - DF_WADS_REPORT 가 검출 보고서 (제품·테스트·fail_type·날짜 조합 단위) 라면,
+     DF_WADS_WF_LIST 는 그 보고서가 가리키는 **개별 wafer(GROUPKEY)** 명단.
+     → 보고서 1행 ↔ wafer N행 의 1:N 관계.
+4. **wads_query_sql** (복잡한 SQL — HTML 절대 반환 불가)
+   - GROUP BY 집계, 여러 PARAMETER OR/AND, NOT LIKE, 서브쿼리 등에만 사용.
+   - query_description 에 자연어로 조회 의도 설명.
+   - 두 테이블 모두 SELECT 가능 (FROM DF_WADS_REPORT 또는 DF_WADS_WF_LIST, JOIN 가능).
+   - 실패하면 1회만 재시도 후 wads_query_data 로 폴백.
+5. **wads_lookup_param_context** (wiki — 본문 보강용, artifact 없음)
+   - 인자: parameter (필수), category (선택)
+   - "EASY 가 뭐야?", "PT1H 와 PT1C 차이?", "왜 늘었지?" 등 **해석성** 질의에만 1회 호출.
+   - 통계/리스트 단순 조회에서는 호출하지 마세요 (불필요한 비용).
+   - 반환은 LLM 본문 보강용 — 별도 artifact 가 발사되지 않습니다.
+6. **wads_lookup_related_failures** (fail_history OpenSearch — 본문 보강용)
+   - 인자: lotcd (필수), parameter (필수), top_k=3
+   - "원인이 뭘까?", "비슷한 사례 있어?" 류 질의에만 1회 호출.
+   - 같은 product + fail_type 의 과거 cause/action 사례.
+7. **wads_correlate_with_yield** (yield_db — 본문 보강용)
+   - 인자: lotcd (필수), ref_date "YYYY-MM-DD" (선택), unit (weekly|monthly|daily), periods
+   - "검출이 늘었는데 수율은?", "yield 같이 떨어졌나?" 류 상관 질의에만 1회 호출.
 
-3. **wads_query_sql**: 복잡한 조건의 WADS SQL 쿼리 실행
-   - wads_query_data/wads_get_html_report로 표현할 수 없는 복잡한 조건에만 사용
-   - GROUP BY 집계, COUNT, 여러 step 동시 필터, NOT LIKE 조건, OR 조건 등
-   - query_description에 자연어로 조회 내용을 설명
-   - 예: wads_query_sql(query_description="4SS의 3월 step01, step02 건수를 step별 집계")
-   - **주의**: 내부 LLM 호출이 추가되어 다른 도구보다 느립니다. 단순 조건은 wads_query_data를 먼저 사용하세요.
-   - wads_query_sql 실패 시 1회만 query_description을 수정하여 재시도하세요. 그래도 실패하면 wads_query_data로 전환하세요.
+**lookup 도구 호출 가드**: 5/6/7 은 합쳐서 최대 2회. 단순 통계/리스트 조회에서는 모두 호출하지 말 것.
 
-## 데이터 구조:
-- lotcd: 로트코드 (예: 5NA, 4SA, 6E2)
-- end_tm: 종료 시간 (예: 2026-01-01 18:07:01)
-- parameter: 스텝 설명 (예: step01, step02, ..., step09)
-- html: Layer1 전수 집계 테이블 HTML
+## 도구 선택 가드 (반드시 지킬 것)
+- "리포트 / HTML / 본문 / 내용 자세히" → **wads_get_html_report** (유일).
+- "통계 / 건수 / 분포 / 비교 / 추세 / lot 리스트 / GROUPKEY" → wads_query_data 또는 wads_query_sql. 이 두 경로는 HTML 을 절대 반환하지 않습니다.
+- 두 의도가 섞이면 도구를 **분리해 두 번** 호출 (통계 1회 + 리포트 1회).
+- **"A 와 B 둘 다" / "A 또는 B" / "X 제외"** 같은 단순 OR/NOT 조건은 wads_query_sql 이 아니라
+  wads_query_data / wads_query_wf_list 의 **list 인자**(`parameter=["EASY","TWT"]`) 또는
+  **exclude_parameter** 로 처리하세요. SQL 도구는 GROUP BY / COUNT / 서브쿼리 등 진짜 집계에만.
 
-## 응답 규칙:
-- 사용자가 특정 조건을 언급하면 해당 필터를 적용하세요.
-- 조건을 언급하지 않으면 전체 데이터를 조회합니다.
-- HTML 리포트를 요청하면 wads_get_html_report를 사용하세요.
-- 데이터 목록만 필요하면 wads_query_data를 사용하세요.
-- 조회 결과가 없으면 명확하게 안내합니다.
-- 응답은 한국어로 친절하게 제공합니다.
+## 사용 예시
+- 전체 조회: wads_query_data()
+- 특정 로트: wads_query_data(lotcd="5NA")
+- 카테고리 필터: wads_query_data(lotcd="5NA", category="PT1H_TEST")
+- 날짜 범위: wads_query_data(lotcd="5NA", start_tm="2026-03-19", end_tm="2026-03-25")
+- 특정 fail_type 리포트: wads_get_html_report(parameter="EASY")
+- 복합 리포트: wads_get_html_report(lotcd="5NA", category="PT1C_TEST", parameter="TWT")
+- **여러 카테고리 비교**: wads_query_data(lotcd="4SS", category=["PT1H_TEST","PT1C_TEST"])
+- **여러 fail_type OR**: wads_query_data(lotcd="5NA", parameter=["EASY","TWT"])
+- **특정 fail_type 제외**: wads_query_data(lotcd="5NA", exclude_parameter=["TWT"])
+- **여러 로트 비교**: wads_query_data(lotcd=["4SS","5NA"], parameter="EASY")
+- **wafer 단위 multi**: wads_query_wf_list(category=["PT1H_TEST","PT1C_TEST"], parameter="EASY")
+- PARAMETER별 집계 (진짜 GROUP BY 필요시): wads_query_sql(query_description="5NA 의 3월 PARAMETER 별 건수 집계")
 
-## 도구 선택 가이드:
-- 단순 필터(lotcd + 날짜 + step 1개) → wads_query_data 또는 wads_get_html_report
-- HTML 리포트 필요 → wads_get_html_report
-- 복잡한 조건(여러 step OR/AND, GROUP BY, COUNT, NOT LIKE, 서브쿼리) → wads_query_sql
-- "모든 날짜" 요청 → 날짜 필터 없이 wads_query_data(lotcd="...")
-- 우선순위: wads_query_data/wads_get_html_report > wads_query_sql (단순한 도구를 먼저 시도)
+## 응답 형식 — 의도에 맞게 적응 (가장 중요)
+사용자 의도에 따라 답변과 artifact 종류를 적응적으로 결정하세요. 답변 마지막 줄에 반드시 다음 두 토큰을 한 줄에 하나씩 출력:
 
-## 사용 예시:
-- 전체 데이터 조회: wads_query_data()
-- 특정 로트 조회: wads_query_data(lotcd="5NA")
-- 특정 날짜 조회: wads_query_data(end_tm="2026-01-01")
-- 날짜 범위 조회: wads_query_data(lotcd="5NA", start_tm="2026-03-19", end_tm="2026-03-25")
-- 날짜 범위 리포트: wads_get_html_report(lotcd="5NA", start_tm="2026-03-19", end_tm="2026-03-25")
-- 특정 스텝 리포트: wads_get_html_report(parameter="step01")
-- 복합 조건: wads_get_html_report(lotcd="5NA", parameter="step05")
-- step별 건수 집계: wads_query_sql(query_description="5NA의 3월 step별 건수 집계")
-- 특정 step 제외: wads_query_sql(query_description="step03 제외한 전체 스텝 목록")
+1) `[RENDER: <mode>]`  — artifact 종류 시그널 (필수)
+2) `[SUGGESTION: ...]` — 후속 제안 (선택, 없으면 `[SUGGESTION: ]`)
 
-## 중요: 응답 형식
-- 도구 호출 결과(데이터/리포트)는 별도의 HTML 카드로 자동 표시됩니다.
-- 따라서 **테이블이나 표를 직접 만들지 마세요**.
+`<mode>` 선택:
+- `text`  : artifact 없음. 짧은 답변 / 단일 숫자 / 없음 안내 등 본문만으로 충분할 때.
+- `md`    : **통계 / 분포 / 비교 / 추세 / 해석 / lot·GROUPKEY 리스트의 기본값**. 본문에 마크다운 표/bullet/수치 인용을 자유롭게 작성. 본문 자체가 오른쪽 패널의 artifact 가 됩니다.
+- `report`: wads_get_html_report 호출 결과(HTML 리포트)를 보여줄 때.
+- `table` : 사용자가 명시적으로 "표로 보여줘" 라고 요청했거나 SQL 집계 결과를 정형 카드로 보여주는 게 더 적절할 때.
+- `auto`  : 결정이 어려울 때. 가능하면 위 4개 중 명시.
 
-## 응답 스타일:
-- 조회 결과에 대해 자연스러운 대화체로 2-3문장 요약하세요
-- 핵심 발견이 있으면 먼저 언급하세요
-- 마지막에 [SUGGESTION: 후속 제안] 형식으로 다음 행동 1개를 제안하세요
-  예시: [SUGGESTION: 다른 step도 확인해볼까요?]
-  제안할 내용이 없으면: [SUGGESTION: ]
+응답 스타일 가이드:
+- 통계/분포 질의 → 본문에 도구 결과의 **숫자를 직접 인용**. "최근 3일 47건이며 EASY 가 12건, TWT 가 8건…" 식. `[RENDER: md]`.
+- 해석/원인 질의 → 도구 결과 + 외부 컨텍스트 종합하여 단락 형태. `[RENDER: md]`.
+- 리포트 요청 → 본문은 1-2문장 짧게 핵심만. `[RENDER: report]`. 리포트 카드가 본문을 대체.
+- 단일 숫자 / 단순 yes/no → 본문 한 줄. `[RENDER: text]`.
+- 데이터 없음 → "해당 조건의 WADS 데이터가 없습니다" 명확히. `[RENDER: text]`.
+- 본문에 마크다운 표를 만드는 것은 **허용** (특히 md 모드). 단, `report` 모드에선 본문에 표를 또 그리지 마세요 — 리포트 카드가 이미 표를 보여줍니다.
 
-예시:
-❌ "5NA 로트의 step01 리포트를 조회했습니다."
-✅ "5NA step01 리포트를 확인했습니다. 해당 스텝에서 열화 징후가 보이네요. [SUGGESTION: step02도 같이 확인해볼까요?]"
+## 예시 응답
+사용자: "4SS 최근 3일치 검출 통계 알려줘"
+✅ "4SS 의 최근 3일치 WADS 리포트는 총 47건입니다 (일평균 15.7건). CATEGORY 는 PT1H_TEST 가 32건으로 다수이고, PARAMETER 는 EASY(18건) · TWT(12건) 가 상위입니다.
+[RENDER: md]
+[SUGGESTION: PARAMETER 별로 리포트 본문을 더 볼까요?]"
+
+사용자: "4SS EASY 리포트 보여줘"
+✅ "4SS 의 EASY 리포트입니다. PT1H_TEST 1건이 조회됐어요.
+[RENDER: report]
+[SUGGESTION: TWT 도 같이 확인해볼까요?]"
 
 ## 중요: 데이터 없음 vs 연결 오류 구분
-- 도구가 "조건에 맞는 WADS 데이터가 없습니다"를 반환하면 → 연결 오류가 아님. "해당 조건의 WADS 데이터가 없습니다"로 안내.
-- 도구가 "Oracle 연결/조회에 실패했습니다"를 반환한 경우에만 → 연결 오류로 안내.
-- 데이터가 없는 것을 절대 "연결 오류", "시스템 오류"로 표현하지 마세요.
+- 도구가 "조건에 맞는 WADS 데이터가 없습니다" → 연결 오류 아님. "해당 조건의 WADS 데이터가 없습니다"로 안내. `[RENDER: text]`.
+- 도구가 "Oracle 연결/조회에 실패했습니다" → 연결 오류로 안내.
+- 데이터 없음을 "연결 오류"·"시스템 오류" 로 표현하지 마세요.
 """
     + _RETRY_RULES
     + _SAFETY_RULES
