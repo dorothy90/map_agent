@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 from pathlib import Path
 import sys
 
@@ -43,7 +44,7 @@ from task_normalizer_validator import (  # noqa: E402
     normalize_task_fields,
     validate_tasks,
 )
-from wads_tools import _sort_sql_result_rows, _wads_join_coverage  # noqa: E402
+from wads_tools import _log_wads_sql, _sort_sql_result_rows, _wads_join_coverage  # noqa: E402
 
 
 def _events(path: Path) -> list[dict]:
@@ -709,6 +710,20 @@ def test_wads_join_coverage_flags_report_without_wafer_groupkey() -> None:
     assert stats["unique_groupkeys"] == 0
     assert stats["missing_groupkey_rows"] == 1
     assert stats["join_missing"] is True
+
+
+def test_wads_sql_diagnostic_logs_at_warning_by_default(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="yield_agent.wads_tools")
+
+    _log_wads_sql(
+        "wads_query_sql.generated",
+        "SELECT PARAMETER, COUNT(*) AS CNT FROM DF_WADS_REPORT WHERE LOTCD = :lotcd GROUP BY PARAMETER",
+        {"lotcd": "4SA"},
+    )
+
+    text = caplog.text
+    assert "[wads_query_sql.generated] SQL: SELECT PARAMETER, COUNT(*) AS CNT" in text
+    assert "[wads_query_sql.generated] SQL binds: {'lotcd': '4SA'}" in text
 
 
 def test_report_ordinal_refs_fan_out_to_report_groupkeys_for_cummap() -> None:

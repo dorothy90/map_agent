@@ -91,8 +91,8 @@ def _log_wads_sql(
 ) -> None:
     compact_sql = _compact_sql(sql)
     binds = dict(bind_vars or {})
-    logger.info("[%s] SQL: %s", context, compact_sql)
-    logger.info("[%s] SQL binds: %s", context, binds)
+    logger.warning("[%s] SQL: %s", context, compact_sql)
+    logger.warning("[%s] SQL binds: %s", context, binds)
     emit_runtime_detail(
         "wads.sql",
         {
@@ -885,14 +885,34 @@ def wads_query_sql(query_description: str) -> str:
         # E3 fix: trailing 단일 세미콜론 제거 — LLM이 SQL 끝에 ;를 자동으로 붙이는 습관 대응
         raw_sql = raw_sql.strip().rstrip(";").strip()
     except Exception as e:
-        logger.error("[wads_query_sql] SQL 생성 실패: %s", e)
+        logger.error(
+            "[wads_query_sql] SQL 생성 실패: %s query_description=%r",
+            e,
+            query_description,
+        )
         return f"SQL 생성 실패: {e}. wads_query_data 도구를 대신 사용하세요."
+
+    _log_wads_sql(
+        "wads_query_sql.generated",
+        raw_sql,
+        {},
+        query_description=query_description,
+        generated_sql_len=len(raw_sql),
+    )
 
     # 2. SQL 검증
     ok, reason = _validate_sql(raw_sql)
     if not ok:
         logger.warning(
             "[wads_query_sql] SQL 검증 실패: %s (sql_len=%d)", reason, len(raw_sql)
+        )
+        _log_wads_sql(
+            "wads_query_sql.validation_failed",
+            raw_sql,
+            {},
+            query_description=query_description,
+            validation_error=reason,
+            generated_sql_len=len(raw_sql),
         )
         return f"SQL 검증 실패: {reason}. wads_query_data 도구를 대신 사용하세요."
 
