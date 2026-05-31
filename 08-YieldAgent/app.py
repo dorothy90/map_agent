@@ -65,6 +65,44 @@ if "pending_interrupt" not in st.session_state:
     st.session_state.pending_interrupt = None
 
 
+def _get_iframe_height(title: str, data: str = "") -> int:
+    """아티팩트 종류(title)에 맞춰 Streamlit iframe의 최적 높이를 동적으로 결정.
+    HTML 데이터 내부의 tr(행) 개수를 파악하여 높이를 자동으로 조절합니다.
+    """
+    t = (title or "").lower()
+    if "yield_table" in t:
+        if data:
+            import re
+            tr_count = len(re.findall(r"<tr\b", data))
+            if tr_count > 0:
+                # Give more height for padding and horizontal scrollbar
+                return max(240, 270 + (tr_count - 7) * 26)
+        return 270
+    elif "lot_compare_table" in t or "lot_compare" in t:
+        if data:
+            import re
+            tr_count = len(re.findall(r"<tr\b", data))
+            if tr_count > 0:
+                return max(260, 310 + (tr_count - 5) * 26)
+        return 310
+    elif "cummap" in t:
+        return 480  # cummap grid 카드용
+    elif "scatter" in t or "trend" in t:
+        return 1140  # 트렌드 차트 대시보드용: 내부 스크롤 방지용 여유 높이
+    elif "fail_history" in t or "wads_report" in t:
+        if data:
+            import re
+            tr_count = len(re.findall(r"<tr\b", data))
+            has_summary = "details" in data or "summary-block" in data
+            base_height = 420 if has_summary else 280
+            if tr_count > 0:
+                return max(220, base_height + (tr_count - 4) * 35)
+        return 420
+    elif "relation_tree" in t:
+        return 450
+    return 600  # 기본 폴백 높이
+
+
 # ── 히스토리 렌더링 헬퍼 ────────────────────────────────
 def _render_entry(entry):
     """하나의 채팅 히스토리 항목을 렌더링 (이벤트 기반 구조)"""
@@ -92,7 +130,8 @@ def _render_entry(entry):
             download_url = f"{AGENT_BASE_URL}{data}"
             st.markdown(f"📊 **[PPT 다운로드]({download_url})**")
         elif art_type == "html":
-            components.html(data, height=600, scrolling=True)
+            height = _get_iframe_height(art.get("title", ""), data)
+            components.html(data, height=height, scrolling=True)
         elif art_type == "image":
             st.image(data, caption=art.get("title", ""))
         elif art_type == "markdown":
@@ -289,7 +328,8 @@ if query:
                     st.warning(f"PPT 다운로드 실패: {e}")
                     st.markdown(f"[직접 다운로드]({AGENT_BASE_URL}{data})")
             elif art_type == "html":
-                components.html(data, height=600, scrolling=True)
+                height = _get_iframe_height(art.get("title", ""), data)
+                components.html(data, height=height, scrolling=True)
             elif art_type == "image":
                 st.image(data, caption=art.get("title", ""))
             elif art_type == "markdown":

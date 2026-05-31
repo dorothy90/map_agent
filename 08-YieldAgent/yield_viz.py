@@ -114,18 +114,16 @@ def _build_table(
 
 # ── Scatter Plot (Period 모드) ────────────────────────────────
 _PERIOD_COLORS = [
-    "#3b82f6",
-    "#ef4444",
-    "#22c55e",
-    "#f59e0b",
-    "#8b5cf6",
-    "#ec4899",
-    "#14b8a6",
-    "#f97316",
-    "#6366f1",
-    "#84cc16",
-    "#06b6d4",
-    "#e11d48",
+    "#1890ff",  # Ant Blue
+    "#ff4d4f",  # Ant Red
+    "#52c41a",  # Ant Green
+    "#fa8c16",  # Ant Orange
+    "#722ed1",  # Ant Purple
+    "#13c2c2",  # Ant Teal
+    "#eb2f96",  # Ant Magenta
+    "#faad14",  # Ant Yellow
+    "#fa541c",  # Ant Volcano
+    "#2f54eb",  # Ant Geekblue
 ]
 
 
@@ -163,21 +161,22 @@ def _build_scatter_html(
     improved = [a for a in anomaly_params if a["direction"] == "개선"][:3]
     degraded = [a for a in anomaly_params if a["direction"] == "열화"][:3]
 
-    rows_config: list[tuple[str, str, list[tuple[str, str]]]] = []
-    rows_config.append(("고정 파라미터", "#3b82f6", [("VTH", "VTH"), ("PT1C", "PT1C")]))
+    rows_config: list[tuple[str, str, str, list[tuple[str, str]]]] = []
+    # (Section Title, CSS Type, Accent Color, Charts)
+    rows_config.append(("수율 파라미터 (Yield)", "fixed", "#1890ff", [("VTH", "VTH"), ("PT1C", "PT1C")]))
     if improved:
         rows_config.append(
-            ("개선 파라미터", "#22c55e", [(a["param"], a["param"]) for a in improved])
+            ("개선 파라미터 (Improved)", "improved", "#52c41a", [(a["param"], a["param"]) for a in improved])
         )
     if degraded:
         rows_config.append(
-            ("열화 파라미터", "#ef4444", [(a["param"], a["param"]) for a in degraded])
+            ("열화 파라미터 (Degraded)", "degraded", "#ff4d4f", [(a["param"], a["param"]) for a in degraded])
         )
 
-    chart_blocks = []
+    sections_html = []
     chart_id = 0
-    for row_title, row_color, charts in rows_config:
-        cells = []
+    for row_title, cat_type, accent_color, charts in rows_config:
+        category_cards = []
         for label, param_name in charts:
             cid = f"sc_{chart_id}"
             chart_id += 1
@@ -195,7 +194,12 @@ def _build_scatter_html(
                             "data": pts,
                             "backgroundColor": color,
                             "borderColor": color,
-                            "pointRadius": 2.5,
+                            "borderWidth": 0,
+                            "pointRadius": 3.5,
+                            "pointHoverRadius": 5.5,
+                            "pointHoverBackgroundColor": color,
+                            "pointHoverBorderColor": "#ffffff",
+                            "pointHoverBorderWidth": 2.0,
                             "showLine": False,
                         }
                     )
@@ -209,18 +213,28 @@ def _build_scatter_html(
                         {
                             "label": label,
                             "data": pts,
-                            "backgroundColor": row_color,
-                            "borderColor": row_color,
-                            "pointRadius": 2.5,
+                            "backgroundColor": accent_color,
+                            "borderColor": accent_color,
+                            "borderWidth": 0,
+                            "pointRadius": 3.5,
+                            "pointHoverRadius": 5.5,
+                            "pointHoverBackgroundColor": accent_color,
+                            "pointHoverBorderColor": "#ffffff",
+                            "pointHoverBorderWidth": 2.0,
                             "showLine": False,
                         }
                     ],
                     ensure_ascii=False,
                 )
 
-            cells.append(f"""
-<div style="flex:1;min-width:320px;max-width:500px;">
-  <canvas id="{cid}"></canvas>
+            category_cards.append(f"""
+<div class="chart-card">
+  <div class="card-header">
+    <span class="card-title">{label}</span>
+  </div>
+  <div class="chart-wrapper">
+    <canvas id="{cid}"></canvas>
+  </div>
   <script>
   new Chart(document.getElementById('{cid}'), {{
     type: 'scatter',
@@ -229,13 +243,45 @@ def _build_scatter_html(
     }},
     options: {{
       responsive: true,
+      maintainAspectRatio: false,
       plugins: {{
-        title: {{ display: true, text: '{label}', font: {{ size: 14 }} }},
-        legend: {{ display: false }},
+        title: {{ display: false }},
+        legend: {{
+          display: {str(use_periods).lower()},
+          position: 'bottom',
+          labels: {{
+            color: '#595959',
+            boxWidth: 6,
+            boxHeight: 6,
+            usePointStyle: true,
+            pointStyle: 'circle',
+            padding: 16,
+            font: {{ family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", size: 10 }}
+          }}
+        }},
         tooltip: {{
+          backgroundColor: '#ffffff',
+          titleColor: '#1f1f1f',
+          bodyColor: '#595959',
+          borderColor: '#f0f0f0',
+          borderWidth: 1,
+          padding: 10,
+          cornerRadius: 6,
+          usePointStyle: true,
+          boxWidth: 6,
+          boxHeight: 6,
+          titleFont: {{ family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", size: 11, weight: '600' }},
+          bodyFont: {{ family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", size: 11 }},
           callbacks: {{
+            title: function(ctx) {{
+              return 'MEASURETIME: ' + ctx[0].label;
+            }},
             label: function(ctx) {{
-              return 'LOT: ' + ctx.raw.lotid + '  WF: ' + ctx.raw.wfid + '  Value: ' + ctx.raw.y;
+              return [
+                ' LOT:   ' + ctx.raw.lotid,
+                ' WF:    ' + ctx.raw.wfid,
+                ' Value: ' + ctx.raw.y
+              ];
             }}
           }}
         }}
@@ -244,30 +290,186 @@ def _build_scatter_html(
         x: {{
           type: 'time',
           time: {{ tooltipFormat: 'yyyy-MM-dd HH:mm:ss', unit: 'day', displayFormats: {{ day: 'MM-dd' }} }},
-          title: {{ display: true, text: 'MEASURETIME' }},
-          ticks: {{ maxRotation: 45, font: {{ size: 9 }} }}
+          grid: {{ display: false }},
+          border: {{ display: false }},
+          title: {{ display: true, text: 'MEASURETIME', color: '#8c8c8c', font: {{ family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", size: 10, weight: 500 }} }},
+          ticks: {{ color: '#8c8c8c', maxRotation: 45, font: {{ family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", size: 10 }} }}
         }},
-        y: {{ title: {{ display: true, text: '{label}' }} }}
+        y: {{
+          grid: {{ color: '#f0f0f0', drawBorder: false }},
+          border: {{ display: false }},
+          title: {{ display: true, text: '{label}', color: '#8c8c8c', font: {{ family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", size: 10, weight: 500 }} }},
+          ticks: {{ color: '#8c8c8c', font: {{ family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", size: 10 }} }}
+        }}
       }}
     }}
   }});
   </script>
 </div>""")
-        chart_blocks.append(
-            f'<div style="margin-bottom:8px;font-weight:600;font-size:13px;color:#475569;">{row_title}</div>'
-            f'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;">{"".join(cells)}</div>'
-        )
+
+        if category_cards:
+            sections_html.append(f"""
+<div class="category-section" data-type="{cat_type}">
+  <div class="section-title" style="border-left: 3.5px solid {accent_color};">{row_title}</div>
+  <div class="grid-layout">
+    {"".join(category_cards)}
+  </div>
+</div>""")
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/iframe-resizer/4.3.2/iframeResizer.contentWindow.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 12px; background: #fff; }}
+body {{
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  margin: 0;
+  padding: 8px;
+  background: #ffffff;
+  color: #1f1f1f;
+  overflow-y: hidden !important;
+  overflow-x: auto !important;
+}}
+.dashboard-container {{
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}}
+.filter-bar {{
+  display: flex;
+  gap: 8px;
+  background: transparent;
+  padding: 0;
+  margin-bottom: 8px;
+}}
+.filter-btn {{
+  background: #ffffff;
+  color: #595959;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  padding: 5px 16px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 400;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  transition: all 0.2s ease;
+  user-select: none;
+}}
+.filter-btn:hover {{
+  color: #40a9ff;
+  border-color: #40a9ff;
+}}
+.filter-btn.active {{
+  background: #1890ff;
+  color: #ffffff;
+  border-color: #1890ff;
+  font-weight: 500;
+}}
+.category-section {{
+  margin-bottom: 12px;
+}}
+.section-title {{
+  font-size: 12px;
+  font-weight: 600;
+  color: #262626;
+  padding-left: 8px;
+  margin-bottom: 8px;
+  line-height: 1.2;
+}}
+.grid-layout {{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+}}
+.chart-card {{
+  background: #ffffff;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  padding: 16px;
+  transition: all 0.3s;
+}}
+.chart-card:hover {{
+  box-shadow: 0 1px 2px -2px rgba(0, 0, 0, 0.16), 0 3px 6px 0 rgba(0, 0, 0, 0.12), 0 5px 12px 4px rgba(0, 0, 0, 0.09);
+  border-color: #f0f0f0;
+}}
+.card-header {{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #f1f5f9;
+  padding-bottom: 8px;
+}}
+.card-title {{
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f1f1f;
+  letter-spacing: 0.3px;
+}}
+.chart-wrapper {{
+  position: relative;
+  height: 240px;
+  width: 100%;
+}}
 </style>
 </head><body>
-{"".join(chart_blocks)}
+<div class="dashboard-container">
+  <div class="filter-bar">
+    <button class="filter-btn active" onclick="filterCharts('all', this)">ALL</button>
+    <button class="filter-btn" onclick="filterCharts('fixed', this)">수율</button>
+    <button class="filter-btn" onclick="filterCharts('improved', this)">개선</button>
+    <button class="filter-btn" onclick="filterCharts('degraded', this)">열화</button>
+  </div>
+
+  {"".join(sections_html)}
+</div>
+
+<script>
+function filterCharts(category, btn) {{
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  document.querySelectorAll('.category-section').forEach(section => {{
+    if (category === 'all') {{
+      section.style.display = 'block';
+    }} else {{
+      if (section.getAttribute('data-type') === category) {{
+        section.style.display = 'block';
+      }} else {{
+        section.style.display = 'none';
+      }}
+    }}
+  }});
+
+  sendHeight();
+}}
+</script>
+<script>
+function sendHeight() {{
+  var height = Math.max(
+    document.documentElement.scrollHeight,
+    document.body.scrollHeight,
+    document.documentElement.offsetHeight,
+    document.body.offsetHeight
+  ) + 120;
+  window.parent.postMessage({{ type: 'resize', height: height }}, '*');
+  window.parent.postMessage({{ type: 'set-height', height: height }}, '*');
+  window.parent.postMessage({{ height: height }}, '*');
+}}
+window.addEventListener('load', function() {{
+  sendHeight();
+  setTimeout(sendHeight, 100);
+  setTimeout(sendHeight, 300);
+  setTimeout(sendHeight, 600);
+}});
+window.addEventListener('resize', sendHeight);
+if (window.ResizeObserver) {{
+  new ResizeObserver(sendHeight).observe(document.body);
+}}
+</script>
 </body></html>"""
     return html
 
@@ -291,7 +493,7 @@ def _build_html_table(
 
     anomaly_map = {a["param"]: a for a in anomaly_params} if anomaly_params else {}
 
-    # Delta 계산 (최신주 - 직전주)
+    # Delta 계산 (최신주 - 직전주, 화면 표시 기준과 동일하게 소수점 2자리 반올림 후 차이 계산)
     delta_pt1h: dict = {}
     delta_pt1c: dict = {}
     delta_gms: dict = {}
@@ -304,7 +506,7 @@ def _build_html_table(
                 delta_pt1h[col] = None
             else:
                 try:
-                    delta_pt1h[col] = float(cv) - float(pv)
+                    delta_pt1h[col] = round(float(cv), 2) - round(float(pv), 2)
                 except (TypeError, ValueError):
                     delta_pt1h[col] = None
         for col in PT1C_COLUMNS:
@@ -314,7 +516,7 @@ def _build_html_table(
                 delta_pt1c[col] = None
             else:
                 try:
-                    delta_pt1c[col] = float(cv) - float(pv)
+                    delta_pt1c[col] = round(float(cv), 2) - round(float(pv), 2)
                 except (TypeError, ValueError):
                     delta_pt1c[col] = None
         for col in gms_cols:
@@ -324,7 +526,7 @@ def _build_html_table(
                 delta_gms[col] = None
             else:
                 try:
-                    delta_gms[col] = float(cv) - float(pv)
+                    delta_gms[col] = round(float(cv), 2) - round(float(pv), 2)
                 except (TypeError, ValueError):
                     delta_gms[col] = None
 
@@ -334,86 +536,182 @@ def _build_html_table(
 
     html = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 8px; background: #fff; }
-table { border-collapse: collapse; border: 1px solid #cbd5e1; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  margin: 0;
+  padding: 8px;
+  background: #ffffff;
+  color: rgba(0, 0, 0, 0.85);
+  overflow-y: auto !important;
+  overflow-x: auto !important;
+}
+.table-container {
+  border-radius: 8px;
+  overflow-x: auto;
+  border: 1px solid #f0f0f0;
+  background: #ffffff;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+}
+.table-container::-webkit-scrollbar {
+  height: 5px;
+}
+.table-container::-webkit-scrollbar-thumb {
+  background: #d9d9d9;
+  border-radius: 3px;
+}
+.table-container::-webkit-scrollbar-thumb:hover {
+  background: #bfbfbf;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  border: none;
+}
 th {
-  background: #1e293b; color: #e2e8f0;
-  font-size: 11px; font-weight: 600;
-  border: 1px solid #334155;
+  background: #fafafa !important;
+  color: rgba(0, 0, 0, 0.85);
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid #f0f0f0;
+  vertical-align: middle;
+  padding: 8px 8px;
 }
 th.th-week {
-  background: #334155; min-width: 80px;
-  text-align: center; vertical-align: middle; padding: 8px;
+  background: #fafafa !important;
+  min-width: 70px;
+  text-align: center;
+  color: rgba(0, 0, 0, 0.85);
+  font-size: 11px;
 }
 th.th-meta {
-  background: #475569; min-width: 44px;
-  text-align: center; vertical-align: middle; padding: 8px 6px;
+  background: #fafafa !important;
+  min-width: 36px;
+  text-align: center;
+  color: rgba(0, 0, 0, 0.85);
+  font-size: 11px;
 }
-th.th-meta-pt1c { background: #2d4a7a; }
-th.th-meta-gms  { background: #2d5a3d; }
 th.th-section {
-  text-align: center; padding: 6px; font-size: 12px; font-weight: 700;
+  text-align: center;
+  padding: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.85);
 }
-th.th-section-pt1h { background: #1e293b; }
-th.th-section-pt1c { background: #1e3a5f; border-left: 3px solid #3b82f6; }
-th.th-section-gms  { background: #1a3a2a; border-left: 3px solid #22c55e; }
+th.th-section-pt1h {
+  border-top: 3px solid #1890ff;
+  background: #e6f7ff !important;
+  color: #0050b3 !important;
+}
+th.th-section-pt1c {
+  border-top: 3px solid #722ed1;
+  border-left: 2px solid #bfbfbf !important;
+  background: #f9f0ff !important;
+  color: #391085 !important;
+}
+th.th-section-gms  {
+  border-top: 3px solid #52c41a;
+  border-left: 2px solid #bfbfbf !important;
+  background: #f6ffed !important;
+  color: #237804 !important;
+}
 th.th-param {
-  width: 44px; height: 100px;
-  padding: 0; vertical-align: bottom;
+  width: 36px;
+  height: 75px;
+  padding: 0;
+  vertical-align: bottom;
+  background: #fafafa !important;
+  border-bottom: 1px solid #f0f0f0;
+  border-left: 1px solid #f0f0f0;
 }
-th.th-blue       { background: #1d4ed8; }
-th.th-amber      { background: #92400e; }
-th.th-blue-pt1c  { background: #1e40af; border-left: 1px solid #3b82f6; }
-th.th-amber-pt1c { background: #78350f; border-left: 1px solid #3b82f6; }
-th.th-gms        { background: #14532d; border-left: 1px solid #22c55e; }
+th.th-blue, th.th-amber, th.th-blue-pt1c, th.th-amber-pt1c, th.th-gms {
+  background: #fafafa;
+}
+
 .th-param-inner {
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: flex-end;
-  height: 100%; padding: 4px 2px;
-  gap: 3px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+  padding: 4px 1px;
 }
 .hname {
   writing-mode: vertical-rl;
   transform: rotate(180deg);
   white-space: nowrap;
-  font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
-  flex: 1; display: flex; align-items: center;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  color: rgba(0, 0, 0, 0.85);
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
-.badge-d { color: #fca5a5; font-size: 9px; margin-top: 2px; }
-.badge-i { color: #86efac; font-size: 9px; margin-top: 2px; }
+.badge-d { color: #cf1322; font-size: 10px; font-weight: bold; }
+.badge-i { color: #389e0d; font-size: 10px; font-weight: bold; }
+
 td {
-  border: 1px solid #e2e8f0; padding: 4px 9px;
-  text-align: right; font-size: 12px; color: #374151;
+  border: 1px solid #f0f0f0;
+  padding: 4px 6px;
+  text-align: right;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.65);
+  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  transition: background 0.3s ease;
 }
 td.td-week {
-  text-align: center; font-weight: 600; font-size: 11px;
-  color: #1e293b; background: #f1f5f9 !important;
+  text-align: center;
+  font-family: 'Inter', sans-serif;
+  font-weight: 500;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.65);
+  background: #fafafa !important;
 }
-tr:nth-child(odd) td:not(.td-week) { background: #ffffff; }
-tr:nth-child(even) td:not(.td-week) { background: #f8fafc; }
+tr td:not(.td-week) { background: #ffffff; }
+
+tr:hover td:not(.td-week) {
+  background: #fafafa !important;
+}
+
 td.degraded {
-  background: #fef2f2 !important; color: #b91c1c;
-  font-weight: 600; border-left: 2px solid #ef4444;
+  background: #fff1f0 !important;
+  color: #cf1322 !important;
+  font-weight: 500;
 }
 td.improved {
-  background: #f0fdf4 !important; color: #15803d;
-  font-weight: 600; border-left: 2px solid #22c55e;
+  background: #f6ffed !important;
+  color: #389e0d !important;
+  font-weight: 500;
 }
-td.td-pt1c-sep { border-left: 3px solid #3b82f6 !important; }
-td.td-gms-sep  { border-left: 3px solid #22c55e !important; }
+td.td-pt1c-sep { border-left: 2px solid #bfbfbf !important; }
+td.td-gms-sep  { border-left: 2px solid #bfbfbf !important; }
+
 tr.delta td {
-  background: #1e293b !important; color: #94a3b8;
-  font-size: 11px; font-weight: 500; border-color: #334155;
+  background: #fafafa !important;
+  color: rgba(0, 0, 0, 0.85);
+  font-size: 10px;
+  font-weight: 500;
+  border-top: 1px solid #f0f0f0;
 }
 tr.delta td.delta-week {
-  text-align: center; color: #e2e8f0; font-weight: 700; font-size: 12px;
+  text-align: center;
+  color: #1890ff;
+  font-weight: 600;
+  font-size: 11px;
+  font-family: 'Inter', sans-serif;
 }
-td.delta-neg { background: #7f1d1d !important; color: #fca5a5; font-weight: 600; }
-td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600; }
+td.delta-neg { background: #fff1f0 !important; color: #cf1322 !important; font-weight: 500; }
+td.delta-pos { background: #f6ffed !important; color: #389e0d !important; font-weight: 500; }
 </style></head><body>
+<div class="table-container">
 <table>
 <thead>"""
 
@@ -439,9 +737,9 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
         badge = ""
         if col in anomaly_map:
             badge = (
-                '<span class="badge-d">▼</span>'
+                '<span class="badge-d">↓</span>'
                 if anomaly_map[col]["direction"] == "열화"
-                else '<span class="badge-i">▲</span>'
+                else '<span class="badge-i">↑</span>'
             )
         tip = ""
         if col in anomaly_map:
@@ -457,7 +755,7 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
         )
 
     for j, col in enumerate(PT1C_COLUMNS):
-        sep = ' style="border-left: 3px solid #3b82f6;"' if j == 0 else ""
+        sep = ' style="border-left: 2px solid #bfbfbf;"' if j == 0 else ""
         html += (
             f'<th class="th-param th-amber-pt1c"{sep}>'
             f'<div class="th-param-inner">'
@@ -466,7 +764,7 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
         )
 
     for j, col in enumerate(gms_cols):
-        sep = ' style="border-left: 3px solid #22c55e;"' if j == 0 else ""
+        sep = ' style="border-left: 2px solid #bfbfbf;"' if j == 0 else ""
         html += (
             f'<th class="th-param th-gms"{sep}>'
             f'<div class="th-param-inner">'
@@ -514,8 +812,10 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
 
         for col in cols:
             d = delta_pt1h.get(col)
-            if d is None or abs(d) < 1e-12:
+            if d is None:
                 html += "<td>—</td>"
+            elif abs(d) < 0.005:  # 소수점 2자리 반올림 시 0인 미세 변화
+                html += "<td>0.00</td>"
             else:
                 is_better = (col in HIGHER_IS_BETTER and d > 0) or (
                     col not in HIGHER_IS_BETTER and d < 0
@@ -526,8 +826,10 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
         for j, col in enumerate(PT1C_COLUMNS):
             d = delta_pt1c.get(col)
             sep = " td-pt1c-sep" if j == 0 else ""
-            if d is None or abs(d) < 1e-12:
+            if d is None:
                 html += f'<td class="{sep.strip()}">—</td>' if sep else "<td>—</td>"
+            elif abs(d) < 0.005:
+                html += f'<td class="{sep.strip()}">0.00</td>' if sep else "<td>0.00</td>"
             else:
                 css = "delta-pos" + sep
                 html += f'<td class="{css}">{d:+.2f}</td>'
@@ -535,8 +837,10 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
         for j, col in enumerate(gms_cols):
             d = delta_gms.get(col)
             sep = " td-gms-sep" if j == 0 else ""
-            if d is None or abs(d) < 1e-12:
+            if d is None:
                 html += f'<td class="{sep.strip()}">—</td>' if sep else "<td>—</td>"
+            elif abs(d) < 0.005:
+                html += f'<td class="{sep.strip()}">0.00</td>' if sep else "<td>0.00</td>"
             else:
                 is_better = col in GMS_HIGHER_IS_BETTER and d > 0
                 css = ("delta-pos" if is_better else "delta-neg") + sep
@@ -544,7 +848,27 @@ td.delta-pos { background: #14532d !important; color: #86efac; font-weight: 600;
 
         html += "</tr>\n"
 
-    html += "</tbody></table>\n</body></html>"
+    html += """</tbody></table>
+</div>
+<script>
+function sendHeight() {
+  var height = (document.documentElement.scrollHeight || document.body.scrollHeight) + 15;
+  window.parent.postMessage({ type: 'resize', height: height }, '*');
+  window.parent.postMessage({ type: 'set-height', height: height }, '*');
+  window.parent.postMessage({ height: height }, '*');
+}
+window.addEventListener('load', function() {
+  sendHeight();
+  setTimeout(sendHeight, 100);
+  setTimeout(sendHeight, 300);
+  setTimeout(sendHeight, 600);
+});
+window.addEventListener('resize', sendHeight);
+if (window.ResizeObserver) {
+  new ResizeObserver(sendHeight).observe(document.body);
+}
+</script>
+</body></html>"""
     return html
 
 
@@ -683,65 +1007,165 @@ def _build_lot_html_table(
 
     html = """<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 8px; background: #fff; }
-table { border-collapse: collapse; border: 1px solid #cbd5e1; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  margin: 0;
+  padding: 8px;
+  background: #ffffff;
+  color: rgba(0, 0, 0, 0.85);
+  overflow-y: auto !important;
+  overflow-x: auto !important;
+}
+.table-container {
+  border-radius: 8px;
+  overflow-x: auto;
+  border: 1px solid #f0f0f0;
+  background: #ffffff;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+}
+.table-container::-webkit-scrollbar {
+  height: 5px;
+}
+.table-container::-webkit-scrollbar-thumb {
+  background: #d9d9d9;
+  border-radius: 3px;
+}
+.table-container::-webkit-scrollbar-thumb:hover {
+  background: #bfbfbf;
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  border: none;
+}
 th {
-  background: #1e293b; color: #e2e8f0;
-  font-size: 11px; font-weight: 600;
-  border: 1px solid #334155;
+  background: #fafafa !important;
+  color: rgba(0, 0, 0, 0.85);
+  font-size: 11px;
+  font-weight: 500;
+  border: 1px solid #f0f0f0;
+  vertical-align: middle;
+  padding: 8px 8px;
 }
 th.th-week {
-  background: #334155; min-width: 100px;
-  text-align: center; vertical-align: middle; padding: 8px;
+  background: #fafafa !important;
+  min-width: 90px;
+  text-align: center;
+  color: rgba(0, 0, 0, 0.85);
+  font-size: 11px;
 }
 th.th-meta {
-  background: #475569; min-width: 44px;
-  text-align: center; vertical-align: middle; padding: 8px 6px;
+  background: #fafafa !important;
+  min-width: 36px;
+  text-align: center;
+  color: rgba(0, 0, 0, 0.85);
+  font-size: 11px;
 }
 th.th-section {
-  text-align: center; padding: 6px; font-size: 12px; font-weight: 700;
+  text-align: center;
+  padding: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.85);
 }
-th.th-section-pt1h { background: #1e293b; }
-th.th-section-pt1c { background: #1e3a5f; border-left: 3px solid #3b82f6; }
-th.th-section-gms  { background: #1a3a2a; border-left: 3px solid #22c55e; }
+th.th-section-pt1h {
+  border-top: 3px solid #1890ff;
+  background: #e6f7ff !important;
+  color: #0050b3 !important;
+}
+th.th-section-pt1c {
+  border-top: 3px solid #722ed1;
+  border-left: 2px solid #bfbfbf !important;
+  background: #f9f0ff !important;
+  color: #391085 !important;
+}
+th.th-section-gms  {
+  border-top: 3px solid #52c41a;
+  border-left: 2px solid #bfbfbf !important;
+  background: #f6ffed !important;
+  color: #237804 !important;
+}
 th.th-param {
-  width: 44px; height: 80px;
-  padding: 0; vertical-align: bottom;
+  width: 36px;
+  height: 75px;
+  padding: 0;
+  vertical-align: bottom;
+  background: #fafafa !important;
+  border-bottom: 1px solid #f0f0f0;
+  border-left: 1px solid #f0f0f0;
 }
-th.th-blue       { background: #1d4ed8; }
-th.th-amber      { background: #92400e; }
-th.th-amber-pt1c { background: #78350f; border-left: 1px solid #3b82f6; }
-th.th-gms        { background: #14532d; border-left: 1px solid #22c55e; }
+th.th-blue, th.th-amber, th.th-amber-pt1c, th.th-gms {
+  background: #fafafa;
+}
+
 .th-param-inner {
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: flex-end;
-  height: 100%; padding: 4px 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  height: 100%;
+  padding: 4px 1px;
 }
 .hname {
   writing-mode: vertical-rl;
   transform: rotate(180deg);
   white-space: nowrap;
-  font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
-  flex: 1; display: flex; align-items: center;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  color: rgba(0, 0, 0, 0.85);
+  flex: 1;
+  display: flex;
+  align-items: center;
 }
+
 td {
-  border: 1px solid #e2e8f0; padding: 4px 9px;
-  text-align: right; font-size: 12px; color: #374151;
+  border: 1px solid #f0f0f0;
+  padding: 4px 6px;
+  text-align: right;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.65);
+  font-family: 'JetBrains Mono', monospace;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  transition: background 0.3s ease;
 }
 td.td-week {
-  text-align: center; font-weight: 600; font-size: 11px;
-  color: #1e293b; background: #f1f5f9 !important;
+  text-align: center;
+  font-family: 'Inter', sans-serif;
+  font-weight: 500;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.65);
+  background: #fafafa !important;
 }
-tr:nth-child(odd) td:not(.td-week) { background: #ffffff; }
-tr:nth-child(even) td:not(.td-week) { background: #f8fafc; }
-tr.avg-row td { background: #eff6ff !important; font-weight: 600; color: #1d4ed8; }
-tr.avg-row td.td-week { background: #1d4ed8 !important; color: #fff; }
-td.td-pt1c-sep { border-left: 3px solid #3b82f6 !important; }
-td.td-gms-sep  { border-left: 3px solid #22c55e !important; }
+tr td:not(.td-week) { background: #ffffff; }
+
+tr:hover td:not(.td-week) {
+  background: #fafafa !important;
+}
+
+tr.avg-row td {
+  background: #fafafa !important;
+  font-weight: 600;
+  color: #1890ff !important;
+  border-top: 1px solid #f0f0f0;
+  border-bottom: 1px solid #f0f0f0;
+}
+tr.avg-row td.td-week {
+  background: #e6f7ff !important;
+  color: #1890ff !important;
+  font-weight: 600;
+}
+
+td.td-pt1c-sep { border-left: 2px solid #bfbfbf !important; }
+td.td-gms-sep  { border-left: 2px solid #bfbfbf !important; }
 </style></head><body>
+<div class="table-container">
 <table>
 <thead>"""
 
@@ -763,13 +1187,13 @@ td.td-gms-sep  { border-left: 3px solid #22c55e !important; }
             f'<div class="th-param-inner"><div class="hname">{col}</div></div></th>'
         )
     for j, col in enumerate(PT1C_COLUMNS):
-        sep = ' style="border-left: 3px solid #3b82f6;"' if j == 0 else ""
+        sep = ' style="border-left: 2px solid #bfbfbf;"' if j == 0 else ""
         html += (
             f'<th class="th-param th-amber-pt1c"{sep}>'
             f'<div class="th-param-inner"><div class="hname">{col}</div></div></th>'
         )
     for j, col in enumerate(gms_cols):
-        sep = ' style="border-left: 3px solid #22c55e;"' if j == 0 else ""
+        sep = ' style="border-left: 2px solid #bfbfbf;"' if j == 0 else ""
         html += (
             f'<th class="th-param th-gms"{sep}>'
             f'<div class="th-param-inner"><div class="hname">{col}</div></div></th>'
@@ -809,7 +1233,27 @@ td.td-gms-sep  { border-left: 3px solid #22c55e !important; }
             html += f"<td{sep}>-</td>"
         html += "</tr>\n"
 
-    html += "</tbody></table>\n</body></html>"
+    html += """</tbody></table>
+</div>
+<script>
+function sendHeight() {
+  var height = (document.documentElement.scrollHeight || document.body.scrollHeight) + 15;
+  window.parent.postMessage({ type: 'resize', height: height }, '*');
+  window.parent.postMessage({ type: 'set-height', height: height }, '*');
+  window.parent.postMessage({ height: height }, '*');
+}
+window.addEventListener('load', function() {
+  sendHeight();
+  setTimeout(sendHeight, 100);
+  setTimeout(sendHeight, 300);
+  setTimeout(sendHeight, 600);
+});
+window.addEventListener('resize', sendHeight);
+if (window.ResizeObserver) {
+  new ResizeObserver(sendHeight).observe(document.body);
+}
+</script>
+</body></html>"""
     return html
 
 
@@ -1111,10 +1555,71 @@ def _build_cummap_grid_html(
     buf.seek(0)
     b64 = base64.b64encode(buf.read()).decode()
 
-    return (
-        f'<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>'
-        f'<div style="margin:8px 0">'
-        f'<p style="font-weight:600">{lotcd} Period × Parameter Cummap Grid</p>'
-        f'<img src="data:image/png;base64,{b64}" style="max-width:100%"/>'
-        f"</div></body></html>"
-    )
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/iframe-resizer/4.3.2/iframeResizer.contentWindow.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+body {{
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  margin: 0;
+  padding: 8px;
+  background: #ffffff;
+  color: #1e293b;
+  overflow-y: auto !important;
+  overflow-x: auto !important;
+}}
+.cummap-card {{
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 16px;
+  width: 100%;
+}}
+.title {{
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 12px;
+  letter-spacing: 0.3px;
+  border-bottom: 1px solid #f1f5f9;
+  padding-bottom: 8px;
+}}
+.img-container {{
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+}}
+img {{
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+}}
+</style>
+</head><body>
+<div class="cummap-card">
+  <div class="title">{lotcd} Period × Parameter Cummap Grid</div>
+  <div class="img-container">
+    <img src="data:image/png;base64,{b64}"/>
+  </div>
+</div>
+<script>
+function sendHeight() {{
+  var height = (document.documentElement.scrollHeight || document.body.scrollHeight) + 15;
+  window.parent.postMessage({{ type: 'resize', height: height }}, '*');
+  window.parent.postMessage({{ type: 'set-height', height: height }}, '*');
+  window.parent.postMessage({{ height: height }}, '*');
+}}
+window.addEventListener('load', function() {{
+  sendHeight();
+  setTimeout(sendHeight, 100);
+  setTimeout(sendHeight, 300);
+  setTimeout(sendHeight, 600);
+}});
+window.addEventListener('resize', sendHeight);
+if (window.ResizeObserver) {{
+  new ResizeObserver(sendHeight).observe(document.body);
+}}
+</script>
+</body></html>"""
