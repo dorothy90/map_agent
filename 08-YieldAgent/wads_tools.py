@@ -4,12 +4,15 @@ WADS @tool 함수 모듈
 WADS 데이터 조회/리포트 도구 함수와 ContextVar 격리 로직.
 wads_agent.py에서 분리.
 """
+
 from __future__ import annotations
 
 import contextvars
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Dict, Optional, Tuple
 
 import oracledb
 import pandas as pd
@@ -17,12 +20,15 @@ from langchain_core.tools import tool
 from langfuse import observe
 
 from common import get_oracle_connection as _get_oracle_connection, get_llm
+from local_trace import emit_runtime_detail
 
 import os
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
-_ORACLE_TABLE = os.getenv("WADS_TABLE", "WADS_TABLE")
+_ORACLE_REPORT_TABLE = "DF_WADS_REPORT"
+_ORACLE_WF_TABLE = os.getenv("WADS_WF_LIST_TABLE", "DF_WADS_WF_LIST")
+_ORACLE_TABLE = _ORACLE_REPORT_TABLE
 _SQL_GEN_MODEL = os.getenv("WADS_SQL_GEN_MODEL", os.getenv("RETRIEVE_CHAIN_MODEL"))
 
 logger = logging.getLogger("yield_agent.wads_tools")
@@ -44,6 +50,108 @@ def _get_tool_payload() -> Dict[str, Any]:
         return storage
 
 
+def _tool_task_id() -> str:
+    storage = _get_tool_payload()
+    defaults = storage.get("_defaults", {}) if isinstance(storage, dict) else {}
+    return str(defaults.get("task_id") or "")
+
+
+def _sample_rows(df: pd.DataFrame, *, limit: int = 3) -> list[dict[str, Any]]:
+    if df.empty:
+        return []
+    return df.head(limit).to_dict(orient="records")
+
+
+def _end_tm_expr(alias: str = "r") -> str:
+    return f"TO_CHAR({alias}.END_TM, 'YYYY-MM-DD HH24:MI:SS') AS END_TM"
+
+
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if hasattr(value, "read"):
+        return value.read()
+    return value
+
+
+def _split_groupkey(groupkey: Any) -> tuple[str, str]:
+    text = str(groupkey or "").strip()
+    if not text:
+        return "", ""
+    if "." not in text:
+        return text, ""
+    lotid, wf_id = text.rsplit(".", 1)
+    return lotid.strip(), wf_id.strip()
+
+
+def _append_unique(values: list[str], value: Any) -> None:
+    text = str(value or "").strip()
+    if text and text not in values:
+        values.append(text)
+
+
+def _report_key(row: Any) -> tuple[str, str, str, str]:
+    if isinstance(row, pd.Series):
+        getter = row.get
+    elif isinstance(row, dict):
+        getter = row.get
+    else:
+        return ("", "", "", "")
+    return (
+        str(getter("lotcd") or "").strip(),
+        str(getter("category") or "").strip(),
+        str(getter("parameter") or "").strip(),
+        str(getter("end_tm") or "").strip(),
+    )
+
+
+def _category_to_map_oper(category: Any) -> str:
+    text = str(category or "").upper()
+    if "PT1C" in text:
+        return "PT1C"
+    if "PT1H" in text:
+        return "PT1H"
+    return ""
+
+
+def _wafer_groups_for_reports(
+    *,
+    lotcd: Optional[str],
+    end_tm: Optional[str],
+    start_tm: Optional[str],
+    parameter: Optional[str],
+) -> dict[tuple[str, str, str, str], dict[str, list[str]]]:
+    try:
+        wafer_df = _query_wads_data(
+            lotcd=lotcd,
+            end_tm=end_tm,
+            start_tm=start_tm,
+            parameter=parameter,
+            columns=(
+                f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, w.GROUPKEY"
+            ),
+            join_wafers=True,
+        )
+    except Exception as exc:
+        logger.warning("[wads_get_html_report] wafer groupkey 조회 실패: %s", exc)
+        return {}
+
+    grouped: dict[tuple[str, str, str, str], dict[str, list[str]]] = {}
+    for row in wafer_df.to_dict(orient="records"):
+        key = _report_key(row)
+        bucket = grouped.setdefault(key, {"groupkeys": [], "lot_ids": [], "wf_ids": []})
+        groupkey = row.get("groupkey")
+        _append_unique(bucket["groupkeys"], groupkey)
+        lotid, wf_id = _split_groupkey(groupkey)
+        _append_unique(bucket["lot_ids"], lotid)
+        _append_unique(bucket["wf_ids"], wf_id)
+    return grouped
+
+
 # ── Oracle 조회 ───────────────────────────────────────────────
 @observe(name="wads_query_oracle")
 def _query_wads_data(
@@ -52,36 +160,63 @@ def _query_wads_data(
     start_tm: Optional[str] = None,
     parameter: Optional[str] = None,
     columns: str = "*",
+    join_wafers: bool = False,
 ) -> pd.DataFrame:
-    """Oracle에서 WADS 데이터 조회 (SQL WHERE + LIKE 필터링)"""
-    logger.info("[_query_wads_data] 조회 시작: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s, columns=%s",
-                lotcd, end_tm, start_tm, parameter, columns)
+    """Oracle에서 WADS 데이터 조회 (report 기준 필터 + 필요 시 wafer list 조인)"""
+    logger.debug(
+        "[_query_wads_data] start filters lotcd=%s start=%s end=%s parameter=%s join_wafers=%s columns=%s",
+        bool(lotcd),
+        bool(start_tm),
+        bool(end_tm),
+        bool(parameter),
+        join_wafers,
+        columns,
+    )
     conditions = []
     bind_vars = {}
 
     if lotcd:
-        conditions.append("UPPER(LOTCD) LIKE UPPER(:lotcd)")
+        conditions.append("UPPER(r.LOTCD) LIKE UPPER(:lotcd)")
         bind_vars["lotcd"] = f"%{lotcd}%"
     if start_tm and end_tm:
         conditions.append(
-            "TRUNC(TO_DATE(SUBSTR(END_TM, 1, 10), 'YYYY-MM-DD')) "
+            "TRUNC(CAST(r.END_TM AS DATE)) "
             "BETWEEN TO_DATE(:start_tm, 'YYYY-MM-DD') AND TO_DATE(:end_tm_range, 'YYYY-MM-DD')"
         )
         bind_vars["start_tm"] = start_tm
         bind_vars["end_tm_range"] = end_tm
     elif end_tm:
-        conditions.append("END_TM LIKE :end_tm")
-        bind_vars["end_tm"] = f"%{end_tm}%"
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(end_tm).strip()):
+            conditions.append(
+                "TRUNC(CAST(r.END_TM AS DATE)) = TO_DATE(:end_tm_date, 'YYYY-MM-DD')"
+            )
+            bind_vars["end_tm_date"] = str(end_tm).strip()
+        else:
+            conditions.append("TO_CHAR(r.END_TM, 'YYYY-MM-DD HH24:MI:SS') LIKE :end_tm")
+            bind_vars["end_tm"] = f"%{end_tm}%"
     if parameter:
-        conditions.append("UPPER(CTN_DESC) LIKE UPPER(:parameter)")
+        conditions.append("UPPER(r.PARAMETER) LIKE UPPER(:parameter)")
         bind_vars["parameter"] = f"%{parameter}%"
 
     where_clause = " AND ".join(conditions) if conditions else "1=1"
-    sql = f"SELECT {columns} FROM {_ORACLE_TABLE} WHERE {where_clause}"
-    logger.info("[_query_wads_data] SQL: %s | bind: %s", sql, bind_vars)
+    from_clause = f"FROM {_ORACLE_REPORT_TABLE} r"
+    if join_wafers:
+        from_clause += (
+            f" LEFT JOIN {_ORACLE_WF_TABLE} w"
+            " ON w.LOT_CD = r.LOTCD"
+            " AND w.OPER_PARA = r.CATEGORY || '_' || r.PARAMETER"
+            " AND w.END_TM = r.END_TM"
+        )
+    sql = f"SELECT {columns} {from_clause} WHERE {where_clause} ORDER BY r.END_TM DESC"
+    logger.debug(
+        "[_query_wads_data] SQL prepared len=%d bind_keys=%s",
+        len(sql),
+        sorted(bind_vars),
+    )
 
     conn = _get_oracle_connection()
     try:
+
         def output_type_handler(cursor, metadata):
             if metadata.type_code is oracledb.DB_TYPE_CLOB:
                 return cursor.var(oracledb.DB_TYPE_LONG, arraysize=cursor.arraysize)
@@ -95,8 +230,13 @@ def _query_wads_data(
         rows = cursor.fetchall()
         cursor.close()
 
-        df = pd.DataFrame(rows, columns=col_names)
-        logger.info("[_query_wads_data] 조회 완료: %d rows, columns=%s", len(df), list(col_names))
+        safe_rows = [tuple(_json_safe_value(value) for value in row) for row in rows]
+        df = pd.DataFrame(safe_rows, columns=col_names)
+        logger.info(
+            "[_query_wads_data] 조회 완료: %d rows, columns=%s",
+            len(df),
+            list(col_names),
+        )
         return df
     except Exception as e:
         logger.error("[_query_wads_data] Oracle 조회 실패: %s", e, exc_info=True)
@@ -117,10 +257,10 @@ def wads_query_data(
     WADS 데이터를 조회합니다. 선택적 필터를 적용하여 매칭되는 데이터의 메타정보를 반환합니다.
 
     Args:
-        lotcd: 랏코드 필터 (예: "5NA", "4SA"). 부분 일치 검색. 미입력시 전체 조회.
+        lotcd: 랏코드 필터 (예: "4SA", "4SS"). 부분 일치 검색. 미입력시 전체 조회.
         end_tm: 종료시간 필터 (예: "2026-01-01", "18:07"). 부분 일치 검색. 미입력시 전체 조회.
         start_tm: 시작 날짜 필터 (예: "2026-03-19"). end_tm과 함께 사용하면 날짜 범위 조회. 미입력시 end_tm 단일 필터.
-        parameter: 스텝 설명 필터 (예: "step01", "step02"). 부분 일치 검색. 미입력시 전체 조회.
+        parameter: fail_type 필터 (예: "EASY", "EASY(W)", "TWT"). 부분 일치 검색. 미입력시 전체 조회.
 
     Returns:
         조회 결과 요약 메시지 (실제 데이터는 별도 저장됨)
@@ -131,7 +271,13 @@ def wads_query_data(
     end_tm = end_tm or defaults.get("end_tm")
     start_tm = start_tm or defaults.get("start_tm")
     parameter = parameter or defaults.get("parameter")
-    logger.info("[wads_query_data] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s", lotcd, end_tm, start_tm, parameter)
+    logger.info(
+        "[wads_query_data] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s",
+        lotcd,
+        end_tm,
+        start_tm,
+        parameter,
+    )
 
     try:
         filtered_df = _query_wads_data(
@@ -139,7 +285,10 @@ def wads_query_data(
             end_tm=end_tm,
             start_tm=start_tm,
             parameter=parameter,
-            columns="LOTID, LOTCD, END_TM, CTN_DESC AS PARAMETER",
+            columns=(
+                f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, w.GROUPKEY"
+            ),
+            join_wafers=True,
         )
     except Exception as e:
         logger.error("[wads_query_data] Oracle 오류: %s", e, exc_info=True)
@@ -153,19 +302,69 @@ def wads_query_data(
 
     if filtered_df.empty:
         logger.info("[wads_query_data] 결과 없음 (NoMatch)")
+        emit_runtime_detail(
+            "wads.query_data",
+            {
+                "row_count": 0,
+                "filters": {
+                    "lotcd": lotcd,
+                    "start_tm": start_tm,
+                    "end_tm": end_tm,
+                    "parameter": parameter,
+                },
+                "columns": list(filtered_df.columns),
+                "sample": [],
+            },
+            task_id=_tool_task_id(),
+        )
         storage["query"] = [
             {"error": "NoMatch", "detail": "조건에 맞는 WADS 데이터가 없습니다."}
         ]
         return "조건에 맞는 WADS 데이터가 없습니다."
 
-    result = filtered_df[["lotid", "lotcd", "end_tm", "parameter"]].to_dict(orient="records")
+    result = []
+    for row in filtered_df.to_dict(orient="records"):
+        lotid, wf_id = _split_groupkey(row.get("groupkey"))
+        result.append(
+            {
+                "lotid": lotid,
+                "wf_id": wf_id,
+                "groupkey": row.get("groupkey") or "",
+                "lotcd": row.get("lotcd") or "",
+                "category": row.get("category") or "",
+                "parameter": row.get("parameter") or "",
+                "end_tm": row.get("end_tm") or "",
+            }
+        )
     storage["query"] = result
     logger.info("[wads_query_data] 완료: %d건", len(result))
+    emit_runtime_detail(
+        "wads.query_data",
+        {
+            "row_count": len(result),
+            "filters": {
+                "lotcd": lotcd,
+                "start_tm": start_tm,
+                "end_tm": end_tm,
+                "parameter": parameter,
+            },
+            "columns": list(filtered_df.columns),
+            "sample": _sample_rows(filtered_df),
+        },
+        task_id=_tool_task_id(),
+    )
 
-    # LLM에게 실제 데이터(LOTID 포함)를 반환하여 lot list 질문에 답변 가능하게 함
-    lines = [f"WADS 데이터 조회 완료: 총 {len(result)}건 (데이터는 화면에 별도 표시됩니다)"]
+    # LLM에게 실제 데이터(LOTID/GROUPKEY 포함)를 반환하여 lot/wafer list 질문에 답변 가능하게 함
+    lines = [
+        f"WADS 데이터 조회 완료: 총 {len(result)}건 (데이터는 화면에 별도 표시됩니다)"
+    ]
     for r in result[:50]:
-        lines.append(f"- LOTID={r.get('lotid')}, LOTCD={r.get('lotcd')}, END_TM={r.get('end_tm')}, STEP={r.get('parameter')}")
+        lines.append(
+            "- "
+            f"GROUPKEY={r.get('groupkey')}, LOTID={r.get('lotid')}, WF_ID={r.get('wf_id')}, "
+            f"LOTCD={r.get('lotcd')}, CATEGORY={r.get('category')}, "
+            f"PARAMETER={r.get('parameter')}, END_TM={r.get('end_tm')}"
+        )
     return "\n".join(lines)
 
 
@@ -181,10 +380,10 @@ def wads_get_html_report(
     여러 번 호출하면 모든 리포트가 누적되어 표시됩니다.
 
     Args:
-        lotcd: 로트코드 필터 (예: "5NA", "4SA"). 부분 일치 검색. 미입력시 전체 조회.
+        lotcd: 로트코드 필터 (예: "4SA", "4SS"). 부분 일치 검색. 미입력시 전체 조회.
         end_tm: 종료시간 필터 (예: "2026-01-01", "18:07"). 부분 일치 검색. 미입력시 전체 조회.
         start_tm: 시작 날짜 필터 (예: "2026-03-19"). end_tm과 함께 사용하면 날짜 범위 조회. 미입력시 end_tm 단일 필터.
-        parameter: 스텝 설명 필터 (예: "step01", "step02"). 부분 일치 검색. 미입력시 전체 조회.
+        parameter: fail_type 필터 (예: "EASY", "EASY(W)", "TWT"). 부분 일치 검색. 미입력시 전체 조회.
 
     Returns:
         조회 결과 요약 메시지 (실제 HTML은 별도 저장됨)
@@ -195,7 +394,13 @@ def wads_get_html_report(
     end_tm = end_tm or defaults.get("end_tm")
     start_tm = start_tm or defaults.get("start_tm")
     parameter = parameter or defaults.get("parameter")
-    logger.info("[wads_get_html_report] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s", lotcd, end_tm, start_tm, parameter)
+    logger.info(
+        "[wads_get_html_report] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s",
+        lotcd,
+        end_tm,
+        start_tm,
+        parameter,
+    )
 
     try:
         filtered_df = _query_wads_data(
@@ -203,7 +408,7 @@ def wads_get_html_report(
             end_tm=end_tm,
             start_tm=start_tm,
             parameter=parameter,
-            columns="LOTCD, END_TM, CTN_DESC AS PARAMETER, HTML",
+            columns=(f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, r.HTML"),
         )
     except Exception as e:
         logger.error("[wads_get_html_report] Oracle 오류: %s", e, exc_info=True)
@@ -211,24 +416,68 @@ def wads_get_html_report(
 
     if filtered_df.empty:
         logger.info("[wads_get_html_report] 결과 없음")
+        emit_runtime_detail(
+            "wads.report_data",
+            {
+                "row_count": 0,
+                "filters": {
+                    "lotcd": lotcd,
+                    "start_tm": start_tm,
+                    "end_tm": end_tm,
+                    "parameter": parameter,
+                },
+                "columns": list(filtered_df.columns),
+                "sample": [],
+            },
+            task_id=_tool_task_id(),
+        )
         return "조건에 맞는 WADS 데이터가 없습니다."
 
     if "reports" not in storage:
         storage["reports"] = []
 
-    for _, row in filtered_df.iterrows():
+    wafer_groups = _wafer_groups_for_reports(
+        lotcd=lotcd,
+        end_tm=end_tm,
+        start_tm=start_tm,
+        parameter=parameter,
+    )
+    report_start_index = len(storage["reports"]) + 1
+    for offset, (_, row) in enumerate(filtered_df.iterrows()):
+        group_info = wafer_groups.get(_report_key(row), {})
         storage["reports"].append(
             {
+                "report_index": report_start_index + offset,
                 "lotcd": row["lotcd"],
+                "category": row["category"],
                 "end_tm": row["end_tm"],
                 "parameter": row["parameter"],
+                "map_oper": _category_to_map_oper(row["category"]),
+                "groupkeys": group_info.get("groupkeys", []),
+                "lot_ids": group_info.get("lot_ids", []),
+                "wf_ids": group_info.get("wf_ids", []),
                 "html": row["html"],
             }
         )
 
     count = len(filtered_df)
+    emit_runtime_detail(
+        "wads.report_data",
+        {
+            "row_count": count,
+            "filters": {
+                "lotcd": lotcd,
+                "start_tm": start_tm,
+                "end_tm": end_tm,
+                "parameter": parameter,
+            },
+            "columns": list(filtered_df.columns),
+            "sample": _sample_rows(filtered_df),
+        },
+        task_id=_tool_task_id(),
+    )
     summary = ", ".join(
-        f"lotcd={r['lotcd']} parameter={r['parameter']}"
+        f"lotcd={r['lotcd']} category={r.get('category', '')} parameter={r['parameter']}"
         for r in storage["reports"][-count:]
     )
     return f"WADS HTML 리포트 조회 완료: {count}건 — {summary} (리포트는 화면에 별도 표시됩니다)"
@@ -275,10 +524,13 @@ def _validate_sql(sql: str) -> Tuple[bool, str]:
     # 계층3: 테이블 허용목록
     table_refs = re.findall(r"\bFROM\s+(\w+)", cleaned, re.IGNORECASE)
     table_refs += re.findall(r"\bJOIN\s+(\w+)", cleaned, re.IGNORECASE)
-    allowed = _ORACLE_TABLE.upper()
+    allowed = {_ORACLE_REPORT_TABLE.upper(), _ORACLE_WF_TABLE.upper()}
     for tbl in table_refs:
-        if tbl.upper() != allowed:
-            return False, f"허용되지 않은 테이블: {tbl} (허용: {_ORACLE_TABLE})"
+        if tbl.upper() not in allowed:
+            return (
+                False,
+                f"허용되지 않은 테이블: {tbl} (허용: {', '.join(sorted(allowed))})",
+            )
 
     return True, ""
 
@@ -291,21 +543,149 @@ def _ensure_row_limit(sql: str, limit: int = 500) -> str:
     return f"{sql.rstrip().rstrip(';')} FETCH FIRST {limit} ROWS ONLY"
 
 
+_COUNT_COLUMN_NAMES = {
+    "count",
+    "cnt",
+    "detection_count",
+    "detected_count",
+    "report_count",
+    "wafer_count",
+}
+_DESC_SORT_HINTS = (
+    "많이",
+    "많은",
+    "높은",
+    "상위",
+    "내림차순",
+    "큰 순",
+    "많은 순",
+    "desc",
+    "descending",
+    "top",
+    "most",
+    "highest",
+    "largest",
+)
+_ASC_SORT_HINTS = (
+    "적게",
+    "적은",
+    "낮은",
+    "하위",
+    "오름차순",
+    "작은 순",
+    "적은 순",
+    "asc",
+    "ascending",
+    "least",
+    "lowest",
+    "smallest",
+)
+
+
+def _numeric_sort_value(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, Decimal):
+        return float(value)
+    try:
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _count_column_name(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    names: list[str] = []
+    for row in rows:
+        if isinstance(row, dict):
+            names.extend(str(key) for key in row.keys())
+    for name in names:
+        normalized = name.lower()
+        if normalized in _COUNT_COLUMN_NAMES or normalized.endswith("_count"):
+            if any(
+                _numeric_sort_value(row.get(name)) is not None
+                for row in rows
+                if isinstance(row, dict)
+            ):
+                return name
+    return ""
+
+
+def _sort_direction_from_request(query_description: str, sql: str) -> str:
+    text = f"{query_description or ''}\n{sql or ''}".lower()
+    if any(hint in text for hint in _ASC_SORT_HINTS):
+        return "asc"
+    if any(hint in text for hint in _DESC_SORT_HINTS):
+        return "desc"
+    if re.search(r"\border\s+by\b.+\basc\b", text, flags=re.IGNORECASE | re.DOTALL):
+        return "asc"
+    if re.search(r"\border\s+by\b.+\bdesc\b", text, flags=re.IGNORECASE | re.DOTALL):
+        return "desc"
+    return "desc"
+
+
+def _sort_sql_result_rows(
+    rows: list[dict[str, Any]],
+    *,
+    query_description: str,
+    sql: str,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Sort count/ranking SQL results deterministically for UI and references."""
+
+    count_col = _count_column_name(rows)
+    if not count_col:
+        return rows, {}
+    direction = _sort_direction_from_request(query_description, sql)
+
+    def sort_key(row: dict[str, Any]) -> tuple[int, float, str]:
+        value = _numeric_sort_value(row.get(count_col))
+        if value is None:
+            return (1, 0.0, "")
+        parameter = str(
+            row.get("parameter") or row.get("param") or row.get("fail_type") or ""
+        )
+        rank_value = value if direction == "asc" else -value
+        return (0, rank_value, parameter)
+
+    sorted_rows = sorted(rows, key=sort_key)
+    return sorted_rows, {"key": count_col, "direction": direction}
+
+
 # ── SQL 생성 프롬프트 (D-4: 도구 내부 캡슐화) ────────────────
-_SQL_GEN_PROMPT = """You are an Oracle SQL generator for the {table_name} table.
+_SQL_GEN_PROMPT = """You are an Oracle SQL generator for WADS report tables.
 
 Schema:
-  LOTID     VARCHAR2  -- individual lot ID (e.g., "4SS7TB2", "4SSMBL9")
-  LOTCD     VARCHAR2  -- product code (e.g., "4SS", "5NA")
-  END_TM    VARCHAR2  -- end time "YYYY-MM-DD HH:MM:SS"
-  CTN_DESC  VARCHAR2  -- step description (e.g., "step01", "step02")
-  HTML      CLOB      -- report HTML (do NOT select unless explicitly requested)
+  {report_table} r
+    LOTCD     VARCHAR2   -- product code (e.g., "4SA", "4SS")
+    CATEGORY  VARCHAR2   -- "PT1H_TEST" or "PT1C_TEST"
+    PARAMETER VARCHAR2   -- fail_type (e.g., "EASY(W)", "TWT(T)", "FMAX(X)")
+    END_TM    TIMESTAMP  -- report end time
+    HTML      CLOB       -- report HTML (do NOT select unless explicitly requested)
+
+  {wf_table} w
+    OPER_PARA VARCHAR2   -- r.CATEGORY || '_' || r.PARAMETER
+    GROUPKEY  VARCHAR2   -- lot.wf (e.g., "4SS2DPD.03")
+    END_TM    TIMESTAMP  -- same value as r.END_TM
+    LOT_CD    VARCHAR2   -- same value as r.LOTCD
+
+Relationship:
+  w.LOT_CD = r.LOTCD
+  w.OPER_PARA = r.CATEGORY || '_' || r.PARAMETER
+  w.END_TM = r.END_TM
 
 Rules:
 - SELECT statements ONLY
 - Do NOT include HTML column unless explicitly requested
-- Use UPPER() for case-insensitive LOTCD, CTN_DESC comparisons
-- Date filtering: TRUNC(TO_DATE(SUBSTR(END_TM,1,10),'YYYY-MM-DD'))
+- Use aliases r and w when joining
+- Use UPPER() for case-insensitive LOTCD, CATEGORY, PARAMETER comparisons
+- Date filtering: TRUNC(CAST(r.END_TM AS DATE)) = TO_DATE('2026-03-19', 'YYYY-MM-DD') or BETWEEN two TO_DATE literals
+- Use TO_CHAR(r.END_TM, 'YYYY-MM-DD HH24:MI:SS') when selecting END_TM for display
+- For COUNT/ranking requests, include ORDER BY using the count alias and the requested direction.
+  If the request asks for "많이", "상위", "top", "most", or similar, ORDER BY count DESC.
+  If the request asks for "적게", "하위", "least", or similar, ORDER BY count ASC.
 - Always add FETCH FIRST 500 ROWS ONLY
 - Output ONLY the SQL statement, no explanation
 
@@ -321,9 +701,9 @@ def wads_query_sql(query_description: str) -> str:
 
     Args:
         query_description: 조회 내용을 자연어로 설명
-            (예: "4SS 로트의 3월 step01, step02 건수를 step별 집계")
-            (예: "step03 제외한 전체 스텝 목록")
-            (예: "로트별 HIGH severity 건수 비교")
+            (예: "4SS의 3월 EASY(W), TWT(T) 건수를 parameter별 집계")
+            (예: "PT1H_TEST 리포트의 wafer groupkey 목록")
+            (예: "4SA의 CATEGORY별 리포트 건수 비교")
 
     Returns:
         조회 결과 요약 (건수 + 컬럼 정보). 실제 데이터는 화면에 별도 표시됩니다.
@@ -334,7 +714,8 @@ def wads_query_sql(query_description: str) -> str:
     try:
         llm = get_llm(model=_SQL_GEN_MODEL)
         prompt = _SQL_GEN_PROMPT.format(
-            table_name=_ORACLE_TABLE,
+            report_table=_ORACLE_REPORT_TABLE,
+            wf_table=_ORACLE_WF_TABLE,
             query_description=query_description,
         )
         response = llm.invoke(prompt)
@@ -352,16 +733,19 @@ def wads_query_sql(query_description: str) -> str:
     # 2. SQL 검증
     ok, reason = _validate_sql(raw_sql)
     if not ok:
-        logger.warning("[wads_query_sql] SQL 검증 실패: %s — SQL: %s", reason, raw_sql)
+        logger.warning(
+            "[wads_query_sql] SQL 검증 실패: %s (sql_len=%d)", reason, len(raw_sql)
+        )
         return f"SQL 검증 실패: {reason}. wads_query_data 도구를 대신 사용하세요."
 
     # 행 제한 보장
     sql = _ensure_row_limit(raw_sql)
-    logger.info("[wads_query_sql] 실행 SQL: %s", sql)
+    logger.debug("[wads_query_sql] SQL prepared len=%d", len(sql))
 
     # 3. Oracle 실행
     conn = _get_oracle_connection()
     try:
+
         def output_type_handler(cursor, metadata):
             if metadata.type_code is oracledb.DB_TYPE_CLOB:
                 return cursor.var(oracledb.DB_TYPE_LONG, arraysize=cursor.arraysize)
@@ -380,7 +764,7 @@ def wads_query_sql(query_description: str) -> str:
         error_obj = e.args[0] if e.args else e
         error_code = getattr(error_obj, "code", 0)
         if error_code in (904, 942):
-            return f"컬럼/테이블 오류: {e}. 사용 가능 컬럼: LOTCD, END_TM, CTN_DESC, HTML"
+            return f"컬럼/테이블 오류: {e}. 사용 가능 컬럼: LOTCD, CATEGORY, PARAMETER, END_TM, HTML, OPER_PARA, GROUPKEY, LOT_CD"
         return f"SQL 실행 오류: {e}. query_description을 수정하여 재시도하세요."
     except Exception as e:
         logger.error("[wads_query_sql] 예기치 않은 오류: %s", e)
@@ -393,20 +777,33 @@ def wads_query_sql(query_description: str) -> str:
         storage["sql_result"] = []
         return "조건에 맞는 데이터가 없습니다."
 
-    result = [dict(zip(col_names, row)) for row in rows]
+    result = [
+        {name: _json_safe_value(value) for name, value in zip(col_names, row)}
+        for row in rows
+    ]
+    result, sort_info = _sort_sql_result_rows(
+        result,
+        query_description=query_description,
+        sql=sql,
+    )
 
     # HTML 컬럼 포함 여부에 따라 reports 또는 sql_result에 저장
     if "html" in col_names:
         for r in result:
-            storage.setdefault("reports", []).append({
-                "lotcd": r.get("lotcd", ""),
-                "end_tm": r.get("end_tm", ""),
-                "parameter": r.get("ctn_desc", ""),
-                "html": r.get("html", ""),
-            })
+            storage.setdefault("reports", []).append(
+                {
+                    "lotcd": r.get("lotcd", ""),
+                    "category": r.get("category", ""),
+                    "end_tm": r.get("end_tm", ""),
+                    "parameter": r.get("parameter", ""),
+                    "html": r.get("html", ""),
+                }
+            )
         return f"WADS SQL 리포트 조회 완료: 총 {len(result)}건 (리포트는 화면에 별도 표시됩니다)"
     else:
         storage["sql_result"] = result
+        if sort_info:
+            storage["sql_result_sort"] = sort_info
         col_info = ", ".join(col_names)
         return f"WADS SQL 쿼리 실행 완료: 총 {len(result)}건 조회됨. 컬럼: {col_info} (데이터는 화면에 별도 표시됩니다)"
 

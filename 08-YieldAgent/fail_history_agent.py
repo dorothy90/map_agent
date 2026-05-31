@@ -21,6 +21,7 @@ from langfuse import observe
 from common import timed, get_llm, extract_suggestion, is_transient_error
 from lf_utils import lf_callbacks as _lf_callbacks
 from prompts import FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE
+from result_contracts import attach_result_envelope, derive_summary_from_rows
 from fail_history_tools import (
     do_search,
     _wiki_payload_var,
@@ -32,6 +33,24 @@ load_dotenv(override=True)
 logger = logging.getLogger("yield_agent.fail_history_agent")
 
 _fh_model = get_llm(model=os.getenv("RETRIEVE_CHAIN_MODEL"))
+
+_PRODUCT_CODE_RE = re.compile(r"^[0-9][A-Za-z0-9]{2}$")
+_LOT_ID_RE = re.compile(r"^[A-Za-z0-9]{7}$")
+
+
+def _product_filter_from_lotcd(value: str) -> str:
+    """Return a product metadata filter only when the value is a 3-char lot_cd."""
+
+    text = (value or "").strip().upper()
+    if not text:
+        return ""
+    if _PRODUCT_CODE_RE.fullmatch(text):
+        return text
+    if _LOT_ID_RE.fullmatch(text):
+        logger.info("[FH Agent] LOT ID-like lotcd ignored for product metadata filter: %s", text)
+        return ""
+    logger.info("[FH Agent] non-product lotcd ignored for product metadata filter: %s", text)
+    return ""
 
 
 
@@ -118,20 +137,21 @@ def _synthesize_answer(
 def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     """함수형 노드: search → (wiki-first 즉시 / 아니면 LLM 1회 합성) → 인용 문서 표시."""
     lotcd = state.get("lotcd", "")
+    product_filter = _product_filter_from_lotcd(lotcd)
     dh_query = state.get("dh_query", "")
     dh_fail_type  = state.get("fail_type", "")
     dh_cause_oper = state.get("cause_oper", "")
 
     logger.info(
-        "[FH Agent] lotcd=%s, dh_query=%s, dh_fail_type=%s, dh_cause_oper=%s",
-        lotcd, dh_query, dh_fail_type, dh_cause_oper,
+        "[FH Agent] lotcd=%s, product_filter=%s, dh_query=%s, dh_fail_type=%s, dh_cause_oper=%s",
+        lotcd, product_filter, dh_query, dh_fail_type, dh_cause_oper,
     )
 
     # 요청별 격리 ContextVar 초기화
     wiki_storage: Dict[str, Any] = {"hit_ids": [], "last_status": "skipped", "queries": []}
     _wiki_payload_var.set(wiki_storage)
     _supervisor_parsed_var.set({
-        "product": lotcd,
+        "product": product_filter,
         "fail_type": dh_fail_type,
         "cause_oper": dh_cause_oper,
         "query_hint": dh_query,
@@ -150,7 +170,7 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     try:
         raw = do_search(
             query=query,
-            product=lotcd,
+            product=product_filter,
             fail_type=dh_fail_type,
             cause_oper=dh_cause_oper,
             top_k=5,
@@ -163,6 +183,22 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         error_message = AIMessage(
             content="불량이력 검색 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
             name="fail_history_agent",
+        )
+        attach_result_envelope(
+            error_message,
+            logger=logger,
+            source_agent="fail_history_agent",
+            kind="summary",
+            status="error",
+            title="fail_history",
+            summary=error_message.content,
+            entities={
+                "products": [product_filter] if product_filter else [],
+                "parameters": [dh_fail_type] if dh_fail_type else [],
+                "fail_types": [dh_fail_type] if dh_fail_type else [],
+                "cause_opers": [dh_cause_oper] if dh_cause_oper else [],
+            },
+            provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
         )
         return {
             "messages": [error_message],
@@ -184,7 +220,7 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         logger.info("[FH Agent] 결과 0건 — LLM 호출 0회")
     else:
         try:
-            answer = _synthesize_answer(query, raw, lotcd, dh_fail_type, dh_cause_oper, config)
+            answer = _synthesize_answer(query, raw, product_filter, dh_fail_type, dh_cause_oper, config)
         except Exception as e:
             if is_transient_error(e):
                 logger.warning("[FH Agent] 합성 transient 오류, retry 위임: %s", e)
@@ -209,6 +245,33 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     else:
         message_content = f"### 💡 [답변]\n\n{answer}"
     result_message = AIMessage(content=message_content, name="fail_history_agent")
+    doc_ids = [r.get("doc_id") for r in results if isinstance(r, dict) and r.get("doc_id")]
+    grounded_summary = derive_summary_from_rows(
+        source_agent="fail_history_agent",
+        rows=results,
+        artifacts=artifacts,
+        fallback=message_content,
+        title="fail_history",
+    )
+    attach_result_envelope(
+        result_message,
+        logger=logger,
+        source_agent="fail_history_agent",
+        kind="document" if results else "summary",
+        status="success" if results else "empty",
+        title="fail_history",
+        summary=grounded_summary,
+        rows=results,
+        entities={
+            "products": [product_filter] if product_filter else [],
+            "parameters": [dh_fail_type] if dh_fail_type else [],
+            "fail_types": [dh_fail_type] if dh_fail_type else [],
+            "cause_opers": [dh_cause_oper] if dh_cause_oper else [],
+            "doc_ids": doc_ids,
+        },
+        provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
+        metadata={"row_count": len(results), "cited_doc_count": len(cited_ids), "wiki_hit_count": len(wiki_storage.get("hit_ids") or [])},
+    )
 
     wiki_hit_ids = list(dict.fromkeys(wiki_storage.get("hit_ids") or []))
     wiki_update_status = wiki_storage.get("last_status", "skipped")

@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"kill $(lsof -ti :8001) 2>/dev/null; sleep 1\\ncd /Users/daehwankim/yield-agent/map_agent/08-YieldAgent\\nnohup /opt/anaconda3/bin/python3.13 /opt/anaconda3/bin/uvicorn agent_server:app --por...",
-  "error": "Exit code 7",
-  "timestamp": "2026-05-25T15:07:24.217Z",
+  "tool_input_preview": "{\"command\":\"cd /Users/daehwankim/yield-agent/map_agent && git merge origin/main 2>&1\",\"description\":\"Merge remote main into local\"}",
+  "error": "Exit code 1\nAuto-merging 08-YieldAgent/prompts.py\nCONFLICT (content): Merge conflict in 08-YieldAgent/prompts.py\nAutomatic merge failed; fix conflicts and then commit the result.",
+  "timestamp": "2026-05-26T14:40:05.453Z",
   "retry_count": 1
 }

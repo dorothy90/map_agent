@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import operator
 import logging
+import re
 from datetime import date
 from typing import Annotated, Any, Dict, Literal, TypedDict
 
@@ -33,7 +34,36 @@ from common import stream_event, get_llm, extract_json_from_llm, is_transient_er
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import StatusEvent
 from prompts import PLANNER_SYSTEM_PROMPT, REPLANNER_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT_TEMPLATE
+from result_contracts import (
+    ResultContractError,
+    build_recent_result_index_entry,
+    prune_recent_results,
+)
+from reference_resolver import resolve_references
 from rewrite_tools import REWRITE_TOOLS
+from task_normalizer_validator import (
+    apply_report_refs_to_map_tasks,
+    normalize_task_fields,
+    validate_tasks,
+)
+from hitl_gate import (
+    CONFIRMATION_ISSUE_TYPES,
+    hitl_abort_message,
+    hitl_interrupt_payload,
+    hitl_response_record,
+    hitl_selected_result_id,
+    select_hitl_issues,
+    should_abort_after_response,
+)
+from local_trace import (
+    emit_runtime_detail,
+    emit_trace_event,
+    preview_text,
+    summarize_params,
+    summarize_result_envelope,
+    summarize_tasks,
+    task_flow,
+)
 
 load_dotenv(override=True)
 
@@ -64,10 +94,98 @@ class PlanResponse(BaseModel):
     tasks: list[TaskItem] = Field(description="실행할 작업 목록")
 
 
+_EMPTY_PLAN_RESPONSE_SYSTEM = """
+너는 반도체 수율 분석 시스템의 대화형 assistant다.
+planner가 실행할 agent task를 만들지 못한 상황에서 사용자에게 자연스럽게 답한다.
+
+규칙:
+- 사용자가 인사하면 짧게 인사하고, 필요하면 어떤 분석을 도울 수 있는지 자연스럽게 안내한다.
+- 사용자가 기능/사용법을 물으면 수율 조회, WADS 열화 리포트, 웨이퍼 맵, LOT 이력, 불량 이력 검색을 예시와 함께 안내한다.
+- 일반 질문이면 억지로 분석 task를 만들지 말고, 이 시스템에서 도울 수 있는 방향을 부드럽게 제안한다.
+- "죄송합니다. ... 쿼리만 지원합니다"처럼 딱딱한 거절문을 그대로 쓰지 않는다.
+- SQL, 내부 schema, planner, supervisor, task 같은 내부 구현 용어는 말하지 않는다.
+- 한국어로 1~4문장만 답한다.
+""".strip()
+
+
+def _llm_empty_plan_response(user_text: str, *, planner_text: str = "") -> str:
+    """Ask the LLM for a natural answer when no executable task exists."""
+
+    try:
+        response = _model.invoke(
+            [
+                {"role": "system", "content": _EMPTY_PLAN_RESPONSE_SYSTEM},
+                {
+                    "role": "user",
+                    "content": (
+                        f"사용자 입력:\n{str(user_text or '').strip()}\n\n"
+                        f"planner 원문 응답 참고:\n{str(planner_text or '').strip()[:800]}"
+                    ),
+                },
+            ],
+            config={"callbacks": _lf_callbacks()},
+        )
+        content = (getattr(response, "content", "") or "").strip()
+        if content:
+            emit_runtime_detail(
+                "planner.empty_response",
+                {"user_text": user_text, "planner_text": planner_text, "response": content},
+            )
+            return content
+    except Exception as exc:
+        logger.warning("[Planner] empty-plan natural response generation failed: %s", exc)
+
+    return "지금 요청은 바로 실행할 분석 작업으로 이어지지는 않았습니다. 확인할 제품코드, LOT ID, WADS, 맵, 이력 같은 대상을 알려주시면 이어서 도와드릴게요."
+
+
 class PlanReviewResult(BaseModel):
     """plan_review LLM의 출력 스키마"""
     action: Literal["approve", "cancel", "modify"]
     tasks: list[TaskItem] = Field(default=[], description="최종 task 목록 (approve 시 현재 계획 그대로, modify 시 수정된 전체 목록)")
+
+
+_CONFIRMATION_REVIEW_SYSTEM = """
+현재 실행 확인 질문, 현재 분석 계획, 사용자 응답을 보고 최종 계획을 JSON으로 반환해라.
+
+action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
+- "approve" : 사용자가 현재 계획 그대로 계속 진행하겠다는 의도
+- "cancel"  : 사용자가 실행 중단 또는 거절을 의도
+- "modify"  : 사용자가 범위, 파라미터, 작업 수, 조건 변경을 요청함
+
+출력 형식:
+{"action": "approve"|"cancel"|"modify", "tasks": [...]}
+
+규칙:
+- tasks는 항상 전체 task 목록이다. 수정하지 않은 task도 포함한다.
+- task_id, agent, params, goal 필드를 유지한다.
+- approve면 현재 계획 그대로 tasks에 넣는다.
+- cancel이면 tasks는 []로 둔다.
+- modify면 사용자 응답을 반영한 수정된 전체 계획을 tasks에 넣는다.
+""".strip()
+
+
+def _review_hitl_confirmation(
+    issue: dict[str, Any],
+    response: Any,
+    task_plan: list[dict[str, Any]],
+) -> PlanReviewResult:
+    question = hitl_interrupt_payload(issue).get("message", "")
+    raw = _model.invoke([
+        {"role": "system", "content": _CONFIRMATION_REVIEW_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                f"확인 질문:\n{question}\n\n"
+                f"현재 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n"
+                f"이슈:\n{json.dumps(issue, ensure_ascii=False)}\n\n"
+                f"사용자 응답:\n{str(response or '').strip()}"
+            ),
+        },
+    ]).content.strip()
+    result = extract_json_from_llm(raw, PlanReviewResult)
+    if result.action == "approve" and not result.tasks:
+        result.tasks = [TaskItem.model_validate(t) for t in task_plan]
+    return result
 
 
 
@@ -114,6 +232,45 @@ def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMes
     return result
 
 
+def _resolved_refs_prompt_context(resolved_refs: dict[str, Any]) -> str:
+    """Compact authoritative context for planner turns with deterministic refs."""
+
+    if not resolved_refs:
+        return ""
+    lines = [
+        "Resolved references are authoritative. Do not infer or replace these values from assistant prose or stale state.",
+    ]
+    if resolved_refs.get("result_id"):
+        lines.append(f"result_id: {resolved_refs.get('result_id')}")
+    if resolved_refs.get("parameters"):
+        lines.append(f"parameters: {', '.join(str(v) for v in resolved_refs.get('parameters') or [])}")
+    if resolved_refs.get("lot_ids"):
+        lines.append(f"lot_ids: {', '.join(str(v) for v in resolved_refs.get('lot_ids') or [])}")
+    report_refs = resolved_refs.get("reports") or []
+    if report_refs:
+        for report in report_refs:
+            groupkeys = report.get("groupkeys") or []
+            lines.append(
+                "report_ref: "
+                f"ordinal={report.get('ordinal')} "
+                f"map_oper={report.get('map_oper', '')} "
+                f"groupkeys={','.join(str(v) for v in groupkeys[:50])}"
+            )
+    for key in ("parameter", "lot"):
+        ref = resolved_refs.get(key)
+        if isinstance(ref, dict):
+            row = ref.get("row")
+            if isinstance(row, dict) and row:
+                compact_row = {
+                    str(k): v
+                    for k, v in row.items()
+                    if str(k).lower() in {"parameter", "param", "fail_type", "lotcd", "lot_cd", "lot_id", "lotid", "end_tm", "detection_count", "count", "cnt"}
+                }
+                if compact_row:
+                    lines.append(f"{key}_row: {json.dumps(compact_row, ensure_ascii=False)}")
+    return "\n".join(lines)
+
+
 def _normalize_map_oper(raw: str) -> str:
     """interrupt 응답을 정규화: '1h'→'PT1H', 'pt1c'→'PT1C' 등"""
     v = raw.strip().upper()
@@ -135,9 +292,12 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 
     # 체크포인트 메시지 pruning: 오래된 메시지 제거하여 체크포인트 크기 제한
     prune_ops = []
+    retained_messages = messages
     if len(messages) > _MAX_CHECKPOINT_MESSAGES:
         excess = messages[: len(messages) - _MAX_CHECKPOINT_MESSAGES]
         prune_ops = [RemoveMessage(id=m.id) for m in excess if getattr(m, "id", None)]
+        excess_ids = {m.id for m in excess if getattr(m, "id", None)}
+        retained_messages = [m for m in messages if getattr(m, "id", None) not in excess_ids]
 
     # 마지막 HumanMessage 추출 (MongoDBSaver 역직렬화 후 isinstance 실패 방어)
     last_human = next(
@@ -150,7 +310,40 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "[Rewrite] early return: no HumanMessage found (last 5 types: %s)",
             [type(m).__name__ for m in messages[-5:]],
         )
-        return {}
+        return _recent_results_update_from_messages(
+            retained_messages,
+            state.get("recent_results", []),
+        )
+
+    if state.get("resolved_refs"):
+        logger.info("[Rewrite] resolved_refs present; preserving raw user reference text")
+        emit_runtime_detail(
+            "rewrite.output",
+            {
+                "input": last_human.content,
+                "rewritten": last_human.content,
+                "reason": "resolved_refs_authoritative",
+            },
+        )
+        emit_trace_event(
+            "rewrite_output",
+            source="rewrite",
+            payload={
+                "input_preview": preview_text(last_human.content),
+                "rewritten_preview": preview_text(last_human.content),
+                "changed": False,
+                "reason": "resolved_refs_authoritative",
+                "input_length": len(str(last_human.content)),
+                "rewritten_length": len(str(last_human.content)),
+            },
+        )
+        update = _recent_results_update_from_messages(
+            retained_messages,
+            state.get("recent_results", []),
+        )
+        if prune_ops:
+            update["messages"] = prune_ops
+        return update
 
     # 최근 5턴 대화 히스토리 추출 (마지막 HumanMessage 제외)
     recent = _get_recent_turns(messages, max_turns=5, exclude_last=last_human)
@@ -178,12 +371,23 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         invoke_messages.append({"role": "system", "content": f"State metadata:\n{meta}"})
     invoke_messages.extend(recent)
     invoke_messages.append({"role": "user", "content": f"Rewrite this message: {last_human.content}"})
+    emit_runtime_detail(
+        "rewrite.input",
+        {
+            "last_human": last_human.content,
+            "meta": meta,
+            "recent_turns": recent,
+            "invoke_messages": invoke_messages,
+        },
+    )
 
-    # 디버깅: rewrite LLM에 전달되는 전체 메시지 로깅
-    logger.info("[Rewrite DEBUG] meta: %s", meta)
-    logger.info("[Rewrite DEBUG] recent turns (%d): %s", len(recent), recent)
-    logger.info("[Rewrite DEBUG] user input: '%s'", last_human.content)
-    logger.info("[Rewrite DEBUG] agent_suggestion state: '%s'", state.get("agent_suggestion", ""))
+    logger.debug(
+        "[Rewrite] context_summary meta=%s recent_turns=%d user_len=%d suggestion_present=%s",
+        bool(meta),
+        len(recent),
+        len(str(last_human.content)),
+        bool(state.get("agent_suggestion")),
+    )
 
     try:
         # Multi-round tool calling loop: LLM이 여러 tool을 순차/병렬로 호출할 수 있으므로
@@ -206,7 +410,11 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                     conversation.append(
                         ToolMessage(content=str(result), tool_call_id=tc["id"])
                     )
-                    logger.info("[Rewrite] tool '%s'(%s) → %s", tc["name"], tc["args"], result)
+                    emit_runtime_detail(
+                        "rewrite.tool",
+                        {"name": tc["name"], "args": tc.get("args", {}), "result": result},
+                    )
+                    logger.debug("[Rewrite] tool '%s' executed", tc["name"])
                 else:
                     conversation.append(
                         ToolMessage(content="unknown tool", tool_call_id=tc["id"])
@@ -222,16 +430,134 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     except Exception as e:
         logger.error("[Rewrite] LLM 호출 실패: %s", e, exc_info=True)
         # 원본 메시지 유지 (rewrite 실패 시 원문으로 진행)
-        return {"messages": prune_ops}
+        return {
+            **_recent_results_update_from_messages(
+                retained_messages,
+                state.get("recent_results", []),
+            ),
+            "messages": prune_ops,
+        }
 
-    logger.info("[Rewrite] '%s' → '%s'", last_human.content, rewritten)
+    logger.debug("[Rewrite] completed input_len=%d output_len=%d", len(str(last_human.content)), len(rewritten))
+    emit_runtime_detail("rewrite.output", {"input": last_human.content, "rewritten": rewritten})
+    emit_trace_event(
+        "rewrite_output",
+        source="rewrite",
+        payload={
+            "input_preview": preview_text(last_human.content),
+            "rewritten_preview": preview_text(rewritten),
+            "changed": str(last_human.content) != str(rewritten),
+            "input_length": len(str(last_human.content)),
+            "rewritten_length": len(str(rewritten)),
+        },
+    )
 
     # 동일 ID로 교체 → add_messages가 제자리 업데이트, 풀 리스트 반환 불필요
-    return {"messages": prune_ops + [HumanMessage(content=rewritten, id=last_human.id)]}
+    return {
+        **_recent_results_update_from_messages(
+            retained_messages,
+            state.get("recent_results", []),
+        ),
+        "messages": prune_ops + [HumanMessage(content=rewritten, id=last_human.id)],
+    }
+
+
+@observe(name="reference_resolver_node")
+def reference_resolver_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
+    """Deterministic ReferenceResolver v1.
+
+    Output is intentionally a scratchpad only:
+    - resolved_refs when references are deterministically resolved
+    - reference_issues when resolver confidence is insufficient
+
+    This node runs before rewrite_node so references are resolved from the raw
+    user expression, not an LLM-rewritten sentence.
+    """
+
+    messages = state.get("messages", [])
+    last_human = next(
+        (m for m in reversed(messages)
+         if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
+        None,
+    )
+    if not last_human:
+        return {"resolved_refs": {}, "reference_issues": []}
+
+    recent_results = _build_recent_results_index(messages)
+    update = {}
+    if recent_results != state.get("recent_results", []):
+        update["recent_results"] = recent_results
+
+    content = last_human.content if isinstance(last_human.content, str) else str(last_human.content)
+    result = resolve_references(content, recent_results)
+    if "issues" in result:
+        logger.info("[ReferenceResolver] issues=%s", result["issues"])
+        emit_trace_event(
+            "reference_resolved",
+            source="reference_resolver",
+            severity="warning",
+            payload={
+                "status": "issue",
+                "issue_count": len(result["issues"]),
+                "issues": result["issues"],
+                "recent_result_count": len(recent_results),
+            },
+        )
+        return {**update, "resolved_refs": {}, "reference_issues": result["issues"]}
+
+    resolved_refs = result.get("resolved_refs", {})
+    if resolved_refs:
+        logger.info("[ReferenceResolver] resolved_refs=%s", resolved_refs)
+    emit_trace_event(
+        "reference_resolved",
+        source="reference_resolver",
+        payload={
+            "status": "resolved" if resolved_refs else "no_reference",
+            "resolved_keys": sorted(resolved_refs.keys()),
+            "result_id": resolved_refs.get("result_id", ""),
+            "recent_result_count": len(recent_results),
+        },
+    )
+    return {**update, "resolved_refs": resolved_refs, "reference_issues": []}
 
 
 # ── Planner 노드 ────────────────────────────────────────────
 _MAX_TASKS = 5
+
+
+def _planner_empty_plan_retry(
+    invoke_messages: list[dict],
+    *,
+    user_text: str,
+    previous_output: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """Ask the planner LLM to re-evaluate an empty plan without code-side rules."""
+
+    retry_messages = list(invoke_messages)
+    retry_messages.append({
+        "role": "system",
+        "content": (
+            "The previous planner output produced zero tasks. Re-evaluate the latest user query using the same "
+            "agent schema and conversation context. If the request can be executed with omitted optional filters "
+            "or worker defaults, return executable tasks with empty params for the omitted values. Only return "
+            '{"tasks": []} when the request is truly out of scope or meaningless. Output JSON only.'
+        ),
+    })
+    fallback_previous = previous_output or '{"tasks": []}'
+    retry_messages.append({
+        "role": "user",
+        "content": (
+            f"Previous planner output:\n{fallback_previous}\n\n"
+            f"Latest user query:\n{user_text}"
+        ),
+    })
+    response = _model.invoke(
+        retry_messages,
+        config={"callbacks": _lf_callbacks()},
+    )
+    raw_retry = (response.content or "").strip()
+    retry_plan = extract_json_from_llm(raw_retry, PlanResponse)
+    return [t.model_dump() for t in retry_plan.tasks], raw_retry
 
 
 @observe(name="planner_node")
@@ -263,17 +589,24 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 
     # #14 fix — planner context-blind 해소: 최근 3턴 + state metadata 주입
     # rewrite_node가 follow-up 컨텍스트를 놓쳤을 때 planner가 직접 복구할 수 있도록.
+    resolved_refs = state.get("resolved_refs") or {}
     recent = _get_recent_turns(messages, max_turns=3, exclude_last=last_human)
+    if resolved_refs:
+        recent = [turn for turn in recent if turn.get("role") != "assistant"]
     meta_parts: list[str] = []
-    if state.get("lotcd"):
-        meta_parts.append(f"현재 제품: {state['lotcd']}")
-    prev_lots = state.get("lot_ids") or []
-    if prev_lots:
-        meta_parts.append(f"이전 lot: {','.join(prev_lots)}")
-    if state.get("cause_oper"):
-        meta_parts.append(f"이전 main_oper: {state['cause_oper']}")
-    if state.get("agent_suggestion"):
-        meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
+    resolved_context = _resolved_refs_prompt_context(resolved_refs)
+    if resolved_context:
+        meta_parts.append(resolved_context)
+    else:
+        if state.get("lotcd"):
+            meta_parts.append(f"현재 제품: {state['lotcd']}")
+        prev_lots = state.get("lot_ids") or []
+        if prev_lots:
+            meta_parts.append(f"이전 lot: {','.join(prev_lots)}")
+        if state.get("cause_oper"):
+            meta_parts.append(f"이전 main_oper: {state['cause_oper']}")
+        if state.get("agent_suggestion"):
+            meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
     meta = "\n".join(meta_parts)
 
     invoke_messages: list[dict] = [{"role": "system", "content": prompt}]
@@ -281,6 +614,15 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         invoke_messages.append({"role": "system", "content": f"State context:\n{meta}"})
     invoke_messages.extend(recent)
     invoke_messages.append({"role": "user", "content": last_human.content})
+    emit_runtime_detail(
+        "planner.input",
+        {
+            "last_human": last_human.content,
+            "meta": meta,
+            "recent_turns": recent,
+            "invoke_messages": invoke_messages,
+        },
+    )
 
     # 수동 JSON 파싱 (with_structured_output은 OpenRouter 호환성 문제)
     raw_text = ""
@@ -290,14 +632,29 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             config={"callbacks": _lf_callbacks()},
         )
         raw_text = response.content.strip()
+        emit_runtime_detail("planner.raw", {"raw_text": raw_text})
         plan = extract_json_from_llm(raw_text, PlanResponse)
     except Exception as e:
         logger.error("[Planner] 파싱 실패: %s — 단일 task fallback", e)
+        emit_trace_event(
+            "planner_output",
+            source="planner",
+            severity="error",
+            payload={
+                "status": "parse_failed",
+                "task_count": 0,
+                "error_type": type(e).__name__,
+                "raw_length": len(raw_text or ""),
+                "question_preview": preview_text(last_human.content),
+                "raw_preview": preview_text(raw_text),
+            },
+        )
         # plain text 거절 메시지이면 state에 보존 (supervisor fallback에서 사용)
         refusal = raw_text if (raw_text and "{" not in raw_text and len(raw_text) < 400) else None
         result: dict = {"task_plan": [], "pending_tasks": []}
         if refusal:
-            result["messages"] = [AIMessage(content=refusal, name="planner")]
+            content = _llm_empty_plan_response(str(last_human.content), planner_text=refusal)
+            result["messages"] = [AIMessage(content=content, name="planner")]
         return result
 
     # task 수 상한 제한 — 초과 시 사용자에게 명시적으로 알림 (#22 fix)
@@ -311,16 +668,65 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         plan.tasks = plan.tasks[:_MAX_TASKS]
 
     tasks_dicts = [t.model_dump() for t in plan.tasks]
+    if not tasks_dicts:
+        try:
+            retry_tasks, retry_raw = _planner_empty_plan_retry(
+                invoke_messages,
+                user_text=str(last_human.content),
+                previous_output=raw_text,
+            )
+        except Exception as exc:
+            retry_tasks = []
+            retry_raw = ""
+            logger.warning("[Planner] empty-plan LLM retry failed: %s", exc)
+        if retry_tasks:
+            tasks_dicts = [TaskItem.model_validate(task).model_dump() for task in retry_tasks]
+            emit_runtime_detail(
+                "planner.empty_retried",
+                {
+                    "question": last_human.content,
+                    "raw_text": raw_text,
+                    "retry_raw": retry_raw,
+                    "tasks": tasks_dicts,
+                },
+            )
+            emit_trace_event(
+                "planner_output",
+                source="planner",
+                severity="warning",
+                payload={
+                    "status": "empty_retried",
+                    "task_count": len(tasks_dicts),
+                    "question_preview": preview_text(last_human.content),
+                    "raw_preview": preview_text(raw_text),
+                    "retry_raw_preview": preview_text(retry_raw),
+                    "task_flow": task_flow(tasks_dicts),
+                    "tasks": summarize_tasks(tasks_dicts),
+                },
+            )
+    emit_runtime_detail("planner.tasks", {"tasks": tasks_dicts})
     logger.info("[Planner] %d task(s) 생성: %s", len(tasks_dicts),
                 [(t["task_id"], t["agent"]) for t in tasks_dicts])
 
     if not tasks_dicts:
         # LLM이 지원 범위 외로 판단 — planner message를 state에 남겨 supervisor가 relay하도록 함
+        emit_trace_event(
+            "planner_output",
+            source="planner",
+            payload={
+                "status": "empty",
+                "task_count": 0,
+                "question_preview": preview_text(last_human.content),
+                "raw_preview": preview_text(raw_text),
+                "tasks": [],
+                "task_flow": "",
+            },
+        )
         return {
             "task_plan": [],
             "pending_tasks": [],
             "messages": [AIMessage(
-                content="죄송합니다. 수율 분석, WADS 열화 리포트, 웨이퍼 맵, LOT 이력 등의 쿼리만 지원합니다.",
+                content=_llm_empty_plan_response(str(last_human.content), planner_text=raw_text),
                 name="planner",
             )],
         }
@@ -332,10 +738,289 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         message=f"📋 계획 ({len(tasks_dicts)}개): {task_summary}",
         node="planner",
     ))
+    emit_trace_event(
+        "planner_output",
+        source="planner",
+        payload={
+            "status": "ok",
+            "task_count": len(tasks_dicts),
+            "max_tasks": _MAX_TASKS,
+            "question_preview": preview_text(last_human.content),
+            "task_flow": task_flow(tasks_dicts),
+            "tasks": summarize_tasks(tasks_dicts),
+        },
+    )
 
     return {
         "task_plan": tasks_dicts,
         "pending_tasks": tasks_dicts,
+    }
+
+
+@observe(name="task_normalizer_validator_node")
+def task_normalizer_validator_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
+    """Normalize and validate planner tasks before supervisor dispatch.
+
+    This layer does not ask the user anything. Issues are surfaced in state and
+    consumed by the downstream HITL gate.
+    """
+
+    tasks = state.get("task_plan", []) or []
+    if not tasks:
+        if state.get("response"):
+            return {}
+        if state.get("reference_issues"):
+            issues = [{
+                "type": "ambiguous_reference",
+                "severity": "error",
+                "blocking": True,
+                "reason": issue.get("reason", "reference_resolution_failed"),
+                "reference": issue.get("reference", ""),
+                "candidates": issue.get("candidates", []),
+                "candidate_options": issue.get("candidate_options", []),
+            } for issue in state.get("reference_issues", [])]
+            for issue in issues:
+                emit_trace_event(
+                    "validation_issue",
+                    source="task_validator",
+                    severity=str(issue.get("severity") or "error"),
+                    payload=issue,
+                )
+            return {"task_validation_issues": issues}
+        return {}
+
+    normalized_tasks, normalization_trace = normalize_task_fields(tasks)
+    normalized_tasks, report_ref_trace = apply_report_refs_to_map_tasks(
+        normalized_tasks,
+        state.get("resolved_refs", {}),
+    )
+    normalization_trace.extend(report_ref_trace)
+    emit_runtime_detail("normalizer.input", {"tasks": tasks})
+    validation = validate_tasks(
+        normalized_tasks,
+        resolved_refs=state.get("resolved_refs", {}),
+        reference_issues=state.get("reference_issues", []),
+    )
+    emit_runtime_detail(
+        "normalizer.output",
+        {
+            "normalized_tasks": normalized_tasks,
+            "normalization_trace": normalization_trace,
+            "validation_trace": validation.get("trace", []),
+            "issues": validation.get("issues", []),
+        },
+    )
+    trace = list(state.get("task_normalization_trace", []) or [])
+    trace.extend(normalization_trace)
+    trace.extend(validation.get("trace", []))
+
+    for event in normalization_trace:
+        logger.info("[TaskNormalizer] %s", event)
+        emit_trace_event(
+            "normalization_applied",
+            source="task_normalizer",
+            task_id=str(event.get("task_id") or ""),
+            payload=event,
+        )
+    for event in validation.get("trace", []):
+        logger.info("[TaskValidator] %s", event)
+        emit_trace_event(
+            "normalization_applied",
+            source="task_validator",
+            task_id=str(event.get("task_id") or ""),
+            payload=event,
+        )
+
+    seen_issue_keys = set()
+    issues = []
+    for issue in validation.get("issues", []):
+        key = json.dumps(issue, sort_keys=True, ensure_ascii=False)
+        if key not in seen_issue_keys:
+            seen_issue_keys.add(key)
+            issues.append(issue)
+    if issues:
+        logger.info("[TaskValidator] issues=%s", issues)
+    for issue in issues:
+        emit_trace_event(
+            "validation_issue",
+            source="task_validator",
+            severity=str(issue.get("severity") or "warning"),
+            task_id=str(issue.get("task_id") or ""),
+            payload=issue,
+        )
+
+    validated_tasks = validation.get("tasks", [])
+    update: dict = {
+        "task_plan": validated_tasks,
+        "pending_tasks": validated_tasks,
+        "task_normalization_trace": trace,
+        "task_validation_issues": issues,
+    }
+
+    return update
+
+
+@observe(name="hitl_gate_node")
+def hitl_gate_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
+    """Convert validator issues into user interrupts before supervisor dispatch."""
+
+    issues = select_hitl_issues(state.get("task_validation_issues", []))
+    if not issues:
+        return {"hitl_issues": [], "hitl_responses": []}
+
+    responses: list[dict] = []
+    for issue in issues:
+        payload = hitl_interrupt_payload(issue)
+        logger.info("[HITLGate] interrupt issue=%s", issue)
+        emit_runtime_detail("hitl.issue", {"issue": issue, "payload": payload}, task_id=str(issue.get("task_id") or ""))
+        emit_trace_event(
+            "hitl_triggered",
+            source="hitl_gate",
+            severity=str(issue.get("severity") or "warning"),
+            task_id=str(issue.get("task_id") or ""),
+            payload={
+                "issue_type": issue.get("type", ""),
+                "agent": issue.get("agent", ""),
+                "param": issue.get("param", ""),
+                "reason": issue.get("reason", ""),
+                "blocking": bool(issue.get("blocking", True)),
+                "reference": issue.get("reference", ""),
+                "candidate_count": len(issue.get("candidates", []) or []),
+                "candidate_options": issue.get("candidate_options", []),
+                "message_preview": preview_text(payload.get("message", "")),
+            },
+        )
+        user_response = interrupt(payload)
+        record = hitl_response_record(issue, user_response)
+        responses.append(record)
+        emit_runtime_detail(
+            "hitl.response",
+            {"issue": issue, "user_response": user_response, "record": record},
+            task_id=str(issue.get("task_id") or ""),
+        )
+        selected_result_id = record.get("selected_result_id") or hitl_selected_result_id(
+            issue,
+            user_response,
+        )
+        if selected_result_id:
+            messages = state.get("messages", [])
+            last_human = next(
+                (m for m in reversed(messages)
+                 if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
+                None,
+            )
+            if last_human:
+                content = last_human.content if isinstance(last_human.content, str) else str(last_human.content)
+                selected_content = content
+                if selected_result_id not in selected_content:
+                    selected_content = f"{content}\n\n선택한 result_id: {selected_result_id}"
+                emit_trace_event(
+                    "hitl_reference_selected",
+                    source="hitl_gate",
+                    task_id=str(issue.get("task_id") or ""),
+                    result_id=str(selected_result_id),
+                    payload={
+                        "reference": issue.get("reference", ""),
+                        "selected_result_id": str(selected_result_id),
+                    },
+                )
+                return Command(
+                    update={
+                        "messages": [
+                            HumanMessage(
+                                content=selected_content,
+                                id=getattr(last_human, "id", None),
+                            )
+                        ],
+                        "hitl_issues": issues,
+                        "hitl_responses": responses,
+                        "resolved_refs": {},
+                        "reference_issues": [],
+                        "task_normalization_trace": [],
+                        "task_validation_issues": [],
+                        "task_plan": [],
+                        "pending_tasks": [],
+                        "response": "",
+                    },
+                    goto="reference_resolver",
+                )
+        if issue.get("type") in CONFIRMATION_ISSUE_TYPES:
+            try:
+                review = _review_hitl_confirmation(
+                    issue,
+                    user_response,
+                    state.get("task_plan", []),
+                )
+            except Exception as e:
+                logger.warning("[HITLGate] confirmation review failed (%s)", e)
+                message = "확인 응답을 해석하지 못해 작업 실행을 중단했습니다. 다시 요청해주세요."
+                return {
+                    "hitl_issues": issues,
+                    "hitl_responses": responses,
+                    "response": message,
+                }
+            review_data = review.model_dump()
+            review_action = str(review_data.get("action") or "")
+            review_tasks = [
+                task
+                for task in (review_data.get("tasks") or [])
+                if isinstance(task, dict)
+            ]
+            logger.info(
+                "[HITLGate] confirmation action=%s tasks=%d",
+                review_action,
+                len(review_tasks),
+            )
+            emit_runtime_detail(
+                "hitl.confirmation_review",
+                {
+                    "issue": issue,
+                    "user_response": user_response,
+                    "action": review_action,
+                    "tasks": review_tasks,
+                },
+                task_id=str(issue.get("task_id") or ""),
+            )
+            if review_action == "approve":
+                continue
+            if review_action == "modify":
+                modified_tasks = review_tasks
+                if not modified_tasks:
+                    return {
+                        "hitl_issues": issues,
+                        "hitl_responses": responses,
+                        "response": "수정 요청을 반영한 계획을 만들지 못했습니다. 변경할 조건을 포함해 다시 요청해주세요.",
+                    }
+                return Command(
+                    update={
+                        "hitl_issues": issues,
+                        "hitl_responses": responses,
+                        "task_plan": modified_tasks,
+                        "pending_tasks": modified_tasks,
+                        "task_validation_issues": [],
+                        "task_normalization_trace": [],
+                        "response": "",
+                    },
+                    goto="plan_review",
+                )
+            message = hitl_abort_message(issue)
+            return {
+                "hitl_issues": issues,
+                "hitl_responses": responses,
+                "response": message,
+            }
+        if should_abort_after_response(issue, user_response):
+            message = hitl_abort_message(issue)
+            logger.info("[HITLGate] abort issue=%s response=%r", issue, user_response)
+            return {
+                "hitl_issues": issues,
+                "hitl_responses": responses,
+                "response": message,
+            }
+
+    return {
+        "hitl_issues": issues,
+        "hitl_responses": responses,
     }
 
 
@@ -357,54 +1042,54 @@ action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
 """.strip()
 
 
+def _groupkey_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+
+def _should_auto_approve_report_map_plan(state: Dict[str, Any], task_plan: list[dict]) -> bool:
+    """Skip plan review for deterministic report-ordinal wafer map fanout."""
+
+    if state.get("task_validation_issues"):
+        return False
+
+    reports = (state.get("resolved_refs") or {}).get("reports") or []
+    if not reports or len(task_plan) != len(reports):
+        return False
+
+    for task, report in zip(task_plan, reports):
+        if task.get("agent") != "map_agent":
+            return False
+        params = task.get("params") or {}
+        report_groupkeys = [str(v).strip() for v in report.get("groupkeys") or [] if str(v).strip()]
+        if not report_groupkeys or _groupkey_list(params.get("groupkey")) != report_groupkeys:
+            return False
+        if str(params.get("map_type") or "").lower() != "cummap":
+            return False
+        report_oper = str(report.get("map_oper") or "").strip().upper()
+        if report_oper and str(params.get("map_oper") or "").strip().upper() != report_oper:
+            return False
+
+    return True
+
+
 def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     """2개 이상 task일 때만 사용자 승인을 기다린다. 단일 task는 즉시 통과.
 
-    missing_params → interrupt 수집 → plan_review interrupt → LLM이 approve/cancel/modify 판단.
+    Validation/HITL handles missing params. This node only handles plan review.
     """
     task_plan = state.get("task_plan", [])
     if len(task_plan) < 2:
         return {}
+    if _should_auto_approve_report_map_plan(state, task_plan):
+        emit_runtime_detail(
+            "plan_review.auto_approved",
+            {"reason": "deterministic_report_map_fanout", "tasks": task_plan},
+        )
+        return {"task_plan": task_plan, "pending_tasks": task_plan}
 
-    missing_params = _detect_missing_global_params(task_plan, state)
-
-    # Step 1: missing param이 있으면 plan_review 전에 먼저 수집
-    _MISSING_PARAM_MESSAGES = {
-        "lotcd":   "계획 검토 전에 제품코드를 입력해주세요. (예: 4SS, 5NA, 6E2)",
-        "map_oper": "계획 검토 전에 공정을 선택해주세요. PT1H / PT1C",
-    }
-    _MISSING_PARAM_AGENTS = {
-        "lotcd":   ("yield_agent", "wads_agent"),
-        "map_oper": ("map_agent",),
-    }
-    collected: dict[str, str] = {}
-    if missing_params:
-        for mp in missing_params:
-            param = mp["param"]
-            val = interrupt({
-                "type": "missing_param",
-                "param": param,
-                "message": _MISSING_PARAM_MESSAGES.get(param, f"{param}을 입력해주세요."),
-                "route": "plan_review",
-            })
-            collected[param] = str(val).strip()
-        updated = []
-        for task in task_plan:
-            t = dict(task)
-            agent = t.get("agent", "")
-            t_params = dict(t.get("params") or {})
-            for param, val in collected.items():
-                if agent in _MISSING_PARAM_AGENTS.get(param, ()):
-                    if param == "map_oper":
-                        normalized = _normalize_map_oper(val)
-                        t_params["map_oper"] = normalized or val
-                    else:
-                        t_params[param] = val
-            t["params"] = t_params
-            updated.append(t)
-        task_plan = updated
-
-    # Step 2: plan_review 루프 — approve/cancel/modify 반복 가능
+    # plan_review 루프 — approve/cancel/modify 반복 가능
     # sequential interrupt 패턴: 루프 각 반복마다 새 interrupt() 생성 → resume 시 순서대로 재생
     while True:
         user_response = interrupt({"type": "plan_review", "tasks": task_plan, "missing_params": []})
@@ -465,6 +1150,92 @@ def _parse_cause_oper(params: dict) -> str:
             or params.get("rt_main_oper_det_desc") or "")
 
 
+def _hitl_response_for(state: dict, task: dict, param: str) -> str:
+    """Return a matching HITL response for supervisor projection, if present."""
+
+    task_id = task.get("task_id", "")
+    agent = task.get("agent", "")
+    aliases = {param}
+    if param == "lot_ids":
+        aliases.add("lot_ids|groupkey")
+
+    for record in reversed(state.get("hitl_responses", []) or []):
+        if record.get("issue_type") != "missing_param":
+            continue
+        if record.get("task_id") and record.get("task_id") != task_id:
+            continue
+        if record.get("agent") and record.get("agent") != agent:
+            continue
+        if record.get("param") not in aliases:
+            continue
+        response = str(record.get("response", "")).strip()
+        if response:
+            return response
+    return ""
+
+
+_PRODUCT_LOTCD_RE = re.compile(r"^[0-9][A-Z0-9]{2}$")
+
+
+def _normalize_product_lotcd(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    return text if _PRODUCT_LOTCD_RE.fullmatch(text) else ""
+
+
+def _lotcd_prompt(agent: str, *, invalid_value: Any = "") -> str:
+    if invalid_value:
+        return (
+            f"`{invalid_value}`는 제품코드 형식이 아닙니다. "
+            "영문/숫자 3자리 제품코드를 다시 입력해주세요. 예: 4SA, 4SS"
+        )
+    if agent == "wads_agent":
+        return "제품코드를 입력해주세요. 예: 4SA, 4SS"
+    return "제품코드를 입력해주세요. 영문/숫자 3자리 형식입니다. 예: 4SS, 5NA, 6E2"
+
+
+def _invalid_lotcd_update(
+    *,
+    agent: str,
+    task_id: str,
+    value: Any,
+    message: str,
+    step_count: int,
+) -> Command:
+    emit_runtime_detail(
+        "param.invalid",
+        {
+            "agent": agent,
+            "param": "lotcd",
+            "value": value,
+            "reason": "lotcd_must_be_ascii_product_code",
+            "action": "abort",
+        },
+        task_id=task_id,
+    )
+    emit_trace_event(
+        "validation_issue",
+        source="supervisor",
+        severity="error",
+        task_id=task_id,
+        payload={
+            "type": "invalid_param",
+            "agent": agent,
+            "param": "lotcd",
+            "reason": "lotcd_must_be_ascii_product_code",
+            "value_preview": preview_text(value),
+        },
+    )
+    return Command(
+        update={
+            "response": message,
+            "step_count": step_count,
+        },
+        goto=END,
+    )
+
+
 def _is_placeholder_or_empty(val) -> bool:
     """빈 값 + LLM이 흔히 출력하는 placeholder 패턴 감지 (#L1+L2 fix).
 
@@ -504,7 +1275,7 @@ def _detect_missing_global_params(task_plan: list[dict], state: dict) -> list[di
         agent = task.get("agent", "")
         params = task.get("params") or {}
 
-        if agent in ("yield_agent", "wads_agent"):
+        if agent == "yield_agent":
             task_lotcd = params.get("lotcd", "")
             if not _is_placeholder_or_empty(task_lotcd):
                 continue
@@ -539,8 +1310,28 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
                 break
 
     lot_ids = wads_data.get("lot_ids") or []
+    groupkeys = wads_data.get("groupkeys") or []
 
-    if _is_placeholder_or_empty(params.get("lot_ids")) and lot_ids:
+    if (
+        task.get("agent") == "map_agent"
+        and _is_placeholder_or_empty(params.get("groupkey"))
+        and _is_placeholder_or_empty(params.get("map_groupkey"))
+        and _is_placeholder_or_empty(params.get("lot_ids"))
+        and groupkeys
+    ):
+        params["groupkey"] = ",".join(str(v).strip() for v in groupkeys if str(v).strip())
+        logger.info("[ResolveChained] groupkey ← wads_sql_result (%d wafers)", len(groupkeys))
+    elif (
+        _is_placeholder_or_empty(params.get("lot_ids"))
+        and lot_ids
+        and (
+            task.get("agent") != "map_agent"
+            or (
+                _is_placeholder_or_empty(params.get("groupkey"))
+                and _is_placeholder_or_empty(params.get("map_groupkey"))
+            )
+        )
+    ):
         params["lot_ids"] = lot_ids
         logger.info("[ResolveChained] lot_ids ← wads_sql_result (%d lots)", len(lot_ids))
 
@@ -553,12 +1344,110 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
     return params
 
 
+def _extract_result_payloads(message: Any) -> list[Any]:
+    """Return full ResultEnvelope payloads stored on a message, if present."""
+
+    additional_kwargs = getattr(message, "additional_kwargs", None) or {}
+    result_payload = additional_kwargs.get("result")
+    if result_payload is None:
+        return []
+    if isinstance(result_payload, list):
+        return result_payload
+    return [result_payload]
+
+
+def _build_recent_results_index(messages: list) -> list[dict]:
+    """Derive the bounded resolver index from message ResultEnvelopes.
+
+    Source of truth stays in AIMessage.additional_kwargs["result"]. This index
+    is rebuilt from messages, pruned to compact metadata/rows, and stored only
+    as supervisor scratchpad for later reference resolution.
+    """
+
+    entries: list[dict] = []
+    for message in messages:
+        for payload in _extract_result_payloads(message):
+            try:
+                entries.append(build_recent_result_index_entry(payload))
+            except ResultContractError as exc:
+                logger.warning(
+                    "[RecentResults] invalid ResultEnvelope skipped: %s",
+                    str(exc).splitlines()[0],
+                )
+            except Exception as exc:
+                logger.warning("[RecentResults] result index build failed: %s", exc)
+
+    return prune_recent_results(entries)
+
+
+def _recent_results_update_from_messages(messages: list, current_recent_results: list | None) -> dict:
+    """Return an overwrite update for the derived recent_results index."""
+
+    recent_results = _build_recent_results_index(messages)
+    if recent_results == (current_recent_results or []):
+        return {}
+    return {"recent_results": recent_results}
+
+
+def _recent_results_update(state: dict) -> dict:
+    """Return a state update only when the derived recent_results index changed."""
+
+    return _recent_results_update_from_messages(
+        state.get("messages", []),
+        state.get("recent_results", []),
+    )
+
+
+def _latest_result_envelope_for_task(messages: list, task_id: str) -> dict | None:
+    """Find the latest ResultEnvelope attached to an agent message for task_id."""
+
+    if not task_id:
+        return None
+    for message in reversed(messages or []):
+        for payload in reversed(_extract_result_payloads(message)):
+            if not isinstance(payload, dict):
+                continue
+            provenance = payload.get("provenance") or {}
+            if provenance.get("task_id") == task_id:
+                return payload
+    return None
+
+
+def _emit_task_outcome_trace(state: dict, task_id: str) -> None:
+    envelope = _latest_result_envelope_for_task(state.get("messages", []), task_id)
+    if not envelope:
+        emit_trace_event(
+            "task_completed",
+            source="replanner",
+            task_id=task_id,
+            payload={"status": "unknown", "result_envelope_found": False},
+        )
+        return
+
+    status = str(envelope.get("status") or "")
+    event_type = "task_failed" if status in {"error", "invalid"} else "task_completed"
+    emit_trace_event(
+        event_type,
+        source="replanner",
+        task_id=task_id,
+        result_id=str(envelope.get("result_id") or ""),
+        payload=summarize_result_envelope(envelope),
+        severity="error" if event_type == "task_failed" else "info",
+    )
+
+
 def _needs_replan(pending: list[dict]) -> bool:
     """Phase 3a 휴리스틱: pending task에 빈 chained-input이 있으면 LLM 호출 필요."""
     for task in pending:
         agent = task.get("agent", "")
         params = task.get("params", {}) or {}
-        if agent in ("map_agent", "lot_history_agent"):
+        if agent == "map_agent":
+            if _is_placeholder_or_empty(params.get("lot_ids")) and _is_placeholder_or_empty(params.get("groupkey")) and all(
+                _is_placeholder_or_empty(params.get(k))
+                for k in ("map_lot_id", "map_lot_ids", "map_groupkey")
+            ):
+                return True
+        elif agent == "lot_history_agent":
             if _is_placeholder_or_empty(params.get("lot_ids")) and all(
                 _is_placeholder_or_empty(params.get(k))
                 for k in ("map_lot_id", "map_lot_ids", "lh_lot_ids")
@@ -589,6 +1478,7 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     past = state.get("past_steps", [])
     pending = state.get("pending_tasks", [])
     task_plan = state.get("task_plan", [])
+    scratchpad_update = _recent_results_update(state)
 
     # 항상 마지막 task 결과 로깅 (관측성)
     if past:
@@ -601,6 +1491,7 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             message=f"✅ [{last_task_id}] 완료",
             node="replanner",
         ))
+        _emit_task_outcome_trace(state, str(last_task_id or ""))
 
     # ── canonical plan-and-execute 종료 판정 ──
     # 모든 planned task가 실행되었고 남은 pending이 없으면 plan 완료.
@@ -623,19 +1514,20 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             len(task_plan),
         )
         return {
+            **scratchpad_update,
             "response": last_agent_msg,
         }
 
     # Fast path: 큐 비었거나 past 비었거나 chained-input 의존이 없으면 LLM 호출 생략
     if not pending or not past:
-        return {}
+        return scratchpad_update
     # C1: 코드 해소 시뮬레이션 — _resolve_chained_params가 모든 pending을 해소할 수 있으면 LLM 호출 생략
     simulated_pending = [
         {**t, "params": _resolve_chained_params(t, state)} for t in pending
     ]
     if not _needs_replan(simulated_pending):
         logger.info("[Replanner] 코드 해소로 chained input 충족 → LLM 호출 생략 (pass-through)")
-        return {}
+        return scratchpad_update
 
     # 사용자 원본 query (rewrite 결과)
     messages = state.get("messages", [])
@@ -645,7 +1537,7 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         None,
     )
     if not last_human:
-        return {}
+        return scratchpad_update
 
     # past + pending을 LLM 입력으로 직렬화
     past_str = "\n".join(
@@ -679,12 +1571,12 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         plan = extract_json_from_llm(raw, PlanResponse)
     except Exception as e:
         logger.warning("[Replanner] LLM 호출 실패 — pass-through: %s", e)
-        return {}
+        return scratchpad_update
 
     new_tasks = [t.model_dump() for t in plan.tasks]
     if not new_tasks:
         logger.warning("[Replanner] LLM이 빈 tasks 반환 — pass-through")
-        return {}
+        return scratchpad_update
     import re as _re
     orig_ids = {t.get("task_id") for t in pending}
     new_ids = {t.get("task_id") for t in new_tasks}
@@ -703,7 +1595,7 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                 "[Replanner] 허용되지 않은 task 추가 (%d → %d) — 거부",
                 len(pending), len(new_tasks),
             )
-            return {}
+            return scratchpad_update
         logger.info("[Replanner] fan-out 허용: %d → %d tasks", len(pending), len(new_tasks))
     # base task_id 기반 subset 검증 (_p{n} suffix 허용)
     _base_ids = {_re.sub(r"_p\d+$", "", tid) for tid in new_ids}
@@ -712,22 +1604,22 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "[Replanner] 새 base task_id 추가 %s — 거부",
             sorted(_base_ids - orig_ids),
         )
-        return {}
+        return scratchpad_update
     if new_tasks == pending:
         logger.info("[Replanner] LLM 결과 변경 없음 (pass-through)")
-        return {}
+        return scratchpad_update
 
     # R3 fix: LLM이 채운 params에 여전히 placeholder가 있으면 거부
     # (예: "task_1의 결과를 사용하세요" 같은 narrative placeholder)
     if _needs_replan(new_tasks):
         logger.warning("[Replanner] LLM 결과에 여전히 빈 chained params 존재 — 거부, supervisor interrupt로 위임")
-        return {}
+        return scratchpad_update
 
     logger.info(
         "[Replanner] plan 갱신: %d → %d tasks (chained input filled)",
         len(pending), len(new_tasks),
     )
-    return {"pending_tasks": new_tasks}
+    return {**scratchpad_update, "pending_tasks": new_tasks}
 
 
 # ── Supervisor 노드 ──────────────────────────────────────────
@@ -749,6 +1641,17 @@ def supervisor_node(
     max_steps = min(len(state.get("task_plan", [])) + 3, 8) or 4
     if step_count > max_steps:
         logger.warning("[Supervisor] 최대 스텝(%d/%d) 초과 → 강제 종료", step_count, max_steps)
+        emit_trace_event(
+            "supervisor_dispatch",
+            source="supervisor",
+            severity="warning",
+            payload={
+                "target": "__end__",
+                "reason": "max_steps_exceeded",
+                "step_count": step_count,
+                "max_steps": max_steps,
+            },
+        )
         return Command(
             update={
                 "step_count": step_count,
@@ -756,6 +1659,19 @@ def supervisor_node(
             },
             goto=END,
         )
+
+    # HITL Gate나 plan_review가 실행 보류/취소를 결정한 경우 dispatch 전에 종료.
+    if state.get("response"):
+        emit_trace_event(
+            "supervisor_dispatch",
+            source="supervisor",
+            payload={
+                "target": "__end__",
+                "reason": "response_set",
+                "step_count": step_count,
+            },
+        )
+        return Command(update={"step_count": step_count}, goto=END)
 
     # ── pending_tasks 큐 기반 dispatch (planner가 생성한 작업 큐) ──
     pending = state.get("pending_tasks", [])
@@ -773,7 +1689,15 @@ def supervisor_node(
             "[Supervisor] queued task dispatch: %s → %s (remaining=%d)",
             current_task.get("task_id"), current_task.get("agent"), len(remaining),
         )
-
+        emit_runtime_detail(
+            "supervisor.current_task",
+            {
+                "current_task": current_task,
+                "remaining_tasks": remaining,
+                "resolved_task_params": task_params,
+            },
+            task_id=str(current_task.get("task_id") or ""),
+        )
         # task params를 state 필드로 projection — agent별 조건부로 관련 파라미터만 기록.
         # 전 agent 파라미터를 항상 덮으면 checkpoint의 다른 agent 값이 소실됨.
         agent = current_task["agent"]
@@ -786,9 +1710,17 @@ def supervisor_node(
             "agent_suggestion": "",
         }
 
-        # lotcd는 yield/wads/fail_history가 공유 — 해당 agent 실행 시에만 업데이트
-        if agent in ("yield_agent", "wads_agent", "fail_history_agent"):
+        # lotcd는 yield/wads/fail_history가 공유 — 해당 agent 실행 시에만 업데이트.
+        # WADS는 lotcd 없이 날짜/파라미터만으로도 조회 가능하므로 stale state lotcd를
+        # 묵시적으로 상속하지 않는다. follow-up 제품코드는 rewrite/planner가 params에 명시한다.
+        # fail_history_agent는 validator가 invalid product filter를 ""로 지울 수
+        # 있으므로, 명시 빈 값이면 stale state lotcd로 fallback하지 않는다.
+        if agent == "yield_agent":
             update_dict["lotcd"] = task_params.get("lotcd") or state.get("lotcd", "")
+        elif agent == "wads_agent":
+            update_dict["lotcd"] = task_params.get("lotcd", "")
+        elif agent == "fail_history_agent":
+            update_dict["lotcd"] = task_params.get("lotcd", state.get("lotcd", ""))
 
         # 통합 필드: 모든 agent에 공통 적용
         update_dict["lot_ids"]    = _parse_lot_ids(task_params)
@@ -802,7 +1734,10 @@ def supervisor_node(
                 "ref_date":      task_params.get("ref_date", state.get("ref_date", "")),
                 "unit":          task_params.get("unit", state.get("unit", "weekly")),
                 "periods":       task_params.get("periods", state.get("periods", 0)),
-                "filter_params": task_params.get("filter_params", []),
+                "lot_ids":       [],
+                "wf_ids":        [],
+                "groupkey":      "",
+                "filter_params": [],
             })
 
         elif agent == "wads_agent":
@@ -827,78 +1762,230 @@ def supervisor_node(
         # map_agent 필수 파라미터 검증
         if current_task["agent"] == "map_agent":
             if not update_dict.get("lot_ids") and not update_dict.get("groupkey"):
-                user_response = interrupt({
-                    "type": "missing_param",
-                    "param": "lot_ids",
-                    "message": "맵을 조회할 Lot ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
-                    "route": "map_agent",
-                })
+                user_response = _hitl_response_for(state, current_task, "lot_ids")
+                if not user_response:
+                    user_response = interrupt({
+                        "type": "missing_param",
+                        "param": "lot_ids",
+                        "message": "맵을 조회할 Lot ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
+                        "route": "map_agent",
+                    })
                 update_dict["lot_ids"] = _parse_lot_ids({"lot_ids": str(user_response).strip()})
 
             normalized = _normalize_map_oper(update_dict.get("map_oper", ""))
             if not normalized:
-                user_response = interrupt({
-                    "type": "missing_param",
-                    "param": "map_oper",
-                    "message": "PT1H / PT1C 중 어떤 공정의 맵을 조회할까요?",
-                    "route": "map_agent",
-                })
+                user_response = _hitl_response_for(state, current_task, "map_oper")
+                if not user_response:
+                    user_response = interrupt({
+                        "type": "missing_param",
+                        "param": "map_oper",
+                        "message": "PT1H / PT1C 중 어떤 공정의 맵을 조회할까요?",
+                        "route": "map_agent",
+                    })
                 normalized = _normalize_map_oper(str(user_response))
             update_dict["map_oper"] = normalized or "PT1H"
 
         # relation_tree_agent 필수 파라미터 검증
         if current_task["agent"] == "relation_tree_agent":
             if not update_dict.get("lotcd"):
-                user_response = interrupt({
-                    "type": "missing_param",
-                    "param": "lotcd",
-                    "message": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
-                    "route": "relation_tree_agent",
-                })
+                user_response = _hitl_response_for(state, current_task, "lotcd")
+                if not user_response:
+                    user_response = interrupt({
+                        "type": "missing_param",
+                        "param": "lotcd",
+                        "message": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
+                        "route": "relation_tree_agent",
+                    })
                 update_dict["lotcd"] = str(user_response).strip()
             if not update_dict.get("cause_oper"):
-                user_response = interrupt({
-                    "type": "missing_param",
-                    "param": "cause_oper",
-                    "message": "연관 분석할 main 공정명을 입력해주세요. (예: STEP07 또는 STEP07,STEP08)",
-                    "route": "relation_tree_agent",
-                })
+                user_response = _hitl_response_for(state, current_task, "cause_oper")
+                if not user_response:
+                    user_response = interrupt({
+                        "type": "missing_param",
+                        "param": "cause_oper",
+                        "message": "연관 분석할 main 공정명을 입력해주세요. (예: STEP07 또는 STEP07,STEP08)",
+                        "route": "relation_tree_agent",
+                    })
                 update_dict["cause_oper"] = str(user_response).strip()
 
-        # yield_agent / wads_agent: lotcd 필수
-        if current_task["agent"] in ("yield_agent", "wads_agent"):
+        # yield_agent: lotcd 필수. wads_agent는 lotcd 없이도 날짜/파라미터 조건으로 조회 가능.
+        if current_task["agent"] == "yield_agent":
             if not update_dict.get("lotcd"):
+                user_response = _hitl_response_for(state, current_task, "lotcd")
+                if not user_response:
+                    user_response = interrupt({
+                        "type": "missing_param",
+                        "param": "lotcd",
+                        "message": _lotcd_prompt(current_task["agent"]),
+                        "route": current_task["agent"],
+                    })
+                update_dict["lotcd"] = str(user_response).strip()
+            normalized_lotcd = _normalize_product_lotcd(update_dict.get("lotcd"))
+            if not normalized_lotcd:
+                invalid_value = update_dict.get("lotcd", "")
+                emit_runtime_detail(
+                    "param.invalid",
+                    {
+                        "agent": current_task["agent"],
+                        "param": "lotcd",
+                        "value": invalid_value,
+                        "reason": "lotcd_must_be_ascii_product_code",
+                        "action": "interrupt",
+                    },
+                    task_id=str(current_task.get("task_id") or ""),
+                )
+                emit_trace_event(
+                    "validation_issue",
+                    source="supervisor",
+                    severity="error",
+                    task_id=str(current_task.get("task_id") or ""),
+                    payload={
+                        "type": "invalid_param",
+                        "agent": current_task["agent"],
+                        "param": "lotcd",
+                        "reason": "lotcd_must_be_ascii_product_code",
+                        "value_preview": preview_text(invalid_value),
+                    },
+                )
                 user_response = interrupt({
                     "type": "missing_param",
                     "param": "lotcd",
-                    "message": "제품코드를 입력해주세요. (예: 4SS, 5NA, 6E2)",
+                    "message": _lotcd_prompt(current_task["agent"], invalid_value=invalid_value),
                     "route": current_task["agent"],
                 })
-                update_dict["lotcd"] = str(user_response).strip()
+                normalized_lotcd = _normalize_product_lotcd(user_response)
+                if not normalized_lotcd:
+                    return _invalid_lotcd_update(
+                        agent=current_task["agent"],
+                        task_id=str(current_task.get("task_id") or ""),
+                        value=user_response,
+                        message=_lotcd_prompt(current_task["agent"], invalid_value=user_response),
+                        step_count=step_count,
+                    )
+            update_dict["lotcd"] = normalized_lotcd
+
+        if current_task["agent"] == "wads_agent" and update_dict.get("lotcd"):
+            normalized_lotcd = _normalize_product_lotcd(update_dict.get("lotcd"))
+            if not normalized_lotcd:
+                invalid_value = update_dict.get("lotcd", "")
+                emit_runtime_detail(
+                    "param.invalid",
+                    {
+                        "agent": current_task["agent"],
+                        "param": "lotcd",
+                        "value": invalid_value,
+                        "reason": "lotcd_must_be_ascii_product_code",
+                        "action": "interrupt",
+                    },
+                    task_id=str(current_task.get("task_id") or ""),
+                )
+                emit_trace_event(
+                    "validation_issue",
+                    source="supervisor",
+                    severity="error",
+                    task_id=str(current_task.get("task_id") or ""),
+                    payload={
+                        "type": "invalid_param",
+                        "agent": current_task["agent"],
+                        "param": "lotcd",
+                        "reason": "lotcd_must_be_ascii_product_code",
+                        "value_preview": preview_text(invalid_value),
+                    },
+                )
+                user_response = interrupt({
+                    "type": "missing_param",
+                    "param": "lotcd",
+                    "message": _lotcd_prompt(current_task["agent"], invalid_value=invalid_value),
+                    "route": current_task["agent"],
+                })
+                normalized_lotcd = _normalize_product_lotcd(user_response)
+                if not normalized_lotcd:
+                    return _invalid_lotcd_update(
+                        agent=current_task["agent"],
+                        task_id=str(current_task.get("task_id") or ""),
+                        value=user_response,
+                        message=_lotcd_prompt(current_task["agent"], invalid_value=user_response),
+                        step_count=step_count,
+                    )
+            update_dict["lotcd"] = normalized_lotcd
 
         # lot_history_agent: lot_ids 필수
         if current_task["agent"] == "lot_history_agent":
             if not update_dict.get("lot_ids"):
-                user_response = interrupt({
-                    "type": "missing_param",
-                    "param": "lot_ids",
-                    "message": "이력을 조회할 LOT ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
-                    "route": "lot_history_agent",
-                })
+                user_response = _hitl_response_for(state, current_task, "lot_ids")
+                if not user_response:
+                    user_response = interrupt({
+                        "type": "missing_param",
+                        "param": "lot_ids",
+                        "message": "이력을 조회할 LOT ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
+                        "route": "lot_history_agent",
+                    })
                 update_dict["lot_ids"] = _parse_lot_ids({"lot_ids": str(user_response).strip()})
 
         stream_event("status", StatusEvent(
             message=f"▶ [{current_task['task_id']}] {current_task.get('goal', '')}",
             node="supervisor",
         ))
+        emit_runtime_detail(
+            "supervisor.dispatch_state",
+            {
+                "goto": current_task["agent"],
+                "update": update_dict,
+            },
+            task_id=str(current_task.get("task_id") or ""),
+        )
+        emit_trace_event(
+            "supervisor_dispatch",
+            source="supervisor",
+            task_id=str(current_task.get("task_id") or ""),
+            payload={
+                "target": current_task.get("agent", ""),
+                "task_goal_preview": preview_text(current_task.get("goal", "")),
+                "remaining_tasks": len(remaining),
+                "step_count": step_count,
+                "params": summarize_params({
+                    key: update_dict.get(key)
+                    for key in (
+                        "lotcd", "lot_ids", "wf_ids", "groupkey", "fail_type",
+                        "cause_oper", "map_type", "map_oper", "dh_query",
+                        "ref_date", "unit", "periods", "wads_start_tm", "wads_end_tm",
+                    )
+                    if key in update_dict
+                }),
+            },
+        )
+        emit_trace_event(
+            "agent_started",
+            source="supervisor",
+            task_id=str(current_task.get("task_id") or ""),
+            payload={
+                "agent": current_task.get("agent", ""),
+                "task_goal_preview": preview_text(current_task.get("goal", "")),
+                "step_count": step_count,
+                "params": summarize_params({
+                    key: update_dict.get(key)
+                    for key in (
+                        "lotcd", "lot_ids", "wf_ids", "groupkey", "fail_type",
+                        "cause_oper", "map_type", "map_oper", "dh_query",
+                        "ref_date", "unit", "periods", "wads_start_tm", "wads_end_tm",
+                    )
+                    if key in update_dict
+                }),
+            },
+        )
         return Command(update=update_dict, goto=current_task["agent"])
-
-    # plan_review cancel 등으로 이미 response가 설정된 경우 바로 종료
-    if state.get("response"):
-        return Command(update={"step_count": step_count}, goto=END)
 
     # planner가 빈 계획 반환 (JSON 파싱 실패 fallback)
     logger.warning("[Supervisor] pending_tasks 없음 — planner 실패 fallback")
+    emit_trace_event(
+        "supervisor_dispatch",
+        source="supervisor",
+        payload={
+            "target": "__end__",
+            "reason": "pending_tasks_empty",
+            "step_count": step_count,
+        },
+    )
     messages = state.get("messages", [])
     planner_refusal = next(
         (m.content for m in reversed(messages)
@@ -925,10 +2012,20 @@ class YieldQueryState(TypedDict):
 
     모든 agent들이 이 State를 통해 구조화된 데이터를 공유합니다.
     멀티스텝 루프에서 artifacts는 operator.add reducer로 누적됩니다.
+
+    State ownership:
+    - Source of truth: messages, especially AIMessage.additional_kwargs["result"]
+      when agents attach a full ResultEnvelope.
+    - UI delivery: *_artifacts fields may contain artifact payloads for the
+      current turn and are not resolver memory.
+    - Scratchpad/index: recent_results is a bounded, payload-free projection
+      rebuilt from message ResultEnvelopes. It is never canonical storage.
     """
 
     messages: Annotated[list, add_messages]
     step_count: int  # supervisor 루프 카운터
+    trace_id: str    # local observability trace id (overwrite)
+    turn_id: str     # local observability turn id (overwrite)
 
     # 조회 파라미터
     lotcd: str
@@ -953,7 +2050,7 @@ class YieldQueryState(TypedDict):
     anomaly_params: list
 
     # 파라미터 필터
-    filter_params: list  # 표시할 파라미터 필터 (빈 list = 전체)
+    filter_params: list  # deprecated: yield_agent always returns the full artifact
 
     # 통합 파라미터 (agent별 분산 → 공통)
     lot_ids:    list[str]   # 7자 lot 번호 목록
@@ -993,6 +2090,24 @@ class YieldQueryState(TypedDict):
     # 에이전트 제안 (UI 렌더링용)
     agent_suggestion: str
 
+    # Resolver scratchpad index (overwrite)
+    # Full ResultEnvelope source remains in message.additional_kwargs["result"].
+    # recent_results stores at most 3 pruned entries with at most 50 rows each.
+    # Consumers must use result_id to retrieve the canonical message payload.
+    recent_results: list[dict]
+
+    # ReferenceResolver v1 scratchpad (overwrite, deterministic only)
+    resolved_refs: dict
+    reference_issues: list[dict]
+
+    # Task normalizer/validator scratchpad (overwrite, Phase 5)
+    task_normalization_trace: list[dict]
+    task_validation_issues: list[dict]
+
+    # HITL Gate scratchpad (overwrite, Phase 6)
+    hitl_issues: list[dict]
+    hitl_responses: list[dict]
+
     # Planner 관련
     task_plan: list[dict]           # planner가 생성한 전체 계획 (overwrite)
     pending_tasks: list[dict]       # 아직 실행 안 된 TaskItem들 (overwrite)
@@ -1026,8 +2141,12 @@ _retry = RetryPolicy(max_attempts=3, initial_interval=1.0, retry_on=is_transient
 
 workflow = StateGraph(YieldQueryState)
 workflow.add_node("rewrite", rewrite_node, retry_policy=_retry)
+workflow.add_node("reference_resolver", reference_resolver_node)
 workflow.add_node("planner", planner_node, retry_policy=_retry)
+workflow.add_node("task_normalizer_validator", task_normalizer_validator_node)
+workflow.add_node("task_normalizer_validator_after_review", task_normalizer_validator_node)
 workflow.add_node("plan_review", plan_review_node)
+workflow.add_node("hitl_gate", hitl_gate_node)
 workflow.add_node("supervisor", supervisor_node, retry_policy=_retry)
 workflow.add_node("replanner", replanner_node, retry_policy=_retry)
 workflow.add_node("yield_agent", yield_agent_node, retry_policy=_retry)
@@ -1038,10 +2157,14 @@ workflow.add_node("ppt_export", ppt_export_node, retry_policy=_retry)
 workflow.add_node("lot_history_agent", lot_history_agent_node, retry_policy=_retry)
 workflow.add_node("relation_tree_agent", relation_tree_agent_node, retry_policy=_retry)
 
-workflow.add_edge(START, "rewrite")
-workflow.add_edge("rewrite", "planner")        # rewrite → planner
-workflow.add_edge("planner", "plan_review")    # planner → plan_review → supervisor
-workflow.add_edge("plan_review", "supervisor")
+workflow.add_edge(START, "reference_resolver")
+workflow.add_edge("reference_resolver", "rewrite")  # raw user reference resolution → rewrite
+workflow.add_edge("rewrite", "planner")
+workflow.add_edge("planner", "task_normalizer_validator")
+workflow.add_edge("task_normalizer_validator", "plan_review")
+workflow.add_edge("plan_review", "task_normalizer_validator_after_review")
+workflow.add_edge("task_normalizer_validator_after_review", "hitl_gate")
+workflow.add_edge("hitl_gate", "supervisor")
 # supervisor → agent: Command(goto=...)가 처리 (conditional_edges 불필요)
 # agent → replanner → supervisor: 공식 plan-and-execute 패턴 (#8 phase 2)
 workflow.add_edge("yield_agent", "replanner")

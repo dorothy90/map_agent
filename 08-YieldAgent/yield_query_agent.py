@@ -19,6 +19,7 @@ from lf_utils import lf_callbacks as _lf_callbacks
 from common import stream_event, timed, get_llm, extract_suggestion
 from models import TokenEvent
 from prompts import ANALYSIS_SYSTEM_PROMPT, ANALYSIS_USER_PROMPT
+from result_contracts import attach_result_envelope
 from yield_db import (
     _fetch_periods, _fetch_wafer_scatter, _fetch_lot_sql,
     _merge_lot_data, _parse_lot_specs, DEFAULT_PERIODS,
@@ -141,6 +142,27 @@ def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm,
 model = get_llm()
 
 
+def _yield_lot_rows(merged: dict) -> list[dict]:
+    return [
+        {"lot_id": lot_id, **values}
+        for lot_id, values in sorted((merged or {}).items())
+        if isinstance(values, dict) and not str(lot_id).startswith("_")
+    ]
+
+
+def _yield_parameters_from_lot_rows(rows: list[dict]) -> list[str]:
+    params: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in {"lot_id", "_wf_count"} and not key.startswith("_"):
+                params.append(key.removeprefix("pt1c_"))
+    return list(dict.fromkeys(params))
+
+
+def _yield_artifact_metadata(artifacts: list[dict]) -> dict[str, str | int | float | bool | None]:
+    return {"artifact_count": len(artifacts or [])}
+
+
 # ============================================================
 # Yield Agent 노드 구현
 # ============================================================
@@ -150,11 +172,15 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     """Yield Agent 노드: State에서 파라미터를 읽어 API 호출 + 테이블 생성"""
     lotcd = state.get("lotcd", "4SS")
     ref_date_str = state.get("ref_date", date.today().strftime("%Y%m%d"))
-    filter_params = state.get("filter_params") or None
+    # Yield agent now always returns the full artifact for lotcd + period.
+    # Parameter-specific filtering is no longer part of the runtime contract.
+    filter_params = None
     unit    = state.get("unit", "weekly")
     periods = int(state.get("periods", 0) or 0)
-    yield_lot_ids  = ",".join(state.get("lot_ids") or [])
-    yield_groupkey = state.get("groupkey", "")
+    # Yield runtime contract is lotcd + period only. Full-lot comparison inputs
+    # are intentionally ignored so the agent always emits the full period artifact.
+    yield_lot_ids = ""
+    yield_groupkey = ""
 
     # ── LOT 비교 모드 ────────────────────────────────────────
     if yield_lot_ids or yield_groupkey:
@@ -177,6 +203,17 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
                 content="해당 lot 데이터를 조회할 수 없습니다. lot ID와 process를 확인해주세요.",
                 name="yield_agent",
             )
+            attach_result_envelope(
+                error_message,
+                logger=logger,
+                source_agent="yield_agent",
+                kind="summary",
+                status="empty",
+                title="yield_lot_compare",
+                summary=error_message.content,
+                entities={"lot_ids": state.get("lot_ids") or []},
+                provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
+            )
             return {
                 "messages": [error_message],
                 "weeks_data": [], "table_result": "", "anomaly_params": [],
@@ -198,6 +235,24 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         }]
 
         result_message = AIMessage(content=result_msg, name="yield_agent")
+        lot_rows = _yield_lot_rows(merged)
+        attach_result_envelope(
+            result_message,
+            logger=logger,
+            source_agent="yield_agent",
+            kind="table",
+            status="success",
+            title="yield_lot_compare",
+            summary=result_msg,
+            rows=lot_rows,
+            entities={
+                "lot_ids": [row["lot_id"].split(".", 1)[0] for row in lot_rows if row.get("lot_id")],
+                "parameters": _yield_parameters_from_lot_rows(lot_rows),
+            },
+            artifacts=yield_artifacts,
+            provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
+            metadata={**_yield_artifact_metadata(yield_artifacts), "row_count": len(lot_rows)},
+        )
         return {
             "messages": [result_message],
             "weeks_data": [],
@@ -241,6 +296,17 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         error_message = AIMessage(
             content="데이터를 조회할 수 없습니다. Oracle DB 연결 또는 해당 기간 데이터를 확인해주세요.",
             name="yield_agent",
+        )
+        attach_result_envelope(
+            error_message,
+            logger=logger,
+            source_agent="yield_agent",
+            kind="summary",
+            status="empty",
+            title="yield_period",
+            summary=error_message.content,
+            entities={"products": [lotcd] if lotcd else []},
+            provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
         )
         return {
             "messages": [error_message],
@@ -307,6 +373,24 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         result_msg += "\n\n> ✅ 이상 파라미터 없음 (±10% 기준)"
 
     result_message = AIMessage(content=result_msg, name="yield_agent")
+    attach_result_envelope(
+        result_message,
+        logger=logger,
+        source_agent="yield_agent",
+        kind="table",
+        status="success",
+        title="yield_period",
+        summary=result_msg,
+        rows=weeks_data,
+        entities={
+            "products": [lotcd] if lotcd else [],
+            # yield anomaly_params, WADS parameter, and supervisor fail_type are the same domain parameter class.
+            "parameters": [p.get("param") for p in anomaly_params if p.get("param")],
+        },
+        artifacts=yield_artifacts,
+        provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
+        metadata={**_yield_artifact_metadata(yield_artifacts), "row_count": len(weeks_data), "anomaly_count": len(anomaly_params)},
+    )
 
     analysis, agent_suggestion = extract_suggestion(analysis)
 

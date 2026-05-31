@@ -102,10 +102,11 @@ class ErrorEvent(BaseModel):
 
 class InterruptEvent(BaseModel):
     type: Literal["interrupt"] = "interrupt"
-    interrupt_type: str = "missing_param"  # "missing_param" | "plan_review"
+    interrupt_type: str = "missing_param"  # "missing_param" | "plan_review" | HITL issue type
     param: str          # 누락된 파라미터명
     message: str        # 사용자에게 보여줄 한국어 메시지
     route: str = ""     # 대상 에이전트
+    options: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ── REST Response Models (session history) ───────────────

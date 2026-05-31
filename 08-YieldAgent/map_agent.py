@@ -40,6 +40,7 @@ from common import (  # noqa: E402
     lot_id_variants,
     timed,
 )
+from result_contracts import attach_result_envelope, derive_summary_from_rows  # noqa: E402
 
 ORACLE_TABLE = os.getenv("ORACLE_TABLE", "LANGGRAPH_DATA")
 
@@ -617,6 +618,8 @@ def _handle_standard_map(state: dict) -> dict:
     lot_ids  = ",".join(lot_ids_list)
     wf_ids   = ",".join(state.get("wf_ids") or [])
     groupkey = state.get("groupkey", "")
+    if isinstance(groupkey, list):
+        groupkey = ",".join(str(v).strip() for v in groupkey if str(v).strip())
     map_type = state.get("map_type", "binmap")
     oper     = state.get("map_oper", "")
 
@@ -626,9 +629,9 @@ def _handle_standard_map(state: dict) -> dict:
     )
 
     result_str = show_wafer_map(
-        lot_id=lot_id or None,
-        lot_ids=lot_ids or None,
-        wf_ids=wf_ids or None,
+        lot_id=None if groupkey else (lot_id or None),
+        lot_ids=None if groupkey else (lot_ids or None),
+        wf_ids=None if groupkey else (wf_ids or None),
         groupkey=groupkey or None,
         map_type=map_type,
         oper=oper or None,
@@ -645,7 +648,7 @@ def _handle_standard_map(state: dict) -> dict:
 
     artifacts = []
     if map_html:
-        artifacts.append({"type": "html", "mime": "text/html", "data": map_html, "title": "map"})
+        artifacts.append({"type": "html", "mime": "text/html", "data": map_html, "title": "map", "semantic": "map"})
 
     try:
         get_client().update_current_span(output={
@@ -657,7 +660,40 @@ def _handle_standard_map(state: dict) -> dict:
     except Exception:
         pass
 
-    result_message = AIMessage(content=result_str, name="map_agent")
+    map_rows = [{
+        "lot_ids": lot_ids_list,
+        "wf_ids": state.get("wf_ids") or [],
+        "groupkey": groupkey,
+        "map_type": map_type,
+        "map_oper": oper,
+        "png_count": len(png_paths),
+    }]
+    result_summary = derive_summary_from_rows(
+        source_agent="map_agent",
+        rows=map_rows,
+        artifacts=artifacts,
+        fallback=result_str,
+        title="wafer_map",
+    )
+    result_message = AIMessage(content=result_summary, name="map_agent")
+    attach_result_envelope(
+        result_message,
+        logger=logger,
+        source_agent="map_agent",
+        kind="image" if artifacts else "summary",
+        status="success" if artifacts else "empty",
+        title="wafer_map",
+        summary=result_summary,
+        rows=map_rows,
+        entities={
+            "lot_ids": lot_ids_list,
+            "wafer_ids": state.get("wf_ids") or [],
+            "processes": [oper] if oper else [],
+        },
+        artifacts=artifacts,
+        provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
+        metadata={"artifact_count": len(artifacts or []), "png_count": len(png_paths)},
+    )
     return {
         "messages": [result_message],
         "map_result": result_str,

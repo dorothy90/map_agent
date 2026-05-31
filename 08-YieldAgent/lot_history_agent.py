@@ -18,6 +18,7 @@ from langfuse import observe
 
 from common import timed, html_escape as _h, is_transient_error
 from lot_history_tools import _tool_payload_var, query_lot_history
+from result_contracts import attach_result_envelope, derive_summary_from_rows
 
 load_dotenv(override=True)
 
@@ -699,6 +700,16 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             content="LOT ID가 제공되지 않았습니다. 조회하려면 LOT ID를 알려주세요.",
             name="lot_history_agent",
         )
+        attach_result_envelope(
+            msg,
+            logger=logger,
+            source_agent="lot_history_agent",
+            kind="summary",
+            status="empty",
+            title="lot_history",
+            summary=msg.content,
+            provenance={"task_id": current_task_id, "task_goal": state.get("current_task_goal", "")},
+        )
         return {
             "messages": [msg],
             "lot_history_artifacts": [],
@@ -720,6 +731,17 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             content=f"LOT 이력 조회 중 오류가 발생했습니다: {e}",
             name="lot_history_agent",
         )
+        attach_result_envelope(
+            error_message,
+            logger=logger,
+            source_agent="lot_history_agent",
+            kind="summary",
+            status="error",
+            title="lot_history",
+            summary=error_message.content,
+            entities={"lot_ids": [v.strip() for v in lh_lot_ids.split(",") if v.strip()]},
+            provenance={"task_id": current_task_id, "task_goal": state.get("current_task_goal", "")},
+        )
         return {
             "messages": [error_message],
             "lot_history_artifacts": [],
@@ -738,13 +760,10 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             "title": "lot_history_report",
         })
 
-    # query_lot_history tool의 한국어 요약을 사용자 메시지로 사용
-    answer = tool_summary if isinstance(tool_summary, str) else str(tool_summary)
-    result_message = AIMessage(content=answer, name="lot_history_agent")
-
     # C1 패턴 확장: lot_history_sql_result structured AIMessage 발행.
     # downstream chained task가 per-lot 위험도에 접근할 수 있도록 additional_kwargs에 dict 저장.
-    out_messages: list = [result_message]
+    out_messages: list = []
+    per_lot_summary: dict[str, dict] = {}
     if isinstance(lot_history_data, dict) and "error" not in lot_history_data and lot_history_data:
         per_lot_summary = {
             lid: {
@@ -767,6 +786,34 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             },
         )
         out_messages.insert(0, sql_result_msg)
+    lot_rows = [
+        {"lot_id": lot_id, **summary}
+        for lot_id, summary in per_lot_summary.items()
+    ]
+    tool_answer = tool_summary if isinstance(tool_summary, str) else str(tool_summary)
+    answer = derive_summary_from_rows(
+        source_agent="lot_history_agent",
+        rows=lot_rows,
+        artifacts=artifacts,
+        fallback=tool_answer,
+        title="lot_history",
+    )
+    result_message = AIMessage(content=answer, name="lot_history_agent")
+    out_messages.append(result_message)
+    attach_result_envelope(
+        result_message,
+        logger=logger,
+        source_agent="lot_history_agent",
+        kind="table" if lot_rows else "summary",
+        status="success" if lot_rows else "empty",
+        title="lot_history",
+        summary=answer,
+        rows=lot_rows,
+        entities={"lot_ids": list(per_lot_summary.keys()) or [v.strip() for v in lh_lot_ids.split(",") if v.strip()]},
+        artifacts=artifacts,
+        provenance={"task_id": current_task_id, "task_goal": state.get("current_task_goal", "")},
+        metadata={"row_count": len(lot_rows), "artifact_count": len(artifacts or [])},
+    )
 
     return {
         "messages": out_messages,
