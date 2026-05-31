@@ -544,7 +544,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         artifacts=artifacts,
         fallback=llm_answer,
         title="wads_result",
-        sort_direction=str(sql_result_sort.get("direction") or "desc"),
+        sort_direction=str(sql_result_sort.get("direction") or "preserve"),
     )
     result_message = AIMessage(content=answer, name="wads_agent")
     out_messages: list = [result_message]

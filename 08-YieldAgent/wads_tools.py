@@ -551,35 +551,6 @@ _COUNT_COLUMN_NAMES = {
     "report_count",
     "wafer_count",
 }
-_DESC_SORT_HINTS = (
-    "많이",
-    "많은",
-    "높은",
-    "상위",
-    "내림차순",
-    "큰 순",
-    "많은 순",
-    "desc",
-    "descending",
-    "top",
-    "most",
-    "highest",
-    "largest",
-)
-_ASC_SORT_HINTS = (
-    "적게",
-    "적은",
-    "낮은",
-    "하위",
-    "오름차순",
-    "작은 순",
-    "적은 순",
-    "asc",
-    "ascending",
-    "least",
-    "lowest",
-    "smallest",
-)
 
 
 def _numeric_sort_value(value: Any) -> float | None:
@@ -614,17 +585,33 @@ def _count_column_name(rows: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _sort_direction_from_request(query_description: str, sql: str) -> str:
-    text = f"{query_description or ''}\n{sql or ''}".lower()
-    if any(hint in text for hint in _ASC_SORT_HINTS):
-        return "asc"
-    if any(hint in text for hint in _DESC_SORT_HINTS):
+def _sort_direction_from_sql(sql: str, count_col: str) -> str:
+    cleaned = _strip_sql_comments(sql)
+    matches = list(
+        re.finditer(
+            r"\border\s+by\b(?P<clause>.*?)(?:\bfetch\s+first\b|\boffset\b|$)",
+            cleaned,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
+    if not matches:
+        return ""
+
+    clause = matches[-1].group("clause").strip()
+    if not clause:
+        return ""
+
+    first_term = clause.split(",", 1)[0]
+    count_col_pattern = rf"\b{re.escape(count_col)}\b"
+    if not re.search(count_col_pattern, first_term, flags=re.IGNORECASE):
+        if not re.search(r"\bcount\s*\(", first_term, flags=re.IGNORECASE):
+            return ""
+
+    if re.search(r"\bdesc\b", first_term, flags=re.IGNORECASE):
         return "desc"
-    if re.search(r"\border\s+by\b.+\basc\b", text, flags=re.IGNORECASE | re.DOTALL):
+    if re.search(r"\basc\b", first_term, flags=re.IGNORECASE):
         return "asc"
-    if re.search(r"\border\s+by\b.+\bdesc\b", text, flags=re.IGNORECASE | re.DOTALL):
-        return "desc"
-    return "desc"
+    return "asc"
 
 
 def _sort_sql_result_rows(
@@ -633,25 +620,17 @@ def _sort_sql_result_rows(
     query_description: str,
     sql: str,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Sort count/ranking SQL results deterministically for UI and references."""
+    """Preserve SQL result order and expose count sort metadata from ORDER BY."""
 
+    # 정렬 의도는 SQL 생성 LLM이 ORDER BY로 결정한다. Python은 자연어를 재해석하지 않는다.
+    _ = query_description
     count_col = _count_column_name(rows)
     if not count_col:
         return rows, {}
-    direction = _sort_direction_from_request(query_description, sql)
-
-    def sort_key(row: dict[str, Any]) -> tuple[int, float, str]:
-        value = _numeric_sort_value(row.get(count_col))
-        if value is None:
-            return (1, 0.0, "")
-        parameter = str(
-            row.get("parameter") or row.get("param") or row.get("fail_type") or ""
-        )
-        rank_value = value if direction == "asc" else -value
-        return (0, rank_value, parameter)
-
-    sorted_rows = sorted(rows, key=sort_key)
-    return sorted_rows, {"key": count_col, "direction": direction}
+    direction = _sort_direction_from_sql(sql, count_col)
+    if not direction:
+        return rows, {}
+    return rows, {"key": count_col, "direction": direction}
 
 
 # ── SQL 생성 프롬프트 (D-4: 도구 내부 캡슐화) ────────────────

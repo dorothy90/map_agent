@@ -352,22 +352,33 @@ def derive_summary_from_rows(
                 except (TypeError, ValueError):
                     return None
 
-            direction = "asc" if str(sort_direction).lower() == "asc" else "desc"
-            ranked_rows = sorted(
-                rows,
-                key=lambda row: (
-                    count_value(row) is None,
-                    count_value(row) if direction == "asc" else -(count_value(row) or 0.0),
-                    str(row.get(param_key) or ""),
-                ),
-            )
+            direction = str(sort_direction).lower()
+            if direction in {"asc", "desc"}:
+                ranked_rows = sorted(
+                    rows,
+                    key=lambda row: (
+                        count_value(row) is None,
+                        count_value(row)
+                        if direction == "asc"
+                        else -(count_value(row) or 0.0),
+                        str(row.get(param_key) or ""),
+                    ),
+                )
+            else:
+                ranked_rows = rows
             top_parts = [
                 f"{row.get(param_key)} {_format_count(row.get(count_key))}건"
                 for row in ranked_rows[:3]
                 if row.get(param_key) not in (None, "") and row.get(count_key) not in (None, "")
             ]
             if top_parts:
-                label = "하위" if direction == "asc" else "상위"
+                label = (
+                    "하위"
+                    if direction == "asc"
+                    else "상위"
+                    if direction == "desc"
+                    else "주요"
+                )
                 return (
                     f"WADS SQL 쿼리 결과 총 {len(rows)}건이 조회되었습니다. "
                     f"검출 건수 기준 {label} 파라미터는 {', '.join(top_parts)} 순입니다."

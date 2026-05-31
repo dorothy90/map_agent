@@ -856,39 +856,60 @@ def test_chained_param_resolution_does_not_broaden_groupkey_map_task(
     assert "lot_ids" not in params
 
 
-def test_wads_sql_ranking_rows_are_sorted_before_ui_summary_and_reference() -> None:
+def test_wads_sql_ranking_rows_follow_sql_order_before_ui_summary_and_reference() -> None:
     rows = [
-        {"parameter": "BVDS(B)", "detection_count": 25},
-        {"parameter": "CONTACT(C)", "detection_count": 19},
-        {"parameter": "DIBL(D)", "detection_count": 8},
-        {"parameter": "EASY(W)", "detection_count": 19},
-        {"parameter": "FMAX(X)", "detection_count": 21},
         {"parameter": "GATE_OX(G)", "detection_count": 51},
         {"parameter": "ISB_CMOS(7)", "detection_count": 36},
         {"parameter": "LATCH(N)", "detection_count": 34},
+        {"parameter": "BVDS(B)", "detection_count": 25},
+        {"parameter": "FMAX(X)", "detection_count": 21},
+        {"parameter": "CONTACT(C)", "detection_count": 19},
+        {"parameter": "EASY(W)", "detection_count": 19},
+        {"parameter": "DIBL(D)", "detection_count": 8},
     ]
 
-    sorted_rows, sort_info = _sort_sql_result_rows(
+    result_rows, sort_info = _sort_sql_result_rows(
         rows,
-        query_description="최근 일주일간 열화검출 파라미터 많이 검출된 순으로 표로 정리",
-        sql="SELECT PARAMETER, COUNT(*) AS DETECTION_COUNT FROM DF_WADS_REPORT GROUP BY PARAMETER",
+        query_description="최근 일주일간 열화검출 파라미터 오름차순으로 표로 정리",
+        sql=(
+            "SELECT PARAMETER, COUNT(*) AS DETECTION_COUNT "
+            "FROM DF_WADS_REPORT GROUP BY PARAMETER "
+            "ORDER BY DETECTION_COUNT DESC"
+        ),
     )
     summary = derive_summary_from_rows(
         source_agent="wads_agent",
-        rows=sorted_rows,
+        rows=result_rows,
         fallback="",
         sort_direction=sort_info["direction"],
     )
-    recent = [_recent(_envelope("result_wads_sorted", rows=sorted_rows))]
+    recent = [_recent(_envelope("result_wads_sorted", rows=result_rows))]
     resolved = resolve_references("첫 번째 파라미터 리포트 보여줘", recent)["resolved_refs"]
 
     assert sort_info == {"key": "detection_count", "direction": "desc"}
-    assert [row["parameter"] for row in sorted_rows[:3]] == ["GATE_OX(G)", "ISB_CMOS(7)", "LATCH(N)"]
+    assert [row["parameter"] for row in result_rows[:3]] == ["GATE_OX(G)", "ISB_CMOS(7)", "LATCH(N)"]
     assert "GATE_OX(G) 51건" in summary
     assert "ISB_CMOS(7) 36건" in summary
     assert "LATCH(N) 34건" in summary
     assert "BVDS(B) 25건, CONTACT(C) 19건, DIBL(D) 8건" not in summary
     assert resolved["parameters"] == ["GATE_OX(G)"]
+
+
+def test_wads_sql_ranking_without_order_by_does_not_infer_sort_from_request() -> None:
+    rows = [
+        {"parameter": "BVDS(B)", "detection_count": 25},
+        {"parameter": "GATE_OX(G)", "detection_count": 51},
+        {"parameter": "DIBL(D)", "detection_count": 8},
+    ]
+
+    result_rows, sort_info = _sort_sql_result_rows(
+        rows,
+        query_description="최근 일주일간 열화검출 파라미터 많이 검출된 순으로 표로 정리",
+        sql="SELECT PARAMETER, COUNT(*) AS DETECTION_COUNT FROM DF_WADS_REPORT GROUP BY PARAMETER",
+    )
+
+    assert result_rows == rows
+    assert sort_info == {}
 
 
 def test_wads_summary_mismatch_is_detected() -> None:
