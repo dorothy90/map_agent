@@ -319,3 +319,69 @@ def test_verbose_runtime_detail_is_compact_by_default(monkeypatch, capsys) -> No
     assert "result=abc123 kind=table status=success rows=30 artifacts=1" in captured.err
     assert "very long answer" not in captured.err
     assert "LOT0001" not in captured.err
+
+
+def test_wads_runtime_detail_shows_join_coverage(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("LOCAL_TRACE_SINK", "none")
+    monkeypatch.setenv("LOCAL_RUNTIME_LOG", "1")
+    monkeypatch.setenv("LOCAL_RUNTIME_VERBOSE", "1")
+    monkeypatch.setenv("LOCAL_RUNTIME_ALLOW_SENSITIVE_LOGS", "1")
+    reset_trace_sink_for_tests()
+    reset_runtime_terminal_logger_for_tests()
+    tokens = set_trace_context("trace_wads_join", "turn_wads_join")
+
+    try:
+        emit_runtime_detail(
+            "wads.query_data",
+            {
+                "row_count": 1,
+                "filters": {"lotcd": "4SS", "parameter": "EASY"},
+                "columns": ["lotcd", "category", "parameter", "end_tm", "groupkey"],
+                "sample": [{"lotcd": "4SS", "groupkey": ""}],
+                "join_coverage": {
+                    "report_rows": 1,
+                    "joined_rows": 1,
+                    "wafer_rows": 0,
+                    "unique_groupkeys": 0,
+                    "missing_groupkey_rows": 1,
+                    "join_missing": True,
+                },
+            },
+            task_id="task_wads_join",
+        )
+    finally:
+        reset_trace_context(tokens)
+
+    captured = capsys.readouterr()
+    assert "wads.query_data rows=1 reports=1 joined=1 wafer_rows=0 groupkeys=0" in captured.err
+    assert "missing_groupkey_rows=1 join_missing=True" in captured.err
+
+
+def test_wads_runtime_detail_shows_sql_and_binds(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("LOCAL_TRACE_SINK", "none")
+    monkeypatch.setenv("LOCAL_RUNTIME_LOG", "1")
+    monkeypatch.setenv("LOCAL_RUNTIME_VERBOSE", "1")
+    monkeypatch.setenv("LOCAL_RUNTIME_ALLOW_SENSITIVE_LOGS", "1")
+    reset_trace_sink_for_tests()
+    reset_runtime_terminal_logger_for_tests()
+    tokens = set_trace_context("trace_wads_sql", "turn_wads_sql")
+
+    try:
+        emit_runtime_detail(
+            "wads.sql",
+            {
+                "context": "_query_wads_data",
+                "sql": "SELECT r.LOTCD FROM DF_WADS_REPORT r WHERE UPPER(r.LOTCD) LIKE UPPER(:lotcd)",
+                "binds": {"lotcd": "%4SS%"},
+                "bind_keys": ["lotcd"],
+                "join_wafers": True,
+            },
+            task_id="task_wads_sql",
+        )
+    finally:
+        reset_trace_context(tokens)
+
+    captured = capsys.readouterr()
+    assert "wads.sql context=_query_wads_data" in captured.err
+    assert "binds={lotcd=%4SS%}" in captured.err
+    assert "SELECT r.LOTCD FROM DF_WADS_REPORT r" in captured.err

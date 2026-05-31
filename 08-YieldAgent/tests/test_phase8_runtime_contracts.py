@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 
+import pandas as pd
 import pytest
 from langchain_core.messages import AIMessage
 
@@ -42,7 +43,7 @@ from task_normalizer_validator import (  # noqa: E402
     normalize_task_fields,
     validate_tasks,
 )
-from wads_tools import _sort_sql_result_rows  # noqa: E402
+from wads_tools import _sort_sql_result_rows, _wads_join_coverage  # noqa: E402
 
 
 def _events(path: Path) -> list[dict]:
@@ -685,6 +686,29 @@ def test_wads_non_count_summary_uses_unique_parameters() -> None:
     )
 
     assert summary == "WADS 조회 결과 총 4건이 조회되었습니다. 주요 파라미터는 DIBL(D), IGATE(P), JUNCTION(J)입니다."
+
+
+def test_wads_join_coverage_flags_report_without_wafer_groupkey() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "lotcd": "4SS",
+                "category": "PT1H_TEST",
+                "parameter": "EASY(W)",
+                "end_tm": "2026-05-31 10:00:00",
+                "groupkey": None,
+            }
+        ]
+    )
+
+    stats = _wads_join_coverage(df)
+
+    assert stats["report_rows"] == 1
+    assert stats["joined_rows"] == 1
+    assert stats["wafer_rows"] == 0
+    assert stats["unique_groupkeys"] == 0
+    assert stats["missing_groupkey_rows"] == 1
+    assert stats["join_missing"] is True
 
 
 def test_report_ordinal_refs_fan_out_to_report_groupkeys_for_cummap() -> None:

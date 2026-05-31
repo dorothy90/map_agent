@@ -81,6 +81,15 @@ def _wads_parameters_from_rows(rows: list[dict]) -> list[str]:
     return extract_parameter_values(rows)
 
 
+def _is_wafer_list_request(text: str) -> bool:
+    lowered = str(text or "").lower()
+    wafer_terms = ("wafer", "웨이퍼", "wf", "groupkey", "group key")
+    list_terms = ("list", "리스트", "목록", "검출")
+    return any(term in lowered for term in wafer_terms) and any(
+        term in lowered for term in list_terms
+    )
+
+
 # create_react_agent로 WADS 그래프 생성 — 수동 StateGraph 대체
 # prompt를 callable로 전달: 호출 시 현재 날짜를 SystemMessage로 주입
 def _wads_prompt(state: dict) -> list:
@@ -438,6 +447,8 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     reports_payload = storage.get("reports", [])
     sql_result_payload = storage.get("sql_result")
     sql_result_sort = storage.get("sql_result_sort") or {}
+    query_stats = storage.get("query_stats") or {}
+    report_stats = storage.get("report_stats") or {}
 
     logger.debug(
         "[WADS Agent] query_payload: %s, reports_payload count: %d, sql_result: %s",
@@ -524,13 +535,38 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         )
         wads_wf_ids = _unique_non_empty(report_wf_ids)
     result_rows = _wads_result_rows(query_payload, sql_result_payload, reports_payload)
-    result_status = "success" if (result_rows or artifacts) else "empty"
+    active_stats = (
+        query_stats
+        if isinstance(query_stats, dict) and query_stats
+        else report_stats
+        if isinstance(report_stats, dict) and report_stats
+        else {}
+    )
+    join_missing = bool(active_stats.get("join_missing"))
+    wafer_list_request = _is_wafer_list_request(query)
+    if join_missing and wafer_list_request:
+        result_status = "partial"
+        logger.warning(
+            "[WADS Agent] wafer list requested but no GROUPKEY rows: "
+            "report_rows=%s joined_rows=%s missing_groupkey_rows=%s query=%s",
+            active_stats.get("report_rows"),
+            active_stats.get("joined_rows"),
+            active_stats.get("missing_groupkey_rows"),
+            query,
+        )
+    else:
+        result_status = "success" if (result_rows or artifacts) else "empty"
     emit_runtime_detail(
         "wads.result_payload",
         {
             "status": result_status,
             "row_count": len(result_rows),
             "artifact_count": len(artifacts or []),
+            "report_row_count": active_stats.get("report_rows"),
+            "joined_row_count": active_stats.get("joined_rows"),
+            "wafer_groupkey_count": active_stats.get("unique_groupkeys"),
+            "missing_groupkey_rows": active_stats.get("missing_groupkey_rows"),
+            "join_missing": join_missing,
             "lot_ids": wads_lot_ids,
             "groupkeys": wads_groupkeys,
             "answer_preview": preview_text(llm_answer),
@@ -546,6 +582,12 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         title="wads_result",
         sort_direction=str(sql_result_sort.get("direction") or "preserve"),
     )
+    if join_missing and wafer_list_request:
+        answer = (
+            "WADS 리포트는 "
+            f"{active_stats.get('report_rows', 0)}건 조회됐지만 연결된 wafer GROUPKEY는 0건입니다. "
+            "DF_WADS_WF_LIST의 LOT_CD, OPER_PARA, END_TM 조인 키를 확인해야 합니다."
+        )
     result_message = AIMessage(content=answer, name="wads_agent")
     out_messages: list = [result_message]
     row_parameters = _wads_parameters_from_rows(result_rows)
@@ -575,6 +617,11 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         metadata={
             "row_count": len(result_rows),
             "artifact_count": len(artifacts or []),
+            "report_row_count": active_stats.get("report_rows"),
+            "joined_row_count": active_stats.get("joined_rows"),
+            "wafer_groupkey_count": active_stats.get("unique_groupkeys"),
+            "missing_groupkey_rows": active_stats.get("missing_groupkey_rows"),
+            "wads_join_missing": join_missing,
         },
     )
     if wads_lot_ids:

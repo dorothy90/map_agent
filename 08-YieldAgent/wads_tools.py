@@ -62,6 +62,50 @@ def _sample_rows(df: pd.DataFrame, *, limit: int = 3) -> list[dict[str, Any]]:
     return df.head(limit).to_dict(orient="records")
 
 
+def _is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _clean_text(value: Any) -> str:
+    if _is_missing(value):
+        return ""
+    return str(value).strip()
+
+
+def _compact_sql(sql: str) -> str:
+    return re.sub(r"\s+", " ", str(sql or "")).strip()
+
+
+def _log_wads_sql(
+    context: str,
+    sql: str,
+    bind_vars: dict[str, Any] | None = None,
+    **metadata: Any,
+) -> None:
+    compact_sql = _compact_sql(sql)
+    binds = dict(bind_vars or {})
+    logger.info("[%s] SQL: %s", context, compact_sql)
+    logger.info("[%s] SQL binds: %s", context, binds)
+    emit_runtime_detail(
+        "wads.sql",
+        {
+            "context": context,
+            "sql": compact_sql,
+            "binds": binds,
+            "bind_keys": sorted(binds),
+            **metadata,
+        },
+        task_id=_tool_task_id(),
+    )
+
+
 def _end_tm_expr(alias: str = "r") -> str:
     return f"TO_CHAR({alias}.END_TM, 'YYYY-MM-DD HH24:MI:SS') AS END_TM"
 
@@ -79,7 +123,7 @@ def _json_safe_value(value: Any) -> Any:
 
 
 def _split_groupkey(groupkey: Any) -> tuple[str, str]:
-    text = str(groupkey or "").strip()
+    text = _clean_text(groupkey)
     if not text:
         return "", ""
     if "." not in text:
@@ -89,7 +133,7 @@ def _split_groupkey(groupkey: Any) -> tuple[str, str]:
 
 
 def _append_unique(values: list[str], value: Any) -> None:
-    text = str(value or "").strip()
+    text = _clean_text(value)
     if text and text not in values:
         values.append(text)
 
@@ -102,10 +146,10 @@ def _report_key(row: Any) -> tuple[str, str, str, str]:
     else:
         return ("", "", "", "")
     return (
-        str(getter("lotcd") or "").strip(),
-        str(getter("category") or "").strip(),
-        str(getter("parameter") or "").strip(),
-        str(getter("end_tm") or "").strip(),
+        _clean_text(getter("lotcd")),
+        _clean_text(getter("category")),
+        _clean_text(getter("parameter")),
+        _clean_text(getter("end_tm")),
     )
 
 
@@ -116,6 +160,83 @@ def _category_to_map_oper(category: Any) -> str:
     if "PT1H" in text:
         return "PT1H"
     return ""
+
+
+def _wads_join_coverage(df: pd.DataFrame) -> dict[str, Any]:
+    rows = df.to_dict(orient="records") if not df.empty else []
+    has_groupkey_column = "groupkey" in df.columns
+    report_keys: list[str] = []
+    groupkeys: list[str] = []
+    lot_ids: list[str] = []
+    wf_ids: list[str] = []
+    oper_para_samples: list[str] = []
+    groupkey_rows = 0
+
+    for row in rows:
+        key_tuple = _report_key(row)
+        key = "|".join(key_tuple)
+        if key.strip("|"):
+            _append_unique(report_keys, key)
+
+        category = _clean_text(row.get("category"))
+        parameter = _clean_text(row.get("parameter"))
+        if category or parameter:
+            _append_unique(oper_para_samples, f"{category}_{parameter}".strip("_"))
+
+        groupkey = _clean_text(row.get("groupkey"))
+        if groupkey:
+            groupkey_rows += 1
+            _append_unique(groupkeys, groupkey)
+            lotid, wf_id = _split_groupkey(groupkey)
+            _append_unique(lot_ids, lotid)
+            _append_unique(wf_ids, wf_id)
+
+    joined_rows = len(rows)
+    report_rows = len(report_keys) if report_keys else joined_rows
+    missing_groupkey_rows = (
+        max(joined_rows - groupkey_rows, 0) if has_groupkey_column else 0
+    )
+    join_missing = bool(
+        has_groupkey_column and report_rows > 0 and len(groupkeys) == 0
+    )
+
+    return {
+        "joined_rows": joined_rows,
+        "report_rows": report_rows,
+        "wafer_rows": groupkey_rows,
+        "unique_groupkeys": len(groupkeys),
+        "unique_lot_ids": len(lot_ids),
+        "unique_wf_ids": len(wf_ids),
+        "missing_groupkey_rows": missing_groupkey_rows,
+        "has_groupkey_column": has_groupkey_column,
+        "join_missing": join_missing,
+        "sample_report_keys": report_keys[:5],
+        "sample_groupkeys": groupkeys[:5],
+        "sample_oper_para": oper_para_samples[:5],
+    }
+
+
+def _log_join_coverage(context: str, stats: dict[str, Any]) -> None:
+    logger.info(
+        "[%s] join coverage: report_rows=%s joined_rows=%s wafer_rows=%s "
+        "unique_groupkeys=%s missing_groupkey_rows=%s",
+        context,
+        stats.get("report_rows"),
+        stats.get("joined_rows"),
+        stats.get("wafer_rows"),
+        stats.get("unique_groupkeys"),
+        stats.get("missing_groupkey_rows"),
+    )
+    if stats.get("join_missing"):
+        logger.warning(
+            "[%s] report rows matched but no wafer GROUPKEY rows. "
+            "Check %s join keys LOT_CD, OPER_PARA, END_TM. "
+            "sample_report_keys=%s sample_oper_para=%s",
+            context,
+            _ORACLE_WF_TABLE,
+            stats.get("sample_report_keys"),
+            stats.get("sample_oper_para"),
+        )
 
 
 def _wafer_groups_for_reports(
@@ -213,6 +334,15 @@ def _query_wads_data(
         len(sql),
         sorted(bind_vars),
     )
+    _log_wads_sql(
+        "_query_wads_data",
+        sql,
+        bind_vars,
+        join_wafers=join_wafers,
+        columns=columns,
+        report_table=_ORACLE_REPORT_TABLE,
+        wafer_table=_ORACLE_WF_TABLE if join_wafers else "",
+    )
 
     conn = _get_oracle_connection()
     try:
@@ -301,6 +431,8 @@ def wads_query_data(
         return f"오류: Oracle 연결/조회에 실패했습니다. ({e})"
 
     if filtered_df.empty:
+        stats = _wads_join_coverage(filtered_df)
+        storage["query_stats"] = stats
         logger.info("[wads_query_data] 결과 없음 (NoMatch)")
         emit_runtime_detail(
             "wads.query_data",
@@ -314,6 +446,7 @@ def wads_query_data(
                 },
                 "columns": list(filtered_df.columns),
                 "sample": [],
+                "join_coverage": stats,
             },
             task_id=_tool_task_id(),
         )
@@ -322,22 +455,34 @@ def wads_query_data(
         ]
         return "조건에 맞는 WADS 데이터가 없습니다."
 
+    stats = _wads_join_coverage(filtered_df)
+    storage["query_stats"] = stats
+    _log_join_coverage("wads_query_data", stats)
+
     result = []
     for row in filtered_df.to_dict(orient="records"):
         lotid, wf_id = _split_groupkey(row.get("groupkey"))
+        groupkey = _clean_text(row.get("groupkey"))
         result.append(
             {
                 "lotid": lotid,
                 "wf_id": wf_id,
-                "groupkey": row.get("groupkey") or "",
-                "lotcd": row.get("lotcd") or "",
-                "category": row.get("category") or "",
-                "parameter": row.get("parameter") or "",
-                "end_tm": row.get("end_tm") or "",
+                "groupkey": groupkey,
+                "lotcd": _clean_text(row.get("lotcd")),
+                "category": _clean_text(row.get("category")),
+                "parameter": _clean_text(row.get("parameter")),
+                "end_tm": _clean_text(row.get("end_tm")),
+                "has_groupkey": bool(groupkey),
             }
         )
     storage["query"] = result
-    logger.info("[wads_query_data] 완료: %d건", len(result))
+    logger.info(
+        "[wads_query_data] 완료: report_rows=%s joined_rows=%s unique_groupkeys=%s result_rows=%d",
+        stats.get("report_rows"),
+        stats.get("joined_rows"),
+        stats.get("unique_groupkeys"),
+        len(result),
+    )
     emit_runtime_detail(
         "wads.query_data",
         {
@@ -350,14 +495,23 @@ def wads_query_data(
             },
             "columns": list(filtered_df.columns),
             "sample": _sample_rows(filtered_df),
+            "join_coverage": stats,
         },
         task_id=_tool_task_id(),
     )
 
     # LLM에게 실제 데이터(LOTID/GROUPKEY 포함)를 반환하여 lot/wafer list 질문에 답변 가능하게 함
     lines = [
-        f"WADS 데이터 조회 완료: 총 {len(result)}건 (데이터는 화면에 별도 표시됩니다)"
+        "WADS 데이터 조회 완료: "
+        f"리포트 {stats.get('report_rows', len(result))}건 / "
+        f"wafer GROUPKEY {stats.get('unique_groupkeys', 0)}건 "
+        "(데이터는 화면에 별도 표시됩니다)"
     ]
+    if stats.get("join_missing"):
+        lines.append(
+            "주의: WADS 리포트는 조회됐지만 연결된 wafer GROUPKEY가 없습니다. "
+            f"{_ORACLE_WF_TABLE}의 LOT_CD, OPER_PARA, END_TM 조인 키를 확인하세요."
+        )
     for r in result[:50]:
         lines.append(
             "- "
@@ -415,6 +569,8 @@ def wads_get_html_report(
         return f"오류: Oracle 연결/조회에 실패했습니다. ({e})"
 
     if filtered_df.empty:
+        stats = _wads_join_coverage(filtered_df)
+        storage["report_stats"] = stats
         logger.info("[wads_get_html_report] 결과 없음")
         emit_runtime_detail(
             "wads.report_data",
@@ -428,6 +584,7 @@ def wads_get_html_report(
                 },
                 "columns": list(filtered_df.columns),
                 "sample": [],
+                "join_coverage": stats,
             },
             task_id=_tool_task_id(),
         )
@@ -461,6 +618,27 @@ def wads_get_html_report(
         )
 
     count = len(filtered_df)
+    report_groupkeys: list[str] = []
+    reports_without_wafers = 0
+    for report in storage["reports"][-count:]:
+        groupkeys = report.get("groupkeys") or []
+        report_groupkeys.extend(groupkeys)
+        if not groupkeys:
+            reports_without_wafers += 1
+    stats = {
+        "report_rows": count,
+        "joined_rows": count,
+        "wafer_rows": len(report_groupkeys),
+        "unique_groupkeys": len(dict.fromkeys(report_groupkeys)),
+        "missing_groupkey_rows": reports_without_wafers,
+        "join_missing": bool(count and not report_groupkeys),
+        "sample_report_keys": [
+            "|".join(_report_key(report)) for report in storage["reports"][-count:]
+        ][:5],
+        "sample_groupkeys": list(dict.fromkeys(report_groupkeys))[:5],
+    }
+    storage["report_stats"] = stats
+    _log_join_coverage("wads_get_html_report", stats)
     emit_runtime_detail(
         "wads.report_data",
         {
@@ -473,6 +651,7 @@ def wads_get_html_report(
             },
             "columns": list(filtered_df.columns),
             "sample": _sample_rows(filtered_df),
+            "join_coverage": stats,
         },
         task_id=_tool_task_id(),
     )
@@ -720,6 +899,13 @@ def wads_query_sql(query_description: str) -> str:
     # 행 제한 보장
     sql = _ensure_row_limit(raw_sql)
     logger.debug("[wads_query_sql] SQL prepared len=%d", len(sql))
+    _log_wads_sql(
+        "wads_query_sql",
+        sql,
+        {},
+        query_description=query_description,
+        generated_sql_len=len(sql),
+    )
 
     # 3. Oracle 실행
     conn = _get_oracle_connection()

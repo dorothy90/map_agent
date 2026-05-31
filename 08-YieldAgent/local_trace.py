@@ -766,10 +766,31 @@ def _compact_runtime_detail(label: str, payload: Any) -> str:
             f" goal=\"{preview_text(payload.get('task_goal'))}\""
         )
 
+    if label == "wads.sql":
+        return (
+            f"{label} context={payload.get('context', '-')}"
+            f" bind_keys={_preview_value(payload.get('bind_keys'))}"
+            f" binds={_preview_params(payload.get('binds') or {})}"
+            f" join_wafers={payload.get('join_wafers', '-')}"
+            f" sql=\"{preview_text(payload.get('sql'), max_chars=500)}\""
+        )
+
     if label == "wads.query_data":
         filters = payload.get("filters") or {}
+        join = payload.get("join_coverage") or {}
+        join_text = ""
+        if isinstance(join, dict) and join:
+            join_text = (
+                f" reports={join.get('report_rows', '-')}"
+                f" joined={join.get('joined_rows', '-')}"
+                f" wafer_rows={join.get('wafer_rows', '-')}"
+                f" groupkeys={join.get('unique_groupkeys', '-')}"
+                f" missing_groupkey_rows={join.get('missing_groupkey_rows', '-')}"
+                f" join_missing={join.get('join_missing', False)}"
+            )
         return (
             f"{label} rows={payload.get('row_count', '-')}"
+            f"{join_text}"
             f" filters={_preview_params(filters)}"
             f" columns={','.join(payload.get('columns') or []) or '-'}"
             f" sample={_preview_value(payload.get('sample'))}"
@@ -777,8 +798,20 @@ def _compact_runtime_detail(label: str, payload: Any) -> str:
 
     if label == "wads.report_data":
         filters = payload.get("filters") or {}
+        join = payload.get("join_coverage") or {}
+        join_text = ""
+        if isinstance(join, dict) and join:
+            join_text = (
+                f" reports={join.get('report_rows', '-')}"
+                f" joined={join.get('joined_rows', '-')}"
+                f" wafer_rows={join.get('wafer_rows', '-')}"
+                f" groupkeys={join.get('unique_groupkeys', '-')}"
+                f" missing_groupkey_rows={join.get('missing_groupkey_rows', '-')}"
+                f" join_missing={join.get('join_missing', False)}"
+            )
         return (
             f"{label} rows={payload.get('row_count', '-')}"
+            f"{join_text}"
             f" filters={_preview_params(filters)}"
             f" columns={','.join(payload.get('columns') or []) or '-'}"
             f" sample={_preview_value(payload.get('sample'))}"
@@ -798,6 +831,11 @@ def _compact_runtime_detail(label: str, payload: Any) -> str:
             f"{label} status={payload.get('status', '-')}"
             f" rows={payload.get('row_count', '-')}"
             f" artifacts={payload.get('artifact_count', '-')}"
+            f" reports={payload.get('report_row_count', '-')}"
+            f" joined={payload.get('joined_row_count', '-')}"
+            f" wafer_groupkeys={payload.get('wafer_groupkey_count', '-')}"
+            f" missing_groupkey_rows={payload.get('missing_groupkey_rows', '-')}"
+            f" join_missing={payload.get('join_missing', False)}"
             f" lots={_preview_value(payload.get('lot_ids'))}"
             f" groupkeys={_preview_value(payload.get('groupkeys'))}"
         )
