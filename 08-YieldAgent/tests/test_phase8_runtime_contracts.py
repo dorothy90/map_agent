@@ -712,6 +712,28 @@ def test_wads_join_coverage_flags_report_without_wafer_groupkey() -> None:
     assert stats["join_missing"] is True
 
 
+def test_wads_join_coverage_accepts_db_group_key_column() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "lotcd": "4SS",
+                "category": "PT1C_TEST",
+                "parameter": "RON(R)",
+                "end_tm": "2026-06-01 10:00:00",
+                "group_key": "4SSJG4W.14",
+            }
+        ]
+    )
+
+    stats = _wads_join_coverage(df)
+
+    assert stats["wafer_rows"] == 1
+    assert stats["unique_groupkeys"] == 1
+    assert stats["missing_groupkey_rows"] == 0
+    assert stats["join_missing"] is False
+    assert stats["sample_groupkeys"] == ["4SSJG4W.14"]
+
+
 def test_wads_sql_diagnostic_logs_at_warning_by_default(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.WARNING, logger="yield_agent.wads_tools")
 
@@ -792,6 +814,117 @@ def test_report_ordinal_refs_fan_out_to_report_groupkeys_for_cummap() -> None:
         "resolved_report_ref_fanout",
         "resolved_report_ref_removed_redundant_source_task",
     ]
+
+
+def test_map_oper_can_defer_to_prior_wads_category() -> None:
+    validation = validate_tasks(
+        [
+            {
+                "task_id": "task_1",
+                "agent": "wads_agent",
+                "params": {"lotcd": "4SS", "wads_end_tm": "2026-06-01"},
+                "goal": "6월 1일 검출 wafer 조회",
+            },
+            {
+                "task_id": "task_2",
+                "agent": "map_agent",
+                "params": {"map_type": "cummap"},
+                "goal": "검출 wafer cummap",
+            },
+        ]
+    )
+
+    assert validation["issues"] == []
+    assert any(
+        event["event"] == "required_param_deferred"
+        and event["param"] == "map_oper"
+        for event in validation["trace"]
+    )
+
+
+def test_chained_map_oper_uses_wads_category_grouping(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sup = _supervisor(monkeypatch, tmp_path)
+    message = AIMessage(
+        content="WADS result",
+        name="wads_sql_result",
+        additional_kwargs={
+            "wads_result": {
+                "groupkeys": ["4SAH0RD.01", "4SAH0RD.07"],
+                "groupkeys_by_map_oper": {
+                    "PT1C": ["4SAH0RD.01", "4SAH0RD.07"],
+                },
+                "map_oper": "PT1C",
+                "map_opers": ["PT1C"],
+            }
+        },
+    )
+
+    params = sup._resolve_chained_params(
+        {
+            "task_id": "task_map",
+            "agent": "map_agent",
+            "params": {"map_type": "cummap"},
+            "goal": "detected wafer cummap",
+        },
+        {"messages": [message]},
+    )
+
+    assert params["groupkey"] == "4SAH0RD.01,4SAH0RD.07"
+    assert params["map_oper"] == "PT1C"
+
+
+def test_replanner_fans_out_detected_wafers_by_wads_category(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sup = _supervisor(monkeypatch, tmp_path)
+    message = AIMessage(
+        content="WADS result",
+        name="wads_sql_result",
+        additional_kwargs={
+            "wads_result": {
+                "groupkeys": ["4SAH0RD.01", "4SAXYZ1.03"],
+                "groupkeys_by_map_oper": {
+                    "PT1C": ["4SAH0RD.01"],
+                    "PT1H": ["4SAXYZ1.03"],
+                },
+                "map_oper": "",
+                "map_opers": ["PT1C", "PT1H"],
+            }
+        },
+    )
+    wads_task = {
+        "task_id": "task_1",
+        "agent": "wads_agent",
+        "params": {"lotcd": "4SS", "wads_end_tm": "2026-06-01"},
+        "goal": "6월 1일 검출 wafer 조회",
+    }
+    map_task = {
+        "task_id": "task_2",
+        "agent": "map_agent",
+        "params": {"map_type": "cummap"},
+        "goal": "검출 wafer cummap",
+    }
+
+    update = sup.replanner_node(
+        {
+            "messages": [message],
+            "past_steps": [("task_1", "WADS completed")],
+            "pending_tasks": [map_task],
+            "task_plan": [wads_task, map_task],
+            "recent_results": [],
+        },
+        {},
+    )
+
+    assert [task["task_id"] for task in update["pending_tasks"]] == ["task_2_p1", "task_2_p2"]
+    assert [task["params"]["map_oper"] for task in update["pending_tasks"]] == ["PT1C", "PT1H"]
+    assert update["pending_tasks"][0]["params"]["groupkey"] == "4SAH0RD.01"
+    assert update["pending_tasks"][1]["params"]["groupkey"] == "4SAXYZ1.03"
+    assert [task["task_id"] for task in update["task_plan"]] == ["task_1", "task_2_p1", "task_2_p2"]
 
 
 def test_report_ref_map_tasks_prioritize_groupkey_and_skip_plan_review(

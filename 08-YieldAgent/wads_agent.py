@@ -28,7 +28,12 @@ from result_contracts import (
     extract_parameter_values,
 )
 from local_trace import emit_runtime_detail, preview_text
-from wads_tools import WADS_TOOLS, _tool_payload_var, _get_tool_payload
+from wads_tools import (
+    WADS_TOOLS,
+    _category_to_map_oper,
+    _tool_payload_var,
+    _get_tool_payload,
+)
 
 # .env 로드 및 모델 설정
 load_dotenv(override=True)
@@ -75,6 +80,41 @@ def _lotid_from_groupkey(value: Any) -> str:
     if not text:
         return ""
     return text.rsplit(".", 1)[0] if "." in text else text
+
+
+def _row_groupkey(row: dict[str, Any]) -> Any:
+    return row.get("groupkey") or row.get("group_key")
+
+
+def _append_unique_text(target: list[str], value: Any) -> None:
+    text = str(value or "").strip()
+    if text and text not in target:
+        target.append(text)
+
+
+def _groupkeys_by_map_oper_from_rows(rows: Any) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    if not isinstance(rows, list):
+        return grouped
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        map_oper = str(row.get("map_oper") or "").strip().upper()
+        if not map_oper:
+            map_oper = _category_to_map_oper(row.get("category"))
+        if not map_oper:
+            continue
+
+        groupkeys = row.get("groupkeys")
+        if not isinstance(groupkeys, list):
+            groupkeys = [_row_groupkey(row)]
+
+        bucket = grouped.setdefault(map_oper, [])
+        for groupkey in groupkeys:
+            _append_unique_text(bucket, groupkey)
+
+    return {oper: groupkeys for oper, groupkeys in grouped.items() if groupkeys}
 
 
 def _wads_parameters_from_rows(rows: list[dict]) -> list[str]:
@@ -496,24 +536,27 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     wads_lot_ids: list[str] = []
     wads_groupkeys: list[str] = []
     wads_wf_ids: list[str] = []
+    wads_groupkeys_by_map_oper: dict[str, list[str]] = {}
     if query_payload:
+        wads_groupkeys_by_map_oper = _groupkeys_by_map_oper_from_rows(query_payload)
         wads_groupkeys = _unique_non_empty(
-            [r.get("groupkey", "") for r in query_payload]
+            [_row_groupkey(r) for r in query_payload]
         )
         wads_lot_ids = _unique_non_empty(
             [
-                r.get("lotid", "") or _lotid_from_groupkey(r.get("groupkey", ""))
+                r.get("lotid", "") or _lotid_from_groupkey(_row_groupkey(r))
                 for r in query_payload
             ]
         )
         wads_wf_ids = _unique_non_empty([r.get("wf_id", "") for r in query_payload])
     elif sql_result_payload:
+        wads_groupkeys_by_map_oper = _groupkeys_by_map_oper_from_rows(sql_result_payload)
         wads_groupkeys = _unique_non_empty(
-            [r.get("groupkey", "") for r in sql_result_payload]
+            [_row_groupkey(r) for r in sql_result_payload]
         )
         wads_lot_ids = _unique_non_empty(
             [
-                r.get("lotid", "") or _lotid_from_groupkey(r.get("groupkey", ""))
+                r.get("lotid", "") or _lotid_from_groupkey(_row_groupkey(r))
                 for r in sql_result_payload
             ]
         )
@@ -528,12 +571,18 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             report_groupkeys.extend(report.get("groupkeys") or [])
             report_lot_ids.extend(report.get("lot_ids") or [])
             report_wf_ids.extend(report.get("wf_ids") or [])
+        wads_groupkeys_by_map_oper = _groupkeys_by_map_oper_from_rows(reports_payload)
         wads_groupkeys = _unique_non_empty(report_groupkeys)
         wads_lot_ids = _unique_non_empty(
             report_lot_ids
             + [_lotid_from_groupkey(groupkey) for groupkey in wads_groupkeys]
         )
         wads_wf_ids = _unique_non_empty(report_wf_ids)
+    wads_map_opers = [
+        oper
+        for oper, groupkeys in wads_groupkeys_by_map_oper.items()
+        if groupkeys
+    ]
     result_rows = _wads_result_rows(query_payload, sql_result_payload, reports_payload)
     active_stats = (
         query_stats
@@ -636,6 +685,9 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
                 "wads_result": {
                     "lot_ids": wads_lot_ids,
                     "groupkeys": wads_groupkeys,
+                    "map_oper": wads_map_opers[0] if len(wads_map_opers) == 1 else "",
+                    "map_opers": wads_map_opers,
+                    "groupkeys_by_map_oper": wads_groupkeys_by_map_oper,
                     "parameter_filter": parameter or "",
                     "date_range": [start_tm or "", end_tm or ""],
                     "detected_count": len(wads_groupkeys) or len(wads_lot_ids),

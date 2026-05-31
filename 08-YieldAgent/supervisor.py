@@ -1048,6 +1048,15 @@ def _groupkey_list(value: Any) -> list[str]:
     return [part.strip() for part in str(value or "").split(",") if part.strip()]
 
 
+def _unique_texts(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
 def _should_auto_approve_report_map_plan(state: Dict[str, Any], task_plan: list[dict]) -> bool:
     """Skip plan review for deterministic report-ordinal wafer map fanout."""
 
@@ -1291,26 +1300,77 @@ def _detect_missing_global_params(task_plan: list[dict], state: dict) -> list[di
         elif agent == "map_agent":
             # map_oper(PT1H/PT1C)가 없고 앞 task에서 공정 정보가 올 수 없는 경우 수집
             task_oper = params.get("map_oper", "")
-            if _is_placeholder_or_empty(task_oper) and not _normalize_map_oper(state_map_oper):
+            earlier_wads = any(t.get("agent") == "wads_agent" for t in task_plan[:i])
+            if (
+                _is_placeholder_or_empty(task_oper)
+                and not _normalize_map_oper(state_map_oper)
+                and not earlier_wads
+            ):
                 missing.append({"task_id": task["task_id"], "agent": agent, "param": "map_oper"})
 
     return missing
 
 
+def _latest_wads_result(state: dict) -> dict:
+    for message in reversed(state.get("messages", []) or []):
+        if isinstance(message, AIMessage) and getattr(message, "name", "") == "wads_sql_result":
+            wads_data = (getattr(message, "additional_kwargs", None) or {}).get("wads_result") or {}
+            if isinstance(wads_data, dict) and wads_data:
+                return wads_data
+    return {}
+
+
+def _wads_groupkeys_by_map_oper(wads_data: dict) -> dict[str, list[str]]:
+    raw = wads_data.get("groupkeys_by_map_oper") or {}
+    if not isinstance(raw, dict):
+        return {}
+
+    grouped: dict[str, list[str]] = {}
+    for raw_oper, raw_groupkeys in raw.items():
+        oper = _normalize_map_oper(str(raw_oper or ""))
+        groupkeys = _unique_texts(_groupkey_list(raw_groupkeys))
+        if oper and groupkeys:
+            grouped[oper] = groupkeys
+    return grouped
+
+
 def _resolve_chained_params(task: dict, state: dict) -> dict:
     """task.params의 빈 chained 필드를 state.messages의 structured tool result에서 코드로 자동 채움."""
     params = dict(task.get("params") or {})
-    messages = state.get("messages", [])
-
-    wads_data: dict = {}
-    for m in reversed(messages):
-        if isinstance(m, AIMessage) and getattr(m, "name", "") == "wads_sql_result":
-            wads_data = (getattr(m, "additional_kwargs", None) or {}).get("wads_result") or {}
-            if wads_data:
-                break
+    wads_data = _latest_wads_result(state)
 
     lot_ids = wads_data.get("lot_ids") or []
     groupkeys = wads_data.get("groupkeys") or []
+    groupkeys_by_oper = _wads_groupkeys_by_map_oper(wads_data)
+
+    if task.get("agent") == "map_agent" and groupkeys_by_oper:
+        selected_oper = _normalize_map_oper(str(params.get("map_oper") or ""))
+        if selected_oper and selected_oper in groupkeys_by_oper:
+            if (
+                _is_placeholder_or_empty(params.get("groupkey"))
+                and _is_placeholder_or_empty(params.get("map_groupkey"))
+                and _is_placeholder_or_empty(params.get("lot_ids"))
+            ):
+                params["groupkey"] = ",".join(groupkeys_by_oper[selected_oper])
+                logger.info(
+                    "[ResolveChained] groupkey ← wads_sql_result.%s (%d wafers)",
+                    selected_oper,
+                    len(groupkeys_by_oper[selected_oper]),
+                )
+        elif not selected_oper and len(groupkeys_by_oper) == 1:
+            inferred_oper, inferred_groupkeys = next(iter(groupkeys_by_oper.items()))
+            params["map_oper"] = inferred_oper
+            if (
+                _is_placeholder_or_empty(params.get("groupkey"))
+                and _is_placeholder_or_empty(params.get("map_groupkey"))
+                and _is_placeholder_or_empty(params.get("lot_ids"))
+            ):
+                params["groupkey"] = ",".join(inferred_groupkeys)
+            logger.info(
+                "[ResolveChained] map_oper/groupkey ← wads_sql_result.%s (%d wafers)",
+                inferred_oper,
+                len(inferred_groupkeys),
+            )
 
     if (
         task.get("agent") == "map_agent"
@@ -1318,6 +1378,7 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
         and _is_placeholder_or_empty(params.get("map_groupkey"))
         and _is_placeholder_or_empty(params.get("lot_ids"))
         and groupkeys
+        and not (groupkeys_by_oper and _is_placeholder_or_empty(params.get("map_oper")))
     ):
         params["groupkey"] = ",".join(str(v).strip() for v in groupkeys if str(v).strip())
         logger.info("[ResolveChained] groupkey ← wads_sql_result (%d wafers)", len(groupkeys))
@@ -1340,6 +1401,12 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
         if fallback:
             params["cause_oper"] = fallback
             logger.info("[ResolveChained] cause_oper ← %s", fallback)
+
+    if task.get("agent") == "map_agent" and _is_placeholder_or_empty(params.get("map_oper")):
+        fallback_oper = _normalize_map_oper(str(wads_data.get("map_oper") or ""))
+        if fallback_oper:
+            params["map_oper"] = fallback_oper
+            logger.info("[ResolveChained] map_oper ← wads_sql_result (%s)", fallback_oper)
 
     return params
 
@@ -1442,6 +1509,8 @@ def _needs_replan(pending: list[dict]) -> bool:
         agent = task.get("agent", "")
         params = task.get("params", {}) or {}
         if agent == "map_agent":
+            if _is_placeholder_or_empty(params.get("map_oper")):
+                return True
             if _is_placeholder_or_empty(params.get("lot_ids")) and _is_placeholder_or_empty(params.get("groupkey")) and all(
                 _is_placeholder_or_empty(params.get(k))
                 for k in ("map_lot_id", "map_lot_ids", "map_groupkey")
@@ -1461,6 +1530,66 @@ def _needs_replan(pending: list[dict]) -> bool:
             if all(_is_placeholder_or_empty(params.get(k)) for k in ("dh_query", "fail_type", "dh_fail_type", "cause_oper")):
                 return True
     return False
+
+
+def _expand_map_tasks_by_wads_map_oper(
+    pending: list[dict],
+    state: dict,
+) -> tuple[list[dict], dict[str, list[dict]]]:
+    groups = _wads_groupkeys_by_map_oper(_latest_wads_result(state))
+    if len(groups) < 2:
+        return pending, {}
+
+    expanded_pending: list[dict] = []
+    replacements: dict[str, list[dict]] = {}
+    for task in pending:
+        params = dict(task.get("params") or {})
+        if (
+            task.get("agent") != "map_agent"
+            or not _is_placeholder_or_empty(params.get("map_oper"))
+            or not _is_placeholder_or_empty(params.get("groupkey"))
+            or not _is_placeholder_or_empty(params.get("map_groupkey"))
+            or not _is_placeholder_or_empty(params.get("lot_ids"))
+        ):
+            expanded_pending.append(task)
+            continue
+
+        task_expansion: list[dict] = []
+        for index, (oper, groupkeys) in enumerate(groups.items(), start=1):
+            next_params = dict(params)
+            next_params["map_oper"] = oper
+            next_params["groupkey"] = ",".join(groupkeys)
+            next_params.pop("lot_ids", None)
+            next_params.pop("wf_ids", None)
+            expanded_task = {
+                **task,
+                "task_id": f"{task.get('task_id', 'task_map')}_p{index}",
+                "goal": f"[{oper}] {task.get('goal', '')}".strip(),
+                "params": next_params,
+            }
+            task_expansion.append(expanded_task)
+
+        replacements[str(task.get("task_id") or "")] = task_expansion
+        expanded_pending.extend(task_expansion)
+
+    return expanded_pending, replacements
+
+
+def _replace_plan_tasks(
+    task_plan: list[dict],
+    replacements: dict[str, list[dict]],
+) -> list[dict]:
+    if not replacements:
+        return task_plan
+
+    updated: list[dict] = []
+    for task in task_plan:
+        task_id = str(task.get("task_id") or "")
+        if task_id in replacements:
+            updated.extend(replacements[task_id])
+        else:
+            updated.append(task)
+    return updated
 
 
 @observe(name="replanner_node")
@@ -1521,6 +1650,18 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     # Fast path: 큐 비었거나 past 비었거나 chained-input 의존이 없으면 LLM 호출 생략
     if not pending or not past:
         return scratchpad_update
+    expanded_pending, replacements = _expand_map_tasks_by_wads_map_oper(pending, state)
+    if replacements:
+        logger.info(
+            "[Replanner] WADS CATEGORY 기반 map_oper fan-out: %d → %d pending tasks",
+            len(pending),
+            len(expanded_pending),
+        )
+        return {
+            **scratchpad_update,
+            "pending_tasks": expanded_pending,
+            "task_plan": _replace_plan_tasks(task_plan, replacements),
+        }
     # C1: 코드 해소 시뮬레이션 — _resolve_chained_params가 모든 pending을 해소할 수 있으면 LLM 호출 생략
     simulated_pending = [
         {**t, "params": _resolve_chained_params(t, state)} for t in pending

@@ -138,6 +138,16 @@ def _append_unique(values: list[str], value: Any) -> None:
         values.append(text)
 
 
+def _row_groupkey(row: Any) -> str:
+    if isinstance(row, pd.Series):
+        getter = row.get
+    elif isinstance(row, dict):
+        getter = row.get
+    else:
+        return ""
+    return _clean_text(getter("groupkey") or getter("group_key"))
+
+
 def _report_key(row: Any) -> tuple[str, str, str, str]:
     if isinstance(row, pd.Series):
         getter = row.get
@@ -164,7 +174,7 @@ def _category_to_map_oper(category: Any) -> str:
 
 def _wads_join_coverage(df: pd.DataFrame) -> dict[str, Any]:
     rows = df.to_dict(orient="records") if not df.empty else []
-    has_groupkey_column = "groupkey" in df.columns
+    has_groupkey_column = "groupkey" in df.columns or "group_key" in df.columns
     report_keys: list[str] = []
     groupkeys: list[str] = []
     lot_ids: list[str] = []
@@ -183,7 +193,7 @@ def _wads_join_coverage(df: pd.DataFrame) -> dict[str, Any]:
         if category or parameter:
             _append_unique(oper_para_samples, f"{category}_{parameter}".strip("_"))
 
-        groupkey = _clean_text(row.get("groupkey"))
+        groupkey = _row_groupkey(row)
         if groupkey:
             groupkey_rows += 1
             _append_unique(groupkeys, groupkey)
@@ -253,7 +263,7 @@ def _wafer_groups_for_reports(
             start_tm=start_tm,
             parameter=parameter,
             columns=(
-                f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, w.GROUPKEY"
+                f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, w.GROUP_KEY AS GROUPKEY"
             ),
             join_wafers=True,
         )
@@ -265,7 +275,7 @@ def _wafer_groups_for_reports(
     for row in wafer_df.to_dict(orient="records"):
         key = _report_key(row)
         bucket = grouped.setdefault(key, {"groupkeys": [], "lot_ids": [], "wf_ids": []})
-        groupkey = row.get("groupkey")
+        groupkey = _row_groupkey(row)
         _append_unique(bucket["groupkeys"], groupkey)
         lotid, wf_id = _split_groupkey(groupkey)
         _append_unique(bucket["lot_ids"], lotid)
@@ -416,7 +426,7 @@ def wads_query_data(
             start_tm=start_tm,
             parameter=parameter,
             columns=(
-                f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, w.GROUPKEY"
+                f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, w.GROUP_KEY AS GROUPKEY"
             ),
             join_wafers=True,
         )
@@ -461,8 +471,8 @@ def wads_query_data(
 
     result = []
     for row in filtered_df.to_dict(orient="records"):
-        lotid, wf_id = _split_groupkey(row.get("groupkey"))
-        groupkey = _clean_text(row.get("groupkey"))
+        groupkey = _row_groupkey(row)
+        lotid, wf_id = _split_groupkey(groupkey)
         result.append(
             {
                 "lotid": lotid,
@@ -825,7 +835,7 @@ Schema:
 
   {wf_table} w
     OPER_PARA VARCHAR2   -- r.CATEGORY || '_' || r.PARAMETER
-    GROUPKEY  VARCHAR2   -- lot.wf (e.g., "4SS2DPD.03")
+    GROUP_KEY VARCHAR2   -- lot.wf (e.g., "4SS2DPD.03")
     END_TM    TIMESTAMP  -- same value as r.END_TM
     LOT_CD    VARCHAR2   -- same value as r.LOTCD
 
@@ -838,6 +848,7 @@ Rules:
 - SELECT statements ONLY
 - Do NOT include HTML column unless explicitly requested
 - Use aliases r and w when joining
+- When selecting the wafer identifier, use w.GROUP_KEY AS GROUPKEY so downstream code receives a GROUPKEY column.
 - Use UPPER() for case-insensitive LOTCD, CATEGORY, PARAMETER comparisons
 - Date filtering: TRUNC(CAST(r.END_TM AS DATE)) = TO_DATE('2026-03-19', 'YYYY-MM-DD') or BETWEEN two TO_DATE literals
 - Use TO_CHAR(r.END_TM, 'YYYY-MM-DD HH24:MI:SS') when selecting END_TM for display
@@ -949,7 +960,7 @@ def wads_query_sql(query_description: str) -> str:
         error_obj = e.args[0] if e.args else e
         error_code = getattr(error_obj, "code", 0)
         if error_code in (904, 942):
-            return f"컬럼/테이블 오류: {e}. 사용 가능 컬럼: LOTCD, CATEGORY, PARAMETER, END_TM, HTML, OPER_PARA, GROUPKEY, LOT_CD"
+            return f"컬럼/테이블 오류: {e}. 사용 가능 컬럼: LOTCD, CATEGORY, PARAMETER, END_TM, HTML, OPER_PARA, GROUP_KEY, LOT_CD"
         return f"SQL 실행 오류: {e}. query_description을 수정하여 재시도하세요."
     except Exception as e:
         logger.error("[wads_query_sql] 예기치 않은 오류: %s", e)
@@ -966,6 +977,9 @@ def wads_query_sql(query_description: str) -> str:
         {name: _json_safe_value(value) for name, value in zip(col_names, row)}
         for row in rows
     ]
+    for row in result:
+        if "group_key" in row and "groupkey" not in row:
+            row["groupkey"] = row["group_key"]
     result, sort_info = _sort_sql_result_rows(
         result,
         query_description=query_description,

@@ -547,7 +547,7 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 
 3. **wads_query_sql**: 복잡한 조건의 WADS SQL 쿼리 실행
    - wads_query_data/wads_get_html_report로 표현할 수 없는 복잡한 조건에만 사용
-   - GROUP BY 집계, COUNT, 여러 parameter 동시 필터, CATEGORY 조건, GROUPKEY 조회 등
+   - GROUP BY 집계, COUNT, 여러 parameter 동시 필터, CATEGORY 조건, GROUP_KEY 조회 등
    - query_description에 자연어로 조회 내용을 설명
    - 예: wads_query_sql(query_description="4SS의 3월 EASY(W), TWT(T) 건수를 parameter별 집계")
    - **주의**: 내부 LLM 호출이 추가되어 다른 도구보다 느립니다. 단순 조건은 wads_query_data를 먼저 사용하세요.
@@ -555,7 +555,7 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 
 ## 데이터 구조:
 - DF_WADS_REPORT: LOTCD, CATEGORY(PT1H_TEST/PT1C_TEST), PARAMETER(fail_type), END_TM, HTML
-- DF_WADS_WF_LIST: OPER_PARA(CATEGORY_PARAMETER), GROUPKEY(lot.wf), END_TM, LOT_CD
+- DF_WADS_WF_LIST: OPER_PARA(CATEGORY_PARAMETER), GROUP_KEY(lot.wf), END_TM, LOT_CD
 - lotcd: 로트코드 (예: 4SA, 4SS)
 - end_tm: 종료 시간 (예: 2026-01-01 18:07:01)
 - parameter: fail_type (예: EASY(W), TWT(T), FMAX(X))
@@ -573,7 +573,7 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 ## 도구 선택 가이드:
 - 단순 필터(lotcd + 날짜 + parameter 1개) → wads_query_data 또는 wads_get_html_report
 - HTML 리포트 필요 → wads_get_html_report
-- 복잡한 조건(여러 parameter OR/AND, CATEGORY별 GROUP BY, COUNT, GROUPKEY 조회, 서브쿼리) → wads_query_sql
+- 복잡한 조건(여러 parameter OR/AND, CATEGORY별 GROUP BY, COUNT, GROUP_KEY 조회, 서브쿼리) → wads_query_sql
 - "모든 날짜" 요청 → 날짜 필터 없이 wads_query_data(lotcd="...")
 - 우선순위: wads_query_data/wads_get_html_report > wads_query_sql (단순한 도구를 먼저 시도)
 

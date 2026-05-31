@@ -425,6 +425,8 @@ def _can_defer_required_param(
     prior_agents = {task.get("agent", "") for task in tasks[:current_index]}
     if param == "lot_ids" and agent in {"map_agent", "lot_history_agent"}:
         return "wads_agent" in prior_agents
+    if param == "map_oper" and agent == "map_agent":
+        return "wads_agent" in prior_agents
     return False
 
 
