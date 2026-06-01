@@ -10,7 +10,7 @@ from langchain_core.messages import HumanMessage
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def test_fail_history_agent_wraps_message_as_markdown_artifact(monkeypatch) -> None:
+def test_fail_history_agent_wraps_message_as_readable_html_artifact(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("OPENROUTER_BASE_URL", "http://localhost")
 
@@ -34,15 +34,18 @@ def test_fail_history_agent_wraps_message_as_markdown_artifact(monkeypatch) -> N
     artifacts = result["fail_history_artifacts"]
 
     assert len(artifacts) == 1
-    assert artifacts[0]["type"] == "markdown"
-    assert artifacts[0]["mime"] == "text/markdown"
+    assert artifacts[0]["type"] == "html"
+    assert artifacts[0]["mime"] == "text/html"
     assert artifacts[0]["agent"] == "fail_history_agent"
-    assert artifacts[0]["data"] == message.content
+    assert artifacts[0]["data"] != message.content
+    assert "<article class=\"paper\">" in artifacts[0]["data"]
+    assert "Fail History Report" in artifacts[0]["data"]
+    assert "불량이력 분석 결과" in artifacts[0]["data"]
     assert "조건에 맞는 불량이력이 없습니다" in artifacts[0]["data"]
 
     envelope = message.additional_kwargs["result"]
     assert envelope["metadata"]["artifact_count"] == 1
-    assert envelope["artifact_refs"][0]["artifact_type"] == "markdown"
+    assert envelope["artifact_refs"][0]["artifact_type"] == "html"
 
 
 def test_agent_server_preserves_declared_markdown_artifact_type(monkeypatch) -> None:

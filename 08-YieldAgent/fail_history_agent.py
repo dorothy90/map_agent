@@ -6,6 +6,7 @@ LLM에게 도구 결정을 맡기지 않는다. 코드가 직접 함수 호출.
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -84,17 +85,133 @@ def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) ->
         if url:
             lines.append(f"- **문서:** [{doc_name}]({url})")
         lines.append("")
-        
+
     return "\n".join(lines).strip()
 
 
-def _message_artifact(content: str, title: str = "fail_history_answer") -> dict[str, str]:
-    """Package fail_history chat prose as a UI artifact for the right panel."""
+def _format_report_inline(text: str) -> str:
+    escaped = html.escape(str(text or ""), quote=True)
+    escaped = re.sub(
+        r"\[([^\]]+)\]\(((?:https?://|/)[^)\s]+)\)",
+        r'<a href="\2" target="_blank" rel="noopener">\1</a>',
+        escaped,
+    )
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+    return escaped
+
+
+def _clean_report_heading(text: str) -> str:
+    heading = re.sub(r"^#+\s*", "", text).strip()
+    replacements = {
+        "💡 [답변]": "답변",
+        "🔍 출처": "출처",
+    }
+    for old, new in replacements.items():
+        heading = heading.replace(old, new)
+    return heading
+
+
+def _render_report_body(content: str) -> str:
+    parts: list[str] = []
+    in_list = False
+
+    def close_list() -> None:
+        nonlocal in_list
+        if in_list:
+            parts.append("</ul>")
+            in_list = False
+
+    for raw_line in str(content or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            close_list()
+            continue
+        if line == "---":
+            close_list()
+            parts.append('<hr class="report-rule" />')
+            continue
+        if line.startswith("###") or line.startswith("##"):
+            close_list()
+            parts.append(f"<h2>{html.escape(_clean_report_heading(line))}</h2>")
+            continue
+        if line.startswith(">"):
+            close_list()
+            quote = line.lstrip("> ").strip()
+            parts.append(f"<blockquote>{_format_report_inline(quote)}</blockquote>")
+            continue
+        if line.startswith("- "):
+            if not in_list:
+                parts.append("<ul>")
+                in_list = True
+            parts.append(f"<li>{_format_report_inline(line[2:].strip())}</li>")
+            continue
+        close_list()
+        cls = ' class="source-title"' if line.startswith("**") and line.endswith("**") else ""
+        parts.append(f"<p{cls}>{_format_report_inline(line)}</p>")
+
+    close_list()
+    return "\n".join(parts) or "<p>표시할 내용이 없습니다.</p>"
+
+
+def _message_artifact(
+    content: str,
+    title: str = "fail_history_answer",
+    *,
+    query: str = "",
+    status: str = "success",
+    result_count: int = 0,
+    retrieval_mode: str = "",
+) -> dict[str, str]:
+    """Package fail_history chat prose as a readable HTML report artifact."""
+
+    status_labels = {
+        "success": "검색 완료",
+        "empty": "결과 없음",
+        "error": "오류",
+    }
+    status_label = status_labels.get(status, status or "검색 완료")
+    status_class = "error" if status == "error" else "empty" if status == "empty" else "success"
+    query_html = html.escape(query or "Fail history query", quote=True)
+    retrieval_html = html.escape(retrieval_mode or "baseline", quote=True)
+    body_html = _render_report_body(content)
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    report_html = f"""<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Fail History Report</title>
+<style>
+*{{box-sizing:border-box}}body{{margin:0;background:#f7f8fa;color:#17202a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;line-height:1.65}}
+.report{{max-width:980px;margin:0 auto;padding:18px}}.paper{{background:#fff;border:1px solid #d8dee8;border-radius:8px;overflow:hidden}}
+.report-header{{display:flex;justify-content:space-between;gap:18px;padding:18px 20px;border-bottom:1px solid #d8dee8;background:#fbfcfd}}
+.eyebrow{{color:#0f766e;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}}h1{{margin:2px 0 0;font-size:19px;line-height:1.25;letter-spacing:0}}
+.query{{margin-top:8px;color:#667085;font-size:13px}}.meta{{display:flex;flex-wrap:wrap;justify-content:flex-end;align-content:flex-start;gap:6px;min-width:180px}}
+.badge{{display:inline-flex;align-items:center;min-height:26px;padding:4px 9px;border-radius:999px;background:#eef3f8;color:#344054;font-size:12px;font-weight:650;white-space:nowrap}}
+.badge.success{{background:#e7f6f3;color:#0f766e}}.badge.empty{{background:#fff4dd;color:#a15c07}}.badge.error{{background:#fff0ed;color:#b42318}}
+.report-body{{padding:18px 20px 22px}}.report-body h2{{margin:18px 0 9px;color:#111827;font-size:15px;line-height:1.35;letter-spacing:0}}.report-body h2:first-child{{margin-top:0}}
+p{{margin:8px 0;color:#243142}}.source-title{{margin-top:14px;padding:10px 12px;border-left:3px solid #0f766e;background:#f8fbfb;color:#1f2937}}
+ul{{margin:8px 0 12px;padding:0;list-style:none}}li{{position:relative;margin:6px 0;padding-left:18px;color:#2f3a4a}}li:before{{content:"";position:absolute;left:2px;top:.75em;width:6px;height:6px;border-radius:50%;background:#0f766e}}
+strong{{font-weight:700;color:#111827}}code{{padding:1px 5px;border-radius:4px;background:#eef2f6;color:#243142;font-family:"SFMono-Regular",Consolas,monospace;font-size:12px}}
+a{{color:#0b63ce;text-decoration:none;font-weight:650}}a:hover{{text-decoration:underline}}blockquote{{margin:10px 0;padding:10px 12px;border-left:3px solid #9aa4b2;background:#f5f7fa;color:#475467}}
+.report-rule{{border:0;border-top:1px solid #d8dee8;margin:18px 0}}.footer{{padding:10px 20px 14px;border-top:1px solid #d8dee8;color:#667085;font-size:11px;background:#fbfcfd}}
+@media(max-width:640px){{.report{{padding:10px}}.report-header{{flex-direction:column;padding:16px}}.meta{{justify-content:flex-start;min-width:0}}.report-body{{padding:16px}}}}
+</style></head><body>
+<main class="report"><article class="paper">
+<header class="report-header"><div><div class="eyebrow">Fail History Report</div><h1>불량이력 분석 결과</h1><div class="query">검색어: {query_html}</div></div>
+<div class="meta"><span class="badge {status_class}">{html.escape(status_label)}</span><span class="badge">결과 {result_count}건</span><span class="badge">{retrieval_html}</span></div></header>
+<section class="report-body">{body_html}</section>
+<footer class="footer">Generated {html.escape(generated_at)} · fail_history_agent</footer>
+</article></main>
+<script>
+function sendHeight(){{var h=(document.documentElement.scrollHeight||document.body.scrollHeight)+16;window.parent.postMessage({{type:'resize',height:h}},'*');window.parent.postMessage({{type:'set-height',height:h}},'*')}}
+window.addEventListener('load',function(){{sendHeight();setTimeout(sendHeight,100);setTimeout(sendHeight,300)}});window.addEventListener('resize',sendHeight);if(window.ResizeObserver){{new ResizeObserver(sendHeight).observe(document.body)}}
+</script></body></html>"""
 
     return {
-        "type": "markdown",
-        "mime": "text/markdown",
-        "data": content,
+        "type": "html",
+        "mime": "text/html",
+        "data": report_html,
         "title": title,
         "agent": "fail_history_agent",
         "semantic": "unknown",
@@ -197,7 +314,15 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             content="불량이력 검색 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
             name="fail_history_agent",
         )
-        error_artifacts = [_message_artifact(error_message.content, "fail_history_error")]
+        error_artifacts = [
+            _message_artifact(
+                error_message.content,
+                "fail_history_error",
+                query=query,
+                status="error",
+                result_count=0,
+            )
+        ]
         attach_result_envelope(
             error_message,
             logger=logger,
@@ -258,7 +383,15 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         message_content = f"### 💡 [답변]\n\n{answer}\n\n---\n\n{result_block}"
     else:
         message_content = f"### 💡 [답변]\n\n{answer}"
-    artifacts = [_message_artifact(message_content)]
+    artifacts = [
+        _message_artifact(
+            message_content,
+            query=query,
+            status="success" if results else "empty",
+            result_count=len(results),
+            retrieval_mode=retrieval_mode,
+        )
+    ]
     result_message = AIMessage(content=message_content, name="fail_history_agent")
     doc_ids = [r.get("doc_id") for r in results if isinstance(r, dict) and r.get("doc_id")]
     grounded_summary = derive_summary_from_rows(
