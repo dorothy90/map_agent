@@ -182,20 +182,20 @@ def _message_artifact(
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Fail History Report</title>
 <style>
-*{{box-sizing:border-box}}body{{margin:0;background:#f7f8fa;color:#17202a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;line-height:1.65}}
-.report{{max-width:980px;margin:0 auto;padding:18px}}.paper{{background:#fff;border:1px solid #d8dee8;border-radius:8px;overflow:hidden}}
-.report-header{{display:flex;justify-content:space-between;gap:18px;padding:18px 20px;border-bottom:1px solid #d8dee8;background:#fbfcfd}}
-.eyebrow{{color:#0f766e;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}}h1{{margin:2px 0 0;font-size:19px;line-height:1.25;letter-spacing:0}}
-.query{{margin-top:8px;color:#667085;font-size:13px}}.meta{{display:flex;flex-wrap:wrap;justify-content:flex-end;align-content:flex-start;gap:6px;min-width:180px}}
+*{{box-sizing:border-box}}body{{margin:0;background:#f7f8fa;color:#17202a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13.5px;line-height:1.7}}
+.report{{max-width:980px;margin:0 auto;padding:28px 32px 36px}}.paper{{background:#fff;border:1px solid #d8dee8;border-radius:8px;overflow:hidden}}
+.report-header{{display:flex;justify-content:space-between;gap:18px;padding:20px 26px 18px;border-bottom:1px solid #d8dee8;background:#fbfcfd}}
+.eyebrow{{color:#0f766e;font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}}h1{{margin:2px 0 0;font-size:18px;line-height:1.28;letter-spacing:0}}
+.query{{margin-top:9px;color:#667085;font-size:12.5px}}.meta{{display:flex;flex-wrap:wrap;justify-content:flex-end;align-content:flex-start;gap:6px;min-width:180px}}
 .badge{{display:inline-flex;align-items:center;min-height:26px;padding:4px 9px;border-radius:999px;background:#eef3f8;color:#344054;font-size:12px;font-weight:650;white-space:nowrap}}
 .badge.success{{background:#e7f6f3;color:#0f766e}}.badge.empty{{background:#fff4dd;color:#a15c07}}.badge.error{{background:#fff0ed;color:#b42318}}
-.report-body{{padding:18px 20px 22px}}.report-body h2{{margin:18px 0 9px;color:#111827;font-size:15px;line-height:1.35;letter-spacing:0}}.report-body h2:first-child{{margin-top:0}}
-p{{margin:8px 0;color:#243142}}.source-title{{margin-top:14px;padding:10px 12px;border-left:3px solid #0f766e;background:#f8fbfb;color:#1f2937}}
-ul{{margin:8px 0 12px;padding:0;list-style:none}}li{{position:relative;margin:6px 0;padding-left:18px;color:#2f3a4a}}li:before{{content:"";position:absolute;left:2px;top:.75em;width:6px;height:6px;border-radius:50%;background:#0f766e}}
+.report-body{{padding:24px 28px 30px}}.report-body h2{{margin:20px 0 8px;padding-left:9px;border-left:3px solid #0f766e;color:#475467;font-size:12px;font-weight:750;line-height:1.3;letter-spacing:.01em}}.report-body h2:first-child{{margin-top:0}}
+p{{margin:9px 0;color:#243142}}.source-title{{margin-top:16px;padding:9px 12px;border-left:3px solid #0f766e;background:#f8fbfb;color:#1f2937;font-size:13px}}
+ul{{margin:8px 0 14px;padding:0;list-style:none}}li{{position:relative;margin:7px 0;padding-left:17px;color:#2f3a4a}}li:before{{content:"";position:absolute;left:2px;top:.78em;width:5px;height:5px;border-radius:50%;background:#0f766e}}
 strong{{font-weight:700;color:#111827}}code{{padding:1px 5px;border-radius:4px;background:#eef2f6;color:#243142;font-family:"SFMono-Regular",Consolas,monospace;font-size:12px}}
 a{{color:#0b63ce;text-decoration:none;font-weight:650}}a:hover{{text-decoration:underline}}blockquote{{margin:10px 0;padding:10px 12px;border-left:3px solid #9aa4b2;background:#f5f7fa;color:#475467}}
-.report-rule{{border:0;border-top:1px solid #d8dee8;margin:18px 0}}.footer{{padding:10px 20px 14px;border-top:1px solid #d8dee8;color:#667085;font-size:11px;background:#fbfcfd}}
-@media(max-width:640px){{.report{{padding:10px}}.report-header{{flex-direction:column;padding:16px}}.meta{{justify-content:flex-start;min-width:0}}.report-body{{padding:16px}}}}
+.report-rule{{border:0;border-top:1px solid #d8dee8;margin:20px 0}}.footer{{padding:11px 26px 15px;border-top:1px solid #d8dee8;color:#667085;font-size:11px;background:#fbfcfd}}
+@media(max-width:640px){{.report{{padding:18px 14px 22px}}.report-header{{flex-direction:column;padding:16px 18px}}.meta{{justify-content:flex-start;min-width:0}}.report-body{{padding:18px}}}}
 </style></head><body>
 <main class="report"><article class="paper">
 <header class="report-header"><div><div class="eyebrow">Fail History Report</div><h1>불량이력 분석 결과</h1><div class="query">검색어: {query_html}</div></div>
