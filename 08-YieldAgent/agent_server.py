@@ -296,6 +296,23 @@ def _detect_artifact_type(data: str) -> ArtifactType:
     return ArtifactType.html
 
 
+def _artifact_type_from_artifact(artifact: dict, data: str) -> ArtifactType:
+    """Prefer an artifact's declared type before falling back to data sniffing."""
+
+    declared = str(artifact.get("type") or artifact.get("artifact_type") or "").strip().lower()
+    if declared:
+        try:
+            return ArtifactType(declared)
+        except ValueError:
+            logger.warning("알 수 없는 artifact type=%s, data 기반으로 추론합니다.", declared)
+
+    mime = str(artifact.get("mime") or "").strip().lower()
+    if mime in {"text/markdown", "text/x-markdown"}:
+        return ArtifactType.markdown
+
+    return _detect_artifact_type(data)
+
+
 SIMULATED_STREAM_DELAY = 0.02  # 20ms per chunk
 
 
@@ -756,12 +773,13 @@ async def chat_stream(request: ChatRequest, req: Request):
                                     task_id=str(node_state.get("current_task_id", "")),
                                 )
 
-                                art_type = _detect_artifact_type(art_data)
-                                mime = {
+                                art_type = _artifact_type_from_artifact(art, art_data)
+                                default_mime = {
                                     ArtifactType.html: "text/html",
                                     ArtifactType.image: "image/png",
                                     ArtifactType.markdown: "text/markdown",
                                 }.get(art_type, "text/html")
+                                mime = art.get("mime") or default_mime
                                 evt = ArtifactEvent(
                                     artifact_type=art_type,
                                     mime=mime,

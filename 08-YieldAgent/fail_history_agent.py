@@ -88,6 +88,19 @@ def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) ->
     return "\n".join(lines).strip()
 
 
+def _message_artifact(content: str, title: str = "fail_history_answer") -> dict[str, str]:
+    """Package fail_history chat prose as a UI artifact for the right panel."""
+
+    return {
+        "type": "markdown",
+        "mime": "text/markdown",
+        "data": content,
+        "title": title,
+        "agent": "fail_history_agent",
+        "semantic": "unknown",
+    }
+
+
 def _synthesize_answer(
     query: str,
     raw: Dict[str, Any],
@@ -184,6 +197,7 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             content="불량이력 검색 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.",
             name="fail_history_agent",
         )
+        error_artifacts = [_message_artifact(error_message.content, "fail_history_error")]
         attach_result_envelope(
             error_message,
             logger=logger,
@@ -198,11 +212,13 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
                 "fail_types": [dh_fail_type] if dh_fail_type else [],
                 "cause_opers": [dh_cause_oper] if dh_cause_oper else [],
             },
+            artifacts=error_artifacts,
             provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
+            metadata={"artifact_count": len(error_artifacts)},
         )
         return {
             "messages": [error_message],
-            "fail_history_artifacts": [],
+            "fail_history_artifacts": error_artifacts,
             "fail_history_results": [],
             "past_steps": [(state.get("current_task_id", ""), f"불량이력 영구 오류: {e}")],
         }
@@ -234,8 +250,6 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     if super_body:
         answer = answer.rstrip() + "\n\n---\n\n## 관련 패턴 (참고용)\n\n" + super_body
 
-    artifacts = []
-
     answer, agent_suggestion = extract_suggestion(answer)
 
     cited_ids = _extract_cited_doc_ids(answer)
@@ -244,6 +258,7 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         message_content = f"### 💡 [답변]\n\n{answer}\n\n---\n\n{result_block}"
     else:
         message_content = f"### 💡 [답변]\n\n{answer}"
+    artifacts = [_message_artifact(message_content)]
     result_message = AIMessage(content=message_content, name="fail_history_agent")
     doc_ids = [r.get("doc_id") for r in results if isinstance(r, dict) and r.get("doc_id")]
     grounded_summary = derive_summary_from_rows(
@@ -269,8 +284,14 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             "cause_opers": [dh_cause_oper] if dh_cause_oper else [],
             "doc_ids": doc_ids,
         },
+        artifacts=artifacts,
         provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
-        metadata={"row_count": len(results), "cited_doc_count": len(cited_ids), "wiki_hit_count": len(wiki_storage.get("hit_ids") or [])},
+        metadata={
+            "row_count": len(results),
+            "artifact_count": len(artifacts),
+            "cited_doc_count": len(cited_ids),
+            "wiki_hit_count": len(wiki_storage.get("hit_ids") or []),
+        },
     )
 
     wiki_hit_ids = list(dict.fromkeys(wiki_storage.get("hit_ids") or []))
