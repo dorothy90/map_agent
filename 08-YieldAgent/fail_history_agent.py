@@ -134,7 +134,12 @@ def _render_report_body(content: str) -> str:
         if line.startswith("###") or line.startswith("##"):
             close_list()
             heading = html.escape(_clean_report_heading(line))
-            parts.append(f'<div class="section-label" role="heading" aria-level="2">{heading}</div>')
+            parts.append(
+                '<div class="section-label" role="heading" aria-level="2" '
+                'style="margin:20px 0 8px;padding-left:9px;border-left:3px solid #0f766e;'
+                'color:#475467;font-size:12px;font-weight:750;line-height:1.3;letter-spacing:.01em">'
+                f"{heading}</div>"
+            )
             continue
         if line.startswith(">"):
             close_list()
@@ -148,8 +153,14 @@ def _render_report_body(content: str) -> str:
             parts.append(f"<li>{_format_report_inline(line[2:].strip())}</li>")
             continue
         close_list()
-        cls = ' class="source-title"' if line.startswith("**") and line.endswith("**") else ""
-        parts.append(f"<p{cls}>{_format_report_inline(line)}</p>")
+        attrs = (
+            ' class="source-title" '
+            'style="margin-top:16px;padding:9px 12px;border-left:3px solid #0f766e;'
+            'background:#f8fbfb;color:#1f2937;font-size:13px"'
+            if line.startswith("**") and line.endswith("**")
+            else ""
+        )
+        parts.append(f"<p{attrs}>{_format_report_inline(line)}</p>")
 
     close_list()
     return "\n".join(parts) or "<p>표시할 내용이 없습니다.</p>"
