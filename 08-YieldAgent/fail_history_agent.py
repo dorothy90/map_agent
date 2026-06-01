@@ -133,7 +133,8 @@ def _render_report_body(content: str) -> str:
             continue
         if line.startswith("###") or line.startswith("##"):
             close_list()
-            parts.append(f"<h2>{html.escape(_clean_report_heading(line))}</h2>")
+            heading = html.escape(_clean_report_heading(line))
+            parts.append(f'<div class="section-label" role="heading" aria-level="2">{heading}</div>')
             continue
         if line.startswith(">"):
             close_list()
@@ -189,7 +190,7 @@ def _message_artifact(
 .query{{margin-top:9px;color:#667085;font-size:12.5px}}.meta{{display:flex;flex-wrap:wrap;justify-content:flex-end;align-content:flex-start;gap:6px;min-width:180px}}
 .badge{{display:inline-flex;align-items:center;min-height:26px;padding:4px 9px;border-radius:999px;background:#eef3f8;color:#344054;font-size:12px;font-weight:650;white-space:nowrap}}
 .badge.success{{background:#e7f6f3;color:#0f766e}}.badge.empty{{background:#fff4dd;color:#a15c07}}.badge.error{{background:#fff0ed;color:#b42318}}
-.report-body{{padding:24px 28px 30px}}.report-body h2{{margin:20px 0 8px;padding-left:9px;border-left:3px solid #0f766e;color:#475467;font-size:12px;font-weight:750;line-height:1.3;letter-spacing:.01em}}.report-body h2:first-child{{margin-top:0}}
+.report-body{{padding:24px 28px 30px}}.section-label{{margin:20px 0 8px;padding-left:9px;border-left:3px solid #0f766e;color:#475467;font-size:12px;font-weight:750;line-height:1.3;letter-spacing:.01em}}.section-label:first-child{{margin-top:0}}
 p{{margin:9px 0;color:#243142}}.source-title{{margin-top:16px;padding:9px 12px;border-left:3px solid #0f766e;background:#f8fbfb;color:#1f2937;font-size:13px}}
 ul{{margin:8px 0 14px;padding:0;list-style:none}}li{{position:relative;margin:7px 0;padding-left:17px;color:#2f3a4a}}li:before{{content:"";position:absolute;left:2px;top:.78em;width:5px;height:5px;border-radius:50%;background:#0f766e}}
 strong{{font-weight:700;color:#111827}}code{{padding:1px 5px;border-radius:4px;background:#eef2f6;color:#243142;font-family:"SFMono-Regular",Consolas,monospace;font-size:12px}}

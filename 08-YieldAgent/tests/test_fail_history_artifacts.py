@@ -42,6 +42,8 @@ def test_fail_history_agent_wraps_message_as_readable_html_artifact(monkeypatch)
     assert "Fail History Report" in artifacts[0]["data"]
     assert "불량이력 분석 결과" in artifacts[0]["data"]
     assert "조건에 맞는 불량이력이 없습니다" in artifacts[0]["data"]
+    assert "<h2>" not in artifacts[0]["data"]
+    assert 'class="section-label"' in artifacts[0]["data"]
 
     envelope = message.additional_kwargs["result"]
     assert envelope["metadata"]["artifact_count"] == 1
