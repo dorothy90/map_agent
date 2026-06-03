@@ -445,7 +445,8 @@ For wads_agent → wads_start_tm, wads_end_tm (YYYY-MM-DD):
   단일 날짜 "1월 20일"         → wads_start_tm="", wads_end_tm="2026-01-20"
   "보여줘" / no date           → wads_start_tm="", wads_end_tm="{today_yyyy_mm_dd}"
   "최근 일주일" / "지난 7일"   → wads_start_tm=(오늘-6일), wads_end_tm="{today_yyyy_mm_dd}"
-  "이번달" / "3월"             → wads_start_tm="2026-03-01", wads_end_tm="{today_yyyy_mm_dd}"
+  "이번달"                     → wads_start_tm=이번달 1일, wads_end_tm="{today_yyyy_mm_dd}"
+  "3월" 같은 과거/특정 월       → wads_start_tm="2026-03-01", wads_end_tm="2026-03-31"
   "1월 20일부터 25일까지"      → wads_start_tm="2026-01-20", wads_end_tm="2026-01-25"
   "저번주"                     → wads_start_tm=지난주 월요일, wads_end_tm=지난주 일요일
 
@@ -527,7 +528,8 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 - 당신은 멀티-task plan의 한 task만 처리한다. 현재 task의 goal에 명시된 범위만 수행하라.
 - 사용자 원본 질문에 다른 의도(예: cummap 시각화, lot 이력 조회 등)가 있어도 무시하라. 다른 agent가 처리한다.
 - task goal이 "lot list 조회"이면 wads_query_data 1회 호출로 lot ID들만 추출하고 즉시 종료하라. 추가 도구 호출 금지.
-- task goal이 "parameter별 검출 리포트"이면 wads_get_html_report만 호출하고 종료하라.
+- task goal이 "parameter별 건수/집계/COUNT"이면 wads_query_sql 1회 호출로 집계하고 종료하라.
+- task goal이 "parameter별 검출 리포트"이고 건수/집계/COUNT가 아닌 경우에만 wads_get_html_report를 호출하고 종료하라.
 - 같은 결과를 다른 방법으로 검증하려고 추가 호출하지 마라. 첫 호출이 성공하면 그 결과로 종료하라.
 
 사용자가 주간 집계 데이터, 변곡점 분석, Layer1 리포트에 대해 질문하면 적절한 도구를 사용하여 정보를 조회하고 답변합니다.
@@ -548,6 +550,7 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 3. **wads_query_sql**: 복잡한 조건의 WADS SQL 쿼리 실행
    - wads_query_data/wads_get_html_report로 표현할 수 없는 복잡한 조건에만 사용
    - GROUP BY 집계, COUNT, 여러 parameter 동시 필터, CATEGORY 조건, GROUP_KEY 조회 등
+   - "건수", "집계", "COUNT", "몇 건", "파라미터별로 정리" 요청은 이 도구를 우선 사용
    - query_description에 자연어로 조회 내용을 설명
    - 예: wads_query_sql(query_description="4SS의 3월 EASY(W), TWT(T) 건수를 parameter별 집계")
    - **주의**: 내부 LLM 호출이 추가되어 다른 도구보다 느립니다. 단순 조건은 wads_query_data를 먼저 사용하세요.
@@ -573,9 +576,10 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 ## 도구 선택 가이드:
 - 단순 필터(lotcd + 날짜 + parameter 1개) → wads_query_data 또는 wads_get_html_report
 - HTML 리포트 필요 → wads_get_html_report
+- 건수/집계/COUNT/몇 건/파라미터별 정리 → wads_query_sql
 - 복잡한 조건(여러 parameter OR/AND, CATEGORY별 GROUP BY, COUNT, GROUP_KEY 조회, 서브쿼리) → wads_query_sql
 - "모든 날짜" 요청 → 날짜 필터 없이 wads_query_data(lotcd="...")
-- 우선순위: wads_query_data/wads_get_html_report > wads_query_sql (단순한 도구를 먼저 시도)
+- 우선순위: 집계/COUNT 의도는 wads_query_sql 우선. 단순 목록/HTML 리포트만 wads_query_data/wads_get_html_report 우선.
 
 ## 사용 예시:
 - 전체 데이터 조회: wads_query_data()

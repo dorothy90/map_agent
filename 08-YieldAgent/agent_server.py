@@ -70,7 +70,7 @@ _handler.setFormatter(logging.Formatter(
     "%(asctime)s [%(name)s] %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
 ))
-_runtime_log_level = getattr(logging, os.getenv("LOG_LEVEL", "WARNING").upper(), logging.WARNING)
+_runtime_log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
 for _name in ("agent_server", "yield_agent"):
     _lg = logging.getLogger(_name)
     _lg.setLevel(_runtime_log_level)
@@ -78,6 +78,7 @@ for _name in ("agent_server", "yield_agent"):
         _lg.addHandler(_handler)
 
 logger = logging.getLogger("agent_server")
+logger.info("terminal log level=%s", logging.getLevelName(_runtime_log_level))
 
 
 def _pending_interrupt_from_state(state_snapshot) -> dict:
@@ -551,8 +552,8 @@ async def chat_stream(request: ChatRequest, req: Request):
                 lf.set_current_trace_io(
                     input={"query": request.query, "session_id": request.session_id},
                 )
-            except Exception:
-                logger.warning("Langfuse trace init 실패 (무시)")
+            except Exception as exc:
+                logger.debug("Langfuse trace init 실패 (무시): %s", exc)
 
             emit_trace_event(
                 "user_turn_started",

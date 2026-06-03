@@ -17,7 +17,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from datetime import date
 
-AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "http://127.0.0.1:8003")
+AGENT_BASE_URL = os.getenv("AGENT_BASE_URL", "http://127.0.0.1:1234")
 
 # ── 페이지 설정 ──────────────────────────────────────────
 st.set_page_config(
@@ -73,6 +73,7 @@ def _get_iframe_height(title: str, data: str = "") -> int:
     if "yield_table" in t:
         if data:
             import re
+
             tr_count = len(re.findall(r"<tr\b", data))
             if tr_count > 0:
                 # Give more height for padding and horizontal scrollbar
@@ -81,6 +82,7 @@ def _get_iframe_height(title: str, data: str = "") -> int:
     elif "lot_compare_table" in t or "lot_compare" in t:
         if data:
             import re
+
             tr_count = len(re.findall(r"<tr\b", data))
             if tr_count > 0:
                 return max(260, 310 + (tr_count - 5) * 26)
@@ -92,6 +94,7 @@ def _get_iframe_height(title: str, data: str = "") -> int:
     elif "fail_history" in t or "wads_report" in t:
         if data:
             import re
+
             tr_count = len(re.findall(r"<tr\b", data))
             has_summary = "details" in data or "summary-block" in data
             base_height = 420 if has_summary else 280

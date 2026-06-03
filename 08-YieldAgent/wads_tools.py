@@ -110,6 +110,11 @@ def _end_tm_expr(alias: str = "r") -> str:
     return f"TO_CHAR({alias}.END_TM, 'YYYY-MM-DD HH24:MI:SS') AS END_TM"
 
 
+_END_TM_DATE_JOIN_EXPR = (
+    "TRUNC(CAST(w.END_TM AS DATE)) = TRUNC(CAST(r.END_TM AS DATE))"
+)
+
+
 def _json_safe_value(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d %H:%M:%S")
@@ -240,7 +245,7 @@ def _log_join_coverage(context: str, stats: dict[str, Any]) -> None:
     if stats.get("join_missing"):
         logger.warning(
             "[%s] report rows matched but no wafer GROUPKEY rows. "
-            "Check %s join keys LOT_CD, OPER_PARA, END_TM. "
+            "Check %s join keys LOT_CD, OPER_PARA, END_TM date. "
             "sample_report_keys=%s sample_oper_para=%s",
             context,
             _ORACLE_WF_TABLE,
@@ -336,7 +341,7 @@ def _query_wads_data(
             f" LEFT JOIN {_ORACLE_WF_TABLE} w"
             " ON w.LOT_CD = r.LOTCD"
             " AND w.OPER_PARA = r.CATEGORY || '_' || r.PARAMETER"
-            " AND w.END_TM = r.END_TM"
+            f" AND {_END_TM_DATE_JOIN_EXPR}"
         )
     sql = f"SELECT {columns} {from_clause} WHERE {where_clause} ORDER BY r.END_TM DESC"
     logger.debug(
@@ -443,7 +448,13 @@ def wads_query_data(
     if filtered_df.empty:
         stats = _wads_join_coverage(filtered_df)
         storage["query_stats"] = stats
-        logger.info("[wads_query_data] 결과 없음 (NoMatch)")
+        logger.warning(
+            "[wads_query_data] 결과 없음 (NoMatch): lotcd=%s, start_tm=%s, end_tm=%s, parameter=%s",
+            lotcd,
+            start_tm,
+            end_tm,
+            parameter,
+        )
         emit_runtime_detail(
             "wads.query_data",
             {
@@ -520,7 +531,7 @@ def wads_query_data(
     if stats.get("join_missing"):
         lines.append(
             "주의: WADS 리포트는 조회됐지만 연결된 wafer GROUPKEY가 없습니다. "
-            f"{_ORACLE_WF_TABLE}의 LOT_CD, OPER_PARA, END_TM 조인 키를 확인하세요."
+            f"{_ORACLE_WF_TABLE}의 LOT_CD, OPER_PARA, END_TM 날짜 조인 키를 확인하세요."
         )
     for r in result[:50]:
         lines.append(
@@ -581,7 +592,13 @@ def wads_get_html_report(
     if filtered_df.empty:
         stats = _wads_join_coverage(filtered_df)
         storage["report_stats"] = stats
-        logger.info("[wads_get_html_report] 결과 없음")
+        logger.warning(
+            "[wads_get_html_report] 결과 없음: lotcd=%s, start_tm=%s, end_tm=%s, parameter=%s",
+            lotcd,
+            start_tm,
+            end_tm,
+            parameter,
+        )
         emit_runtime_detail(
             "wads.report_data",
             {
@@ -684,6 +701,23 @@ def _strip_sql_comments(sql: str) -> str:
     sql = re.sub(r"--.*$", "", sql, flags=re.MULTILINE)
     sql = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
     return sql
+
+
+def _normalize_end_tm_join(sql: str) -> str:
+    """Generated WADS joins must match END_TM by date, not exact timestamp."""
+    patterns = (
+        r"\bw\.END_TM\s*=\s*r\.END_TM\b",
+        r"\br\.END_TM\s*=\s*w\.END_TM\b",
+    )
+    normalized = sql
+    for pattern in patterns:
+        normalized = re.sub(
+            pattern,
+            _END_TM_DATE_JOIN_EXPR,
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    return normalized
 
 
 def _validate_sql(sql: str) -> Tuple[bool, str]:
@@ -836,18 +870,19 @@ Schema:
   {wf_table} w
     OPER_PARA VARCHAR2   -- r.CATEGORY || '_' || r.PARAMETER
     GROUP_KEY VARCHAR2   -- lot.wf (e.g., "4SS2DPD.03")
-    END_TM    TIMESTAMP  -- same value as r.END_TM
+    END_TM    TIMESTAMP  -- same YYYY-MM-DD date as r.END_TM
     LOT_CD    VARCHAR2   -- same value as r.LOTCD
 
 Relationship:
   w.LOT_CD = r.LOTCD
   w.OPER_PARA = r.CATEGORY || '_' || r.PARAMETER
-  w.END_TM = r.END_TM
+  TRUNC(CAST(w.END_TM AS DATE)) = TRUNC(CAST(r.END_TM AS DATE))
 
 Rules:
 - SELECT statements ONLY
 - Do NOT include HTML column unless explicitly requested
 - Use aliases r and w when joining
+- Join END_TM by YYYY-MM-DD date only, not exact timestamp.
 - When selecting the wafer identifier, use w.GROUP_KEY AS GROUPKEY so downstream code receives a GROUPKEY column.
 - Use UPPER() for case-insensitive LOTCD, CATEGORY, PARAMETER comparisons
 - Date filtering: TRUNC(CAST(r.END_TM AS DATE)) = TO_DATE('2026-03-19', 'YYYY-MM-DD') or BETWEEN two TO_DATE literals
@@ -895,6 +930,7 @@ def wads_query_sql(query_description: str) -> str:
             raw_sql = re.sub(r"\n?```$", "", raw_sql)
         # E3 fix: trailing 단일 세미콜론 제거 — LLM이 SQL 끝에 ;를 자동으로 붙이는 습관 대응
         raw_sql = raw_sql.strip().rstrip(";").strip()
+        raw_sql = _normalize_end_tm_join(raw_sql)
     except Exception as e:
         logger.error(
             "[wads_query_sql] SQL 생성 실패: %s query_description=%r",
@@ -971,6 +1007,7 @@ def wads_query_sql(query_description: str) -> str:
     # 4. 결과 처리 — ContextVar 저장 (A-3: 요약만 LLM에 반환)
     if not rows:
         storage["sql_result"] = []
+        logger.warning("[wads_query_sql] 결과 없음: sql_len=%d", len(sql))
         return "조건에 맞는 데이터가 없습니다."
 
     result = [

@@ -707,6 +707,7 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     emit_runtime_detail("planner.tasks", {"tasks": tasks_dicts})
     logger.info("[Planner] %d task(s) 생성: %s", len(tasks_dicts),
                 [(t["task_id"], t["agent"]) for t in tasks_dicts])
+    logger.info("[Planner] task_flow=%s", task_flow(tasks_dicts))
 
     if not tasks_dicts:
         # LLM이 지원 범위 외로 판단 — planner message를 state에 남겨 supervisor가 relay하도록 함
@@ -1827,8 +1828,12 @@ def supervisor_node(
             name="supervisor",
         )
         logger.info(
-            "[Supervisor] queued task dispatch: %s → %s (remaining=%d)",
-            current_task.get("task_id"), current_task.get("agent"), len(remaining),
+            "[Supervisor] queued task dispatch: %s → %s params=%s goal=%r (remaining=%d)",
+            current_task.get("task_id"),
+            current_task.get("agent"),
+            summarize_params(task_params),
+            current_task.get("goal", ""),
+            len(remaining),
         )
         emit_runtime_detail(
             "supervisor.current_task",

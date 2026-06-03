@@ -340,6 +340,14 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         end_tm,
         parameter,
     )
+    logger.warning(
+        "[WADS Agent] context: lotcd=%s, start_tm=%s, end_tm=%s, parameter=%r, goal=%r",
+        lotcd,
+        start_tm,
+        end_tm,
+        parameter,
+        state.get("current_task_goal", ""),
+    )
     emit_runtime_detail(
         "wads.query_context",
         {
@@ -439,6 +447,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
                     name,
                     tc_summary,
                 )
+                logger.warning("[WADS Agent] tool_calls=[%s]", tc_summary)
             else:
                 logger.info(
                     "[WADS Agent] ReAct msg[%d] %s(name=%s): %s",
@@ -496,6 +505,8 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         len(reports_payload),
         sql_result_payload is not None,
     )
+    if not reports_payload and not sql_result_payload and not query_payload:
+        logger.warning("[WADS Agent] no tool payload produced. answer=%s", llm_answer[:300])
 
     # 렌더링 우선순위: reports > sql_result > query (S-1, I-2)
     artifacts = []
@@ -635,7 +646,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         answer = (
             "WADS 리포트는 "
             f"{active_stats.get('report_rows', 0)}건 조회됐지만 연결된 wafer GROUPKEY는 0건입니다. "
-            "DF_WADS_WF_LIST의 LOT_CD, OPER_PARA, END_TM 조인 키를 확인해야 합니다."
+            "DF_WADS_WF_LIST의 LOT_CD, OPER_PARA, END_TM 날짜 조인 키를 확인해야 합니다."
         )
     result_message = AIMessage(content=answer, name="wads_agent")
     out_messages: list = [result_message]

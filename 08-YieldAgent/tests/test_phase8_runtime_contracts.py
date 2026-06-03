@@ -27,6 +27,7 @@ from local_trace import (  # noqa: E402
     reset_trace_sink_for_tests,
     set_trace_context,
 )
+from prompts import WADS_SYSTEM_PROMPT_TEMPLATE  # noqa: E402
 from reference_resolver import resolve_references  # noqa: E402
 from result_contracts import (  # noqa: E402
     RESULT_ENVELOPE_SCHEMA_VERSION,
@@ -44,6 +45,7 @@ from task_normalizer_validator import (  # noqa: E402
     normalize_task_fields,
     validate_tasks,
 )
+import wads_tools as wads_tools_module  # noqa: E402
 from wads_tools import _log_wads_sql, _sort_sql_result_rows, _wads_join_coverage  # noqa: E402
 
 
@@ -734,6 +736,48 @@ def test_wads_join_coverage_accepts_db_group_key_column() -> None:
     assert stats["sample_groupkeys"] == ["4SSJG4W.14"]
 
 
+def test_wads_query_join_matches_end_tm_date_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeCursor:
+        description = [("LOTCD",)]
+
+        def execute(self, sql: str, bind_vars: dict[str, object]) -> None:
+            captured["sql"] = sql
+            captured["bind_vars"] = bind_vars
+
+        def fetchall(self) -> list[tuple]:
+            return []
+
+        def close(self) -> None:
+            pass
+
+    class FakeConnection:
+        outputtypehandler = None
+
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        wads_tools_module,
+        "_get_oracle_connection",
+        lambda: FakeConnection(),
+    )
+
+    wads_tools_module._query_wads_data(
+        lotcd="4SS",
+        columns="r.LOTCD",
+        join_wafers=True,
+    )
+
+    sql = str(captured["sql"])
+    assert "TRUNC(CAST(w.END_TM AS DATE)) = TRUNC(CAST(r.END_TM AS DATE))" in sql
+    assert "w.END_TM = r.END_TM" not in sql
+
+
 def test_wads_sql_diagnostic_logs_at_warning_by_default(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.WARNING, logger="yield_agent.wads_tools")
 
@@ -746,6 +790,40 @@ def test_wads_sql_diagnostic_logs_at_warning_by_default(caplog: pytest.LogCaptur
     text = caplog.text
     assert "[wads_query_sql.generated] SQL: SELECT PARAMETER, COUNT(*) AS CNT" in text
     assert "[wads_query_sql.generated] SQL binds: {'lotcd': '4SA'}" in text
+
+
+def test_wads_prompt_routes_parameter_count_requests_to_sql() -> None:
+    prompt = WADS_SYSTEM_PROMPT_TEMPLATE.format(current_date="2026년 06월 01일")
+
+    assert 'task goal이 "parameter별 건수/집계/COUNT"이면 wads_query_sql' in prompt
+    assert "건수/집계/COUNT/몇 건/파라미터별 정리 → wads_query_sql" in prompt
+    assert 'task goal이 "parameter별 검출 리포트"이면 wads_get_html_report만' not in prompt
+
+
+def test_wads_sql_generator_prompt_joins_end_tm_by_date_only() -> None:
+    prompt = wads_tools_module._SQL_GEN_PROMPT.format(
+        report_table="DF_WADS_REPORT",
+        wf_table="DF_WADS_WF_LIST",
+        query_description="4SS wafer groupkey 목록",
+    )
+
+    assert "TRUNC(CAST(w.END_TM AS DATE)) = TRUNC(CAST(r.END_TM AS DATE))" in prompt
+    assert "w.END_TM = r.END_TM" not in prompt
+    assert "Join END_TM by YYYY-MM-DD date only" in prompt
+
+
+def test_wads_generated_sql_normalizes_exact_end_tm_join() -> None:
+    sql = (
+        "SELECT w.GROUP_KEY FROM DF_WADS_REPORT r "
+        "JOIN DF_WADS_WF_LIST w ON w.LOT_CD = r.LOTCD "
+        "AND w.OPER_PARA = r.CATEGORY || '_' || r.PARAMETER "
+        "AND w.END_TM = r.END_TM"
+    )
+
+    normalized = wads_tools_module._normalize_end_tm_join(sql)
+
+    assert "TRUNC(CAST(w.END_TM AS DATE)) = TRUNC(CAST(r.END_TM AS DATE))" in normalized
+    assert "w.END_TM = r.END_TM" not in normalized
 
 
 def test_report_ordinal_refs_fan_out_to_report_groupkeys_for_cummap() -> None:
