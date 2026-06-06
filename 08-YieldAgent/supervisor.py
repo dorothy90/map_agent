@@ -52,15 +52,6 @@ from task_normalizer_validator import (
     normalize_task_fields,
     validate_tasks,
 )
-from hitl_gate import (
-    CONFIRMATION_ISSUE_TYPES,
-    hitl_abort_message,
-    hitl_interrupt_payload,
-    hitl_response_record,
-    hitl_selected_result_id,
-    select_hitl_issues,
-    should_abort_after_response,
-)
 from local_trace import (
     emit_runtime_detail,
     emit_trace_event,
@@ -191,36 +182,6 @@ action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
 - cancel이면 requests는 []로 둔다.
 - modify면 사용자 응답을 반영한 수정된 전체 요청 목록을 requests에 넣는다.
 """.strip()
-
-
-def _review_hitl_confirmation(
-    issue: dict[str, Any],
-    response: Any,
-    task_plan: list[dict[str, Any]],
-) -> PlanReviewResult:
-    question = hitl_interrupt_payload(issue).get("message", "")
-    current_requests = canonical_requests_from_tasks(task_plan)
-    raw = _model.invoke([
-        {"role": "system", "content": _CONFIRMATION_REVIEW_SYSTEM},
-        {
-            "role": "user",
-            "content": (
-                f"확인 질문:\n{question}\n\n"
-                f"현재 canonical requests:\n{json.dumps(current_requests, ensure_ascii=False)}\n\n"
-                f"화면 표시용 현재 task 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n"
-                f"이슈:\n{json.dumps(issue, ensure_ascii=False)}\n\n"
-                f"사용자 응답:\n{str(response or '').strip()}"
-            ),
-        },
-    ]).content.strip()
-    result = extract_json_from_llm(raw, PlanReviewResult)
-    if result.action == "approve" and not result.requests:
-        result.requests = [
-            CanonicalRequestItem.model_validate(request)
-            for request in current_requests
-        ]
-    return result
-
 
 
 _MAX_CHECKPOINT_MESSAGES = 30
@@ -1091,191 +1052,6 @@ def task_normalizer_validator_node(state: Dict[str, Any], config: RunnableConfig
     }
 
     return update
-
-
-@observe(name="hitl_gate_node")
-def hitl_gate_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
-    """Convert validator issues into user interrupts before supervisor dispatch."""
-
-    issues = select_hitl_issues(state.get("task_validation_issues", []))
-    if not issues:
-        return {"hitl_issues": [], "hitl_responses": []}
-
-    responses: list[dict] = []
-    for issue in issues:
-        payload = hitl_interrupt_payload(issue)
-        logger.info("[HITLGate] interrupt issue=%s", issue)
-        emit_runtime_detail("hitl.issue", {"issue": issue, "payload": payload}, task_id=str(issue.get("task_id") or ""))
-        emit_trace_event(
-            "hitl_triggered",
-            source="hitl_gate",
-            severity=str(issue.get("severity") or "warning"),
-            task_id=str(issue.get("task_id") or ""),
-            payload={
-                "issue_type": issue.get("type", ""),
-                "agent": issue.get("agent", ""),
-                "param": issue.get("param", ""),
-                "reason": issue.get("reason", ""),
-                "blocking": bool(issue.get("blocking", True)),
-                "reference": issue.get("reference", ""),
-                "candidate_count": len(issue.get("candidates", []) or []),
-                "candidate_options": issue.get("candidate_options", []),
-                "message_preview": preview_text(payload.get("message", "")),
-            },
-        )
-        user_response = interrupt(payload)
-        record = hitl_response_record(issue, user_response)
-        responses.append(record)
-        emit_runtime_detail(
-            "hitl.response",
-            {"issue": issue, "user_response": user_response, "record": record},
-            task_id=str(issue.get("task_id") or ""),
-        )
-        selected_result_id = record.get("selected_result_id") or hitl_selected_result_id(
-            issue,
-            user_response,
-        )
-        if selected_result_id:
-            messages = state.get("messages", [])
-            last_human = next(
-                (m for m in reversed(messages)
-                 if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
-                None,
-            )
-            if last_human:
-                content = last_human.content if isinstance(last_human.content, str) else str(last_human.content)
-                selected_content = content
-                if selected_result_id not in selected_content:
-                    selected_content = f"{content}\n\n선택한 result_id: {selected_result_id}"
-                emit_trace_event(
-                    "hitl_reference_selected",
-                    source="hitl_gate",
-                    task_id=str(issue.get("task_id") or ""),
-                    result_id=str(selected_result_id),
-                    payload={
-                        "reference": issue.get("reference", ""),
-                        "selected_result_id": str(selected_result_id),
-                    },
-                )
-                return Command(
-                    update={
-                        "messages": [
-                            HumanMessage(
-                                content=selected_content,
-                                id=getattr(last_human, "id", None),
-                            )
-                        ],
-                        "hitl_issues": issues,
-                        "hitl_responses": responses,
-                        "resolved_refs": {},
-                        "reference_issues": [],
-                        "task_normalization_trace": [],
-                        "task_validation_issues": [],
-                        "task_plan": [],
-                        "pending_tasks": [],
-                        "response": "",
-                    },
-                    goto="reference_resolver",
-                )
-        if issue.get("type") in CONFIRMATION_ISSUE_TYPES:
-            try:
-                review = _review_hitl_confirmation(
-                    issue,
-                    user_response,
-                    state.get("task_plan", []),
-                )
-            except Exception as e:
-                logger.warning("[HITLGate] confirmation review failed (%s)", e)
-                message = "확인 응답을 해석하지 못해 작업 실행을 중단했습니다. 다시 요청해주세요."
-                return {
-                    "hitl_issues": issues,
-                    "hitl_responses": responses,
-                    "response": message,
-                }
-            review_data = review.model_dump()
-            review_action = str(review_data.get("action") or "")
-            review_requests = [
-                normalize_canonical_request(request)
-                for request in (review_data.get("requests") or [])
-                if isinstance(request, dict) and request.get("intent") and request.get("agent")
-            ]
-            logger.info(
-                "[HITLGate] confirmation action=%s requests=%d",
-                review_action,
-                len(review_requests),
-            )
-            emit_runtime_detail(
-                "hitl.confirmation_review",
-                {
-                    "issue": issue,
-                    "user_response": user_response,
-                    "action": review_action,
-                    "canonical_requests": review_requests,
-                },
-                task_id=str(issue.get("task_id") or ""),
-            )
-            if review_action == "approve":
-                continue
-            if review_action == "modify":
-                modified_tasks = build_tasks_from_canonical_requests(review_requests)
-                if not modified_tasks:
-                    return {
-                        "hitl_issues": issues,
-                        "hitl_responses": responses,
-                        "response": "수정 요청을 반영한 계획을 만들지 못했습니다. 변경할 조건을 포함해 다시 요청해주세요.",
-                    }
-                return Command(
-                    update={
-                        "hitl_issues": issues,
-                        "hitl_responses": responses,
-                        "canonical_request": review_requests[0],
-                        "canonical_requests": review_requests,
-                        "task_plan": modified_tasks,
-                        "pending_tasks": modified_tasks,
-                        "task_validation_issues": [],
-                        "task_normalization_trace": [],
-                        "response": "",
-                    },
-                    goto="plan_review",
-                )
-            message = hitl_abort_message(issue)
-            return {
-                "hitl_issues": issues,
-                "hitl_responses": responses,
-                "response": message,
-            }
-        if should_abort_after_response(issue, user_response):
-            message = hitl_abort_message(issue)
-            logger.info("[HITLGate] abort issue=%s response=%r", issue, user_response)
-            return {
-                "hitl_issues": issues,
-                "hitl_responses": responses,
-                "response": message,
-            }
-
-    return {
-        "hitl_issues": issues,
-        "hitl_responses": responses,
-    }
-
-
-_PLAN_REVIEW_SYSTEM = """
-현재 canonical request 목록과 사용자 응답을 보고 최종 요청 목록을 JSON으로 반환해라.
-
-action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
-- "approve" : 승인 (응/ok/확인/좋아/네/그렇게 해/빈 응답 등)
-- "cancel"  : 취소 (취소/cancel/no/그만/중단 등)
-- "modify"  : 수정 요청 (구체적인 변경 지시)
-
-출력 형식:
-{"action": "approve"|"cancel"|"modify", "requests": [...]}
-
-규칙:
-- requests는 항상 전체 canonical request 목록 (수정 안 한 request도 포함)
-- request는 intent, agent, slots, goal 필드를 사용한다.
-- task_id, params, tasks 필드를 출력하지 마라.
-- approve/cancel 시에도 requests 필드 필수 (approve → 현재 요청 그대로, cancel → [])
-""".strip()
 
 
 def _groupkey_list(value: Any) -> list[str]:
@@ -2712,7 +2488,6 @@ workflow.add_node("reference_resolver", reference_resolver_node)
 workflow.add_node("planner", planner_node, retry_policy=_retry)
 workflow.add_node("task_normalizer_validator", task_normalizer_validator_node)
 workflow.add_node("plan_review", plan_review_node)
-workflow.add_node("hitl_gate", hitl_gate_node)
 workflow.add_node("supervisor", supervisor_node, retry_policy=_retry)
 workflow.add_node("replanner", replanner_node, retry_policy=_retry)
 workflow.add_node("yield_agent", yield_agent_node, retry_policy=_retry)
@@ -2727,8 +2502,7 @@ workflow.add_edge(START, "reference_resolver")
 workflow.add_edge("reference_resolver", "planner")
 workflow.add_edge("planner", "task_normalizer_validator")
 workflow.add_edge("task_normalizer_validator", "plan_review")
-workflow.add_edge("plan_review", "hitl_gate")
-workflow.add_edge("hitl_gate", "supervisor")
+workflow.add_edge("plan_review", "supervisor")
 # supervisor → agent: Command(goto=...)가 처리 (conditional_edges 불필요)
 # agent → replanner → supervisor: 공식 plan-and-execute 패턴 (#8 phase 2)
 workflow.add_edge("yield_agent", "replanner")
