@@ -263,6 +263,24 @@ def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMes
             content = m.content if isinstance(m.content, str) else str(m.content)
             if content.strip():
                 result.append({"role": "assistant", "content": content})
+
+    # 멀티턴 중 LLM에 "안 들어간" 턴을 가시화 (verbose에서만 렌더)
+    excluded = [m for m in eligible if all(m is not t for t in trimmed)]
+    if excluded:
+        emit_runtime_detail(
+            "history.excluded",
+            {
+                "eligible": len(eligible),
+                "kept_for_llm": len(trimmed),
+                "excluded": [
+                    {
+                        "role": "user" if isinstance(m, HumanMessage) else "ai",
+                        "preview": preview_text(m.content if isinstance(m.content, str) else str(m.content)),
+                    }
+                    for m in excluded[:6]
+                ],
+            },
+        )
     return result
 
 
@@ -641,14 +659,12 @@ def reference_resolver_node(state: Dict[str, Any], config: RunnableConfig) -> di
 
 
 # ── Deterministic Task Builder 노드 ─────────────────────────────
-@observe(name="task_builder_node")
-def task_builder_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
-    """Build the common task contract from canonical request(s)."""
+def _build_tasks_update(canonical_requests: list[dict]) -> dict:
+    """Build the task contract from canonical request(s) and emit plan status.
 
-    canonical_requests = state.get("canonical_requests") or []
-    if not canonical_requests and state.get("canonical_request"):
-        canonical_requests = [state["canonical_request"]]
-
+    Folded from the former task_builder graph node into planner_node. Emissions
+    (status + trace) are kept identical so downstream/UI behavior is unchanged.
+    """
     tasks = build_tasks_from_canonical_requests(canonical_requests)
     emit_runtime_detail(
         "task_builder.output",
@@ -932,6 +948,8 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         return {
             "canonical_request": {},
             "canonical_requests": [],
+            "task_plan": [],
+            "pending_tasks": [],
             "messages": [AIMessage(
                 content=_llm_empty_plan_response(str(last_human.content), planner_text=raw_text),
                 name="planner",
@@ -950,7 +968,7 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         },
     )
 
-    return {
+    update = {
         "canonical_request": canonical_requests[0],
         "canonical_requests": canonical_requests,
         "canonical_trace": list(state.get("canonical_trace", []) or []) + [{
@@ -959,6 +977,9 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "request_count": len(canonical_requests),
         }],
     }
+    # task_builder folded in: build tasks + emit plan status in the same node
+    update.update(_build_tasks_update(canonical_requests))
+    return update
 
 
 @observe(name="task_normalizer_validator_node")
@@ -2688,7 +2709,6 @@ _retry = RetryPolicy(max_attempts=3, initial_interval=1.0, retry_on=is_transient
 
 workflow = StateGraph(YieldQueryState)
 workflow.add_node("reference_resolver", reference_resolver_node)
-workflow.add_node("task_builder", task_builder_node)
 workflow.add_node("planner", planner_node, retry_policy=_retry)
 workflow.add_node("task_normalizer_validator", task_normalizer_validator_node)
 workflow.add_node("task_normalizer_validator_after_review", task_normalizer_validator_node)
@@ -2706,8 +2726,7 @@ workflow.add_node("relation_tree_agent", relation_tree_agent_node, retry_policy=
 
 workflow.add_edge(START, "reference_resolver")
 workflow.add_edge("reference_resolver", "planner")
-workflow.add_edge("planner", "task_builder")
-workflow.add_edge("task_builder", "task_normalizer_validator")
+workflow.add_edge("planner", "task_normalizer_validator")
 workflow.add_edge("task_normalizer_validator", "plan_review")
 workflow.add_edge("plan_review", "task_normalizer_validator_after_review")
 workflow.add_edge("task_normalizer_validator_after_review", "hitl_gate")
