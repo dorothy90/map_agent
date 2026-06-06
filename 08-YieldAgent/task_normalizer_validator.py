@@ -1,10 +1,10 @@
-"""Task normalization and validation for planner output.
+"""Task normalization for planner output.
 
-Phase 5 keeps this layer deliberately narrow:
-- normalizer: field-name aliases only
-- validator: allowed/required params, resolved_refs application, issues
-
-No HITL, no semantic guessing, and no agent business logic lives here.
+Narrow layer: field-name alias normalization only. The deterministic gates that
+once lived here (allow-list dropping, value blanking, missing-param, cost/fanout)
+were removed in Step 3; reference (resolved_refs) application was removed in
+Step 5② — the planner now resolves references and the supervisor dispatch guard
+validates required params.
 """
 
 from __future__ import annotations
@@ -13,32 +13,118 @@ from copy import deepcopy
 import re
 from typing import Any
 
-from canonical_request import (
-    AGENT_SLOT_RULES,
-    build_tasks_from_canonical_requests,
-    canonical_request_from_task,
-)
-
 
 FIELD_ALIASES = {
     "map_lot_ids": "lot_ids",
     "dh_fail_type": "fail_type",
 }
 
+# ── Deterministic ordinal-reference resolution (Step 5②-a) ──────────────
+# The planner judges the SEMANTICS ("this slot is the N-th item of a prior
+# result") and emits an ordinal token like "#1" / "#last". The code then does the
+# pure-mechanical part: pick row[N-1] of the relevant recent result and copy the
+# value. This replaces reference_resolver's keyword/regex phrase matching (dropped)
+# while keeping "첫번째 = row[0]" a 100% deterministic code operation, not an LLM guess.
 
-AGENT_PARAM_RULES: dict[str, dict[str, Any]] = AGENT_SLOT_RULES
+_ORDINAL_TOKEN_RE = re.compile(r"^#(\d+|last|latest)$")
+
+# (agent, slot) -> recent-result column semantic to read the value from.
+_ORDINAL_SLOT_SEMANTIC = {
+    ("lot_history_agent", "lot_ids"): "lot_id",
+    ("map_agent", "lot_ids"): "lot_id",
+    ("fail_history_agent", "fail_type"): "parameter",
+    ("wads_agent", "fail_type"): "parameter",
+}
+
+# Fallback row keys per semantic, used when a result has no semantic-tagged column.
+_SEMANTIC_ROW_KEYS = {
+    "lot_id": ("lot_id", "lot_ids", "lot", "groupkey"),
+    "parameter": ("parameter", "param", "fail_type"),
+}
 
 
-def _is_empty(value: Any) -> bool:
-    return value is None or value == "" or value == [] or value == {}
+def _semantic_column_name(result: dict[str, Any], semantic: str) -> str | None:
+    cols = [
+        c for c in (result.get("columns") or [])
+        if isinstance(c, dict) and c.get("semantic") == semantic
+    ]
+    return cols[0].get("name") if len(cols) == 1 else None
 
 
-def _as_list(value: Any) -> list[Any]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    return [value]
+def _row_semantic_value(row: dict[str, Any], semantic: str, col: str | None) -> str | None:
+    for key in ([col] if col else []) + list(_SEMANTIC_ROW_KEYS.get(semantic, ())):
+        if not key:
+            continue
+        value = row.get(key)
+        if isinstance(value, list):
+            value = value[0] if value else None
+        if value in (None, ""):
+            continue
+        text = str(value).strip()
+        if semantic == "lot_id" and "." in text:   # lot.wf groupkey -> lot id
+            text = text.split(".", 1)[0]
+        return text or None
+    return None
+
+
+def _resolve_ordinal_value(recent_results: list[dict[str, Any]] | None, semantic: str, token: str) -> str | None:
+    """Ordinal indexes the DISTINCT semantic values in displayed order, not raw rows.
+
+    Result rows are per-wafer, so one lot repeats across consecutive rows; the user
+    sees a deduplicated lot list, so "두번째 lot" = 2nd distinct lot, not row[1].
+    Returns None if out of range / no such result (caller clears the slot -> backstop).
+    """
+    for result in reversed(recent_results or []):
+        rows = result.get("rows") or []
+        if not rows:
+            continue
+        col = _semantic_column_name(result, semantic)
+        if not col and not any(k in (rows[0] or {}) for k in _SEMANTIC_ROW_KEYS.get(semantic, ())):
+            continue
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            val = _row_semantic_value(row, semantic, col)
+            if val and val not in seen:
+                seen.add(val)
+                ordered.append(val)
+        if not ordered:
+            continue
+        idx = (len(ordered) - 1) if token in ("last", "latest") else int(token) - 1
+        if idx < 0 or idx >= len(ordered):
+            return None
+        return ordered[idx]
+    return None
+
+
+def apply_ordinal_ref(agent: str, slots: dict[str, Any], recent_results: list[dict[str, Any]] | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Resolve planner ordinal tokens ("#N"/"#last") in slots into concrete values.
+
+    Pure mechanical: the planner already decided this is an ordinal reference; here
+    we deterministically read row[N-1]. Unresolvable tokens are cleared (slot left
+    empty) so the supervisor dispatch guard can ask — never substitute a wrong value.
+    """
+    resolved = dict(slots or {})
+    trace: list[dict[str, Any]] = []
+    for slot, value in list(resolved.items()):
+        if not isinstance(value, str):
+            continue
+        match = _ORDINAL_TOKEN_RE.match(value.strip())
+        if not match:
+            continue
+        semantic = _ORDINAL_SLOT_SEMANTIC.get((agent, slot))
+        if not semantic:
+            resolved.pop(slot, None)
+            trace.append({"event": "ordinal_ref_unmappable", "agent": agent, "slot": slot, "token": value})
+            continue
+        out = _resolve_ordinal_value(recent_results, semantic, match.group(1))
+        if out is None:
+            resolved.pop(slot, None)
+            trace.append({"event": "ordinal_ref_unresolved", "agent": agent, "slot": slot, "token": value})
+        else:
+            resolved[slot] = out
+            trace.append({"event": "ordinal_ref_resolved", "agent": agent, "slot": slot, "token": value, "value": out})
+    return resolved, trace
 
 
 def normalize_task_fields(tasks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -88,254 +174,18 @@ def normalize_task_fields(tasks: list[dict[str, Any]]) -> tuple[list[dict[str, A
     return normalized_tasks, trace
 
 
-def _report_ref_params(report: dict[str, Any], base_params: dict[str, Any]) -> dict[str, Any]:
-    params = dict(base_params)
-    groupkeys = [str(v).strip() for v in _as_list(report.get("groupkeys")) if str(v).strip()]
-    if groupkeys:
-        params["groupkey"] = ",".join(groupkeys)
-        params.pop("lot_ids", None)
-        params.pop("wf_ids", None)
+def validate_tasks(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pass normalized tasks through unchanged.
 
-    map_oper = str(report.get("map_oper") or "").strip().upper()
-    if map_oper and _is_empty(params.get("map_oper")):
-        params["map_oper"] = map_oper
-
-    return params
-
-
-def _remove_redundant_wads_tasks_for_report_refs(
-    tasks: list[dict[str, Any]],
-    trace: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    if not any(task.get("agent") == "map_agent" for task in tasks):
-        return tasks
-
-    retained: list[dict[str, Any]] = []
-    for task in tasks:
-        if task.get("agent") == "wads_agent":
-            trace.append({
-                "event": "resolved_report_ref_removed_redundant_source_task",
-                "task_id": task.get("task_id", ""),
-                "agent": "wads_agent",
-                "reason": "report_refs_already_resolved",
-            })
-            continue
-        retained.append(task)
-    return retained
-
-
-def apply_report_refs_to_map_tasks(
-    tasks: list[dict[str, Any]],
-    resolved_refs: dict[str, Any] | None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Apply deterministic report ordinal refs to map tasks.
-
-    This only acts on explicit ReferenceResolver output such as "1,2번째 리포트".
-    It does not infer report meaning from free text or choose results by recency.
+    Kept as the validator node's contract point. All deterministic gating
+    (Step 3) and reference/resolved_refs application (Step 5②) were removed —
+    the planner resolves references and the supervisor dispatch guard validates
+    required params, so nothing is dropped, blanked, or blocked here.
     """
-
-    reports = (resolved_refs or {}).get("reports") or []
-    if not reports:
-        return tasks, []
-
-    updated_tasks = deepcopy(tasks or [])
-    trace: list[dict[str, Any]] = []
-    map_indexes = [
-        index
-        for index, task in enumerate(updated_tasks)
-        if task.get("agent") == "map_agent"
-    ]
-    if not map_indexes:
-        return updated_tasks, trace
-
-    if len(reports) > 1 and len(map_indexes) == 1:
-        index = map_indexes[0]
-        base_task = updated_tasks[index]
-        base_request = canonical_request_from_task(base_task)
-        expanded_requests: list[dict[str, Any]] = []
-        task_ids: list[str] = []
-        for report in reports:
-            ordinal = report.get("ordinal")
-            map_type = str((base_task.get("params") or {}).get("map_type") or "map")
-            goal = f"리포트 {ordinal} wafer {map_type}"
-            expanded_requests.append({
-                **base_request,
-                "slots": _report_ref_params(report, dict(base_task.get("params") or {})),
-                "goal": goal,
-                "source": {
-                    **dict(base_request.get("source") or {}),
-                    "type": "resolved_report_ref",
-                    "report_ordinal": ordinal,
-                },
-            })
-            task_ids.append(f"{base_task.get('task_id', 'task_map')}_r{ordinal}")
-            trace.append({
-                "event": "resolved_report_ref_fanout",
-                "task_id": task_ids[-1],
-                "agent": "map_agent",
-                "report_ordinal": ordinal,
-                "groupkey_count": len(report.get("groupkeys") or []),
-            })
-        expanded = build_tasks_from_canonical_requests(expanded_requests, task_ids=task_ids)
-        updated_tasks = updated_tasks[:index] + expanded + updated_tasks[index + 1:]
-        updated_tasks = _remove_redundant_wads_tasks_for_report_refs(updated_tasks, trace)
-        return updated_tasks, trace
-
-    for task_index, report in zip(map_indexes, reports):
-        task = updated_tasks[task_index]
-        previous = dict(task.get("params") or {})
-        request = canonical_request_from_task(task)
-        request["slots"] = _report_ref_params(report, previous)
-        updated_tasks[task_index] = build_tasks_from_canonical_requests(
-            [request],
-            task_ids=[str(task.get("task_id") or f"task_{task_index + 1}")],
-        )[0]
-        trace.append({
-            "event": "resolved_report_ref_applied",
-            "task_id": task.get("task_id", ""),
-            "agent": "map_agent",
-            "report_ordinal": report.get("ordinal"),
-            "groupkey_count": len(report.get("groupkeys") or []),
-            "previous": previous,
-        })
-
-    updated_tasks = _remove_redundant_wads_tasks_for_report_refs(updated_tasks, trace)
-    return updated_tasks, trace
-
-
-def _apply_resolved_refs(
-    task: dict[str, Any],
-    params: dict[str, Any],
-    resolved_refs: dict[str, Any],
-) -> list[dict[str, Any]]:
-    trace: list[dict[str, Any]] = []
-    agent = task.get("agent", "")
-
-    if agent in {"map_agent", "lot_history_agent"}:
-        lot_ids = [str(v).strip() for v in _as_list(resolved_refs.get("lot_ids")) if str(v).strip()]
-        if lot_ids:
-            previous = params.get("lot_ids")
-            if agent == "map_agent" and not _is_empty(params.get("groupkey")):
-                trace.append({
-                    "event": "resolved_ref_skipped",
-                    "task_id": task.get("task_id", ""),
-                    "agent": agent,
-                    "param": "lot_ids",
-                    "source": "resolved_refs.lot_ids",
-                    "reason": "groupkey_is_more_specific_selector",
-                })
-                return trace
-            params["lot_ids"] = lot_ids
-            trace.append({
-                "event": "resolved_ref_applied" if _is_empty(previous) else "resolved_ref_overrode",
-                "task_id": task.get("task_id", ""),
-                "agent": agent,
-                "param": "lot_ids",
-                "source": "resolved_refs.lot_ids",
-                "previous": previous,
-            })
-
-    if agent in {"wads_agent", "fail_history_agent"}:
-        parameters = [str(v).strip() for v in _as_list(resolved_refs.get("parameters")) if str(v).strip()]
-        if parameters:
-            previous = params.get("fail_type")
-            params["fail_type"] = parameters[0]
-            trace.append({
-                "event": "resolved_ref_applied" if _is_empty(previous) else "resolved_ref_overrode",
-                "task_id": task.get("task_id", ""),
-                "agent": agent,
-                "param": "fail_type",
-                "source": "resolved_refs.parameters",
-                "previous": previous,
-            })
-
-    row = {}
-    for key in ("parameter", "lot"):
-        ref = resolved_refs.get(key)
-        if isinstance(ref, dict) and isinstance(ref.get("row"), dict):
-            row = ref["row"]
-            break
-    if row and agent in {"wads_agent", "fail_history_agent", "yield_agent", "relation_tree_agent"} and _is_empty(params.get("lotcd")):
-        for row_key in ("lotcd", "lot_cd", "product"):
-            value = row.get(row_key)
-            if value not in (None, ""):
-                params["lotcd"] = str(value).strip()
-                trace.append({
-                    "event": "resolved_ref_applied",
-                    "task_id": task.get("task_id", ""),
-                    "agent": agent,
-                    "param": "lotcd",
-                    "source": f"resolved_refs.row.{row_key}",
-                })
-                break
-
-    if row and agent == "wads_agent":
-        for param, row_keys in {
-            "wads_end_tm": ("end_tm", "date", "created_at"),
-            "wads_start_tm": ("start_tm",),
-        }.items():
-            if not _is_empty(params.get(param)):
-                continue
-            for row_key in row_keys:
-                value = row.get(row_key)
-                if value not in (None, ""):
-                    params[param] = str(value).strip()
-                    trace.append({
-                        "event": "resolved_ref_applied",
-                        "task_id": task.get("task_id", ""),
-                        "agent": agent,
-                        "param": param,
-                        "source": f"resolved_refs.row.{row_key}",
-                    })
-                    break
-
-    return trace
-
-
-def validate_tasks(
-    tasks: list[dict[str, Any]],
-    *,
-    resolved_refs: dict[str, Any] | None = None,
-    reference_issues: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Apply deterministic resolved_refs to tasks; surface unresolved references.
-
-    Step 3 removed the deterministic gates that lived here:
-    - allow-list param dropping / value blanking — agents ignore unknown params,
-      and the supervisor validates required params at dispatch (no double work).
-    - missing_param gating — same dispatch-time supervisor guard covers it.
-    - cost/fanout gating — the planner already caps plans at _MAX_TASKS.
-    Reference application (_apply_resolved_refs) stays until reference_resolver is
-    retired (Step 5); unresolved references are still surfaced as blocking issues.
-    """
-
-    resolved_refs = resolved_refs or {}
-    issues: list[dict[str, Any]] = []
-    trace: list[dict[str, Any]] = []
-
-    for ref_issue in reference_issues or []:
-        issues.append({
-            "type": "ambiguous_reference",
-            "severity": "error",
-            "blocking": True,
-            "reason": ref_issue.get("reason", "reference_resolution_failed"),
-            "reference": ref_issue.get("reference", ""),
-            "candidates": ref_issue.get("candidates", []),
-            "candidate_options": ref_issue.get("candidate_options", []),
-        })
-
-    validated_tasks: list[dict[str, Any]] = []
-    for task in tasks or []:
-        validated_task = deepcopy(task)
-        params = dict(validated_task.get("params") or {})
-        trace.extend(_apply_resolved_refs(validated_task, params, resolved_refs))
-        validated_task["params"] = params
-        validated_tasks.append(validated_task)
-
     return {
-        "tasks": validated_tasks,
-        "issues": issues,
-        "trace": trace,
+        "tasks": [deepcopy(task) for task in tasks or []],
+        "issues": [],
+        "trace": [],
     }
 
 
@@ -357,19 +207,6 @@ def format_task_issues_for_user(issues: list[dict[str, Any]]) -> str:
         label = f"{task}/{agent}" if task or agent else "reference"
         if issue.get("type") == "missing_param":
             lines.append(f"- {label}: `{param}` 누락 ({reason})")
-        elif issue.get("type") == "ambiguous_reference":
-            reference = issue.get("reference", "")
-            options = issue.get("candidate_options") or []
-            if options:
-                labels = [
-                    f"{option.get('index')}. {option.get('label')}"
-                    for option in options
-                    if isinstance(option, dict) and option.get("label")
-                ]
-                suffix = f" 후보: {'; '.join(labels)}" if labels else ""
-                lines.append(f"- 참조 표현 `{reference}` 확인 필요 ({reason}).{suffix}")
-            else:
-                lines.append(f"- 참조 표현 `{reference}` 확인 필요 ({reason})")
         else:
             lines.append(f"- {label}: `{param}` 오류 ({reason})")
     return "\n".join(lines)

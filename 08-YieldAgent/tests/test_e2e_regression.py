@@ -96,7 +96,17 @@ CASES: list[dict] = [
             "첫번째 lot 이력 보여줘",
         ],
         "kind": "reference_resolves",
-        "expect": {"agent": "lot_history_agent", "param": "lot_ids"},
+        "expect": {"agent": "lot_history_agent", "param": "lot_ids", "ordinal": 1},
+    },
+    # Ordinal N (not just 1): "두번째" must deterministically map to row[1].
+    {
+        "id": "reference_resolves_2nd",
+        "turns": [
+            "최근 1주일 4SS 검출 lot 알려줘",
+            "두번째 lot 이력 보여줘",
+        ],
+        "kind": "reference_resolves",
+        "expect": {"agent": "lot_history_agent", "param": "lot_ids", "ordinal": 2},
     },
     # Can't resolve: a ref with no resolvable target must hit the dispatch
     # missing-param backstop (not silently run). (no prior result to reference)
@@ -106,21 +116,22 @@ CASES: list[dict] = [
         "kind": "reference_unresolved_block",
         "expect": {"param": "lot_ids"},
     },
-    # KNOWN BUG (xfail): an out-of-range reference with a prior wads result is NOT
-    # blocked and NOT resolved — it silently runs lot_history with ALL wads lots.
-    # This is the comparison baseline for Step 5②: should flip to xpass (planner
-    # resolves/blocks) or stay xfail if not worsened.
+    # KNOWN BUG (xfail) — target for Step 5②-b. An OUT-OF-RANGE ordinal ("백번째"
+    # = 100th, but far fewer lots exist) can't be resolved, so the slot is cleared;
+    # _resolve_chained_params then silently fills lot_history with ALL wads lots
+    # instead of letting the dispatch missing-param backstop ask. (In-range ordinals
+    # like 첫번째/두번째/여덟번째 are now resolved deterministically in ②-a.)
     {
         "id": "reference_unresolved_chained_silent",
         "turns": [
             "최근 1주일 4SS 검출 lot 알려줘",
-            "여덟번째 lot 이력 보여줘",
+            "백번째 lot 이력 보여줘",
         ],
         "kind": "reference_silent_chained_xfail",
-        "xfail": "current silent-wrong bug: _resolve_chained_params chaining pre-empts "
-                 "the dispatch missing-param backstop, filling lot_history with ALL wads "
-                 "lots for an unresolvable reference. Step 5② should make this xpass "
-                 "(planner resolves/blocks) or keep it xfail if not worsened.",
+        "xfail": "current silent-wrong bug: an unresolvable (out-of-range) ordinal "
+                 "leaves the slot empty, and _resolve_chained_params pre-empts the "
+                 "dispatch missing-param backstop by filling lot_history with ALL wads "
+                 "lots. Step 5②-b should flip this to xpass (backstop asks instead).",
     },
 ]
 
@@ -165,21 +176,22 @@ def _check_reference_resolves(case: dict, r: TurnResult) -> list[str]:
     expect = case.get("expect", {})
     agent, param = expect["agent"], expect["param"]
 
+    ordinal = expect.get("ordinal", 1)
     t1 = r.turns[0] if r.turns else r
     lots = t1.displayed_lots()
-    if not lots:
-        return ["T1 produced no displayed lots — cannot baseline reference resolution"]
-    first_lot = lots[0]
+    if len(lots) < ordinal:
+        return [f"T1 produced {len(lots)} lots (<{ordinal}) — cannot baseline ordinal {ordinal}"]
+    want_lot = lots[ordinal - 1]
 
     if agent not in r.planned_agents():
         fails.append(f"follow-up did not route to {agent} (planned={r.planned_agents()})")
         return fails
 
     got = _as_lot_list(r.slots_for(agent).get(param))
-    if got != [first_lot]:
-        reason = "chained all-lots fallback" if len(got) != 1 else "wrong lot"
+    if got != [want_lot]:
+        reason = "chained all-lots fallback" if len(got) != 1 else "wrong/missing lot"
         fails.append(
-            f"reference must resolve to exactly the first displayed lot [{first_lot}], "
+            f"ordinal {ordinal} must resolve to exactly [{want_lot}] (displayed #{ordinal}), "
             f"got {got!r} ({reason}); slots={r.slots_for(agent)}"
         )
     if r.sse_interrupts("missing_param"):

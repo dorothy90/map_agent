@@ -45,10 +45,9 @@ from result_contracts import (
     build_recent_result_index_entry,
     prune_recent_results,
 )
-from reference_resolver import resolve_references
 from rewrite_tools import REWRITE_TOOLS
 from task_normalizer_validator import (
-    apply_report_refs_to_map_tasks,
+    apply_ordinal_ref,
     normalize_task_fields,
     validate_tasks,
 )
@@ -243,45 +242,6 @@ def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMes
             },
         )
     return result
-
-
-def _resolved_refs_prompt_context(resolved_refs: dict[str, Any]) -> str:
-    """Compact authoritative context for planner turns with deterministic refs."""
-
-    if not resolved_refs:
-        return ""
-    lines = [
-        "Resolved references are authoritative. Do not infer or replace these values from assistant prose or stale state.",
-    ]
-    if resolved_refs.get("result_id"):
-        lines.append(f"result_id: {resolved_refs.get('result_id')}")
-    if resolved_refs.get("parameters"):
-        lines.append(f"parameters: {', '.join(str(v) for v in resolved_refs.get('parameters') or [])}")
-    if resolved_refs.get("lot_ids"):
-        lines.append(f"lot_ids: {', '.join(str(v) for v in resolved_refs.get('lot_ids') or [])}")
-    report_refs = resolved_refs.get("reports") or []
-    if report_refs:
-        for report in report_refs:
-            groupkeys = report.get("groupkeys") or []
-            lines.append(
-                "report_ref: "
-                f"ordinal={report.get('ordinal')} "
-                f"map_oper={report.get('map_oper', '')} "
-                f"groupkeys={','.join(str(v) for v in groupkeys[:50])}"
-            )
-    for key in ("parameter", "lot"):
-        ref = resolved_refs.get(key)
-        if isinstance(ref, dict):
-            row = ref.get("row")
-            if isinstance(row, dict) and row:
-                compact_row = {
-                    str(k): v
-                    for k, v in row.items()
-                    if str(k).lower() in {"parameter", "param", "fail_type", "lotcd", "lot_cd", "lot_id", "lotid", "end_tm", "detection_count", "count", "cnt"}
-                }
-                if compact_row:
-                    lines.append(f"{key}_row: {json.dumps(compact_row, ensure_ascii=False)}")
-    return "\n".join(lines)
 
 
 def _recent_results_prompt_context(recent_results: list[dict[str, Any]]) -> str:
@@ -560,66 +520,6 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     }
 
 
-@observe(name="reference_resolver_node")
-def reference_resolver_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
-    """Deterministic ReferenceResolver v1.
-
-    Output is intentionally a scratchpad only:
-    - resolved_refs when references are deterministically resolved
-    - reference_issues when resolver confidence is insufficient
-
-    This node runs before rewrite_node so references are resolved from the raw
-    user expression, not an LLM-rewritten sentence.
-    """
-
-    messages = state.get("messages", [])
-    last_human = next(
-        (m for m in reversed(messages)
-         if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
-        None,
-    )
-    if not last_human:
-        return {"resolved_refs": {}, "reference_issues": []}
-
-    recent_results = _build_recent_results_index(messages)
-    update = {}
-    if recent_results != state.get("recent_results", []):
-        update["recent_results"] = recent_results
-
-    content = last_human.content if isinstance(last_human.content, str) else str(last_human.content)
-    result = resolve_references(content, recent_results)
-    if "issues" in result:
-        logger.info("[ReferenceResolver] issues=%s", result["issues"])
-        emit_trace_event(
-            "reference_resolved",
-            source="reference_resolver",
-            severity="warning",
-            payload={
-                "status": "issue",
-                "issue_count": len(result["issues"]),
-                "issues": result["issues"],
-                "recent_result_count": len(recent_results),
-            },
-        )
-        return {**update, "resolved_refs": {}, "reference_issues": result["issues"]}
-
-    resolved_refs = result.get("resolved_refs", {})
-    if resolved_refs:
-        logger.info("[ReferenceResolver] resolved_refs=%s", resolved_refs)
-    emit_trace_event(
-        "reference_resolved",
-        source="reference_resolver",
-        payload={
-            "status": "resolved" if resolved_refs else "no_reference",
-            "resolved_keys": sorted(resolved_refs.keys()),
-            "result_id": resolved_refs.get("result_id", ""),
-            "recent_result_count": len(recent_results),
-        },
-    )
-    return {**update, "resolved_refs": resolved_refs, "reference_issues": []}
-
-
-# ── Deterministic Task Builder 노드 ─────────────────────────────
 def _build_tasks_update(canonical_requests: list[dict]) -> dict:
     """Build the task contract from canonical request(s) and emit plan status.
 
@@ -733,12 +633,12 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         year=today.year,
     )
 
-    resolved_refs = state.get("resolved_refs") or {}
     meta_parts: list[str] = []
-    resolved_context = _resolved_refs_prompt_context(resolved_refs)
-    if resolved_context:
-        meta_parts.append(resolved_context)
-    recent_context = _recent_results_prompt_context(state.get("recent_results") or [])
+    # Reference resolution is planner-owned (reference_resolver removed): build the
+    # recent-results context here each turn so follow-up references resolve from the
+    # displayed prior results. Also returned to state below for downstream chaining.
+    recent_results = _build_recent_results_index(messages)
+    recent_context = _recent_results_prompt_context(recent_results)
     if recent_context:
         meta_parts.append(recent_context)
     if state.get("lotcd"):
@@ -917,6 +817,17 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             )],
         }
 
+    # Step 5②-a: resolve planner ordinal tokens ("#N"/"#last") into concrete values
+    # from recent_results — deterministic. The planner judged the ordinal (semantics);
+    # code fills row[N-1] (mechanical), so planner_output and downstream carry the real
+    # value. Unresolvable tokens are cleared -> dispatch backstop (Step 5②-b).
+    for _cr in canonical_requests:
+        _cr["slots"], _ref_trace = apply_ordinal_ref(
+            _cr.get("agent", ""), _cr.get("slots") or {}, recent_results
+        )
+        for _ev in _ref_trace:
+            logger.info("[OrdinalRef] %s", _ev)
+
     emit_trace_event(
         "planner_output",
         source="planner",
@@ -932,6 +843,9 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     update = {
         "canonical_request": canonical_requests[0],
         "canonical_requests": canonical_requests,
+        # recent_results was populated by reference_resolver; planner owns it now.
+        # Downstream (validator's _apply_recent_wads_to_map_tasks) reads it from state.
+        "recent_results": recent_results,
         "canonical_trace": list(state.get("canonical_trace", []) or []) + [{
             "event": "llm_canonicalized",
             "source": "planner",
@@ -953,45 +867,16 @@ def task_normalizer_validator_node(state: Dict[str, Any], config: RunnableConfig
 
     tasks = state.get("task_plan", []) or []
     if not tasks:
-        if state.get("response"):
-            return {}
-        if state.get("reference_issues"):
-            issues = [{
-                "type": "ambiguous_reference",
-                "severity": "error",
-                "blocking": True,
-                "reason": issue.get("reason", "reference_resolution_failed"),
-                "reference": issue.get("reference", ""),
-                "candidates": issue.get("candidates", []),
-                "candidate_options": issue.get("candidate_options", []),
-            } for issue in state.get("reference_issues", [])]
-            for issue in issues:
-                emit_trace_event(
-                    "validation_issue",
-                    source="task_validator",
-                    severity=str(issue.get("severity") or "error"),
-                    payload=issue,
-                )
-            return {"task_validation_issues": issues}
         return {}
 
     normalized_tasks, normalization_trace = normalize_task_fields(tasks)
-    normalized_tasks, report_ref_trace = apply_report_refs_to_map_tasks(
-        normalized_tasks,
-        state.get("resolved_refs", {}),
-    )
-    normalization_trace.extend(report_ref_trace)
     normalized_tasks, recent_wads_trace = _apply_recent_wads_to_map_tasks(
         normalized_tasks,
         state,
     )
     normalization_trace.extend(recent_wads_trace)
     emit_runtime_detail("normalizer.input", {"tasks": tasks})
-    validation = validate_tasks(
-        normalized_tasks,
-        resolved_refs=state.get("resolved_refs", {}),
-        reference_issues=state.get("reference_issues", []),
-    )
+    validation = validate_tasks(normalized_tasks)
     emit_runtime_detail(
         "normalizer.output",
         {
@@ -2484,7 +2369,6 @@ from relation_tree_agent import relation_tree_agent_node  # noqa: E402
 _retry = RetryPolicy(max_attempts=3, initial_interval=1.0, retry_on=is_transient_error)
 
 workflow = StateGraph(YieldQueryState)
-workflow.add_node("reference_resolver", reference_resolver_node)
 workflow.add_node("planner", planner_node, retry_policy=_retry)
 workflow.add_node("task_normalizer_validator", task_normalizer_validator_node)
 workflow.add_node("plan_review", plan_review_node)
@@ -2498,8 +2382,7 @@ workflow.add_node("ppt_export", ppt_export_node, retry_policy=_retry)
 workflow.add_node("lot_history_agent", lot_history_agent_node, retry_policy=_retry)
 workflow.add_node("relation_tree_agent", relation_tree_agent_node, retry_policy=_retry)
 
-workflow.add_edge(START, "reference_resolver")
-workflow.add_edge("reference_resolver", "planner")
+workflow.add_edge(START, "planner")
 workflow.add_edge("planner", "task_normalizer_validator")
 workflow.add_edge("task_normalizer_validator", "plan_review")
 workflow.add_edge("plan_review", "supervisor")

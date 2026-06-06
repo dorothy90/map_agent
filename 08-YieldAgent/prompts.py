@@ -139,19 +139,18 @@ or the provided follow-up context, leave that slot empty or omit it.
 - Never output placeholders like "<task_1 result>", "{{from_task_1}}", or "task result".
 
 === REFERENCE RESOLUTION ===
-The "Recent structured results" context lists prior results in displayed order,
-each with rows and key fields (lot_id/lot_ids, groupkey, parameter/fail_type, ...).
-Resolve follow-up references against that context YOURSELF and write the concrete
-value(s) into the slots — never emit a vague reference phrase as a slot value:
-- Ordinals ("첫번째"/"N번째"/"방금 결과") select that single row in displayed order.
-  e.g. "첫번째 lot 이력" -> lot_history_agent slots {{"lot_ids":"<first row's lot>"}}.
-- "N번째 리포트" / an explicit result_id select that result; use its groupkey /
-  lot_ids / parameter from the context.
-- Pick EXACTLY the referenced item (one lot for one ordinal) — do NOT widen to all
-  rows. If the referenced item is not in the context, STILL emit the agent the user
-  asked for with the dependent slot left empty — do NOT drop the request to zero
-  just because a reference is unresolvable; the executor's dispatch guard will ask
-  for the missing value. (Greetings / out-of-scope still produce zero requests.)
+The "Recent structured results" context lists prior results in displayed order.
+When the latest request refers to a prior item by ORDINAL or recency, do NOT copy
+the value yourself — emit an ordinal TOKEN in the dependent slot and the system
+fills the exact value deterministically (this avoids guessing the wrong value):
+- "첫번째"/"1번째" -> "#1" ; "두번째"/"2번째" -> "#2" ; ... ; "방금"/"마지막" -> "#last".
+- Put the token in the slot the agent needs, e.g.:
+    "첫번째 lot 이력" -> lot_history_agent slots {{"lot_ids":"#1"}}
+    "두번째 lot 이력" -> lot_history_agent slots {{"lot_ids":"#2"}}
+    "방금 결과 불량이력" -> fail_history_agent slots {{"fail_type":"#last"}}
+- Emit ONLY the ordinal you judged; do not also guess the literal value, and do not
+  widen to all rows. Still emit the agent the user asked for (with the token) — never
+  drop the request to zero for a reference. (Greetings / out-of-scope stay zero.)
 
 === WORKED EXAMPLES ===
 - "최근 3주간 4SS 수율 알려줘"
@@ -160,8 +159,8 @@ value(s) into the slots — never emit a vague reference phrase as a slot value:
   -> {{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"lotcd":"4SS","unit":"daily","periods":1}},"goal":"4SS 오늘 수율 조회"}}],"answer":""}}
 - "5NA 최근 6개월 수율 추세"
   -> {{"requests":[{{"intent":"yield_analysis","agent":"yield_agent","slots":{{"lotcd":"5NA","unit":"monthly","periods":6}},"goal":"5NA 최근 6개월 수율 추세"}}],"answer":""}}
-- (follow-up) "첫번째 lot 이력 보여줘", Recent results' first row lot is 4SSRNZX
-  -> {{"requests":[{{"intent":"lot_history","agent":"lot_history_agent","slots":{{"lot_ids":"4SSRNZX"}},"goal":"4SSRNZX lot 이력"}}],"answer":""}}
+- (follow-up) "두번째 lot 이력 보여줘"  (ordinal reference to a prior result)
+  -> {{"requests":[{{"intent":"lot_history","agent":"lot_history_agent","slots":{{"lot_ids":"#2"}},"goal":"두번째 lot 이력"}}],"answer":""}}
 
 === OUTPUT FORMAT ===
 Return exactly one JSON object. No markdown, no explanation:
