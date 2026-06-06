@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd /Users/daehwankim/yield-agent/map_agent && git merge origin/main 2>&1\",\"description\":\"Merge remote main into local\"}",
-  "error": "Exit code 1\nAuto-merging 08-YieldAgent/prompts.py\nCONFLICT (content): Merge conflict in 08-YieldAgent/prompts.py\nAutomatic merge failed; fix conflicts and then commit the result.",
-  "timestamp": "2026-05-26T14:40:05.453Z",
-  "retry_count": 1
-}

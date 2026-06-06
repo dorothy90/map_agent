@@ -245,3 +245,8 @@ image.png
 08-YieldAgent/eval/datasets/
 08-YieldAgent/wiki/concepts/
 08-YieldAgent/wiki/aliases/
+
+# tooling state / generated artifacts — untracked going forward
+08-YieldAgent/.omc/
+08-YieldAgent/generated/
+08-YieldAgent/traces/

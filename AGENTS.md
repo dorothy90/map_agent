@@ -40,8 +40,8 @@ When editing existing code:
 
 When your changes create orphans:
 
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
+- [ ] Remove imports/variables/functions that YOUR changes made unused.
+- [ ] Don't remove pre-existing dead code unless asked.
 
 The test: Every changed line should trace directly to the user's request.
 
@@ -77,3 +77,15 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+## 6. Codex Hardcoding Ban
+
+**Do not solve semantic planning failures with hardcoded natural-language rules.**
+
+- Codex는 자연어 해석 문제를 keyword, regex, phrase list, if/else trigger, enum matching 확장으로 해결하지 않는다.
+- Codex는 실패 로그에 나온 특정 문구를 그대로 코드 조건으로 박지 않는다.
+- Codex는 "이번 케이스만 통과"시키기 위한 hardcoded branch, special-case parser, Korean expression table을 추가하지 않는다.
+- Codex는 few-shot 예시를 계속 늘려 planner를 보정하는 방식으로 문제를 해결하지 않는다.
+- Codex는 multi-turn/follow-up 실패를 reference resolver 규칙 추가로 우회하지 않는다.
+- 먼저 LLM에 제공되는 context, 직전 assistant message, structured result envelope, canonical request contract가 충분한지 점검한다.
+- keyword/regex/하드코딩이 정말 필요한 경우에는 수정 전에 사용자에게 이유, 대안, 적용 범위를 설명하고 명시적 승인을 받아야 한다.
