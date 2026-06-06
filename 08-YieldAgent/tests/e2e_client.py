@@ -83,6 +83,19 @@ class TurnResult:
                 out.append(p)
         return out
 
+    def sse_interrupts(self, interrupt_type: str | None = None) -> list[dict]:
+        """SSE interrupt events (graph paused for human input). The supervisor
+        dispatch guard emits interrupt_type='missing_param' when a required slot
+        is empty; plan_review emits interrupt_type='plan_review'."""
+        out = [e for e in self.sse_events if e.get("type") == "interrupt"]
+        if interrupt_type is not None:
+            out = [e for e in out if e.get("interrupt_type") == interrupt_type]
+        return out
+
+    def cap_status_fired(self) -> bool:
+        """True if the planner's _MAX_TASKS cap dropped requests this turn."""
+        return self.sse_contains("처음") and self.sse_contains("개만") or self.sse_contains("너무 많아")
+
     def validation_issues(self) -> list[dict]:
         return [e.get("payload", {}) for e in self.events_of("validation_issue")]
 

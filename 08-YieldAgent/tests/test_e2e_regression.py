@@ -70,6 +70,22 @@ CASES: list[dict] = [
         "query": "최근 1주일 4SS 검출 lot 알려줘",
         "kind": "wads",
     },
+    # Safety nets — guards that replaced the removed hitl_gate must actually fire.
+    # (1) Missing required param must BLOCK at supervisor dispatch (not silently run).
+    {
+        "id": "missing_lotcd_blocks_dispatch",
+        "query": "최근 3주간 수율 알려줘",
+        "kind": "required_param_block",
+        "expect": {"agent": "yield_agent", "param": "lotcd"},
+    },
+    # (2) planner _MAX_TASKS=5 cap must hold (it is now the only fan-out guard).
+    {
+        "id": "max_tasks_cap_enforced",
+        "query": "4SS 수율 보여주고, 4SS WADS 검출 리스트, 그 wafer map, "
+                 "4SS 불량이력, 4SS lot 이력, 4SS relation tree까지 전부 분석해줘",
+        "kind": "task_cap",
+        "expect": {"max_tasks": 5},
+    },
 ]
 
 
@@ -84,7 +100,48 @@ def check_case(case: dict, r: TurnResult) -> list[str]:
         return _check_wads(case, r)
     if kind == "no_agent":
         return _check_no_agent(case, r)
+    if kind == "required_param_block":
+        return _check_required_param_block(case, r)
+    if kind == "task_cap":
+        return _check_task_cap(case, r)
     return [f"unknown case kind: {kind}"]
+
+
+def _check_required_param_block(case: dict, r: TurnResult) -> list[str]:
+    """A required slot left empty must BLOCK at supervisor dispatch via a
+    missing_param interrupt — the guard that replaced hitl_gate."""
+    fails: list[str] = []
+    expect = case.get("expect", {})
+    blocks = r.sse_interrupts("missing_param")
+    if not blocks:
+        fails.append(
+            f"no missing_param interrupt — dispatch did not block on missing "
+            f"required param (interrupts seen: {[i.get('interrupt_type') for i in r.sse_interrupts()]})"
+        )
+        return fails
+    params = [b.get("param") for b in blocks]
+    if expect.get("param") and expect["param"] not in params:
+        fails.append(f"missing_param interrupt for {params}, expected param {expect['param']!r}")
+    # the blocked agent must not have produced a yield success artifact
+    if r.sse_contains("주간 (최근"):
+        fails.append("agent appears to have run despite missing required param")
+    return fails
+
+
+def _check_task_cap(case: dict, r: TurnResult) -> list[str]:
+    """planner _MAX_TASKS cap is the only fan-out guard now; it must hold."""
+    fails: list[str] = []
+    cap = case.get("expect", {}).get("max_tasks", 5)
+    n = len(r.planner_requests())
+    if n > cap:
+        fails.append(f"planner produced {n} requests, exceeds cap {cap}")
+    # this query enumerates >cap tasks, so the cap must have actually fired
+    if not r.cap_status_fired():
+        fails.append(
+            f"cap did not fire (planned {n}); expected a '처음 N개만' drop notice "
+            f"for an over-cap request"
+        )
+    return fails
 
 
 def _check_yield(case: dict, r: TurnResult) -> list[str]:
