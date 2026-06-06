@@ -138,6 +138,21 @@ or the provided follow-up context, leave that slot empty or omit it.
   - If unresolved, omit the date slot or use "".
 - Never output placeholders like "<task_1 result>", "{{from_task_1}}", or "task result".
 
+=== REFERENCE RESOLUTION ===
+The "Recent structured results" context lists prior results in displayed order,
+each with rows and key fields (lot_id/lot_ids, groupkey, parameter/fail_type, ...).
+Resolve follow-up references against that context YOURSELF and write the concrete
+value(s) into the slots — never emit a vague reference phrase as a slot value:
+- Ordinals ("첫번째"/"N번째"/"방금 결과") select that single row in displayed order.
+  e.g. "첫번째 lot 이력" -> lot_history_agent slots {{"lot_ids":"<first row's lot>"}}.
+- "N번째 리포트" / an explicit result_id select that result; use its groupkey /
+  lot_ids / parameter from the context.
+- Pick EXACTLY the referenced item (one lot for one ordinal) — do NOT widen to all
+  rows. If the referenced item is not in the context, STILL emit the agent the user
+  asked for with the dependent slot left empty — do NOT drop the request to zero
+  just because a reference is unresolvable; the executor's dispatch guard will ask
+  for the missing value. (Greetings / out-of-scope still produce zero requests.)
+
 === WORKED EXAMPLES ===
 - "최근 3주간 4SS 수율 알려줘"
   -> {{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"lotcd":"4SS","unit":"weekly","periods":3}},"goal":"4SS 최근 3주 수율 조회"}}],"answer":""}}
@@ -145,6 +160,8 @@ or the provided follow-up context, leave that slot empty or omit it.
   -> {{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"lotcd":"4SS","unit":"daily","periods":1}},"goal":"4SS 오늘 수율 조회"}}],"answer":""}}
 - "5NA 최근 6개월 수율 추세"
   -> {{"requests":[{{"intent":"yield_analysis","agent":"yield_agent","slots":{{"lotcd":"5NA","unit":"monthly","periods":6}},"goal":"5NA 최근 6개월 수율 추세"}}],"answer":""}}
+- (follow-up) "첫번째 lot 이력 보여줘", Recent results' first row lot is 4SSRNZX
+  -> {{"requests":[{{"intent":"lot_history","agent":"lot_history_agent","slots":{{"lot_ids":"4SSRNZX"}},"goal":"4SSRNZX lot 이력"}}],"answer":""}}
 
 === OUTPUT FORMAT ===
 Return exactly one JSON object. No markdown, no explanation:

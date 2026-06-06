@@ -179,7 +179,7 @@ class Session:
             str(e.get("event_id")) for e in _load_trace_events(self.trace_id)
         }
 
-    def turn(self, query: str, *, resume_value: str | None = None, timeout: float = 120.0) -> TurnResult:
+    def turn(self, query: str, *, resume_value: str | None = None, timeout: float = 240.0) -> TurnResult:
         sse_events, sse_blob = _drain_sse(query, self.session_id, timeout, resume_value=resume_value)
 
         new_events: list[dict] = []
@@ -201,7 +201,7 @@ class Session:
         )
 
 
-def run_turn(query: str, *, timeout: float = 120.0) -> TurnResult:
+def run_turn(query: str, *, timeout: float = 240.0) -> TurnResult:
     """Single fresh-session turn (convenience for single-turn cases)."""
     return Session().turn(query, timeout=timeout)
 
