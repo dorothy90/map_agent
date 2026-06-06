@@ -19,6 +19,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -54,6 +55,7 @@ class TurnResult:
     sse_events: list[dict] = field(default_factory=list)
     sse_blob: str = ""               # all SSE event JSON concatenated, for substring search
     trace_events: list[dict] = field(default_factory=list)
+    turns: list = field(default_factory=list)   # all TurnResults of a multi-turn case (set by run_case)
 
     # ── trace-derived structured views ────────────────────────────
     def events_of(self, event_type: str) -> list[dict]:
@@ -101,6 +103,25 @@ class TurnResult:
 
     def sse_contains(self, needle: str) -> bool:
         return needle in self.sse_blob
+
+    def displayed_lots(self) -> list[str]:
+        """4SS-product lot ids (7-char) in displayed order from this turn's SSE.
+        Used to know what an ordinal reference ("첫번째") should resolve to."""
+        seen: list[str] = []
+        for tok in re.findall(r"\b4SS[A-Z0-9]{4}\b", self.sse_blob):
+            if tok not in seen:
+                seen.append(tok)
+        return seen
+
+    def dispatched_param(self, agent: str, param: str) -> dict:
+        """Param meta ({count, present, preview, type}) actually dispatched to an
+        agent, from the supervisor_dispatch trace — this reflects chained auto-fill
+        applied at dispatch (which planner_output slots do NOT show)."""
+        for e in self.events_of("supervisor_dispatch"):
+            p = e.get("payload", {})
+            if p.get("target") == agent:
+                return (p.get("params", {}) or {}).get(param, {}) or {}
+        return {}
 
 
 def _drain_sse(query: str, session_id: str, timeout: float, resume_value: str | None = None) -> tuple[list[dict], str]:

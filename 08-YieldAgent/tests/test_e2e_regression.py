@@ -106,6 +106,22 @@ CASES: list[dict] = [
         "kind": "reference_unresolved_block",
         "expect": {"param": "lot_ids"},
     },
+    # KNOWN BUG (xfail): an out-of-range reference with a prior wads result is NOT
+    # blocked and NOT resolved — it silently runs lot_history with ALL wads lots.
+    # This is the comparison baseline for Step 5②: should flip to xpass (planner
+    # resolves/blocks) or stay xfail if not worsened.
+    {
+        "id": "reference_unresolved_chained_silent",
+        "turns": [
+            "최근 1주일 4SS 검출 lot 알려줘",
+            "여덟번째 lot 이력 보여줘",
+        ],
+        "kind": "reference_silent_chained_xfail",
+        "xfail": "current silent-wrong bug: _resolve_chained_params chaining pre-empts "
+                 "the dispatch missing-param backstop, filling lot_history with ALL wads "
+                 "lots for an unresolvable reference. Step 5② should make this xpass "
+                 "(planner resolves/blocks) or keep it xfail if not worsened.",
+    },
 ]
 
 
@@ -128,25 +144,67 @@ def check_case(case: dict, r: TurnResult) -> list[str]:
         return _check_reference_resolves(case, r)
     if kind == "reference_unresolved_block":
         return _check_reference_unresolved_block(case, r)
+    if kind == "reference_silent_chained_xfail":
+        return _check_reference_silent_chained_xfail(case, r)
     return [f"unknown case kind: {kind}"]
 
 
+def _as_lot_list(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    return [s.strip() for s in str(value or "").split(",") if s.strip()]
+
+
 def _check_reference_resolves(case: dict, r: TurnResult) -> list[str]:
-    """A follow-up ordinal reference must resolve to a prior result and fill the
-    downstream required slot (today via reference_resolver; Step 5 via planner)."""
+    """A follow-up ordinal reference must resolve to the EXACT prior item — value
+    check, not just non-empty. "첫번째" must give the first displayed lot, alone.
+    This catches both a wrong lot and the _resolve_chained_params all-lots fallback
+    (which would silently fill every wads lot). (today via reference_resolver;
+    Step 5 via planner — comparable because we assert the outcome, not the path.)"""
     fails: list[str] = []
     expect = case.get("expect", {})
     agent, param = expect["agent"], expect["param"]
+
+    t1 = r.turns[0] if r.turns else r
+    lots = t1.displayed_lots()
+    if not lots:
+        return ["T1 produced no displayed lots — cannot baseline reference resolution"]
+    first_lot = lots[0]
+
     if agent not in r.planned_agents():
         fails.append(f"follow-up did not route to {agent} (planned={r.planned_agents()})")
         return fails
-    val = r.slots_for(agent).get(param)
-    if not val:
-        fails.append(f"reference not applied — {agent}.{param} empty (slots={r.slots_for(agent)})")
+
+    got = _as_lot_list(r.slots_for(agent).get(param))
+    if got != [first_lot]:
+        reason = "chained all-lots fallback" if len(got) != 1 else "wrong lot"
+        fails.append(
+            f"reference must resolve to exactly the first displayed lot [{first_lot}], "
+            f"got {got!r} ({reason}); slots={r.slots_for(agent)}"
+        )
     if r.sse_interrupts("missing_param"):
-        fails.append(f"unexpected missing_param block on a resolvable reference")
+        fails.append("unexpected missing_param block on a resolvable reference")
     if r.sse_contains(AGENT_ERROR_MARKER):
         fails.append("runtime agent error on resolved follow-up")
+    return fails
+
+
+def _check_reference_silent_chained_xfail(case: dict, r: TurnResult) -> list[str]:
+    """DESIRED behavior (currently FAILS → marked xfail): an out-of-range reference
+    ("여덟번째" when fewer rows exist) must NOT silently run lot_history with the
+    full wads lot set — it should block (missing_param) or resolve to a single lot.
+    Today it does neither: _resolve_chained_params injects ALL wads lots at dispatch,
+    pre-empting the backstop. After Step 5② this should become xpass (planner
+    resolves/blocks) or stay xfail if not worsened."""
+    fails: list[str] = []
+    blocked = bool(r.sse_interrupts("missing_param"))
+    meta = r.dispatched_param("lot_history_agent", "lot_ids")
+    count = int(meta.get("count", 0) or 0) if meta.get("present") else 0
+    if (not blocked) and count > 1:
+        fails.append(
+            f"silent all-lots: lot_history dispatched with {count} lots and no block "
+            f"— _resolve_chained_params chaining pre-empted the missing-param backstop"
+        )
     return fails
 
 
@@ -270,12 +328,14 @@ def run_case(case: dict) -> TurnResult:
     """Run a case's turn(s); return the last turn's result. Multi-turn cases use a
     shared Session so follow-up references can see prior-turn results."""
     if "turns" in case:
-        result: TurnResult | None = None
         session = Session()
-        for query in case["turns"]:
-            result = session.turn(query)
-        return result
-    return run_turn(case["query"])
+        results = [session.turn(query) for query in case["turns"]]
+        last = results[-1]
+        last.turns = results
+        return last
+    r = run_turn(case["query"])
+    r.turns = [r]
+    return r
 
 
 def case_label(case: dict) -> str:
@@ -288,7 +348,14 @@ def case_label(case: dict) -> str:
 try:
     import pytest
 
-    @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])
+    def _params():
+        out = []
+        for c in CASES:
+            marks = [pytest.mark.xfail(reason=c["xfail"], strict=False)] if c.get("xfail") else []
+            out.append(pytest.param(c, id=c["id"], marks=marks))
+        return out
+
+    @pytest.mark.parametrize("case", _params())
     def test_regression_case(case):
         r = run_case(case)
         assert r.events_of("planner_output"), (
@@ -316,6 +383,13 @@ def _main() -> int:
             total_fail += 1
             continue
         fails = check_case(case, r)
+        if case.get("xfail"):
+            # expected-failure case: failing now is correct (bug reproduced)
+            if fails:
+                print(f"XFAIL {case['id']} (expected — {fails[0]})")
+            else:
+                print(f"XPASS {case['id']} — no longer fails (bug fixed/changed? review)")
+            continue
         if fails:
             total_fail += 1
             print(f"FAIL {case['id']} ({case_label(case)!r})")
@@ -323,7 +397,8 @@ def _main() -> int:
                 print(f"     - {f}")
         else:
             print(f"PASS {case['id']} ({case_label(case)!r})")
-    print(f"\n{len(CASES) - total_fail}/{len(CASES)} passed")
+    n_real = sum(1 for c in CASES if not c.get("xfail"))
+    print(f"\n{n_real - total_fail}/{n_real} passed (+ {len(CASES) - n_real} xfail-tracked)")
     return 1 if total_fail else 0
 
 
