@@ -29,22 +29,6 @@ FIELD_ALIASES = {
 AGENT_PARAM_RULES: dict[str, dict[str, Any]] = AGENT_SLOT_RULES
 
 
-MAP_OPER_VALUES = {"PT1H", "PT1C"}
-MAP_TYPE_VALUES = {"binmap", "cummap", "all"}
-PRODUCT_LOTCD_RE = re.compile(r"^[0-9][A-Z0-9]{2}$")
-EXCESSIVE_FANOUT_TASK_THRESHOLD = 5
-HIGH_COST_UNIT_THRESHOLD = 12
-TASK_COST_UNITS = {
-    "yield_agent": 2,
-    "wads_agent": 3,
-    "map_agent": 3,
-    "fail_history_agent": 2,
-    "lot_history_agent": 1,
-    "relation_tree_agent": 4,
-    "ppt_export": 3,
-}
-
-
 def _is_empty(value: Any) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
@@ -55,54 +39,6 @@ def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
     return [value]
-
-
-def _issue(
-    issue_type: str,
-    *,
-    task: dict[str, Any] | None = None,
-    param: str = "",
-    severity: str = "error",
-    reason: str = "",
-    **extra: Any,
-) -> dict[str, Any]:
-    payload = {
-        "type": issue_type,
-        "severity": severity,
-        "blocking": severity == "error",
-        "task_id": (task or {}).get("task_id", ""),
-        "agent": (task or {}).get("agent", ""),
-        "param": param,
-        "reason": reason,
-    }
-    payload.update({k: v for k, v in extra.items() if v not in (None, [], {})})
-    return {k: v for k, v in payload.items() if v not in ("", None, [], {})}
-
-
-def _plan_level_issues(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = []
-    task_count = len(tasks or [])
-    if task_count >= EXCESSIVE_FANOUT_TASK_THRESHOLD:
-        issues.append({
-            "type": "excessive_fanout",
-            "severity": "warning",
-            "blocking": True,
-            "reason": "task_count_exceeds_hitl_threshold",
-            "task_count": task_count,
-            "threshold": EXCESSIVE_FANOUT_TASK_THRESHOLD,
-        })
-
-    cost_units = sum(TASK_COST_UNITS.get(task.get("agent", ""), 1) for task in tasks or [])
-    if cost_units >= HIGH_COST_UNIT_THRESHOLD:
-        issues.append({
-            "type": "high_cost",
-            "severity": "warning",
-            "blocking": True,
-            "reason": "estimated_cost_exceeds_hitl_threshold",
-            "cost_units": cost_units,
-            "threshold": HIGH_COST_UNIT_THRESHOLD,
-        })
-    return issues
 
 
 def normalize_task_fields(tasks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -356,81 +292,26 @@ def _apply_resolved_refs(
     return trace
 
 
-def _validate_known_param_value(
-    task: dict[str, Any],
-    param: str,
-    value: Any,
-) -> dict[str, Any] | None:
-    agent = task.get("agent", "")
-
-    if param == "lotcd" and agent in {"yield_agent", "wads_agent", "fail_history_agent"}:
-        text = str(value).strip().upper()
-        if not text:
-            return None
-        if PRODUCT_LOTCD_RE.fullmatch(text):
-            return None
-        return _issue(
-            "invalid_param",
-            task=task,
-            param="lotcd",
-            reason="lotcd_must_be_ascii_product_code",
-            value=value,
-            severity="warning" if agent == "fail_history_agent" else "error",
-        )
-
-    if param == "map_oper" and not _is_empty(value):
-        text = str(value).strip()
-        if text not in MAP_OPER_VALUES:
-            return _issue(
-                "invalid_param",
-                task=task,
-                param="map_oper",
-                reason="map_oper_must_be_PT1H_or_PT1C",
-                value=value,
-                severity="error",
-            )
-
-    if param == "map_type" and not _is_empty(value):
-        text = str(value).strip()
-        if text not in MAP_TYPE_VALUES:
-            return _issue(
-                "invalid_param",
-                task=task,
-                param="map_type",
-                reason="map_type_must_be_binmap_cummap_or_all",
-                value=value,
-                severity="error",
-            )
-
-    return None
-
-
-def _can_defer_required_param(
-    tasks: list[dict[str, Any]],
-    current_index: int,
-    agent: str,
-    param: str,
-) -> bool:
-    prior_agents = {task.get("agent", "") for task in tasks[:current_index]}
-    if param == "lot_ids" and agent in {"map_agent", "lot_history_agent"}:
-        return "wads_agent" in prior_agents
-    if param == "map_oper" and agent == "map_agent":
-        return "wads_agent" in prior_agents
-    return False
-
-
 def validate_tasks(
     tasks: list[dict[str, Any]],
     *,
     resolved_refs: dict[str, Any] | None = None,
     reference_issues: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Validate normalized tasks and apply deterministic resolved_refs."""
+    """Apply deterministic resolved_refs to tasks; surface unresolved references.
+
+    Step 3 removed the deterministic gates that lived here:
+    - allow-list param dropping / value blanking — agents ignore unknown params,
+      and the supervisor validates required params at dispatch (no double work).
+    - missing_param gating — same dispatch-time supervisor guard covers it.
+    - cost/fanout gating — the planner already caps plans at _MAX_TASKS.
+    Reference application (_apply_resolved_refs) stays until reference_resolver is
+    retired (Step 5); unresolved references are still surfaced as blocking issues.
+    """
 
     resolved_refs = resolved_refs or {}
     issues: list[dict[str, Any]] = []
     trace: list[dict[str, Any]] = []
-    issues.extend(_plan_level_issues(tasks or []))
 
     for ref_issue in reference_issues or []:
         issues.append({
@@ -444,97 +325,12 @@ def validate_tasks(
         })
 
     validated_tasks: list[dict[str, Any]] = []
-    for task_index, task in enumerate(tasks or []):
+    for task in tasks or []:
         validated_task = deepcopy(task)
-        agent = validated_task.get("agent", "")
         params = dict(validated_task.get("params") or {})
-        rules = AGENT_PARAM_RULES.get(agent)
-
-        if rules is None:
-            issues.append(_issue("invalid_param", task=validated_task, reason="unknown_agent"))
-            validated_tasks.append(validated_task)
-            continue
-
         trace.extend(_apply_resolved_refs(validated_task, params, resolved_refs))
-
-        cleaned_params: dict[str, Any] = {}
-        allowed = rules["allowed"]
-        for param, value in params.items():
-            if param not in allowed:
-                issues.append(_issue(
-                    "invalid_param",
-                    task=validated_task,
-                    param=param,
-                    reason="param_not_allowed_for_agent",
-                    severity="warning",
-                ))
-                trace.append({
-                    "event": "invalid_param_removed",
-                    "task_id": validated_task.get("task_id", ""),
-                    "agent": agent,
-                    "param": param,
-                    "reason": "param_not_allowed_for_agent",
-                })
-                continue
-
-            value_issue = _validate_known_param_value(validated_task, param, value)
-            if value_issue:
-                issues.append(value_issue)
-                trace.append({
-                    "event": "invalid_param_removed",
-                    "task_id": validated_task.get("task_id", ""),
-                    "agent": agent,
-                    "param": param,
-                    "reason": value_issue.get("reason", ""),
-                })
-                if value_issue.get("severity") == "warning":
-                    cleaned_params[param] = ""
-                continue
-
-            cleaned_params[param] = value
-
-        validated_task["params"] = cleaned_params
-
-        for required_param in rules.get("required", ()):
-            if _is_empty(cleaned_params.get(required_param)):
-                if _can_defer_required_param(tasks, task_index, agent, required_param):
-                    trace.append({
-                        "event": "required_param_deferred",
-                        "task_id": validated_task.get("task_id", ""),
-                        "agent": agent,
-                        "param": required_param,
-                        "provider": "prior_task",
-                    })
-                    continue
-                issues.append(_issue(
-                    "missing_param",
-                    task=validated_task,
-                    param=required_param,
-                    reason="required_param_missing",
-                ))
-
-        for group in rules.get("required_any", ()):
-            if all(_is_empty(cleaned_params.get(param)) for param in group):
-                if any(_can_defer_required_param(tasks, task_index, agent, param) for param in group):
-                    trace.append({
-                        "event": "required_param_deferred",
-                        "task_id": validated_task.get("task_id", ""),
-                        "agent": agent,
-                        "param": "|".join(group),
-                        "provider": "prior_task",
-                    })
-                    validated_tasks.append(validated_task)
-                    continue
-                issues.append(_issue(
-                    "missing_param",
-                    task=validated_task,
-                    param="|".join(group),
-                    reason="one_of_required_params_missing",
-                    required_any=list(group),
-                ))
-
-        if validated_task not in validated_tasks:
-            validated_tasks.append(validated_task)
+        validated_task["params"] = params
+        validated_tasks.append(validated_task)
 
     return {
         "tasks": validated_tasks,
