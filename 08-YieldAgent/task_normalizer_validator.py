@@ -28,6 +28,11 @@ FIELD_ALIASES = {
 
 _ORDINAL_TOKEN_RE = re.compile(r"^#(\d+|last|latest)$")
 
+# Sentinel left in a slot when an ordinal reference could not be resolved (out of
+# range / no source). It is non-empty on purpose so wads chaining skips it; the
+# dispatch path strips it back to "" so the missing-param backstop fires (②-b).
+UNRESOLVED_REF = "#unresolved"
+
 # (agent, slot) -> recent-result column semantic to read the value from.
 _ORDINAL_SLOT_SEMANTIC = {
     ("lot_history_agent", "lot_ids"): "lot_id",
@@ -114,12 +119,17 @@ def apply_ordinal_ref(agent: str, slots: dict[str, Any], recent_results: list[di
             continue
         semantic = _ORDINAL_SLOT_SEMANTIC.get((agent, slot))
         if not semantic:
-            resolved.pop(slot, None)
+            resolved[slot] = UNRESOLVED_REF
             trace.append({"event": "ordinal_ref_unmappable", "agent": agent, "slot": slot, "token": value})
             continue
         out = _resolve_ordinal_value(recent_results, semantic, match.group(1))
         if out is None:
-            resolved.pop(slot, None)
+            # Reference intended but not resolvable (out of range / no source). Mark it
+            # so chaining does NOT silently fill it (Step 5②-b) — the dispatch guard
+            # asks instead. UNRESOLVED_REF is non-empty, so _is_placeholder_or_empty is
+            # False and the wads chaining skips it; _resolve_chained_params strips it
+            # back to "" at the very end so the guard sees an empty required slot.
+            resolved[slot] = UNRESOLVED_REF
             trace.append({"event": "ordinal_ref_unresolved", "agent": agent, "slot": slot, "token": value})
         else:
             resolved[slot] = out

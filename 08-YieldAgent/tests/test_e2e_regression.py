@@ -116,22 +116,28 @@ CASES: list[dict] = [
         "kind": "reference_unresolved_block",
         "expect": {"param": "lot_ids"},
     },
-    # KNOWN BUG (xfail) — target for Step 5②-b. An OUT-OF-RANGE ordinal ("백번째"
-    # = 100th, but far fewer lots exist) can't be resolved, so the slot is cleared;
-    # _resolve_chained_params then silently fills lot_history with ALL wads lots
-    # instead of letting the dispatch missing-param backstop ask. (In-range ordinals
-    # like 첫번째/두번째/여덟번째 are now resolved deterministically in ②-a.)
+    # Step 5②-b: an OUT-OF-RANGE ordinal ("백번째" with far fewer lots) can't be
+    # resolved -> slot marked unresolved -> chaining must NOT silently fill all wads
+    # lots; the dispatch missing-param backstop asks instead. (Was an xfail until ②-b.)
     {
-        "id": "reference_unresolved_chained_silent",
+        "id": "reference_out_of_range_blocks",
         "turns": [
             "최근 1주일 4SS 검출 lot 알려줘",
             "백번째 lot 이력 보여줘",
         ],
-        "kind": "reference_silent_chained_xfail",
-        "xfail": "current silent-wrong bug: an unresolvable (out-of-range) ordinal "
-                 "leaves the slot empty, and _resolve_chained_params pre-empts the "
-                 "dispatch missing-param backstop by filling lot_history with ALL wads "
-                 "lots. Step 5②-b should flip this to xpass (backstop asks instead).",
+        "kind": "reference_unresolved_block",
+        "expect": {"param": "lot_ids"},
+    },
+    # Step 5②-b guard: a PLAIN-empty chained slot (no ordinal token — "그 lot들" =
+    # all wads lots) must still be filled from the wads result, NOT mistaken for a
+    # failed reference. Proves the unresolved-ref sentinel didn't break real chaining.
+    {
+        "id": "wads_map_chaining_intact",
+        "turns": [
+            "최근 1주일 4SS 검출 lot 알려줘",
+            "그 lot들 wafer map 보여줘",
+        ],
+        "kind": "wads_map_chain",
     },
 ]
 
@@ -155,9 +161,26 @@ def check_case(case: dict, r: TurnResult) -> list[str]:
         return _check_reference_resolves(case, r)
     if kind == "reference_unresolved_block":
         return _check_reference_unresolved_block(case, r)
-    if kind == "reference_silent_chained_xfail":
-        return _check_reference_silent_chained_xfail(case, r)
+    if kind == "wads_map_chain":
+        return _check_wads_map_chain(case, r)
     return [f"unknown case kind: {kind}"]
+
+
+def _check_wads_map_chain(case: dict, r: TurnResult) -> list[str]:
+    """A plain-empty chained slot (no ordinal token) must still be filled from the
+    prior wads result — the unresolved-ref sentinel must not block real chaining."""
+    fails: list[str] = []
+    if "map_agent" not in r.planned_agents():
+        fails.append(f"follow-up did not route to map_agent (planned={r.planned_agents()})")
+    if r.sse_interrupts("missing_param"):
+        fails.append(
+            f"plain chaining wrongly hit a missing-param backstop: "
+            f"{[i.get('param') for i in r.sse_interrupts('missing_param')]} "
+            f"(sentinel must not affect non-reference empty slots)"
+        )
+    if r.sse_contains(AGENT_ERROR_MARKER):
+        fails.append("runtime agent error on chained wads->map")
+    return fails
 
 
 def _as_lot_list(value) -> list[str]:
@@ -198,25 +221,6 @@ def _check_reference_resolves(case: dict, r: TurnResult) -> list[str]:
         fails.append("unexpected missing_param block on a resolvable reference")
     if r.sse_contains(AGENT_ERROR_MARKER):
         fails.append("runtime agent error on resolved follow-up")
-    return fails
-
-
-def _check_reference_silent_chained_xfail(case: dict, r: TurnResult) -> list[str]:
-    """DESIRED behavior (currently FAILS → marked xfail): an out-of-range reference
-    ("여덟번째" when fewer rows exist) must NOT silently run lot_history with the
-    full wads lot set — it should block (missing_param) or resolve to a single lot.
-    Today it does neither: _resolve_chained_params injects ALL wads lots at dispatch,
-    pre-empting the backstop. After Step 5② this should become xpass (planner
-    resolves/blocks) or stay xfail if not worsened."""
-    fails: list[str] = []
-    blocked = bool(r.sse_interrupts("missing_param"))
-    meta = r.dispatched_param("lot_history_agent", "lot_ids")
-    count = int(meta.get("count", 0) or 0) if meta.get("present") else 0
-    if (not blocked) and count > 1:
-        fails.append(
-            f"silent all-lots: lot_history dispatched with {count} lots and no block "
-            f"— _resolve_chained_params chaining pre-empted the missing-param backstop"
-        )
     return fails
 
 

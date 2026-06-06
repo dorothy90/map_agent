@@ -56,6 +56,7 @@ from result_contracts import (
 )
 from rewrite_tools import REWRITE_TOOLS
 from task_normalizer_validator import (
+    UNRESOLVED_REF,
     apply_ordinal_ref,
     normalize_task_fields,
     validate_tasks,
@@ -1647,6 +1648,15 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
             logger.info(
                 "[ResolveChained] map_oper ← wads_sql_result (%s)", fallback_oper
             )
+
+    # Step 5②-b: after ALL chaining/injection above, an unresolved-reference slot
+    # still holds the UNRESOLVED_REF sentinel (chaining skipped it as non-empty).
+    # Strip it to "" so the dispatch missing-param guard asks the user, instead of
+    # silently substituting chained wads lots. Plain-empty slots (real chaining
+    # intent) were already filled above and are unaffected.
+    for _slot, _val in list(params.items()):
+        if _val == UNRESOLVED_REF:
+            params[_slot] = ""
 
     return params
 
