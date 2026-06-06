@@ -175,8 +175,17 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     # Yield agent now always returns the full artifact for lotcd + period.
     # Parameter-specific filtering is no longer part of the runtime contract.
     filter_params = None
-    unit    = state.get("unit", "weekly")
-    periods = int(state.get("periods", 0) or 0)
+    unit    = state.get("unit") or "weekly"
+    # Tolerant parse: "3", "3w", 3 -> 3; anything non-numeric -> 0 (falls back to
+    # DEFAULT_PERIODS[unit] below). Never hard-crash on a stray planner string.
+    _raw_periods = state.get("periods", 0)
+    if isinstance(_raw_periods, bool):
+        periods = 0
+    elif isinstance(_raw_periods, int):
+        periods = _raw_periods
+    else:
+        _digits = "".join(ch for ch in str(_raw_periods or "") if ch.isdigit())
+        periods = int(_digits) if _digits else 0
     # Yield runtime contract is lotcd + period only. Full-lot comparison inputs
     # are intentionally ignored so the agent always emits the full period artifact.
     yield_lot_ids = ""

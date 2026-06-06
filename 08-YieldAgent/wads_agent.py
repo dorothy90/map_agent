@@ -130,6 +130,32 @@ def _is_wafer_list_request(text: str) -> bool:
     )
 
 
+def _query_with_slot_context(
+    query: str,
+    *,
+    lotcd: str,
+    start_tm: str,
+    end_tm: str,
+    parameter: str,
+) -> str:
+    slots: list[str] = []
+    if lotcd:
+        slots.append(f"- lotcd: {lotcd}")
+    if start_tm or end_tm:
+        slots.append(f"- date_range: {start_tm or '전체'} ~ {end_tm or '전체'}")
+    if parameter:
+        slots.append(f"- parameter: {parameter}")
+    if not slots:
+        return query
+    return (
+        f"{query}\n\n"
+        "[실행 슬롯]\n"
+        + "\n".join(slots)
+        + "\n위 실행 슬롯은 supervisor가 확정한 값입니다. "
+        "도구 호출과 SQL 설명에서 이 값을 그대로 사용하고 다른 parameter로 대체하지 마세요."
+    )
+
+
 # create_react_agent로 WADS 그래프 생성 — 수동 StateGraph 대체
 # prompt를 callable로 전달: 호출 시 현재 날짜를 SystemMessage로 주입
 def _wads_prompt(state: dict) -> list:
@@ -388,12 +414,17 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         if last_human
         else f"{lotcd} 로트의 {end_tm} WADS 리포트를 보여줘"
     )
-    # _wads_prompt가 시스템 프롬프트에 [조회 컨텍스트] lotcd/기간/parameter를 자동 주입하므로
-    # query에 별도 embed 불필요. WADS_SYSTEM_PROMPT의 TASK SCOPE 룰이 ReAct 1회 호출 종료를 강제.
-    logger.info("[WADS Agent] 쿼리: %s (task_goal=%r)", query, task_goal)
+    query_for_worker = _query_with_slot_context(
+        query,
+        lotcd=lotcd,
+        start_tm=start_tm,
+        end_tm=end_tm,
+        parameter=parameter,
+    )
+    logger.info("[WADS Agent] 쿼리: %s (task_goal=%r)", query_for_worker, task_goal)
 
-    # ReAct에 task_goal만 단일 user message로 전달 — scope를 wads task로 좁혀 recursion 방지.
-    wads_history: List[Any] = [HumanMessage(content=query)]
+    # ReAct에는 task goal과 supervisor가 확정한 slot만 전달한다.
+    wads_history: List[Any] = [HumanMessage(content=query_for_worker)]
 
     logger.info(
         "[WADS Agent] ReAct 그래프 invoke 시작 (history=%d msgs, recursion_limit=20)",

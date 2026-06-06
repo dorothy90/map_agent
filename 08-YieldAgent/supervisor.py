@@ -16,7 +16,7 @@ import json
 import operator
 import logging
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated, Any, Dict, Literal, TypedDict
 
 from dotenv import load_dotenv
@@ -31,9 +31,15 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import ToolMessage
 
 from common import stream_event, get_llm, extract_json_from_llm, is_transient_error
+from canonical_request import (
+    AGENT_SLOT_SCHEMAS,
+    build_tasks_from_canonical_requests,
+    canonical_requests_from_tasks,
+    normalize_canonical_request,
+)
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import StatusEvent
-from prompts import PLANNER_SYSTEM_PROMPT, REPLANNER_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT_TEMPLATE
+from prompts import CANONICAL_PLANNER_SYSTEM_PROMPT, REPLANNER_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT_TEMPLATE
 from result_contracts import (
     ResultContractError,
     build_recent_result_index_entry,
@@ -80,7 +86,7 @@ _rewrite_tool_map = {t.name: t for t in REWRITE_TOOLS}
 
 # ── Pydantic 라우팅 결정 모델 ────────────────────────────────
 class TaskItem(BaseModel):
-    """planner가 생성하는 개별 작업 단위"""
+    """deterministic task builder가 생성하는 공통 작업 단위"""
     task_id: str = Field(description="고유 ID (예: 'task_1')")
     agent: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "relation_tree_agent"] = Field(
         description="실행할 에이전트"
@@ -90,8 +96,28 @@ class TaskItem(BaseModel):
 
 
 class PlanResponse(BaseModel):
-    """planner LLM의 출력 스키마"""
+    """공통 task contract 래퍼. Runtime LLM planner 출력은 CanonicalPlanResponse를 사용한다."""
     tasks: list[TaskItem] = Field(description="실행할 작업 목록")
+
+
+class CanonicalRequestItem(BaseModel):
+    """LLM canonicalizer output before deterministic task building."""
+
+    intent: str = Field(default="", description="정규화된 intent (예: wads_report, map)")
+    agent: Literal["", "yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "relation_tree_agent"] = Field(
+        default="",
+        description="실행 대상 agent"
+    )
+    slots: dict = Field(default_factory=dict, description="agent slot schema에 맞춘 structured parameters")
+    goal: str = Field(default="", description="사용자에게 표시할 한국어 목표")
+    answer: str = Field(default="", description="잘못 중첩된 direct answer 보정용")
+
+
+class CanonicalPlanResponse(BaseModel):
+    """LLM canonicalizer output schema."""
+
+    requests: list[CanonicalRequestItem] = Field(default_factory=list, description="정규화된 요청 목록")
+    answer: str = Field(default="", description="도구 실행 없이 제공 context만으로 답할 수 있을 때의 사용자 응답")
 
 
 _EMPTY_PLAN_RESPONSE_SYSTEM = """
@@ -141,11 +167,14 @@ def _llm_empty_plan_response(user_text: str, *, planner_text: str = "") -> str:
 class PlanReviewResult(BaseModel):
     """plan_review LLM의 출력 스키마"""
     action: Literal["approve", "cancel", "modify"]
-    tasks: list[TaskItem] = Field(default=[], description="최종 task 목록 (approve 시 현재 계획 그대로, modify 시 수정된 전체 목록)")
+    requests: list[CanonicalRequestItem] = Field(
+        default_factory=list,
+        description="최종 canonical request 목록 (approve 시 현재 요청 그대로, modify 시 수정된 전체 목록)",
+    )
 
 
 _CONFIRMATION_REVIEW_SYSTEM = """
-현재 실행 확인 질문, 현재 분석 계획, 사용자 응답을 보고 최종 계획을 JSON으로 반환해라.
+현재 실행 확인 질문, 현재 canonical request 목록, 사용자 응답을 보고 최종 요청 목록을 JSON으로 반환해라.
 
 action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
 - "approve" : 사용자가 현재 계획 그대로 계속 진행하겠다는 의도
@@ -153,14 +182,14 @@ action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
 - "modify"  : 사용자가 범위, 파라미터, 작업 수, 조건 변경을 요청함
 
 출력 형식:
-{"action": "approve"|"cancel"|"modify", "tasks": [...]}
+{"action": "approve"|"cancel"|"modify", "requests": [...]}
 
 규칙:
-- tasks는 항상 전체 task 목록이다. 수정하지 않은 task도 포함한다.
-- task_id, agent, params, goal 필드를 유지한다.
-- approve면 현재 계획 그대로 tasks에 넣는다.
-- cancel이면 tasks는 []로 둔다.
-- modify면 사용자 응답을 반영한 수정된 전체 계획을 tasks에 넣는다.
+- requests는 항상 전체 canonical request 목록이다. 수정하지 않은 request도 포함한다.
+- request는 intent, agent, slots, goal 필드를 사용한다. task_id/params/tasks를 출력하지 마라.
+- approve면 현재 요청 그대로 requests에 넣는다.
+- cancel이면 requests는 []로 둔다.
+- modify면 사용자 응답을 반영한 수정된 전체 요청 목록을 requests에 넣는다.
 """.strip()
 
 
@@ -170,21 +199,26 @@ def _review_hitl_confirmation(
     task_plan: list[dict[str, Any]],
 ) -> PlanReviewResult:
     question = hitl_interrupt_payload(issue).get("message", "")
+    current_requests = canonical_requests_from_tasks(task_plan)
     raw = _model.invoke([
         {"role": "system", "content": _CONFIRMATION_REVIEW_SYSTEM},
         {
             "role": "user",
             "content": (
                 f"확인 질문:\n{question}\n\n"
-                f"현재 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n"
+                f"현재 canonical requests:\n{json.dumps(current_requests, ensure_ascii=False)}\n\n"
+                f"화면 표시용 현재 task 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n"
                 f"이슈:\n{json.dumps(issue, ensure_ascii=False)}\n\n"
                 f"사용자 응답:\n{str(response or '').strip()}"
             ),
         },
     ]).content.strip()
     result = extract_json_from_llm(raw, PlanReviewResult)
-    if result.action == "approve" and not result.tasks:
-        result.tasks = [TaskItem.model_validate(t) for t in task_plan]
+    if result.action == "approve" and not result.requests:
+        result.requests = [
+            CanonicalRequestItem.model_validate(request)
+            for request in current_requests
+        ]
     return result
 
 
@@ -269,6 +303,91 @@ def _resolved_refs_prompt_context(resolved_refs: dict[str, Any]) -> str:
                 if compact_row:
                     lines.append(f"{key}_row: {json.dumps(compact_row, ensure_ascii=False)}")
     return "\n".join(lines)
+
+
+def _recent_results_prompt_context(recent_results: list[dict[str, Any]]) -> str:
+    """Compact structured result context for follow-up planning.
+
+    This intentionally exposes result metadata and row order, not raw assistant
+    prose, so follow-ups can refer to prior tables without replaying suggestions.
+    """
+
+    if not recent_results:
+        return ""
+    lines = [
+        "Recent structured results are ordered as displayed to the user. Follow-up references to ranks, rows, or prior items refer to that displayed order.",
+    ]
+    preferred_keys = (
+        "parameter",
+        "param",
+        "fail_type",
+        "cnt",
+        "count",
+        "detection_count",
+        "lot_id",
+        "lot_ids",
+        "wf_ids",
+        "lotcd",
+        "groupkey",
+        "groupkeys",
+        "map_oper",
+        "category",
+        "end_tm",
+    )
+    for result in recent_results[-3:]:
+        rows = result.get("rows") or []
+        columns = [
+            {
+                "name": column.get("name"),
+                "semantic": column.get("semantic"),
+            }
+            for column in (result.get("columns") or [])
+            if isinstance(column, dict)
+        ][:8]
+        lines.append(
+            "result: "
+            f"result_id={result.get('result_id', '')} "
+            f"source_agent={result.get('source_agent', '')} "
+            f"kind={result.get('kind', '')} "
+            f"title={preview_text(result.get('title', ''), max_chars=80)} "
+            f"row_count={len(rows)} "
+            f"columns={json.dumps(columns, ensure_ascii=False)}"
+        )
+        for index, row in enumerate(rows[:5], start=1):
+            if not isinstance(row, dict):
+                continue
+            compact_row = {
+                key: row.get(key)
+                for key in preferred_keys
+                if row.get(key) not in (None, "")
+            }
+            if compact_row:
+                lines.append(f"row_{index}: {json.dumps(compact_row, ensure_ascii=False)}")
+    return "\n".join(lines)
+
+
+def _previous_assistant_prompt_context(messages: list, last_human: Any) -> str:
+    """Return the assistant message immediately preceding the latest user turn."""
+
+    if not messages or last_human is None:
+        return ""
+    try:
+        last_index = max(
+            index
+            for index, message in enumerate(messages)
+            if message is last_human or getattr(message, "id", None) == getattr(last_human, "id", None)
+        )
+    except ValueError:
+        last_index = len(messages)
+
+    for message in reversed(messages[:last_index]):
+        if not isinstance(message, AIMessage) and getattr(message, "type", "") != "ai":
+            continue
+        content = message.content if isinstance(message.content, str) else str(message.content)
+        content = content.strip()
+        if content:
+            return preview_text(content, max_chars=4000)
+    return ""
 
 
 def _normalize_map_oper(raw: str) -> str:
@@ -521,33 +640,75 @@ def reference_resolver_node(state: Dict[str, Any], config: RunnableConfig) -> di
     return {**update, "resolved_refs": resolved_refs, "reference_issues": []}
 
 
+# ── Deterministic Task Builder 노드 ─────────────────────────────
+@observe(name="task_builder_node")
+def task_builder_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
+    """Build the common task contract from canonical request(s)."""
+
+    canonical_requests = state.get("canonical_requests") or []
+    if not canonical_requests and state.get("canonical_request"):
+        canonical_requests = [state["canonical_request"]]
+
+    tasks = build_tasks_from_canonical_requests(canonical_requests)
+    emit_runtime_detail(
+        "task_builder.output",
+        {
+            "canonical_requests": canonical_requests,
+            "tasks": tasks,
+        },
+    )
+    if not tasks:
+        return {"task_plan": [], "pending_tasks": []}
+
+    logger.info("[TaskBuilder] %d task(s) built: %s", len(tasks), task_flow(tasks))
+    stream_event("status", StatusEvent(
+        message=f"📋 계획 ({len(tasks)}개): " + " → ".join(f"[{t['task_id']}]{t['agent']}" for t in tasks),
+        node="task_builder",
+    ))
+    emit_trace_event(
+        "task_builder_output",
+        source="task_builder",
+        payload={
+            "status": "ok",
+            "task_count": len(tasks),
+            "task_flow": task_flow(tasks),
+            "tasks": summarize_tasks(tasks),
+        },
+    )
+    return {
+        "task_plan": tasks,
+        "pending_tasks": tasks,
+    }
+
+
 # ── Planner 노드 ────────────────────────────────────────────
 _MAX_TASKS = 5
 
 
-def _planner_empty_plan_retry(
+def _planner_empty_canonical_retry(
     invoke_messages: list[dict],
     *,
     user_text: str,
     previous_output: str,
 ) -> tuple[list[dict[str, Any]], str]:
-    """Ask the planner LLM to re-evaluate an empty plan without code-side rules."""
+    """Ask the LLM canonicalizer to re-evaluate an empty canonical plan."""
 
     retry_messages = list(invoke_messages)
     retry_messages.append({
         "role": "system",
         "content": (
-            "The previous planner output produced zero tasks. Re-evaluate the latest user query using the same "
-            "agent schema and conversation context. If the request can be executed with omitted optional filters "
-            "or worker defaults, return executable tasks with empty params for the omitted values. Only return "
-            '{"tasks": []} when the request is truly out of scope or meaningless. Output JSON only.'
+            "The previous canonicalizer output produced zero requests. Re-evaluate the latest user query using "
+            "the same canonical request schema and structured context. If the request can be executed with "
+            "omitted optional filters or worker defaults, return canonical requests with empty slots for the "
+            'omitted values. Only return {"requests": []} when the request is truly out of scope or meaningless. '
+            "Never output task_id, params, or tasks. Output JSON only."
         ),
     })
-    fallback_previous = previous_output or '{"tasks": []}'
+    fallback_previous = previous_output or '{"requests": []}'
     retry_messages.append({
         "role": "user",
         "content": (
-            f"Previous planner output:\n{fallback_previous}\n\n"
+            f"Previous canonicalizer output:\n{fallback_previous}\n\n"
             f"Latest user query:\n{user_text}"
         ),
     })
@@ -556,16 +717,23 @@ def _planner_empty_plan_retry(
         config={"callbacks": _lf_callbacks()},
     )
     raw_retry = (response.content or "").strip()
-    retry_plan = extract_json_from_llm(raw_retry, PlanResponse)
-    return [t.model_dump() for t in retry_plan.tasks], raw_retry
+    retry_plan = extract_json_from_llm(raw_retry, CanonicalPlanResponse)
+    if retry_plan.answer.strip():
+        return [], raw_retry
+    return [
+        normalize_canonical_request(request.model_dump())
+        for request in retry_plan.requests
+        if request.intent and request.agent
+    ], raw_retry
 
 
 @observe(name="planner_node")
 def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
-    """사용자 질문을 TaskItem 리스트로 분해.
+    """Primary LLM canonicalizer for the latest user request.
 
-    단순 질문이면 task 1개, 복합이면 N개 생성.
-    task_plan은 디버깅용, pending_tasks는 실행 큐.
+    The planner does not read raw history and does not emit executable tasks.
+    It receives only the latest user text plus structured context, then emits
+    canonical request(s). The downstream task_builder creates task_plan.
     """
     messages = state.get("messages", [])
     if not messages:
@@ -580,46 +748,50 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         return {}
 
     today = date.today()
-    prompt = PLANNER_SYSTEM_PROMPT.format(
+    prompt = CANONICAL_PLANNER_SYSTEM_PROMPT.format(
         today=today.strftime("%Y년 %m월 %d일 (%A)"),
         today_yyyymmdd=today.strftime("%Y%m%d"),
         today_yyyy_mm_dd=today.strftime("%Y-%m-%d"),
+        week_ago_yyyy_mm_dd=(today - timedelta(days=6)).strftime("%Y-%m-%d"),
         year=today.year,
     )
 
-    # #14 fix — planner context-blind 해소: 최근 3턴 + state metadata 주입
-    # rewrite_node가 follow-up 컨텍스트를 놓쳤을 때 planner가 직접 복구할 수 있도록.
     resolved_refs = state.get("resolved_refs") or {}
-    recent = _get_recent_turns(messages, max_turns=3, exclude_last=last_human)
-    if resolved_refs:
-        recent = [turn for turn in recent if turn.get("role") != "assistant"]
     meta_parts: list[str] = []
     resolved_context = _resolved_refs_prompt_context(resolved_refs)
     if resolved_context:
         meta_parts.append(resolved_context)
-    else:
-        if state.get("lotcd"):
-            meta_parts.append(f"현재 제품: {state['lotcd']}")
-        prev_lots = state.get("lot_ids") or []
-        if prev_lots:
-            meta_parts.append(f"이전 lot: {','.join(prev_lots)}")
-        if state.get("cause_oper"):
-            meta_parts.append(f"이전 main_oper: {state['cause_oper']}")
-        if state.get("agent_suggestion"):
-            meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
+    recent_context = _recent_results_prompt_context(state.get("recent_results") or [])
+    if recent_context:
+        meta_parts.append(recent_context)
+    if state.get("lotcd"):
+        meta_parts.append(f"현재 제품: {state['lotcd']}")
+    prev_lots = state.get("lot_ids") or []
+    if prev_lots:
+        meta_parts.append(f"이전 lot: {','.join(prev_lots)}")
+    if state.get("cause_oper"):
+        meta_parts.append(f"이전 main_oper: {state['cause_oper']}")
+    if state.get("agent_suggestion"):
+        meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
     meta = "\n".join(meta_parts)
 
     invoke_messages: list[dict] = [{"role": "system", "content": prompt}]
     if meta:
-        invoke_messages.append({"role": "system", "content": f"State context:\n{meta}"})
-    invoke_messages.extend(recent)
+        invoke_messages.append({"role": "system", "content": f"Structured context:\n{meta}"})
+    previous_assistant = _previous_assistant_prompt_context(messages, last_human)
+    if previous_assistant:
+        invoke_messages.append({
+            "role": "assistant",
+            "content": f"Previous assistant message for follow-up resolution:\n{previous_assistant}",
+        })
     invoke_messages.append({"role": "user", "content": last_human.content})
     emit_runtime_detail(
         "planner.input",
         {
             "last_human": last_human.content,
             "meta": meta,
-            "recent_turns": recent,
+            "previous_assistant": previous_assistant,
+            "recent_turns": [],
             "invoke_messages": invoke_messages,
         },
     )
@@ -633,9 +805,9 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         )
         raw_text = response.content.strip()
         emit_runtime_detail("planner.raw", {"raw_text": raw_text})
-        plan = extract_json_from_llm(raw_text, PlanResponse)
+        plan = extract_json_from_llm(raw_text, CanonicalPlanResponse)
     except Exception as e:
-        logger.error("[Planner] 파싱 실패: %s — 단일 task fallback", e)
+        logger.error("[Planner] canonical 파싱 실패: %s", e)
         emit_trace_event(
             "planner_output",
             source="planner",
@@ -651,43 +823,77 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         )
         # plain text 거절 메시지이면 state에 보존 (supervisor fallback에서 사용)
         refusal = raw_text if (raw_text and "{" not in raw_text and len(raw_text) < 400) else None
-        result: dict = {"task_plan": [], "pending_tasks": []}
+        result: dict = {"canonical_request": {}, "canonical_requests": []}
         if refusal:
             content = _llm_empty_plan_response(str(last_human.content), planner_text=refusal)
             result["messages"] = [AIMessage(content=content, name="planner")]
         return result
 
-    # task 수 상한 제한 — 초과 시 사용자에게 명시적으로 알림 (#22 fix)
-    if len(plan.tasks) > _MAX_TASKS:
-        dropped = len(plan.tasks) - _MAX_TASKS
-        logger.warning("[Planner] task 수 %d → %d로 제한 (%d개 dropped)", len(plan.tasks), _MAX_TASKS, dropped)
+    # canonical request 수 상한 제한 — 초과 시 사용자에게 명시적으로 알림 (#22 fix)
+    if len(plan.requests) > _MAX_TASKS:
+        dropped = len(plan.requests) - _MAX_TASKS
+        logger.warning("[Planner] request 수 %d → %d로 제한 (%d개 dropped)", len(plan.requests), _MAX_TASKS, dropped)
         stream_event("status", StatusEvent(
             message=f"⚠ 요청하신 작업이 너무 많아 처음 {_MAX_TASKS}개만 처리합니다 ({dropped}개 생략).",
             node="planner",
         ))
-        plan.tasks = plan.tasks[:_MAX_TASKS]
+        plan.requests = plan.requests[:_MAX_TASKS]
 
-    tasks_dicts = [t.model_dump() for t in plan.tasks]
-    if not tasks_dicts:
+    nested_answer = next(
+        (request.answer.strip() for request in plan.requests if request.answer.strip()),
+        "",
+    )
+    canonical_requests = [
+        normalize_canonical_request(request.model_dump())
+        for request in plan.requests
+        if request.intent and request.agent
+    ]
+    direct_answer = plan.answer.strip() or nested_answer
+    if not canonical_requests and direct_answer:
+        emit_runtime_detail(
+            "planner.direct_answer",
+            {
+                "question": last_human.content,
+                "answer": direct_answer,
+                "raw_text": raw_text,
+            },
+        )
+        emit_trace_event(
+            "planner_output",
+            source="planner",
+            payload={
+                "status": "direct_answer",
+                "request_count": 0,
+                "question_preview": preview_text(last_human.content),
+                "raw_preview": preview_text(raw_text),
+            },
+        )
+        return {
+            "canonical_request": {},
+            "canonical_requests": [],
+            "messages": [AIMessage(content=direct_answer, name="planner")],
+            "response": direct_answer,
+        }
+    if not canonical_requests:
         try:
-            retry_tasks, retry_raw = _planner_empty_plan_retry(
+            retry_requests, retry_raw = _planner_empty_canonical_retry(
                 invoke_messages,
                 user_text=str(last_human.content),
                 previous_output=raw_text,
             )
         except Exception as exc:
-            retry_tasks = []
+            retry_requests = []
             retry_raw = ""
-            logger.warning("[Planner] empty-plan LLM retry failed: %s", exc)
-        if retry_tasks:
-            tasks_dicts = [TaskItem.model_validate(task).model_dump() for task in retry_tasks]
+            logger.warning("[Planner] empty canonical retry failed: %s", exc)
+        if retry_requests:
+            canonical_requests = retry_requests
             emit_runtime_detail(
                 "planner.empty_retried",
                 {
                     "question": last_human.content,
                     "raw_text": raw_text,
                     "retry_raw": retry_raw,
-                    "tasks": tasks_dicts,
+                    "canonical_requests": canonical_requests,
                 },
             )
             emit_trace_event(
@@ -696,71 +902,68 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                 severity="warning",
                 payload={
                     "status": "empty_retried",
-                    "task_count": len(tasks_dicts),
+                    "request_count": len(canonical_requests),
                     "question_preview": preview_text(last_human.content),
                     "raw_preview": preview_text(raw_text),
                     "retry_raw_preview": preview_text(retry_raw),
-                    "task_flow": task_flow(tasks_dicts),
-                    "tasks": summarize_tasks(tasks_dicts),
+                    "canonical_requests": canonical_requests,
                 },
             )
-    emit_runtime_detail("planner.tasks", {"tasks": tasks_dicts})
-    logger.info("[Planner] %d task(s) 생성: %s", len(tasks_dicts),
-                [(t["task_id"], t["agent"]) for t in tasks_dicts])
-    logger.info("[Planner] task_flow=%s", task_flow(tasks_dicts))
+    emit_runtime_detail("planner.canonical_requests", {"canonical_requests": canonical_requests})
+    logger.info(
+        "[Planner] %d canonical request(s) 생성: %s",
+        len(canonical_requests),
+        [(r.get("intent"), r.get("agent")) for r in canonical_requests],
+    )
 
-    if not tasks_dicts:
+    if not canonical_requests:
         # LLM이 지원 범위 외로 판단 — planner message를 state에 남겨 supervisor가 relay하도록 함
         emit_trace_event(
             "planner_output",
             source="planner",
             payload={
                 "status": "empty",
-                "task_count": 0,
+                "request_count": 0,
                 "question_preview": preview_text(last_human.content),
                 "raw_preview": preview_text(raw_text),
-                "tasks": [],
-                "task_flow": "",
+                "canonical_requests": [],
             },
         )
         return {
-            "task_plan": [],
-            "pending_tasks": [],
+            "canonical_request": {},
+            "canonical_requests": [],
             "messages": [AIMessage(
                 content=_llm_empty_plan_response(str(last_human.content), planner_text=raw_text),
                 name="planner",
             )],
         }
 
-    task_summary = " → ".join(
-        f"[{t['task_id']}]{t['agent']}" for t in tasks_dicts
-    )
-    stream_event("status", StatusEvent(
-        message=f"📋 계획 ({len(tasks_dicts)}개): {task_summary}",
-        node="planner",
-    ))
     emit_trace_event(
         "planner_output",
         source="planner",
         payload={
             "status": "ok",
-            "task_count": len(tasks_dicts),
+            "request_count": len(canonical_requests),
             "max_tasks": _MAX_TASKS,
             "question_preview": preview_text(last_human.content),
-            "task_flow": task_flow(tasks_dicts),
-            "tasks": summarize_tasks(tasks_dicts),
+            "canonical_requests": canonical_requests,
         },
     )
 
     return {
-        "task_plan": tasks_dicts,
-        "pending_tasks": tasks_dicts,
+        "canonical_request": canonical_requests[0],
+        "canonical_requests": canonical_requests,
+        "canonical_trace": list(state.get("canonical_trace", []) or []) + [{
+            "event": "llm_canonicalized",
+            "source": "planner",
+            "request_count": len(canonical_requests),
+        }],
     }
 
 
 @observe(name="task_normalizer_validator_node")
 def task_normalizer_validator_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
-    """Normalize and validate planner tasks before supervisor dispatch.
+    """Normalize and validate task-builder output before supervisor dispatch.
 
     This layer does not ask the user anything. Issues are surfaced in state and
     consumed by the downstream HITL gate.
@@ -796,6 +999,11 @@ def task_normalizer_validator_node(state: Dict[str, Any], config: RunnableConfig
         state.get("resolved_refs", {}),
     )
     normalization_trace.extend(report_ref_trace)
+    normalized_tasks, recent_wads_trace = _apply_recent_wads_to_map_tasks(
+        normalized_tasks,
+        state,
+    )
+    normalization_trace.extend(recent_wads_trace)
     emit_runtime_detail("normalizer.input", {"tasks": tasks})
     validation = validate_tasks(
         normalized_tasks,
@@ -851,7 +1059,10 @@ def task_normalizer_validator_node(state: Dict[str, Any], config: RunnableConfig
         )
 
     validated_tasks = validation.get("tasks", [])
+    validated_canonical_requests = canonical_requests_from_tasks(validated_tasks)
     update: dict = {
+        "canonical_request": validated_canonical_requests[0] if validated_canonical_requests else {},
+        "canonical_requests": validated_canonical_requests,
         "task_plan": validated_tasks,
         "pending_tasks": validated_tasks,
         "task_normalization_trace": trace,
@@ -962,15 +1173,15 @@ def hitl_gate_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                 }
             review_data = review.model_dump()
             review_action = str(review_data.get("action") or "")
-            review_tasks = [
-                task
-                for task in (review_data.get("tasks") or [])
-                if isinstance(task, dict)
+            review_requests = [
+                normalize_canonical_request(request)
+                for request in (review_data.get("requests") or [])
+                if isinstance(request, dict) and request.get("intent") and request.get("agent")
             ]
             logger.info(
-                "[HITLGate] confirmation action=%s tasks=%d",
+                "[HITLGate] confirmation action=%s requests=%d",
                 review_action,
-                len(review_tasks),
+                len(review_requests),
             )
             emit_runtime_detail(
                 "hitl.confirmation_review",
@@ -978,14 +1189,14 @@ def hitl_gate_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                     "issue": issue,
                     "user_response": user_response,
                     "action": review_action,
-                    "tasks": review_tasks,
+                    "canonical_requests": review_requests,
                 },
                 task_id=str(issue.get("task_id") or ""),
             )
             if review_action == "approve":
                 continue
             if review_action == "modify":
-                modified_tasks = review_tasks
+                modified_tasks = build_tasks_from_canonical_requests(review_requests)
                 if not modified_tasks:
                     return {
                         "hitl_issues": issues,
@@ -996,6 +1207,8 @@ def hitl_gate_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                     update={
                         "hitl_issues": issues,
                         "hitl_responses": responses,
+                        "canonical_request": review_requests[0],
+                        "canonical_requests": review_requests,
                         "task_plan": modified_tasks,
                         "pending_tasks": modified_tasks,
                         "task_validation_issues": [],
@@ -1026,7 +1239,7 @@ def hitl_gate_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 
 
 _PLAN_REVIEW_SYSTEM = """
-현재 분석 계획과 사용자 응답을 보고 최종 계획을 JSON으로 반환해라.
+현재 canonical request 목록과 사용자 응답을 보고 최종 요청 목록을 JSON으로 반환해라.
 
 action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
 - "approve" : 승인 (응/ok/확인/좋아/네/그렇게 해/빈 응답 등)
@@ -1034,12 +1247,13 @@ action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
 - "modify"  : 수정 요청 (구체적인 변경 지시)
 
 출력 형식:
-{"action": "approve"|"cancel"|"modify", "tasks": [...]}
+{"action": "approve"|"cancel"|"modify", "requests": [...]}
 
 규칙:
-- tasks는 항상 전체 task 목록 (수정 안 한 task도 포함)
-- task_id, agent, params, goal 필드 유지
-- approve/cancel 시에도 tasks 필드 필수 (approve → 현재 계획 그대로, cancel → [])
+- requests는 항상 전체 canonical request 목록 (수정 안 한 request도 포함)
+- request는 intent, agent, slots, goal 필드를 사용한다.
+- task_id, params, tasks 필드를 출력하지 마라.
+- approve/cancel 시에도 requests 필드 필수 (approve → 현재 요청 그대로, cancel → [])
 """.strip()
 
 
@@ -1090,6 +1304,7 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     Validation/HITL handles missing params. This node only handles plan review.
     """
     task_plan = state.get("task_plan", [])
+    canonical_requests = state.get("canonical_requests") or canonical_requests_from_tasks(task_plan)
     if len(task_plan) < 2:
         return {}
     if _should_auto_approve_report_map_plan(state, task_plan):
@@ -1097,7 +1312,7 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "plan_review.auto_approved",
             {"reason": "deterministic_report_map_fanout", "tasks": task_plan},
         )
-        return {"task_plan": task_plan, "pending_tasks": task_plan}
+        return {"canonical_requests": canonical_requests, "task_plan": task_plan, "pending_tasks": task_plan}
 
     # plan_review 루프 — approve/cancel/modify 반복 가능
     # sequential interrupt 패턴: 루프 각 반복마다 새 interrupt() 생성 → resume 시 순서대로 재생
@@ -1111,24 +1326,47 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         try:
             raw = _model.invoke([
                 {"role": "system", "content": _PLAN_REVIEW_SYSTEM},
-                {"role": "user", "content": f"현재 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n사용자 응답: \"{resp}\""},
+                {
+                    "role": "user",
+                    "content": (
+                        f"현재 canonical requests:\n{json.dumps(canonical_requests, ensure_ascii=False)}\n\n"
+                        f"화면 표시용 현재 task 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n"
+                        f"사용자 응답: \"{resp}\""
+                    ),
+                },
             ]).content.strip()
             result = extract_json_from_llm(raw, PlanReviewResult)
         except Exception as e:
             logger.warning("[PlanReview] LLM 판단 실패 (%s) — 계획 재표시", e)
             continue  # interrupt 재호출 → 사용자에게 계획 다시 표시
 
-        logger.info("[PlanReview] action=%s tasks=%s", result.action,
-                    [(t.task_id, t.agent) for t in result.tasks])
+        result_requests = [
+            normalize_canonical_request(request.model_dump())
+            for request in result.requests
+        ]
+        logger.info("[PlanReview] action=%s requests=%s", result.action,
+                    [(r.get("intent"), r.get("agent")) for r in result_requests])
 
         if result.action == "cancel":
-            return {"response": "사용자가 분석 계획을 취소했습니다.", "task_plan": [], "pending_tasks": []}
+            return {
+                "response": "사용자가 분석 계획을 취소했습니다.",
+                "canonical_request": {},
+                "canonical_requests": [],
+                "task_plan": [],
+                "pending_tasks": [],
+            }
         if result.action == "approve":
             break
         # modify → task_plan 갱신 후 루프 재시작 (새 interrupt로 수정된 플랜 재표시)
-        task_plan = [t.model_dump() for t in result.tasks]
+        canonical_requests = result_requests
+        task_plan = build_tasks_from_canonical_requests(canonical_requests)
 
-    return {"task_plan": task_plan, "pending_tasks": task_plan}
+    return {
+        "canonical_request": canonical_requests[0] if canonical_requests else {},
+        "canonical_requests": canonical_requests,
+        "task_plan": task_plan,
+        "pending_tasks": task_plan,
+    }
 
 
 # ── Replanner 노드 (#8 phase 3a) ──────────────────────────────
@@ -1272,46 +1510,6 @@ def _is_placeholder_or_empty(val) -> bool:
     return False
 
 
-def _detect_missing_global_params(task_plan: list[dict], state: dict) -> list[dict]:
-    """state에도 없고 앞 task가 제공하지도 않는 진짜 누락 파라미터 목록 반환.
-
-    '↳ 0단계 자동 연결'처럼 보이지만 실제로는 입력이 필요한 경우를 구분한다.
-    returns: [{"task_id": ..., "agent": ..., "param": "lotcd"}, ...]
-    """
-    missing = []
-    state_lotcd = state.get("lotcd", "")
-    state_map_oper = state.get("map_oper", "")
-    for i, task in enumerate(task_plan):
-        agent = task.get("agent", "")
-        params = task.get("params") or {}
-
-        if agent == "yield_agent":
-            task_lotcd = params.get("lotcd", "")
-            if not _is_placeholder_or_empty(task_lotcd):
-                continue
-            if state_lotcd:
-                continue
-            earlier_providers = [
-                t for t in task_plan[:i]
-                if t.get("agent") in ("yield_agent", "wads_agent")
-            ]
-            if not earlier_providers:
-                missing.append({"task_id": task["task_id"], "agent": agent, "param": "lotcd"})
-
-        elif agent == "map_agent":
-            # map_oper(PT1H/PT1C)가 없고 앞 task에서 공정 정보가 올 수 없는 경우 수집
-            task_oper = params.get("map_oper", "")
-            earlier_wads = any(t.get("agent") == "wads_agent" for t in task_plan[:i])
-            if (
-                _is_placeholder_or_empty(task_oper)
-                and not _normalize_map_oper(state_map_oper)
-                and not earlier_wads
-            ):
-                missing.append({"task_id": task["task_id"], "agent": agent, "param": "map_oper"})
-
-    return missing
-
-
 def _latest_wads_result(state: dict) -> dict:
     for message in reversed(state.get("messages", []) or []):
         if isinstance(message, AIMessage) and getattr(message, "name", "") == "wads_sql_result":
@@ -1333,6 +1531,126 @@ def _wads_groupkeys_by_map_oper(wads_data: dict) -> dict[str, list[str]]:
         if oper and groupkeys:
             grouped[oper] = groupkeys
     return grouped
+
+
+def _map_oper_from_wads_row(row: dict[str, Any]) -> str:
+    oper = _normalize_map_oper(str(row.get("map_oper") or ""))
+    if oper:
+        return oper
+    category = str(row.get("category") or "").upper()
+    if "PT1C" in category:
+        return "PT1C"
+    if "PT1H" in category:
+        return "PT1H"
+    return ""
+
+
+def _recent_wads_groupkeys_by_map_oper(state: dict) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for result in state.get("recent_results", []) or []:
+        if not isinstance(result, dict) or result.get("source_agent") != "wads_agent":
+            continue
+        for row in result.get("rows", []) or []:
+            if not isinstance(row, dict):
+                continue
+            oper = _map_oper_from_wads_row(row)
+            groupkeys = _groupkey_list(row.get("groupkeys") or row.get("groupkey"))
+            if not oper or not groupkeys:
+                continue
+            bucket = grouped.setdefault(oper, [])
+            bucket.extend(groupkeys)
+    return {oper: _unique_texts(groupkeys) for oper, groupkeys in grouped.items() if groupkeys}
+
+
+def _apply_recent_wads_to_map_tasks(
+    tasks: list[dict],
+    state: dict,
+) -> tuple[list[dict], list[dict]]:
+    groups = _recent_wads_groupkeys_by_map_oper(state)
+    if not groups:
+        return tasks, []
+
+    expanded: list[dict] = []
+    trace: list[dict] = []
+    for task in tasks:
+        params = dict(task.get("params") or {})
+        needs_groupkey = (
+            task.get("agent") == "map_agent"
+            and _is_placeholder_or_empty(params.get("groupkey"))
+            and _is_placeholder_or_empty(params.get("map_groupkey"))
+            and _is_placeholder_or_empty(params.get("lot_ids"))
+        )
+        if not needs_groupkey:
+            expanded.append(task)
+            continue
+
+        selected_oper = _normalize_map_oper(str(params.get("map_oper") or ""))
+        if selected_oper:
+            selected_groupkeys = groups.get(selected_oper) or []
+            if selected_groupkeys:
+                updated = {**task, "params": {**params, "groupkey": ",".join(selected_groupkeys)}}
+                expanded.append(updated)
+                trace.append({
+                    "event": "recent_wads_groupkey_applied",
+                    "task_id": task.get("task_id", ""),
+                    "agent": "map_agent",
+                    "map_oper": selected_oper,
+                    "groupkey_count": len(selected_groupkeys),
+                })
+                continue
+            expanded.append(task)
+            continue
+
+        if len(groups) == 1:
+            inferred_oper, inferred_groupkeys = next(iter(groups.items()))
+            updated = {
+                **task,
+                "params": {
+                    **params,
+                    "map_oper": inferred_oper,
+                    "groupkey": ",".join(inferred_groupkeys),
+                },
+            }
+            expanded.append(updated)
+            trace.append({
+                "event": "recent_wads_map_oper_groupkey_applied",
+                "task_id": task.get("task_id", ""),
+                "agent": "map_agent",
+                "map_oper": inferred_oper,
+                "groupkey_count": len(inferred_groupkeys),
+            })
+            continue
+
+        base_request = canonical_requests_from_tasks([task])[0]
+        request_expansion: list[dict] = []
+        task_ids: list[str] = []
+        for index, (oper, groupkeys) in enumerate(groups.items(), start=1):
+            slots = dict(base_request.get("slots") or {})
+            slots["map_oper"] = oper
+            slots["groupkey"] = ",".join(groupkeys)
+            slots.pop("lot_ids", None)
+            slots.pop("wf_ids", None)
+            request_expansion.append({
+                **base_request,
+                "slots": slots,
+                "goal": f"[{oper}] {task.get('goal', '')}".strip(),
+                "source": {
+                    **dict(base_request.get("source") or {}),
+                    "type": "recent_wads_map_oper_fanout",
+                },
+            })
+            task_ids.append(f"{task.get('task_id', 'task_map')}_p{index}")
+        task_expansion = build_tasks_from_canonical_requests(request_expansion, task_ids=task_ids)
+        expanded.extend(task_expansion)
+        trace.append({
+            "event": "recent_wads_map_oper_fanout",
+            "task_id": task.get("task_id", ""),
+            "agent": "map_agent",
+            "map_opers": list(groups.keys()),
+            "task_count": len(task_expansion),
+        })
+
+    return expanded, trace
 
 
 def _resolve_chained_params(task: dict, state: dict) -> dict:
@@ -1555,21 +1873,27 @@ def _expand_map_tasks_by_wads_map_oper(
             expanded_pending.append(task)
             continue
 
-        task_expansion: list[dict] = []
+        request_expansion: list[dict] = []
+        task_ids: list[str] = []
+        base_request = canonical_requests_from_tasks([task])[0]
         for index, (oper, groupkeys) in enumerate(groups.items(), start=1):
-            next_params = dict(params)
-            next_params["map_oper"] = oper
-            next_params["groupkey"] = ",".join(groupkeys)
-            next_params.pop("lot_ids", None)
-            next_params.pop("wf_ids", None)
-            expanded_task = {
-                **task,
-                "task_id": f"{task.get('task_id', 'task_map')}_p{index}",
+            next_slots = dict(base_request.get("slots") or {})
+            next_slots["map_oper"] = oper
+            next_slots["groupkey"] = ",".join(groupkeys)
+            next_slots.pop("lot_ids", None)
+            next_slots.pop("wf_ids", None)
+            request_expansion.append({
+                **base_request,
+                "slots": next_slots,
                 "goal": f"[{oper}] {task.get('goal', '')}".strip(),
-                "params": next_params,
-            }
-            task_expansion.append(expanded_task)
+                "source": {
+                    **dict(base_request.get("source") or {}),
+                    "type": "wads_map_oper_fanout",
+                },
+            })
+            task_ids.append(f"{task.get('task_id', 'task_map')}_p{index}")
 
+        task_expansion = build_tasks_from_canonical_requests(request_expansion, task_ids=task_ids)
         replacements[str(task.get("task_id") or "")] = task_expansion
         expanded_pending.extend(task_expansion)
 
@@ -1591,6 +1915,42 @@ def _replace_plan_tasks(
         else:
             updated.append(task)
     return updated
+
+
+def _task_ids_for_replanned_requests(
+    canonical_requests: list[dict[str, Any]],
+    pending_tasks: list[dict],
+) -> list[str]:
+    if len(canonical_requests) <= len(pending_tasks):
+        return [
+            str(task.get("task_id") or f"task_{index}")
+            for index, task in enumerate(pending_tasks[:len(canonical_requests)], start=1)
+        ]
+
+    if len(pending_tasks) == 1:
+        base_id = str(pending_tasks[0].get("task_id") or "task_1")
+        return [f"{base_id}_p{index}" for index in range(1, len(canonical_requests) + 1)]
+
+    task_ids = [
+        str(task.get("task_id") or f"task_{index}")
+        for index, task in enumerate(pending_tasks, start=1)
+    ]
+    task_ids.extend(f"task_extra_p{index}" for index in range(1, len(canonical_requests) - len(task_ids) + 1))
+    return task_ids
+
+
+def _replacements_from_replanned_tasks(
+    pending_tasks: list[dict],
+    new_tasks: list[dict],
+) -> dict[str, list[dict]]:
+    if not pending_tasks or not new_tasks:
+        return {}
+    if len(pending_tasks) == 1:
+        return {str(pending_tasks[0].get("task_id") or ""): new_tasks}
+    return {
+        str(old.get("task_id") or ""): [new]
+        for old, new in zip(pending_tasks, new_tasks)
+    }
 
 
 @observe(name="replanner_node")
@@ -1658,10 +2018,12 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             len(pending),
             len(expanded_pending),
         )
+        expanded_task_plan = _replace_plan_tasks(task_plan, replacements)
         return {
             **scratchpad_update,
+            "canonical_requests": canonical_requests_from_tasks(expanded_task_plan),
             "pending_tasks": expanded_pending,
-            "task_plan": _replace_plan_tasks(task_plan, replacements),
+            "task_plan": expanded_task_plan,
         }
     # C1: 코드 해소 시뮬레이션 — _resolve_chained_params가 모든 pending을 해소할 수 있으면 LLM 호출 생략
     simulated_pending = [
@@ -1685,10 +2047,9 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     past_str = "\n".join(
         f"- {tid}: {str(summary)[:400]}" for tid, summary in past
     )
-    pending_str = "\n".join(
-        f"- {t.get('task_id','?')}({t.get('agent','?')}): goal={t.get('goal','')!r} params={t.get('params',{})}"
-        for t in pending
-    )
+    pending_requests = canonical_requests_from_tasks(pending)
+    pending_ids = [str(task.get("task_id") or "") for task in pending]
+    pending_str = json.dumps(pending_requests, ensure_ascii=False)
 
     today = date.today()
     prompt = REPLANNER_SYSTEM_PROMPT.format(
@@ -1697,8 +2058,9 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     user_msg = (
         f"원본 사용자 요청: {last_human.content}\n\n"
         f"이미 실행된 task와 결과:\n{past_str}\n\n"
-        f"남은 task (params에 빈 값이 있으면 위 결과에서 추출하여 채워라):\n{pending_str}\n\n"
-        f"업데이트된 남은 task 목록을 PlanResponse JSON 형식으로 반환:"
+        f"남은 canonical requests (slots에 빈 값이 있으면 위 결과에서 추출하여 채워라):\n{pending_str}\n\n"
+        f"참고용 pending task ids(출력하지 마라): {pending_ids}\n\n"
+        f"업데이트된 남은 canonical request 목록을 CanonicalPlanResponse JSON 형식으로 반환:"
     )
 
     try:
@@ -1710,15 +2072,23 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             config={"callbacks": _lf_callbacks()},
         )
         raw = (response.content or "").strip()
-        plan = extract_json_from_llm(raw, PlanResponse)
+        plan = extract_json_from_llm(raw, CanonicalPlanResponse)
     except Exception as e:
         logger.warning("[Replanner] LLM 호출 실패 — pass-through: %s", e)
         return scratchpad_update
 
-    new_tasks = [t.model_dump() for t in plan.tasks]
-    if not new_tasks:
-        logger.warning("[Replanner] LLM이 빈 tasks 반환 — pass-through")
+        new_requests = [
+            normalize_canonical_request(request.model_dump())
+            for request in plan.requests
+            if request.intent and request.agent
+        ]
+    if not new_requests:
+        logger.warning("[Replanner] LLM이 빈 requests 반환 — pass-through")
         return scratchpad_update
+    new_tasks = build_tasks_from_canonical_requests(
+        new_requests,
+        task_ids=_task_ids_for_replanned_requests(new_requests, pending),
+    )
     import re as _re
     orig_ids = {t.get("task_id") for t in pending}
     new_ids = {t.get("task_id") for t in new_tasks}
@@ -1761,7 +2131,14 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         "[Replanner] plan 갱신: %d → %d tasks (chained input filled)",
         len(pending), len(new_tasks),
     )
-    return {**scratchpad_update, "pending_tasks": new_tasks}
+    replacements = _replacements_from_replanned_tasks(pending, new_tasks)
+    updated_task_plan = _replace_plan_tasks(task_plan, replacements)
+    return {
+        **scratchpad_update,
+        "canonical_requests": canonical_requests_from_tasks(updated_task_plan),
+        "task_plan": updated_task_plan,
+        "pending_tasks": new_tasks,
+    }
 
 
 # ── Supervisor 노드 ──────────────────────────────────────────
@@ -1815,7 +2192,7 @@ def supervisor_node(
         )
         return Command(update={"step_count": step_count}, goto=END)
 
-    # ── pending_tasks 큐 기반 dispatch (planner가 생성한 작업 큐) ──
+    # ── pending_tasks 큐 기반 dispatch (task_builder가 생성한 작업 큐) ──
     pending = state.get("pending_tasks", [])
     if pending:
         current_task = pending[0]
@@ -1849,6 +2226,10 @@ def supervisor_node(
         agent = current_task["agent"]
         update_dict: dict = {
             "step_count": step_count,
+            "current_task": {
+                **current_task,
+                "params": task_params,
+            },
             "current_task_id": current_task.get("task_id", ""),
             "current_task_goal": current_task.get("goal", ""),
             "pending_tasks": remaining,
@@ -2068,6 +2449,19 @@ def supervisor_node(
                     })
                 update_dict["lot_ids"] = _parse_lot_ids({"lot_ids": str(user_response).strip()})
 
+        final_task_params = dict(task_params)
+        for slot in AGENT_SLOT_SCHEMAS.get(agent, set()):
+            if slot in update_dict:
+                final_task_params[slot] = update_dict[slot]
+        update_dict["current_task"] = {
+            **current_task,
+            "params": {
+                key: value
+                for key, value in final_task_params.items()
+                if value not in (None, "", [], {})
+            },
+        }
+
         stream_event("status", StatusEvent(
             message=f"▶ [{current_task['task_id']}] {current_task.get('goal', '')}",
             node="supervisor",
@@ -2122,7 +2516,7 @@ def supervisor_node(
         return Command(update=update_dict, goto=current_task["agent"])
 
     # planner가 빈 계획 반환 (JSON 파싱 실패 fallback)
-    logger.warning("[Supervisor] pending_tasks 없음 — planner 실패 fallback")
+    logger.warning("[Supervisor] pending_tasks 없음 — canonical/task_builder 실패 fallback")
     emit_trace_event(
         "supervisor_dispatch",
         source="supervisor",
@@ -2217,7 +2611,7 @@ class YieldQueryState(TypedDict):
     fail_history_results: list[dict]     # 다음-턴 번호 선택 라우팅용 raw results (overwrite, per-turn reset in agent_server)
 
     # Day 4: wiki memory 메타 (둘 다 turn별 overwrite, reducer 없음 — plan v3 §State/Checkpoint 가드)
-    wiki_hit_ids: list[str]              # 이번 turn에 wiki_memory가 참조한 노드 id (eval/디버그용)
+    wiki_hit_ids: list[str]              # 이번 turn에 wiki_memory가 참조한 노드 id (디버그용)
     wiki_update_status: str              # "queued" | "summarized" | "persisted" | "dropped" | "skipped"
 
     # Lot History 결과
@@ -2246,6 +2640,12 @@ class YieldQueryState(TypedDict):
     resolved_refs: dict
     reference_issues: list[dict]
 
+    # Canonical request scratchpad (overwrite). Planner/replanner produce this
+    # contract; task_builder converts it into executable tasks.
+    canonical_request: dict
+    canonical_requests: list[dict]
+    canonical_trace: list[dict]
+
     # Task normalizer/validator scratchpad (overwrite, Phase 5)
     task_normalization_trace: list[dict]
     task_validation_issues: list[dict]
@@ -2255,8 +2655,9 @@ class YieldQueryState(TypedDict):
     hitl_responses: list[dict]
 
     # Planner 관련
-    task_plan: list[dict]           # planner가 생성한 전체 계획 (overwrite)
+    task_plan: list[dict]           # task_builder가 생성한 전체 계획 (overwrite)
     pending_tasks: list[dict]       # 아직 실행 안 된 TaskItem들 (overwrite)
+    current_task: dict              # 현재 executor가 받는 공통 task contract (task_id, agent, params, goal)
     current_task_id: str            # 현재 실행 중인 task의 ID
     current_task_goal: str          # 현재 실행 중인 task의 한국어 goal — worker가 query 우선순위로 사용 (#12 fix)
 
@@ -2286,8 +2687,8 @@ from relation_tree_agent import relation_tree_agent_node  # noqa: E402
 _retry = RetryPolicy(max_attempts=3, initial_interval=1.0, retry_on=is_transient_error)
 
 workflow = StateGraph(YieldQueryState)
-workflow.add_node("rewrite", rewrite_node, retry_policy=_retry)
 workflow.add_node("reference_resolver", reference_resolver_node)
+workflow.add_node("task_builder", task_builder_node)
 workflow.add_node("planner", planner_node, retry_policy=_retry)
 workflow.add_node("task_normalizer_validator", task_normalizer_validator_node)
 workflow.add_node("task_normalizer_validator_after_review", task_normalizer_validator_node)
@@ -2304,9 +2705,9 @@ workflow.add_node("lot_history_agent", lot_history_agent_node, retry_policy=_ret
 workflow.add_node("relation_tree_agent", relation_tree_agent_node, retry_policy=_retry)
 
 workflow.add_edge(START, "reference_resolver")
-workflow.add_edge("reference_resolver", "rewrite")  # raw user reference resolution → rewrite
-workflow.add_edge("rewrite", "planner")
-workflow.add_edge("planner", "task_normalizer_validator")
+workflow.add_edge("reference_resolver", "planner")
+workflow.add_edge("planner", "task_builder")
+workflow.add_edge("task_builder", "task_normalizer_validator")
 workflow.add_edge("task_normalizer_validator", "plan_review")
 workflow.add_edge("plan_review", "task_normalizer_validator_after_review")
 workflow.add_edge("task_normalizer_validator_after_review", "hitl_gate")

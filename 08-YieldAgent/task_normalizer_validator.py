@@ -13,6 +13,12 @@ from copy import deepcopy
 import re
 from typing import Any
 
+from canonical_request import (
+    AGENT_SLOT_RULES,
+    build_tasks_from_canonical_requests,
+    canonical_request_from_task,
+)
+
 
 FIELD_ALIASES = {
     "map_lot_ids": "lot_ids",
@@ -20,37 +26,7 @@ FIELD_ALIASES = {
 }
 
 
-AGENT_PARAM_RULES: dict[str, dict[str, Any]] = {
-    "yield_agent": {
-        "allowed": {"lotcd", "ref_date", "unit", "periods"},
-        "required": ("lotcd",),
-    },
-    "wads_agent": {
-        "allowed": {"lotcd", "wads_start_tm", "wads_end_tm", "fail_type"},
-        "required": (),
-    },
-    "map_agent": {
-        "allowed": {"lot_ids", "wf_ids", "groupkey", "map_type", "map_oper"},
-        "required": ("map_oper",),
-        "required_any": (("lot_ids", "groupkey"),),
-    },
-    "fail_history_agent": {
-        "allowed": {"dh_query", "fail_type", "cause_oper", "lotcd"},
-        "required": (),
-    },
-    "lot_history_agent": {
-        "allowed": {"lot_ids"},
-        "required": ("lot_ids",),
-    },
-    "relation_tree_agent": {
-        "allowed": {"lotcd", "cause_oper"},
-        "required": ("lotcd", "cause_oper"),
-    },
-    "ppt_export": {
-        "allowed": set(),
-        "required": (),
-    },
-}
+AGENT_PARAM_RULES: dict[str, dict[str, Any]] = AGENT_SLOT_RULES
 
 
 MAP_OPER_VALUES = {"PT1H", "PT1C"}
@@ -176,7 +152,7 @@ def normalize_task_fields(tasks: list[dict[str, Any]]) -> tuple[list[dict[str, A
     return normalized_tasks, trace
 
 
-def _report_ref_params(report: dict[str, Any], base_params: dict[str, Any], base_goal: str) -> dict[str, Any]:
+def _report_ref_params(report: dict[str, Any], base_params: dict[str, Any]) -> dict[str, Any]:
     params = dict(base_params)
     groupkeys = [str(v).strip() for v in _as_list(report.get("groupkeys")) if str(v).strip()]
     if groupkeys:
@@ -188,9 +164,6 @@ def _report_ref_params(report: dict[str, Any], base_params: dict[str, Any], base
     if map_oper and _is_empty(params.get("map_oper")):
         params["map_oper"] = map_oper
 
-    goal_text = str(base_goal or "").lower()
-    if _is_empty(params.get("map_type")) and "cummap" in goal_text:
-        params["map_type"] = "cummap"
     return params
 
 
@@ -242,21 +215,32 @@ def apply_report_refs_to_map_tasks(
     if len(reports) > 1 and len(map_indexes) == 1:
         index = map_indexes[0]
         base_task = updated_tasks[index]
-        expanded: list[dict[str, Any]] = []
+        base_request = canonical_request_from_task(base_task)
+        expanded_requests: list[dict[str, Any]] = []
+        task_ids: list[str] = []
         for report in reports:
-            task = deepcopy(base_task)
             ordinal = report.get("ordinal")
-            task["task_id"] = f"{base_task.get('task_id', 'task_map')}_r{ordinal}"
-            task["goal"] = f"리포트 {ordinal} wafer cummap"
-            task["params"] = _report_ref_params(report, dict(base_task.get("params") or {}), task["goal"])
-            expanded.append(task)
+            map_type = str((base_task.get("params") or {}).get("map_type") or "map")
+            goal = f"리포트 {ordinal} wafer {map_type}"
+            expanded_requests.append({
+                **base_request,
+                "slots": _report_ref_params(report, dict(base_task.get("params") or {})),
+                "goal": goal,
+                "source": {
+                    **dict(base_request.get("source") or {}),
+                    "type": "resolved_report_ref",
+                    "report_ordinal": ordinal,
+                },
+            })
+            task_ids.append(f"{base_task.get('task_id', 'task_map')}_r{ordinal}")
             trace.append({
                 "event": "resolved_report_ref_fanout",
-                "task_id": task["task_id"],
+                "task_id": task_ids[-1],
                 "agent": "map_agent",
                 "report_ordinal": ordinal,
                 "groupkey_count": len(report.get("groupkeys") or []),
             })
+        expanded = build_tasks_from_canonical_requests(expanded_requests, task_ids=task_ids)
         updated_tasks = updated_tasks[:index] + expanded + updated_tasks[index + 1:]
         updated_tasks = _remove_redundant_wads_tasks_for_report_refs(updated_tasks, trace)
         return updated_tasks, trace
@@ -264,7 +248,12 @@ def apply_report_refs_to_map_tasks(
     for task_index, report in zip(map_indexes, reports):
         task = updated_tasks[task_index]
         previous = dict(task.get("params") or {})
-        task["params"] = _report_ref_params(report, previous, str(task.get("goal") or ""))
+        request = canonical_request_from_task(task)
+        request["slots"] = _report_ref_params(report, previous)
+        updated_tasks[task_index] = build_tasks_from_canonical_requests(
+            [request],
+            task_ids=[str(task.get("task_id") or f"task_{task_index + 1}")],
+        )[0]
         trace.append({
             "event": "resolved_report_ref_applied",
             "task_id": task.get("task_id", ""),

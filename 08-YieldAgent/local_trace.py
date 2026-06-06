@@ -26,6 +26,7 @@ TRACE_EVENT_TYPES = frozenset({
     "user_turn_started",
     "rewrite_output",
     "planner_output",
+    "task_builder_output",
     "reference_resolved",
     "normalization_applied",
     "validation_issue",

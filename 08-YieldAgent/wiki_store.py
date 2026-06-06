@@ -623,7 +623,7 @@ def upsert_super_concept(
     return super_id, path
 
 
-# ── 카운트 (eval/디버그) ─────────────────────────────────
+# ── 카운트 (디버그) ─────────────────────────────────
 def counts() -> dict[str, int]:
     _ensure_dirs()
     return {

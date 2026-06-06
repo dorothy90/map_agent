@@ -465,9 +465,14 @@ async def chat_stream(request: ChatRequest, req: Request):
             # planner가 매 turn 덮어쓰지만 planner 실패 시 stale 방지
             "task_plan": [],
             "pending_tasks": [],
+            "current_task": {},
             # ReferenceResolver v1 scratchpad (turn별 overwrite)
             "resolved_refs": {},
             "reference_issues": [],
+            # Canonical request scratchpad (turn별 overwrite)
+            "canonical_request": {},
+            "canonical_requests": [],
+            "canonical_trace": [],
             # Task normalizer/validator scratchpad (turn별 overwrite)
             "task_normalization_trace": [],
             "task_validation_issues": [],
@@ -526,12 +531,16 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "recent_results": [],
                 "resolved_refs": {},
                 "reference_issues": [],
+                "canonical_request": {},
+                "canonical_requests": [],
+                "canonical_trace": [],
                 "task_normalization_trace": [],
                 "task_validation_issues": [],
                 "hitl_issues": [],
                 "hitl_responses": [],
                 "task_plan": [],
                 "pending_tasks": [],
+                "current_task": {},
                 "current_task_id": "",
                 "current_task_goal": "",
                 "response": "",

@@ -26,9 +26,6 @@ _REPORT_WORD_RE = re.compile(fr"{_ORDINAL_RE}\s*(?:리포트|report|REPORT|Repor
 _REPORT_NUM_LIST_RE = re.compile(
     r"(?P<numbers>\d+(?:\s*,\s*\d+)*)\s*(?:번째|번)?\s*(?:리포트|report|REPORT|Report)"
 )
-_UNSUPPORTED_DEMONSTRATIVE_RE = re.compile(
-    r"(?:그|해당|위)\s*(?:lot|LOT|Lot|파라미터|parameter|PARAMETER|Parameter|map|MAP|Map|맵)"
-)
 
 
 def _issue(reference: str, reason: str, **extra: Any) -> dict[str, Any]:
@@ -458,18 +455,6 @@ def resolve_references(text: str, recent_results: list[dict[str, Any]] | None) -
     report_ordinals = _report_ordinals(text or "")
     has_result_ref = "방금 결과" in (text or "") or "이 결과" in (text or "") or bool(_explicit_result_ids(text or ""))
     needs_target = bool(lot_match or param_match or report_ordinals)
-    unsupported_demonstrative = _UNSUPPORTED_DEMONSTRATIVE_RE.search(text or "")
-
-    if unsupported_demonstrative and not (lot_match or param_match or map_match):
-        return {
-            "issues": [
-                _issue(
-                    unsupported_demonstrative.group(0),
-                    "ordinal_or_explicit_reference_required",
-                )
-            ]
-        }
-
     semantic_target = ""
     if param_match:
         semantic_target = "parameter"

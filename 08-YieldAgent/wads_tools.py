@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 _ORACLE_REPORT_TABLE = "DF_WADS_REPORT"
 _ORACLE_WF_TABLE = os.getenv("WADS_WF_LIST_TABLE", "DF_WADS_WF_LIST")
+_ORACLE_WF_GROUPKEY_COLUMN = os.getenv("WADS_WF_GROUPKEY_COLUMN", "GROUP_KEY")
 _ORACLE_TABLE = _ORACLE_REPORT_TABLE
 _SQL_GEN_MODEL = os.getenv("WADS_SQL_GEN_MODEL", os.getenv("RETRIEVE_CHAIN_MODEL"))
 
@@ -113,6 +114,22 @@ def _end_tm_expr(alias: str = "r") -> str:
 _END_TM_DATE_JOIN_EXPR = (
     "TRUNC(CAST(w.END_TM AS DATE)) = TRUNC(CAST(r.END_TM AS DATE))"
 )
+
+
+def _oracle_identifier(name: str, *, fallback: str) -> str:
+    text = str(name or "").strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", text):
+        logger.warning("Invalid Oracle identifier %r; falling back to %s", name, fallback)
+        return fallback
+    return text
+
+
+def _wf_groupkey_column() -> str:
+    return _oracle_identifier(_ORACLE_WF_GROUPKEY_COLUMN, fallback="GROUP_KEY")
+
+
+def _wf_groupkey_expr(alias: str = "w") -> str:
+    return f"{alias}.{_wf_groupkey_column()} AS GROUP_KEY"
 
 
 def _json_safe_value(value: Any) -> Any:
@@ -268,7 +285,7 @@ def _wafer_groups_for_reports(
             start_tm=start_tm,
             parameter=parameter,
             columns=(
-                f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, w.GROUP_KEY AS GROUPKEY"
+                f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, {_wf_groupkey_expr()}"
             ),
             join_wafers=True,
         )
@@ -431,7 +448,7 @@ def wads_query_data(
             start_tm=start_tm,
             parameter=parameter,
             columns=(
-                f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, w.GROUP_KEY AS GROUPKEY"
+                f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, {_wf_groupkey_expr()}"
             ),
             join_wafers=True,
         )
@@ -491,6 +508,7 @@ def wads_query_data(
                 "groupkey": groupkey,
                 "lotcd": _clean_text(row.get("lotcd")),
                 "category": _clean_text(row.get("category")),
+                "map_oper": _category_to_map_oper(row.get("category")),
                 "parameter": _clean_text(row.get("parameter")),
                 "end_tm": _clean_text(row.get("end_tm")),
                 "has_groupkey": bool(groupkey),
@@ -720,6 +738,27 @@ def _normalize_end_tm_join(sql: str) -> str:
     return normalized
 
 
+def _normalize_groupkey_column(sql: str) -> str:
+    """Map common WADS wafer key spellings to the configured DB column."""
+    return re.sub(
+        r"\bw\.(?:GROUP_KEY|GROUPKEY)\b",
+        f"w.{_wf_groupkey_column()}",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
+def _normalize_cast_parentheses(sql: str) -> str:
+    """Repair common Oracle CAST syntax drift from generated SQL."""
+
+    return re.sub(
+        r"\bCAST\s+([rw]\.END_TM)\s+AS\s+DATE\b",
+        r"CAST(\1 AS DATE)",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
 def _validate_sql(sql: str) -> Tuple[bool, str]:
     """
     4계층 SQL 검증. (ok, reason) 반환.
@@ -869,7 +908,7 @@ Schema:
 
   {wf_table} w
     OPER_PARA VARCHAR2   -- r.CATEGORY || '_' || r.PARAMETER
-    GROUP_KEY VARCHAR2   -- lot.wf (e.g., "4SS2DPD.03")
+    {wf_groupkey_column} VARCHAR2   -- lot.wf (e.g., "4SS2DPD.03")
     END_TM    TIMESTAMP  -- same YYYY-MM-DD date as r.END_TM
     LOT_CD    VARCHAR2   -- same value as r.LOTCD
 
@@ -883,7 +922,8 @@ Rules:
 - Do NOT include HTML column unless explicitly requested
 - Use aliases r and w when joining
 - Join END_TM by YYYY-MM-DD date only, not exact timestamp.
-- When selecting the wafer identifier, use w.GROUP_KEY AS GROUPKEY so downstream code receives a GROUPKEY column.
+- When selecting the wafer identifier, use w.{wf_groupkey_column} AS GROUP_KEY so downstream code receives a GROUP_KEY column.
+- For wafer/GROUP_KEY list queries, also select r.CATEGORY and r.PARAMETER so downstream map requests can resolve map_oper and parameter provenance.
 - Use UPPER() for case-insensitive LOTCD, CATEGORY, PARAMETER comparisons
 - Date filtering: TRUNC(CAST(r.END_TM AS DATE)) = TO_DATE('2026-03-19', 'YYYY-MM-DD') or BETWEEN two TO_DATE literals
 - Use TO_CHAR(r.END_TM, 'YYYY-MM-DD HH24:MI:SS') when selecting END_TM for display
@@ -920,6 +960,7 @@ def wads_query_sql(query_description: str) -> str:
         prompt = _SQL_GEN_PROMPT.format(
             report_table=_ORACLE_REPORT_TABLE,
             wf_table=_ORACLE_WF_TABLE,
+            wf_groupkey_column=_wf_groupkey_column(),
             query_description=query_description,
         )
         response = llm.invoke(prompt)
@@ -931,6 +972,8 @@ def wads_query_sql(query_description: str) -> str:
         # E3 fix: trailing 단일 세미콜론 제거 — LLM이 SQL 끝에 ;를 자동으로 붙이는 습관 대응
         raw_sql = raw_sql.strip().rstrip(";").strip()
         raw_sql = _normalize_end_tm_join(raw_sql)
+        raw_sql = _normalize_groupkey_column(raw_sql)
+        raw_sql = _normalize_cast_parentheses(raw_sql)
     except Exception as e:
         logger.error(
             "[wads_query_sql] SQL 생성 실패: %s query_description=%r",
@@ -996,7 +1039,11 @@ def wads_query_sql(query_description: str) -> str:
         error_obj = e.args[0] if e.args else e
         error_code = getattr(error_obj, "code", 0)
         if error_code in (904, 942):
-            return f"컬럼/테이블 오류: {e}. 사용 가능 컬럼: LOTCD, CATEGORY, PARAMETER, END_TM, HTML, OPER_PARA, GROUP_KEY, LOT_CD"
+            return (
+                f"컬럼/테이블 오류: {e}. 사용 가능 컬럼: "
+                f"LOTCD, CATEGORY, PARAMETER, END_TM, HTML, OPER_PARA, "
+                f"{_wf_groupkey_column()}, LOT_CD"
+            )
         return f"SQL 실행 오류: {e}. query_description을 수정하여 재시도하세요."
     except Exception as e:
         logger.error("[wads_query_sql] 예기치 않은 오류: %s", e)
@@ -1017,6 +1064,10 @@ def wads_query_sql(query_description: str) -> str:
     for row in result:
         if "group_key" in row and "groupkey" not in row:
             row["groupkey"] = row["group_key"]
+        if "category" in row and "map_oper" not in row:
+            map_oper = _category_to_map_oper(row.get("category"))
+            if map_oper:
+                row["map_oper"] = map_oper
     result, sort_info = _sort_sql_result_rows(
         result,
         query_description=query_description,
