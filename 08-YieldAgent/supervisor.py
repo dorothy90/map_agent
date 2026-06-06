@@ -1461,16 +1461,94 @@ def _recent_wads_groupkeys_by_map_oper(state: dict) -> dict[str, list[str]]:
     }
 
 
+_REPORT_TOKEN_RE = re.compile(r"^#R(\d+)$")
+
+
+def _is_report_row(row: Any) -> bool:
+    """A report row = one degradation report (one parameter×lot with its wafers)."""
+    return isinstance(row, dict) and (
+        row.get("report_index") not in (None, "")
+        or (row.get("groupkeys") and row.get("parameter"))
+    )
+
+
+def _latest_report_result(state: dict) -> dict | None:
+    """Most-recent wads result whose rows are report rows (report_index/groupkeys)."""
+    for result in reversed(state.get("recent_results", []) or []):
+        if not isinstance(result, dict) or result.get("source_agent") != "wads_agent":
+            continue
+        if any(_is_report_row(r) for r in (result.get("rows") or [])):
+            return result
+    return None
+
+
+def _resolve_report_ordinal(state: dict, ordinal: int) -> tuple[list[str], str] | None:
+    """row[ordinal-1] of the latest report result -> (groupkeys, map_oper).
+
+    None if there is no report-structured result or the ordinal is out of range —
+    the caller marks it unresolved so the dispatch missing-param backstop asks
+    (never silently substitutes another report / all lots).
+    """
+    result = _latest_report_result(state)
+    if not result:
+        return None
+    rows = result.get("rows") or []
+    idx = ordinal - 1
+    if idx < 0 or idx >= len(rows) or not _is_report_row(rows[idx]):
+        return None
+    row = rows[idx]
+    groupkeys = _unique_texts(_groupkey_list(row.get("groupkeys") or row.get("groupkey")))
+    if not groupkeys:
+        return None
+    return groupkeys, _map_oper_from_wads_row(row)
+
+
+def _apply_report_ordinal_to_map_task(task: dict, state: dict, trace: list[dict]) -> dict:
+    """Resolve a report-ordinal token ("#RN") in a map task's groupkey by slicing the
+    Nth report row's groupkeys (+map_oper). Deterministic — the planner only judged
+    "Nth report"; the row[N-1] slice is pure code. Unresolvable -> UNRESOLVED_REF."""
+    if task.get("agent") != "map_agent":
+        return task
+    params = dict(task.get("params") or {})
+    match = _REPORT_TOKEN_RE.match(str(params.get("groupkey") or "").strip())
+    if not match:
+        return task
+    ordinal = int(match.group(1))
+    resolved = _resolve_report_ordinal(state, ordinal)
+    if resolved:
+        groupkeys, oper = resolved
+        params["groupkey"] = ",".join(groupkeys)
+        if oper and _is_placeholder_or_empty(params.get("map_oper")):
+            params["map_oper"] = oper
+        trace.append({
+            "event": "report_ordinal_resolved", "task_id": task.get("task_id", ""),
+            "agent": "map_agent", "ordinal": ordinal,
+            "groupkey_count": len(groupkeys), "map_oper": oper,
+        })
+    else:
+        params["groupkey"] = UNRESOLVED_REF
+        trace.append({
+            "event": "report_ordinal_unresolved", "task_id": task.get("task_id", ""),
+            "agent": "map_agent", "ordinal": ordinal,
+        })
+    return {**task, "params": params}
+
+
 def _apply_recent_wads_to_map_tasks(
     tasks: list[dict],
     state: dict,
 ) -> tuple[list[dict], list[dict]]:
+    trace: list[dict] = []
+    # Step 5②-c: resolve report-ordinal tokens ("#RN") first — slice the latest report
+    # result's row[N-1]. These tasks then carry a non-empty groupkey (real or the
+    # UNRESOLVED_REF sentinel), so the per-map_oper chaining below skips them.
+    tasks = [_apply_report_ordinal_to_map_task(t, state, trace) for t in tasks]
+
     groups = _recent_wads_groupkeys_by_map_oper(state)
     if not groups:
-        return tasks, []
+        return tasks, trace
 
     expanded: list[dict] = []
-    trace: list[dict] = []
     for task in tasks:
         params = dict(task.get("params") or {})
         needs_groupkey = (

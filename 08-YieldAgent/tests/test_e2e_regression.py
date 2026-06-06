@@ -16,6 +16,8 @@ plus the SSE output (user-facing success/error text). Run:
 
 from __future__ import annotations
 
+import re
+
 from e2e_client import (
     VALID_UNITS,
     Session,
@@ -128,6 +130,50 @@ CASES: list[dict] = [
         "kind": "reference_unresolved_block",
         "expect": {"param": "lot_ids"},
     },
+    # Step 5②-c: lot-vs-report distinction on the SAME prior report result. An
+    # ordinal that targets a LOT (lot history) resolves to one lot value; an ordinal
+    # that targets a REPORT (map/cummap) resolves to that report's whole groupkey set.
+    # Same turn-1, same ordinal, two different agents -> two correct, different fills.
+    # (a) lot ordinal on a report result -> single lot (lot_history path).
+    {
+        "id": "reference_lot_ordinal_on_report",
+        "turns": [
+            "4SS 열화 리포트 보여줘",
+            "첫번째 lot 이력 보여줘",
+        ],
+        "kind": "reference_resolves",
+        "expect": {"agent": "lot_history_agent", "param": "lot_ids", "ordinal": 1},
+    },
+    # (b) report ordinal -> the Nth report's exact groupkeys (#RN), no bleed.
+    {
+        "id": "report_ordinal_resolves_1st",
+        "turns": [
+            "4SS 열화 리포트 보여줘",
+            "첫번째 리포트 cummap 보여줘",
+        ],
+        "kind": "report_resolves",
+        "expect": {"ordinal": 1},
+    },
+    {
+        "id": "report_ordinal_resolves_2nd",
+        "turns": [
+            "4SS 열화 리포트 보여줘",
+            "두번째 리포트 cummap 보여줘",
+        ],
+        "kind": "report_resolves",
+        "expect": {"ordinal": 2},
+    },
+    # An OUT-OF-RANGE report ordinal must also hit the dispatch backstop (#R100 ->
+    # no such report row -> unresolved -> ask), never silently slice another report.
+    {
+        "id": "report_ordinal_out_of_range_blocks",
+        "turns": [
+            "4SS 열화 리포트 보여줘",
+            "백번째 리포트 cummap 보여줘",
+        ],
+        "kind": "reference_unresolved_block",
+        "expect": {"param": "lot_ids"},
+    },
     # Step 5②-b guard: a PLAIN-empty chained slot (no ordinal token — "그 lot들" =
     # all wads lots) must still be filled from the wads result, NOT mistaken for a
     # failed reference. Proves the unresolved-ref sentinel didn't break real chaining.
@@ -159,6 +205,8 @@ def check_case(case: dict, r: TurnResult) -> list[str]:
         return _check_task_cap(case, r)
     if kind == "reference_resolves":
         return _check_reference_resolves(case, r)
+    if kind == "report_resolves":
+        return _check_report_resolves(case, r)
     if kind == "reference_unresolved_block":
         return _check_reference_unresolved_block(case, r)
     if kind == "wads_map_chain":
@@ -221,6 +269,41 @@ def _check_reference_resolves(case: dict, r: TurnResult) -> list[str]:
         fails.append("unexpected missing_param block on a resolvable reference")
     if r.sse_contains(AGENT_ERROR_MARKER):
         fails.append("runtime agent error on resolved follow-up")
+    return fails
+
+
+def _check_report_resolves(case: dict, r: TurnResult) -> list[str]:
+    """A "N번째 리포트 cummap" follow-up (#RN) must resolve to the Nth prior REPORT's
+    EXACT groupkeys — the slice happens in the wads->map chaining (validator), so the
+    resolved value shows up in the DISPATCHED groupkey, not the planner slot. Boundary
+    check: every dispatched groupkey belongs to report-N's lot, with no bleed from
+    another report's lot."""
+    fails: list[str] = []
+    ordinal = case.get("expect", {}).get("ordinal", 1)
+    t1 = r.turns[0] if r.turns else r
+    lots = t1.displayed_lots()
+    if len(lots) < ordinal:
+        return [f"T1 produced {len(lots)} report lots (<{ordinal}) — cannot baseline report {ordinal}"]
+    want_lot = lots[ordinal - 1]
+
+    if "map_agent" not in r.planned_agents():
+        return [f"report ref did not route to map_agent (planned={r.planned_agents()})"]
+    if r.sse_interrupts("missing_param"):
+        fails.append("unexpected missing_param block on a resolvable report reference")
+
+    preview = r.dispatched_param("map_agent", "groupkey").get("preview", "") or ""
+    groupkeys = re.findall(r"4SS[A-Z0-9]{4}\.\w+", preview)
+    if not groupkeys:
+        fails.append(f"no groupkeys dispatched for report {ordinal} (groupkey preview={preview!r})")
+        return fails
+    lots_in = sorted({g.split(".")[0] for g in groupkeys})
+    if lots_in != [want_lot]:
+        fails.append(
+            f"report {ordinal} must slice exactly report-{ordinal} lot [{want_lot}], "
+            f"got groupkey lots {lots_in} (wrong report / bleed); preview={preview!r}"
+        )
+    if r.sse_contains(AGENT_ERROR_MARKER):
+        fails.append("runtime agent error on resolved report follow-up")
     return fails
 
 
