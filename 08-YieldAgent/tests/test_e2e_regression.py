@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from e2e_client import (
     VALID_UNITS,
+    Session,
     TurnResult,
     coerce_periods,
     run_turn,
@@ -86,6 +87,25 @@ CASES: list[dict] = [
         "kind": "task_cap",
         "expect": {"max_tasks": 5},
     },
+    # Reference follow-ups (baseline for Step 5: resolution moves to the planner).
+    # Resolves: an ordinal ref to a prior result must fill the downstream slot.
+    {
+        "id": "reference_resolves_followup",
+        "turns": [
+            "최근 1주일 4SS 검출 lot 알려줘",
+            "첫번째 lot 이력 보여줘",
+        ],
+        "kind": "reference_resolves",
+        "expect": {"agent": "lot_history_agent", "param": "lot_ids"},
+    },
+    # Can't resolve: a ref with no resolvable target must hit the dispatch
+    # missing-param backstop (not silently run). (no prior result to reference)
+    {
+        "id": "reference_unresolved_blocks",
+        "query": "첫번째 결과 lot 이력 보여줘",
+        "kind": "reference_unresolved_block",
+        "expect": {"param": "lot_ids"},
+    },
 ]
 
 
@@ -104,7 +124,48 @@ def check_case(case: dict, r: TurnResult) -> list[str]:
         return _check_required_param_block(case, r)
     if kind == "task_cap":
         return _check_task_cap(case, r)
+    if kind == "reference_resolves":
+        return _check_reference_resolves(case, r)
+    if kind == "reference_unresolved_block":
+        return _check_reference_unresolved_block(case, r)
     return [f"unknown case kind: {kind}"]
+
+
+def _check_reference_resolves(case: dict, r: TurnResult) -> list[str]:
+    """A follow-up ordinal reference must resolve to a prior result and fill the
+    downstream required slot (today via reference_resolver; Step 5 via planner)."""
+    fails: list[str] = []
+    expect = case.get("expect", {})
+    agent, param = expect["agent"], expect["param"]
+    if agent not in r.planned_agents():
+        fails.append(f"follow-up did not route to {agent} (planned={r.planned_agents()})")
+        return fails
+    val = r.slots_for(agent).get(param)
+    if not val:
+        fails.append(f"reference not applied — {agent}.{param} empty (slots={r.slots_for(agent)})")
+    if r.sse_interrupts("missing_param"):
+        fails.append(f"unexpected missing_param block on a resolvable reference")
+    if r.sse_contains(AGENT_ERROR_MARKER):
+        fails.append("runtime agent error on resolved follow-up")
+    return fails
+
+
+def _check_reference_unresolved_block(case: dict, r: TurnResult) -> list[str]:
+    """An unresolvable reference must hit the supervisor dispatch missing-param
+    backstop (the guard that catches what reference resolution couldn't fill)."""
+    fails: list[str] = []
+    expect = case.get("expect", {})
+    blocks = r.sse_interrupts("missing_param")
+    if not blocks:
+        fails.append(
+            f"no missing_param backstop fired for an unresolvable reference "
+            f"(interrupts: {[i.get('interrupt_type') for i in r.sse_interrupts()]}, "
+            f"agents: {r.planned_agents()})"
+        )
+        return fails
+    if expect.get("param") and expect["param"] not in [b.get("param") for b in blocks]:
+        fails.append(f"backstop param {[b.get('param') for b in blocks]}, expected {expect['param']!r}")
+    return fails
 
 
 def _check_required_param_block(case: dict, r: TurnResult) -> list[str]:
@@ -205,6 +266,22 @@ def _check_no_agent(case: dict, r: TurnResult) -> list[str]:
     return fails
 
 
+def run_case(case: dict) -> TurnResult:
+    """Run a case's turn(s); return the last turn's result. Multi-turn cases use a
+    shared Session so follow-up references can see prior-turn results."""
+    if "turns" in case:
+        result: TurnResult | None = None
+        session = Session()
+        for query in case["turns"]:
+            result = session.turn(query)
+        return result
+    return run_turn(case["query"])
+
+
+def case_label(case: dict) -> str:
+    return case.get("query") or " ⟶ ".join(case.get("turns", []))
+
+
 # ─────────────────────────────────────────────────────────────
 # pytest entrypoint
 # ─────────────────────────────────────────────────────────────
@@ -213,7 +290,7 @@ try:
 
     @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])
     def test_regression_case(case):
-        r = run_turn(case["query"])
+        r = run_case(case)
         assert r.events_of("planner_output"), (
             f"no planner_output trace captured for {case['id']} "
             f"(trace_id={r.trace_id}); is LOCAL_TRACE writing to traces/*.jsonl?"
@@ -233,7 +310,7 @@ def _main() -> int:
         return 2
     total_fail = 0
     for case in CASES:
-        r = run_turn(case["query"])
+        r = run_case(case)
         if not r.events_of("planner_output"):
             print(f"FAIL {case['id']}: no planner_output trace (trace_id={r.trace_id})")
             total_fail += 1
@@ -241,11 +318,11 @@ def _main() -> int:
         fails = check_case(case, r)
         if fails:
             total_fail += 1
-            print(f"FAIL {case['id']} ({case['query']!r})")
+            print(f"FAIL {case['id']} ({case_label(case)!r})")
             for f in fails:
                 print(f"     - {f}")
         else:
-            print(f"PASS {case['id']} ({case['query']!r})")
+            print(f"PASS {case['id']} ({case_label(case)!r})")
     print(f"\n{len(CASES) - total_fail}/{len(CASES)} passed")
     return 1 if total_fail else 0
 

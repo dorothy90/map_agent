@@ -103,9 +103,11 @@ class TurnResult:
         return needle in self.sse_blob
 
 
-def _drain_sse(query: str, session_id: str, timeout: float) -> tuple[list[dict], str]:
+def _drain_sse(query: str, session_id: str, timeout: float, resume_value: str | None = None) -> tuple[list[dict], str]:
     events: list[dict] = []
-    payload = {"query": query, "session_id": session_id}
+    payload: dict = {"query": query, "session_id": session_id}
+    if resume_value is not None:
+        payload["resume_value"] = resume_value
     with httpx.Client(timeout=httpx.Timeout(timeout, read=timeout)) as client:
         with client.stream("POST", f"{BASE_URL}/chat/stream", json=payload) as r:
             r.raise_for_status()
@@ -143,27 +145,44 @@ def _load_trace_events(trace_id: str) -> list[dict]:
     return rows
 
 
+class Session:
+    """A live chat session. Reuse across turns to test multi-turn follow-ups
+    (references like "첫번째 결과"). trace_id is deterministic from session_id, so
+    turns within one session share it; we isolate each turn's events by event_id
+    snapshot (events appended that weren't seen before this turn)."""
+
+    def __init__(self, session_id: str | None = None):
+        self.session_id = session_id or str(uuid.uuid4())
+        self.trace_id = trace_id_for(self.session_id)
+        self._seen: set[str] = {
+            str(e.get("event_id")) for e in _load_trace_events(self.trace_id)
+        }
+
+    def turn(self, query: str, *, resume_value: str | None = None, timeout: float = 120.0) -> TurnResult:
+        sse_events, sse_blob = _drain_sse(query, self.session_id, timeout, resume_value=resume_value)
+
+        new_events: list[dict] = []
+        for _ in range(10):
+            allev = _load_trace_events(self.trace_id)
+            new_events = [e for e in allev if str(e.get("event_id")) not in self._seen]
+            done = any(e.get("event_type") == "planner_output" for e in new_events)
+            if done or (resume_value and new_events):
+                break
+            time.sleep(0.3)
+        self._seen.update(str(e.get("event_id")) for e in new_events)
+
+        return TurnResult(
+            session_id=self.session_id,
+            trace_id=self.trace_id,
+            sse_events=sse_events,
+            sse_blob=sse_blob,
+            trace_events=new_events,
+        )
+
+
 def run_turn(query: str, *, timeout: float = 120.0) -> TurnResult:
-    """Send one query to the live server and collect SSE + trace events for that turn."""
-    session_id = str(uuid.uuid4())
-    tid = trace_id_for(session_id)
-    sse_events, sse_blob = _drain_sse(query, session_id, timeout)
-
-    # trace is appended synchronously as nodes run; retry briefly until planner_output lands
-    trace_events: list[dict] = []
-    for _ in range(10):
-        trace_events = _load_trace_events(tid)
-        if any(e.get("event_type") == "planner_output" for e in trace_events):
-            break
-        time.sleep(0.3)
-
-    return TurnResult(
-        session_id=session_id,
-        trace_id=tid,
-        sse_events=sse_events,
-        sse_blob=sse_blob,
-        trace_events=trace_events,
-    )
+    """Single fresh-session turn (convenience for single-turn cases)."""
+    return Session().turn(query, timeout=timeout)
 
 
 def coerce_periods(value) -> int | None:
