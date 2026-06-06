@@ -250,3 +250,5 @@ image.png
 08-YieldAgent/.omc/
 08-YieldAgent/generated/
 08-YieldAgent/traces/
+.playwright-mcp
+08-YieldAgent/yield_frontend

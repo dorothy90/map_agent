@@ -20,7 +20,12 @@ from datetime import date, timedelta
 from typing import Annotated, Any, Dict, Literal, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, trim_messages
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+    trim_messages,
+)
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.runnables import RunnableConfig
 from langfuse import get_client, observe
@@ -39,7 +44,11 @@ from canonical_request import (
 )
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import StatusEvent
-from prompts import CANONICAL_PLANNER_SYSTEM_PROMPT, REPLANNER_SYSTEM_PROMPT, REWRITE_SYSTEM_PROMPT_TEMPLATE
+from prompts import (
+    CANONICAL_PLANNER_SYSTEM_PROMPT,
+    REPLANNER_SYSTEM_PROMPT,
+    REWRITE_SYSTEM_PROMPT_TEMPLATE,
+)
 from result_contracts import (
     ResultContractError,
     build_recent_result_index_entry,
@@ -73,32 +82,54 @@ _rewrite_model = _model.bind_tools(REWRITE_TOOLS)
 _rewrite_tool_map = {t.name: t for t in REWRITE_TOOLS}
 
 
-
 # ── Pydantic 라우팅 결정 모델 ────────────────────────────────
 class TaskItem(BaseModel):
     """deterministic task builder가 생성하는 공통 작업 단위"""
+
     task_id: str = Field(description="고유 ID (예: 'task_1')")
-    agent: Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "relation_tree_agent"] = Field(
-        description="실행할 에이전트"
+    agent: Literal[
+        "yield_agent",
+        "wads_agent",
+        "map_agent",
+        "fail_history_agent",
+        "ppt_export",
+        "lot_history_agent",
+        "relation_tree_agent",
+    ] = Field(description="실행할 에이전트")
+    params: dict = Field(
+        default={}, description="에이전트별 파라미터 (map_lot_ids, map_type 등)"
     )
-    params: dict = Field(default={}, description="에이전트별 파라미터 (map_lot_ids, map_type 등)")
-    goal: str = Field(description="이 작업의 목표 (한국어, 예: 'lot 3,4번 cummap 생성')")
+    goal: str = Field(
+        description="이 작업의 목표 (한국어, 예: 'lot 3,4번 cummap 생성')"
+    )
 
 
 class PlanResponse(BaseModel):
     """공통 task contract 래퍼. Runtime LLM planner 출력은 CanonicalPlanResponse를 사용한다."""
+
     tasks: list[TaskItem] = Field(description="실행할 작업 목록")
 
 
 class CanonicalRequestItem(BaseModel):
     """LLM canonicalizer output before deterministic task building."""
 
-    intent: str = Field(default="", description="정규화된 intent (예: wads_report, map)")
-    agent: Literal["", "yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "relation_tree_agent"] = Field(
-        default="",
-        description="실행 대상 agent"
+    intent: str = Field(
+        default="", description="정규화된 intent (예: wads_report, map)"
     )
-    slots: dict = Field(default_factory=dict, description="agent slot schema에 맞춘 structured parameters")
+    agent: Literal[
+        "",
+        "yield_agent",
+        "wads_agent",
+        "map_agent",
+        "fail_history_agent",
+        "ppt_export",
+        "lot_history_agent",
+        "relation_tree_agent",
+    ] = Field(default="", description="실행 대상 agent")
+    slots: dict = Field(
+        default_factory=dict,
+        description="agent slot schema에 맞춘 structured parameters",
+    )
     goal: str = Field(default="", description="사용자에게 표시할 한국어 목표")
     answer: str = Field(default="", description="잘못 중첩된 direct answer 보정용")
 
@@ -106,8 +137,13 @@ class CanonicalRequestItem(BaseModel):
 class CanonicalPlanResponse(BaseModel):
     """LLM canonicalizer output schema."""
 
-    requests: list[CanonicalRequestItem] = Field(default_factory=list, description="정규화된 요청 목록")
-    answer: str = Field(default="", description="도구 실행 없이 제공 context만으로 답할 수 있을 때의 사용자 응답")
+    requests: list[CanonicalRequestItem] = Field(
+        default_factory=list, description="정규화된 요청 목록"
+    )
+    answer: str = Field(
+        default="",
+        description="도구 실행 없이 제공 context만으로 답할 수 있을 때의 사용자 응답",
+    )
 
 
 _EMPTY_PLAN_RESPONSE_SYSTEM = """
@@ -145,17 +181,24 @@ def _llm_empty_plan_response(user_text: str, *, planner_text: str = "") -> str:
         if content:
             emit_runtime_detail(
                 "planner.empty_response",
-                {"user_text": user_text, "planner_text": planner_text, "response": content},
+                {
+                    "user_text": user_text,
+                    "planner_text": planner_text,
+                    "response": content,
+                },
             )
             return content
     except Exception as exc:
-        logger.warning("[Planner] empty-plan natural response generation failed: %s", exc)
+        logger.warning(
+            "[Planner] empty-plan natural response generation failed: %s", exc
+        )
 
     return "지금 요청은 바로 실행할 분석 작업으로 이어지지는 않았습니다. 확인할 제품코드, LOT ID, WADS, 맵, 이력 같은 대상을 알려주시면 이어서 도와드릴게요."
 
 
 class PlanReviewResult(BaseModel):
     """plan_review LLM의 출력 스키마"""
+
     action: Literal["approve", "cancel", "modify"]
     requests: list[CanonicalRequestItem] = Field(
         default_factory=list,
@@ -186,14 +229,23 @@ action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
 _MAX_CHECKPOINT_MESSAGES = 30
 
 # worker AIMessage 판별용 name 집합 — supervisor_node/replanner_node 양쪽에서 사용.
-_AGENT_NAMES = {"yield_agent", "wads_agent", "map_agent", "fail_history_agent", "ppt_export", "lot_history_agent", "relation_tree_agent"}
-
+_AGENT_NAMES = {
+    "yield_agent",
+    "wads_agent",
+    "map_agent",
+    "fail_history_agent",
+    "ppt_export",
+    "lot_history_agent",
+    "relation_tree_agent",
+}
 
 
 _MAX_CONTEXT_TOKENS = 30_000
 
 
-def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMessage | None = None) -> list[dict]:
+def _get_recent_turns(
+    messages: list, max_turns: int = 5, exclude_last: HumanMessage | None = None
+) -> list[dict]:
     """최근 N턴의 Human/AI 메시지를 chat format으로 변환.
 
     ToolMessage, SystemMessage 등은 스킵.
@@ -201,13 +253,17 @@ def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMes
     turn 수 제한 후 토큰 예산 초과 시 오래된 턴부터 추가 제거.
     """
     eligible = [
-        m for m in messages
+        m
+        for m in messages
         if (exclude_last is None or m is not exclude_last)
         and isinstance(m, (HumanMessage, AIMessage))
-        and (isinstance(m, HumanMessage) or (isinstance(m.content, str) and m.content.strip()))
+        and (
+            isinstance(m, HumanMessage)
+            or (isinstance(m.content, str) and m.content.strip())
+        )
     ]
     # 1차: 턴 수 제한
-    turn_limited = eligible[-(max_turns * 2):]
+    turn_limited = eligible[-(max_turns * 2) :]
     # 2차: 토큰 예산 제한 (SQL 결과·아티팩트 JSON 등 긴 메시지 대응)
     trimmed = trim_messages(
         turn_limited,
@@ -218,7 +274,14 @@ def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMes
     result = []
     for m in trimmed:
         if isinstance(m, HumanMessage):
-            result.append({"role": "user", "content": m.content if isinstance(m.content, str) else str(m.content)})
+            result.append(
+                {
+                    "role": "user",
+                    "content": m.content
+                    if isinstance(m.content, str)
+                    else str(m.content),
+                }
+            )
         elif isinstance(m, AIMessage):
             content = m.content if isinstance(m.content, str) else str(m.content)
             if content.strip():
@@ -235,7 +298,9 @@ def _get_recent_turns(messages: list, max_turns: int = 5, exclude_last: HumanMes
                 "excluded": [
                     {
                         "role": "user" if isinstance(m, HumanMessage) else "ai",
-                        "preview": preview_text(m.content if isinstance(m.content, str) else str(m.content)),
+                        "preview": preview_text(
+                            m.content if isinstance(m.content, str) else str(m.content)
+                        ),
                     }
                     for m in excluded[:6]
                 ],
@@ -301,7 +366,9 @@ def _recent_results_prompt_context(recent_results: list[dict[str, Any]]) -> str:
                 if row.get(key) not in (None, "")
             }
             if compact_row:
-                lines.append(f"row_{index}: {json.dumps(compact_row, ensure_ascii=False)}")
+                lines.append(
+                    f"row_{index}: {json.dumps(compact_row, ensure_ascii=False)}"
+                )
     return "\n".join(lines)
 
 
@@ -314,7 +381,8 @@ def _previous_assistant_prompt_context(messages: list, last_human: Any) -> str:
         last_index = max(
             index
             for index, message in enumerate(messages)
-            if message is last_human or getattr(message, "id", None) == getattr(last_human, "id", None)
+            if message is last_human
+            or getattr(message, "id", None) == getattr(last_human, "id", None)
         )
     except ValueError:
         last_index = len(messages)
@@ -322,7 +390,11 @@ def _previous_assistant_prompt_context(messages: list, last_human: Any) -> str:
     for message in reversed(messages[:last_index]):
         if not isinstance(message, AIMessage) and getattr(message, "type", "") != "ai":
             continue
-        content = message.content if isinstance(message.content, str) else str(message.content)
+        content = (
+            message.content
+            if isinstance(message.content, str)
+            else str(message.content)
+        )
         content = content.strip()
         if content:
             return preview_text(content, max_chars=4000)
@@ -355,12 +427,17 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         excess = messages[: len(messages) - _MAX_CHECKPOINT_MESSAGES]
         prune_ops = [RemoveMessage(id=m.id) for m in excess if getattr(m, "id", None)]
         excess_ids = {m.id for m in excess if getattr(m, "id", None)}
-        retained_messages = [m for m in messages if getattr(m, "id", None) not in excess_ids]
+        retained_messages = [
+            m for m in messages if getattr(m, "id", None) not in excess_ids
+        ]
 
     # 마지막 HumanMessage 추출 (MongoDBSaver 역직렬화 후 isinstance 실패 방어)
     last_human = next(
-        (m for m in reversed(messages)
-         if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
+        (
+            m
+            for m in reversed(messages)
+            if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"
+        ),
         None,
     )
     if not last_human:
@@ -374,7 +451,9 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         )
 
     if state.get("resolved_refs"):
-        logger.info("[Rewrite] resolved_refs present; preserving raw user reference text")
+        logger.info(
+            "[Rewrite] resolved_refs present; preserving raw user reference text"
+        )
         emit_runtime_detail(
             "rewrite.output",
             {
@@ -426,9 +505,13 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     )
     invoke_messages: list[dict] = [{"role": "system", "content": rewrite_prompt}]
     if meta:
-        invoke_messages.append({"role": "system", "content": f"State metadata:\n{meta}"})
+        invoke_messages.append(
+            {"role": "system", "content": f"State metadata:\n{meta}"}
+        )
     invoke_messages.extend(recent)
-    invoke_messages.append({"role": "user", "content": f"Rewrite this message: {last_human.content}"})
+    invoke_messages.append(
+        {"role": "user", "content": f"Rewrite this message: {last_human.content}"}
+    )
     emit_runtime_detail(
         "rewrite.input",
         {
@@ -470,7 +553,11 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                     )
                     emit_runtime_detail(
                         "rewrite.tool",
-                        {"name": tc["name"], "args": tc.get("args", {}), "result": result},
+                        {
+                            "name": tc["name"],
+                            "args": tc.get("args", {}),
+                            "result": result,
+                        },
                     )
                     logger.debug("[Rewrite] tool '%s' executed", tc["name"])
                 else:
@@ -496,8 +583,14 @@ def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "messages": prune_ops,
         }
 
-    logger.debug("[Rewrite] completed input_len=%d output_len=%d", len(str(last_human.content)), len(rewritten))
-    emit_runtime_detail("rewrite.output", {"input": last_human.content, "rewritten": rewritten})
+    logger.debug(
+        "[Rewrite] completed input_len=%d output_len=%d",
+        len(str(last_human.content)),
+        len(rewritten),
+    )
+    emit_runtime_detail(
+        "rewrite.output", {"input": last_human.content, "rewritten": rewritten}
+    )
     emit_trace_event(
         "rewrite_output",
         source="rewrite",
@@ -538,10 +631,14 @@ def _build_tasks_update(canonical_requests: list[dict]) -> dict:
         return {"task_plan": [], "pending_tasks": []}
 
     logger.info("[TaskBuilder] %d task(s) built: %s", len(tasks), task_flow(tasks))
-    stream_event("status", StatusEvent(
-        message=f"📋 계획 ({len(tasks)}개): " + " → ".join(f"[{t['task_id']}]{t['agent']}" for t in tasks),
-        node="task_builder",
-    ))
+    stream_event(
+        "status",
+        StatusEvent(
+            message=f"📋 계획 ({len(tasks)}개): "
+            + " → ".join(f"[{t['task_id']}]{t['agent']}" for t in tasks),
+            node="task_builder",
+        ),
+    )
     emit_trace_event(
         "task_builder_output",
         source="task_builder",
@@ -571,24 +668,28 @@ def _planner_empty_canonical_retry(
     """Ask the LLM canonicalizer to re-evaluate an empty canonical plan."""
 
     retry_messages = list(invoke_messages)
-    retry_messages.append({
-        "role": "system",
-        "content": (
-            "The previous canonicalizer output produced zero requests. Re-evaluate the latest user query using "
-            "the same canonical request schema and structured context. If the request can be executed with "
-            "omitted optional filters or worker defaults, return canonical requests with empty slots for the "
-            'omitted values. Only return {"requests": []} when the request is truly out of scope or meaningless. '
-            "Never output task_id, params, or tasks. Output JSON only."
-        ),
-    })
+    retry_messages.append(
+        {
+            "role": "system",
+            "content": (
+                "The previous canonicalizer output produced zero requests. Re-evaluate the latest user query using "
+                "the same canonical request schema and structured context. If the request can be executed with "
+                "omitted optional filters or worker defaults, return canonical requests with empty slots for the "
+                'omitted values. Only return {"requests": []} when the request is truly out of scope or meaningless. '
+                "Never output task_id, params, or tasks. Output JSON only."
+            ),
+        }
+    )
     fallback_previous = previous_output or '{"requests": []}'
-    retry_messages.append({
-        "role": "user",
-        "content": (
-            f"Previous canonicalizer output:\n{fallback_previous}\n\n"
-            f"Latest user query:\n{user_text}"
-        ),
-    })
+    retry_messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"Previous canonicalizer output:\n{fallback_previous}\n\n"
+                f"Latest user query:\n{user_text}"
+            ),
+        }
+    )
     response = _model.invoke(
         retry_messages,
         config={"callbacks": _lf_callbacks()},
@@ -617,8 +718,11 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         return {}
 
     last_human = next(
-        (m for m in reversed(messages)
-         if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
+        (
+            m
+            for m in reversed(messages)
+            if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"
+        ),
         None,
     )
     if not last_human:
@@ -654,13 +758,17 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 
     invoke_messages: list[dict] = [{"role": "system", "content": prompt}]
     if meta:
-        invoke_messages.append({"role": "system", "content": f"Structured context:\n{meta}"})
+        invoke_messages.append(
+            {"role": "system", "content": f"Structured context:\n{meta}"}
+        )
     previous_assistant = _previous_assistant_prompt_context(messages, last_human)
     if previous_assistant:
-        invoke_messages.append({
-            "role": "assistant",
-            "content": f"Previous assistant message for follow-up resolution:\n{previous_assistant}",
-        })
+        invoke_messages.append(
+            {
+                "role": "assistant",
+                "content": f"Previous assistant message for follow-up resolution:\n{previous_assistant}",
+            }
+        )
     invoke_messages.append({"role": "user", "content": last_human.content})
     emit_runtime_detail(
         "planner.input",
@@ -699,21 +807,35 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             },
         )
         # plain text 거절 메시지이면 state에 보존 (supervisor fallback에서 사용)
-        refusal = raw_text if (raw_text and "{" not in raw_text and len(raw_text) < 400) else None
+        refusal = (
+            raw_text
+            if (raw_text and "{" not in raw_text and len(raw_text) < 400)
+            else None
+        )
         result: dict = {"canonical_request": {}, "canonical_requests": []}
         if refusal:
-            content = _llm_empty_plan_response(str(last_human.content), planner_text=refusal)
+            content = _llm_empty_plan_response(
+                str(last_human.content), planner_text=refusal
+            )
             result["messages"] = [AIMessage(content=content, name="planner")]
         return result
 
     # canonical request 수 상한 제한 — 초과 시 사용자에게 명시적으로 알림 (#22 fix)
     if len(plan.requests) > _MAX_TASKS:
         dropped = len(plan.requests) - _MAX_TASKS
-        logger.warning("[Planner] request 수 %d → %d로 제한 (%d개 dropped)", len(plan.requests), _MAX_TASKS, dropped)
-        stream_event("status", StatusEvent(
-            message=f"⚠ 요청하신 작업이 너무 많아 처음 {_MAX_TASKS}개만 처리합니다 ({dropped}개 생략).",
-            node="planner",
-        ))
+        logger.warning(
+            "[Planner] request 수 %d → %d로 제한 (%d개 dropped)",
+            len(plan.requests),
+            _MAX_TASKS,
+            dropped,
+        )
+        stream_event(
+            "status",
+            StatusEvent(
+                message=f"⚠ 요청하신 작업이 너무 많아 처음 {_MAX_TASKS}개만 처리합니다 ({dropped}개 생략).",
+                node="planner",
+            ),
+        )
         plan.requests = plan.requests[:_MAX_TASKS]
 
     nested_answer = next(
@@ -786,7 +908,9 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                     "canonical_requests": canonical_requests,
                 },
             )
-    emit_runtime_detail("planner.canonical_requests", {"canonical_requests": canonical_requests})
+    emit_runtime_detail(
+        "planner.canonical_requests", {"canonical_requests": canonical_requests}
+    )
     logger.info(
         "[Planner] %d canonical request(s) 생성: %s",
         len(canonical_requests),
@@ -811,10 +935,14 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "canonical_requests": [],
             "task_plan": [],
             "pending_tasks": [],
-            "messages": [AIMessage(
-                content=_llm_empty_plan_response(str(last_human.content), planner_text=raw_text),
-                name="planner",
-            )],
+            "messages": [
+                AIMessage(
+                    content=_llm_empty_plan_response(
+                        str(last_human.content), planner_text=raw_text
+                    ),
+                    name="planner",
+                )
+            ],
         }
 
     # Step 5②-a: resolve planner ordinal tokens ("#N"/"#last") into concrete values
@@ -846,11 +974,14 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         # recent_results was populated by reference_resolver; planner owns it now.
         # Downstream (validator's _apply_recent_wads_to_map_tasks) reads it from state.
         "recent_results": recent_results,
-        "canonical_trace": list(state.get("canonical_trace", []) or []) + [{
-            "event": "llm_canonicalized",
-            "source": "planner",
-            "request_count": len(canonical_requests),
-        }],
+        "canonical_trace": list(state.get("canonical_trace", []) or [])
+        + [
+            {
+                "event": "llm_canonicalized",
+                "source": "planner",
+                "request_count": len(canonical_requests),
+            }
+        ],
     }
     # task_builder folded in: build tasks + emit plan status in the same node
     update.update(_build_tasks_update(canonical_requests))
@@ -858,7 +989,9 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 
 
 @observe(name="task_normalizer_validator_node")
-def task_normalizer_validator_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
+def task_normalizer_validator_node(
+    state: Dict[str, Any], config: RunnableConfig
+) -> dict:
     """Normalize and validate task-builder output before supervisor dispatch.
 
     This layer does not ask the user anything. Issues are surfaced in state and
@@ -928,7 +1061,9 @@ def task_normalizer_validator_node(state: Dict[str, Any], config: RunnableConfig
     validated_tasks = validation.get("tasks", [])
     validated_canonical_requests = canonical_requests_from_tasks(validated_tasks)
     update: dict = {
-        "canonical_request": validated_canonical_requests[0] if validated_canonical_requests else {},
+        "canonical_request": validated_canonical_requests[0]
+        if validated_canonical_requests
+        else {},
         "canonical_requests": validated_canonical_requests,
         "task_plan": validated_tasks,
         "pending_tasks": validated_tasks,
@@ -937,6 +1072,24 @@ def task_normalizer_validator_node(state: Dict[str, Any], config: RunnableConfig
     }
 
     return update
+
+
+_PLAN_REVIEW_SYSTEM = """
+현재 분석 계획과 사용자 응답을 보고 최종 계획을 JSON으로 반환해라.
+
+action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
+- "approve" : 승인 (응/ok/확인/좋아/네/그렇게 해/빈 응답 등)
+- "cancel"  : 취소 (취소/cancel/no/그만/중단 등)
+- "modify"  : 수정 요청 (구체적인 변경 지시)
+
+출력 형식:
+{"action": "approve"|"cancel"|"modify", "tasks": [...]}
+
+규칙:
+- tasks는 항상 전체 task 목록 (수정 안 한 task도 포함)
+- task_id, agent, params, goal 필드 유지
+- approve/cancel 시에도 tasks 필드 필수 (approve → 현재 계획 그대로, cancel → [])
+""".strip()
 
 
 def _groupkey_list(value: Any) -> list[str]:
@@ -954,7 +1107,9 @@ def _unique_texts(values: list[Any]) -> list[str]:
     return result
 
 
-def _should_auto_approve_report_map_plan(state: Dict[str, Any], task_plan: list[dict]) -> bool:
+def _should_auto_approve_report_map_plan(
+    state: Dict[str, Any], task_plan: list[dict]
+) -> bool:
     """Skip plan review for deterministic report-ordinal wafer map fanout."""
 
     if state.get("task_validation_issues"):
@@ -968,13 +1123,21 @@ def _should_auto_approve_report_map_plan(state: Dict[str, Any], task_plan: list[
         if task.get("agent") != "map_agent":
             return False
         params = task.get("params") or {}
-        report_groupkeys = [str(v).strip() for v in report.get("groupkeys") or [] if str(v).strip()]
-        if not report_groupkeys or _groupkey_list(params.get("groupkey")) != report_groupkeys:
+        report_groupkeys = [
+            str(v).strip() for v in report.get("groupkeys") or [] if str(v).strip()
+        ]
+        if (
+            not report_groupkeys
+            or _groupkey_list(params.get("groupkey")) != report_groupkeys
+        ):
             return False
         if str(params.get("map_type") or "").lower() != "cummap":
             return False
         report_oper = str(report.get("map_oper") or "").strip().upper()
-        if report_oper and str(params.get("map_oper") or "").strip().upper() != report_oper:
+        if (
+            report_oper
+            and str(params.get("map_oper") or "").strip().upper() != report_oper
+        ):
             return False
 
     return True
@@ -986,7 +1149,9 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     Validation/HITL handles missing params. This node only handles plan review.
     """
     task_plan = state.get("task_plan", [])
-    canonical_requests = state.get("canonical_requests") or canonical_requests_from_tasks(task_plan)
+    canonical_requests = state.get(
+        "canonical_requests"
+    ) or canonical_requests_from_tasks(task_plan)
     if len(task_plan) < 2:
         return {}
     if _should_auto_approve_report_map_plan(state, task_plan):
@@ -994,29 +1159,37 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "plan_review.auto_approved",
             {"reason": "deterministic_report_map_fanout", "tasks": task_plan},
         )
-        return {"canonical_requests": canonical_requests, "task_plan": task_plan, "pending_tasks": task_plan}
+        return {
+            "canonical_requests": canonical_requests,
+            "task_plan": task_plan,
+            "pending_tasks": task_plan,
+        }
 
     # plan_review 루프 — approve/cancel/modify 반복 가능
     # sequential interrupt 패턴: 루프 각 반복마다 새 interrupt() 생성 → resume 시 순서대로 재생
     while True:
-        user_response = interrupt({"type": "plan_review", "tasks": task_plan, "missing_params": []})
+        user_response = interrupt(
+            {"type": "plan_review", "tasks": task_plan, "missing_params": []}
+        )
         resp = (user_response or "").strip()
 
         if not resp:
             break  # 빈 응답 → approve, LLM 호출 없이 즉시 통과
 
         try:
-            raw = _model.invoke([
-                {"role": "system", "content": _PLAN_REVIEW_SYSTEM},
-                {
-                    "role": "user",
-                    "content": (
-                        f"현재 canonical requests:\n{json.dumps(canonical_requests, ensure_ascii=False)}\n\n"
-                        f"화면 표시용 현재 task 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n"
-                        f"사용자 응답: \"{resp}\""
-                    ),
-                },
-            ]).content.strip()
+            raw = _model.invoke(
+                [
+                    {"role": "system", "content": _PLAN_REVIEW_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"현재 canonical requests:\n{json.dumps(canonical_requests, ensure_ascii=False)}\n\n"
+                            f"화면 표시용 현재 task 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n"
+                            f'사용자 응답: "{resp}"'
+                        ),
+                    },
+                ]
+            ).content.strip()
             result = extract_json_from_llm(raw, PlanReviewResult)
         except Exception as e:
             logger.warning("[PlanReview] LLM 판단 실패 (%s) — 계획 재표시", e)
@@ -1026,8 +1199,11 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             normalize_canonical_request(request.model_dump())
             for request in result.requests
         ]
-        logger.info("[PlanReview] action=%s requests=%s", result.action,
-                    [(r.get("intent"), r.get("agent")) for r in result_requests])
+        logger.info(
+            "[PlanReview] action=%s requests=%s",
+            result.action,
+            [(r.get("intent"), r.get("agent")) for r in result_requests],
+        )
 
         if result.action == "cancel":
             return {
@@ -1058,12 +1234,20 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 # DO NOT 추가/삭제/순서변경 — 단순 input 채우기. Phase 3b에서 plan 전체 재구성 추가 예정.
 # 그래프 wiring: agent → replanner → supervisor (#8 phase 2에서 이미 wiring 완료).
 
+
 def _parse_lot_ids(params: dict) -> list[str]:
-    val = (params.get("lot_ids") or params.get("map_lot_ids") or params.get("lh_lot_ids")
-           or params.get("yield_lot_ids") or params.get("map_lot_id") or "")
+    val = (
+        params.get("lot_ids")
+        or params.get("map_lot_ids")
+        or params.get("lh_lot_ids")
+        or params.get("yield_lot_ids")
+        or params.get("map_lot_id")
+        or ""
+    )
     if isinstance(val, list):
         return [v.strip() for v in val if v.strip()]
     return [v.strip() for v in str(val).split(",") if v.strip()]
+
 
 def _parse_wf_ids(params: dict) -> list[str]:
     val = params.get("wf_ids") or params.get("map_wf_ids") or ""
@@ -1071,13 +1255,23 @@ def _parse_wf_ids(params: dict) -> list[str]:
         return [v.strip() for v in val if v.strip()]
     return [v.strip() for v in str(val).split(",") if v.strip()]
 
+
 def _parse_fail_type(params: dict) -> str:
-    return (params.get("fail_type") or params.get("wads_parameter")
-            or params.get("dh_fail_type") or "")
+    return (
+        params.get("fail_type")
+        or params.get("wads_parameter")
+        or params.get("dh_fail_type")
+        or ""
+    )
+
 
 def _parse_cause_oper(params: dict) -> str:
-    return (params.get("cause_oper") or params.get("dh_cause_oper")
-            or params.get("rt_main_oper_det_desc") or "")
+    return (
+        params.get("cause_oper")
+        or params.get("dh_cause_oper")
+        or params.get("rt_main_oper_det_desc")
+        or ""
+    )
 
 
 def _hitl_response_for(state: dict, task: dict, param: str) -> str:
@@ -1182,20 +1376,38 @@ def _is_placeholder_or_empty(val) -> bool:
     v = val.strip()
     if not v:
         return True
-    if (v.startswith("<") and v.endswith(">")) or \
-       (v.startswith("{{") and v.endswith("}}")) or \
-       (v.startswith("__") and v.endswith("__")):
+    if (
+        (v.startswith("<") and v.endswith(">"))
+        or (v.startswith("{{") and v.endswith("}}"))
+        or (v.startswith("__") and v.endswith("__"))
+    ):
         return True
     lower = v.lower()
-    if any(k in lower for k in ("task_1", "task_2", "task_3", "결과", "from_task", "result of", "from task")):
+    if any(
+        k in lower
+        for k in (
+            "task_1",
+            "task_2",
+            "task_3",
+            "결과",
+            "from_task",
+            "result of",
+            "from task",
+        )
+    ):
         return True
     return False
 
 
 def _latest_wads_result(state: dict) -> dict:
     for message in reversed(state.get("messages", []) or []):
-        if isinstance(message, AIMessage) and getattr(message, "name", "") == "wads_sql_result":
-            wads_data = (getattr(message, "additional_kwargs", None) or {}).get("wads_result") or {}
+        if (
+            isinstance(message, AIMessage)
+            and getattr(message, "name", "") == "wads_sql_result"
+        ):
+            wads_data = (getattr(message, "additional_kwargs", None) or {}).get(
+                "wads_result"
+            ) or {}
             if isinstance(wads_data, dict) and wads_data:
                 return wads_data
     return {}
@@ -1241,7 +1453,11 @@ def _recent_wads_groupkeys_by_map_oper(state: dict) -> dict[str, list[str]]:
                 continue
             bucket = grouped.setdefault(oper, [])
             bucket.extend(groupkeys)
-    return {oper: _unique_texts(groupkeys) for oper, groupkeys in grouped.items() if groupkeys}
+    return {
+        oper: _unique_texts(groupkeys)
+        for oper, groupkeys in grouped.items()
+        if groupkeys
+    }
 
 
 def _apply_recent_wads_to_map_tasks(
@@ -1270,15 +1486,20 @@ def _apply_recent_wads_to_map_tasks(
         if selected_oper:
             selected_groupkeys = groups.get(selected_oper) or []
             if selected_groupkeys:
-                updated = {**task, "params": {**params, "groupkey": ",".join(selected_groupkeys)}}
+                updated = {
+                    **task,
+                    "params": {**params, "groupkey": ",".join(selected_groupkeys)},
+                }
                 expanded.append(updated)
-                trace.append({
-                    "event": "recent_wads_groupkey_applied",
-                    "task_id": task.get("task_id", ""),
-                    "agent": "map_agent",
-                    "map_oper": selected_oper,
-                    "groupkey_count": len(selected_groupkeys),
-                })
+                trace.append(
+                    {
+                        "event": "recent_wads_groupkey_applied",
+                        "task_id": task.get("task_id", ""),
+                        "agent": "map_agent",
+                        "map_oper": selected_oper,
+                        "groupkey_count": len(selected_groupkeys),
+                    }
+                )
                 continue
             expanded.append(task)
             continue
@@ -1294,13 +1515,15 @@ def _apply_recent_wads_to_map_tasks(
                 },
             }
             expanded.append(updated)
-            trace.append({
-                "event": "recent_wads_map_oper_groupkey_applied",
-                "task_id": task.get("task_id", ""),
-                "agent": "map_agent",
-                "map_oper": inferred_oper,
-                "groupkey_count": len(inferred_groupkeys),
-            })
+            trace.append(
+                {
+                    "event": "recent_wads_map_oper_groupkey_applied",
+                    "task_id": task.get("task_id", ""),
+                    "agent": "map_agent",
+                    "map_oper": inferred_oper,
+                    "groupkey_count": len(inferred_groupkeys),
+                }
+            )
             continue
 
         base_request = canonical_requests_from_tasks([task])[0]
@@ -1312,25 +1535,31 @@ def _apply_recent_wads_to_map_tasks(
             slots["groupkey"] = ",".join(groupkeys)
             slots.pop("lot_ids", None)
             slots.pop("wf_ids", None)
-            request_expansion.append({
-                **base_request,
-                "slots": slots,
-                "goal": f"[{oper}] {task.get('goal', '')}".strip(),
-                "source": {
-                    **dict(base_request.get("source") or {}),
-                    "type": "recent_wads_map_oper_fanout",
-                },
-            })
+            request_expansion.append(
+                {
+                    **base_request,
+                    "slots": slots,
+                    "goal": f"[{oper}] {task.get('goal', '')}".strip(),
+                    "source": {
+                        **dict(base_request.get("source") or {}),
+                        "type": "recent_wads_map_oper_fanout",
+                    },
+                }
+            )
             task_ids.append(f"{task.get('task_id', 'task_map')}_p{index}")
-        task_expansion = build_tasks_from_canonical_requests(request_expansion, task_ids=task_ids)
+        task_expansion = build_tasks_from_canonical_requests(
+            request_expansion, task_ids=task_ids
+        )
         expanded.extend(task_expansion)
-        trace.append({
-            "event": "recent_wads_map_oper_fanout",
-            "task_id": task.get("task_id", ""),
-            "agent": "map_agent",
-            "map_opers": list(groups.keys()),
-            "task_count": len(task_expansion),
-        })
+        trace.append(
+            {
+                "event": "recent_wads_map_oper_fanout",
+                "task_id": task.get("task_id", ""),
+                "agent": "map_agent",
+                "map_opers": list(groups.keys()),
+                "task_count": len(task_expansion),
+            }
+        )
 
     return expanded, trace
 
@@ -1381,8 +1610,12 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
         and groupkeys
         and not (groupkeys_by_oper and _is_placeholder_or_empty(params.get("map_oper")))
     ):
-        params["groupkey"] = ",".join(str(v).strip() for v in groupkeys if str(v).strip())
-        logger.info("[ResolveChained] groupkey ← wads_sql_result (%d wafers)", len(groupkeys))
+        params["groupkey"] = ",".join(
+            str(v).strip() for v in groupkeys if str(v).strip()
+        )
+        logger.info(
+            "[ResolveChained] groupkey ← wads_sql_result (%d wafers)", len(groupkeys)
+        )
     elif (
         _is_placeholder_or_empty(params.get("lot_ids"))
         and lot_ids
@@ -1395,7 +1628,9 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
         )
     ):
         params["lot_ids"] = lot_ids
-        logger.info("[ResolveChained] lot_ids ← wads_sql_result (%d lots)", len(lot_ids))
+        logger.info(
+            "[ResolveChained] lot_ids ← wads_sql_result (%d lots)", len(lot_ids)
+        )
 
     if _is_placeholder_or_empty(params.get("cause_oper")):
         fallback = state.get("cause_oper")
@@ -1403,11 +1638,15 @@ def _resolve_chained_params(task: dict, state: dict) -> dict:
             params["cause_oper"] = fallback
             logger.info("[ResolveChained] cause_oper ← %s", fallback)
 
-    if task.get("agent") == "map_agent" and _is_placeholder_or_empty(params.get("map_oper")):
+    if task.get("agent") == "map_agent" and _is_placeholder_or_empty(
+        params.get("map_oper")
+    ):
         fallback_oper = _normalize_map_oper(str(wads_data.get("map_oper") or ""))
         if fallback_oper:
             params["map_oper"] = fallback_oper
-            logger.info("[ResolveChained] map_oper ← wads_sql_result (%s)", fallback_oper)
+            logger.info(
+                "[ResolveChained] map_oper ← wads_sql_result (%s)", fallback_oper
+            )
 
     return params
 
@@ -1448,7 +1687,9 @@ def _build_recent_results_index(messages: list) -> list[dict]:
     return prune_recent_results(entries)
 
 
-def _recent_results_update_from_messages(messages: list, current_recent_results: list | None) -> dict:
+def _recent_results_update_from_messages(
+    messages: list, current_recent_results: list | None
+) -> dict:
     """Return an overwrite update for the derived recent_results index."""
 
     recent_results = _build_recent_results_index(messages)
@@ -1512,9 +1753,13 @@ def _needs_replan(pending: list[dict]) -> bool:
         if agent == "map_agent":
             if _is_placeholder_or_empty(params.get("map_oper")):
                 return True
-            if _is_placeholder_or_empty(params.get("lot_ids")) and _is_placeholder_or_empty(params.get("groupkey")) and all(
-                _is_placeholder_or_empty(params.get(k))
-                for k in ("map_lot_id", "map_lot_ids", "map_groupkey")
+            if (
+                _is_placeholder_or_empty(params.get("lot_ids"))
+                and _is_placeholder_or_empty(params.get("groupkey"))
+                and all(
+                    _is_placeholder_or_empty(params.get(k))
+                    for k in ("map_lot_id", "map_lot_ids", "map_groupkey")
+                )
             ):
                 return True
         elif agent == "lot_history_agent":
@@ -1525,10 +1770,15 @@ def _needs_replan(pending: list[dict]) -> bool:
                 return True
         elif agent == "relation_tree_agent":
             # relation_tree_agent는 lot_ids 아닌 lotcd+cause_oper 사용
-            if _is_placeholder_or_empty(params.get("cause_oper")) and _is_placeholder_or_empty(params.get("rt_main_oper_det_desc")):
+            if _is_placeholder_or_empty(
+                params.get("cause_oper")
+            ) and _is_placeholder_or_empty(params.get("rt_main_oper_det_desc")):
                 return True
         elif agent == "fail_history_agent":
-            if all(_is_placeholder_or_empty(params.get(k)) for k in ("dh_query", "fail_type", "dh_fail_type", "cause_oper")):
+            if all(
+                _is_placeholder_or_empty(params.get(k))
+                for k in ("dh_query", "fail_type", "dh_fail_type", "cause_oper")
+            ):
                 return True
     return False
 
@@ -1564,18 +1814,22 @@ def _expand_map_tasks_by_wads_map_oper(
             next_slots["groupkey"] = ",".join(groupkeys)
             next_slots.pop("lot_ids", None)
             next_slots.pop("wf_ids", None)
-            request_expansion.append({
-                **base_request,
-                "slots": next_slots,
-                "goal": f"[{oper}] {task.get('goal', '')}".strip(),
-                "source": {
-                    **dict(base_request.get("source") or {}),
-                    "type": "wads_map_oper_fanout",
-                },
-            })
+            request_expansion.append(
+                {
+                    **base_request,
+                    "slots": next_slots,
+                    "goal": f"[{oper}] {task.get('goal', '')}".strip(),
+                    "source": {
+                        **dict(base_request.get("source") or {}),
+                        "type": "wads_map_oper_fanout",
+                    },
+                }
+            )
             task_ids.append(f"{task.get('task_id', 'task_map')}_p{index}")
 
-        task_expansion = build_tasks_from_canonical_requests(request_expansion, task_ids=task_ids)
+        task_expansion = build_tasks_from_canonical_requests(
+            request_expansion, task_ids=task_ids
+        )
         replacements[str(task.get("task_id") or "")] = task_expansion
         expanded_pending.extend(task_expansion)
 
@@ -1606,18 +1860,25 @@ def _task_ids_for_replanned_requests(
     if len(canonical_requests) <= len(pending_tasks):
         return [
             str(task.get("task_id") or f"task_{index}")
-            for index, task in enumerate(pending_tasks[:len(canonical_requests)], start=1)
+            for index, task in enumerate(
+                pending_tasks[: len(canonical_requests)], start=1
+            )
         ]
 
     if len(pending_tasks) == 1:
         base_id = str(pending_tasks[0].get("task_id") or "task_1")
-        return [f"{base_id}_p{index}" for index in range(1, len(canonical_requests) + 1)]
+        return [
+            f"{base_id}_p{index}" for index in range(1, len(canonical_requests) + 1)
+        ]
 
     task_ids = [
         str(task.get("task_id") or f"task_{index}")
         for index, task in enumerate(pending_tasks, start=1)
     ]
-    task_ids.extend(f"task_extra_p{index}" for index in range(1, len(canonical_requests) - len(task_ids) + 1))
+    task_ids.extend(
+        f"task_extra_p{index}"
+        for index in range(1, len(canonical_requests) - len(task_ids) + 1)
+    )
     return task_ids
 
 
@@ -1657,12 +1918,17 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         last_task_id, last_summary = past[-1]
         logger.info(
             "[Replanner] last_task=%s pending=%d summary=%s",
-            last_task_id, len(pending), str(last_summary)[:120],
+            last_task_id,
+            len(pending),
+            str(last_summary)[:120],
         )
-        stream_event("status", StatusEvent(
-            message=f"✅ [{last_task_id}] 완료",
-            node="replanner",
-        ))
+        stream_event(
+            "status",
+            StatusEvent(
+                message=f"✅ [{last_task_id}] 완료",
+                node="replanner",
+            ),
+        )
         _emit_task_outcome_trace(state, str(last_task_id or ""))
 
     # ── canonical plan-and-execute 종료 판정 ──
@@ -1674,11 +1940,14 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     if not pending and task_plan:
         messages = state.get("messages", [])
         last_agent_msg = next(
-            (m.content for m in reversed(messages)
-             if isinstance(m, AIMessage)
-             and getattr(m, "name", "") in _AGENT_NAMES
-             and isinstance(m.content, str)
-             and m.content.strip()),
+            (
+                m.content
+                for m in reversed(messages)
+                if isinstance(m, AIMessage)
+                and getattr(m, "name", "") in _AGENT_NAMES
+                and isinstance(m.content, str)
+                and m.content.strip()
+            ),
             "분석을 완료했습니다.",
         )
         logger.info(
@@ -1712,23 +1981,26 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         {**t, "params": _resolve_chained_params(t, state)} for t in pending
     ]
     if not _needs_replan(simulated_pending):
-        logger.info("[Replanner] 코드 해소로 chained input 충족 → LLM 호출 생략 (pass-through)")
+        logger.info(
+            "[Replanner] 코드 해소로 chained input 충족 → LLM 호출 생략 (pass-through)"
+        )
         return scratchpad_update
 
     # 사용자 원본 query (rewrite 결과)
     messages = state.get("messages", [])
     last_human = next(
-        (m for m in reversed(messages)
-         if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"),
+        (
+            m
+            for m in reversed(messages)
+            if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"
+        ),
         None,
     )
     if not last_human:
         return scratchpad_update
 
     # past + pending을 LLM 입력으로 직렬화
-    past_str = "\n".join(
-        f"- {tid}: {str(summary)[:400]}" for tid, summary in past
-    )
+    past_str = "\n".join(f"- {tid}: {str(summary)[:400]}" for tid, summary in past)
     pending_requests = canonical_requests_from_tasks(pending)
     pending_ids = [str(task.get("task_id") or "") for task in pending]
     pending_str = json.dumps(pending_requests, ensure_ascii=False)
@@ -1772,6 +2044,7 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         task_ids=_task_ids_for_replanned_requests(new_requests, pending),
     )
     import re as _re
+
     orig_ids = {t.get("task_id") for t in pending}
     new_ids = {t.get("task_id") for t in new_tasks}
     # R2 fix: task 추가는 fan-out(_p{n} suffix) 패턴만 허용, 그 외 거부
@@ -1787,10 +2060,13 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         if not _fanout_ok:
             logger.warning(
                 "[Replanner] 허용되지 않은 task 추가 (%d → %d) — 거부",
-                len(pending), len(new_tasks),
+                len(pending),
+                len(new_tasks),
             )
             return scratchpad_update
-        logger.info("[Replanner] fan-out 허용: %d → %d tasks", len(pending), len(new_tasks))
+        logger.info(
+            "[Replanner] fan-out 허용: %d → %d tasks", len(pending), len(new_tasks)
+        )
     # base task_id 기반 subset 검증 (_p{n} suffix 허용)
     _base_ids = {_re.sub(r"_p\d+$", "", tid) for tid in new_ids}
     if not _base_ids.issubset(orig_ids):
@@ -1806,12 +2082,15 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     # R3 fix: LLM이 채운 params에 여전히 placeholder가 있으면 거부
     # (예: "task_1의 결과를 사용하세요" 같은 narrative placeholder)
     if _needs_replan(new_tasks):
-        logger.warning("[Replanner] LLM 결과에 여전히 빈 chained params 존재 — 거부, supervisor interrupt로 위임")
+        logger.warning(
+            "[Replanner] LLM 결과에 여전히 빈 chained params 존재 — 거부, supervisor interrupt로 위임"
+        )
         return scratchpad_update
 
     logger.info(
         "[Replanner] plan 갱신: %d → %d tasks (chained input filled)",
-        len(pending), len(new_tasks),
+        len(pending),
+        len(new_tasks),
     )
     replacements = _replacements_from_replanned_tasks(pending, new_tasks)
     updated_task_plan = _replace_plan_tasks(task_plan, replacements)
@@ -1827,7 +2106,18 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 @observe(name="supervisor_node")
 def supervisor_node(
     state: Dict[str, Any], config: RunnableConfig
-) -> Command[Literal["yield_agent", "wads_agent", "map_agent", "fail_history_agent", "lot_history_agent", "ppt_export", "relation_tree_agent", "__end__"]]:
+) -> Command[
+    Literal[
+        "yield_agent",
+        "wads_agent",
+        "map_agent",
+        "fail_history_agent",
+        "lot_history_agent",
+        "ppt_export",
+        "relation_tree_agent",
+        "__end__",
+    ]
+]:
     """Supervisor 노드: ReAct 스타일 멀티스텝 루프.
 
     각 스텝마다 에이전트 결과를 확인하고 다음 행동을 결정합니다.
@@ -1841,7 +2131,9 @@ def supervisor_node(
     # n=5 → max_steps=8 → 8 supervisor 진입 × 3노드 + setup 3 = 27 ≤ 30 ✅
     max_steps = min(len(state.get("task_plan", [])) + 3, 8) or 4
     if step_count > max_steps:
-        logger.warning("[Supervisor] 최대 스텝(%d/%d) 초과 → 강제 종료", step_count, max_steps)
+        logger.warning(
+            "[Supervisor] 최대 스텝(%d/%d) 초과 → 강제 종료", step_count, max_steps
+        )
         emit_trace_event(
             "supervisor_dispatch",
             source="supervisor",
@@ -1856,7 +2148,9 @@ def supervisor_node(
         return Command(
             update={
                 "step_count": step_count,
-                "messages": [AIMessage(content="분석을 완료했습니다.", name="supervisor")],
+                "messages": [
+                    AIMessage(content="분석을 완료했습니다.", name="supervisor")
+                ],
             },
             goto=END,
         )
@@ -1932,34 +2226,47 @@ def supervisor_node(
             update_dict["lotcd"] = task_params.get("lotcd", state.get("lotcd", ""))
 
         # 통합 필드: 모든 agent에 공통 적용
-        update_dict["lot_ids"]    = _parse_lot_ids(task_params)
-        update_dict["wf_ids"]     = _parse_wf_ids(task_params)
-        update_dict["groupkey"]   = task_params.get("groupkey") or task_params.get("map_groupkey") or task_params.get("yield_groupkey") or ""
-        update_dict["fail_type"]  = _parse_fail_type(task_params)
+        update_dict["lot_ids"] = _parse_lot_ids(task_params)
+        update_dict["wf_ids"] = _parse_wf_ids(task_params)
+        update_dict["groupkey"] = (
+            task_params.get("groupkey")
+            or task_params.get("map_groupkey")
+            or task_params.get("yield_groupkey")
+            or ""
+        )
+        update_dict["fail_type"] = _parse_fail_type(task_params)
         update_dict["cause_oper"] = _parse_cause_oper(task_params)
 
         if agent == "yield_agent":
-            update_dict.update({
-                "ref_date":      task_params.get("ref_date", state.get("ref_date", "")),
-                "unit":          task_params.get("unit", state.get("unit", "weekly")),
-                "periods":       task_params.get("periods", state.get("periods", 0)),
-                "lot_ids":       [],
-                "wf_ids":        [],
-                "groupkey":      "",
-                "filter_params": [],
-            })
+            update_dict.update(
+                {
+                    "ref_date": task_params.get("ref_date", state.get("ref_date", "")),
+                    "unit": task_params.get("unit", state.get("unit", "weekly")),
+                    "periods": task_params.get("periods", state.get("periods", 0)),
+                    "lot_ids": [],
+                    "wf_ids": [],
+                    "groupkey": "",
+                    "filter_params": [],
+                }
+            )
 
         elif agent == "wads_agent":
-            update_dict.update({
-                "wads_start_tm": task_params.get("wads_start_tm", ""),
-                "wads_end_tm":   task_params.get("wads_end_tm") or date.today().strftime("%Y-%m-%d"),
-            })
+            update_dict.update(
+                {
+                    "wads_start_tm": task_params.get("wads_start_tm", ""),
+                    "wads_end_tm": task_params.get("wads_end_tm")
+                    or date.today().strftime("%Y-%m-%d"),
+                }
+            )
 
         elif agent == "map_agent":
-            update_dict.update({
-                "map_type": task_params.get("map_type", "binmap"),
-                "map_oper": task_params.get("map_oper") or state.get("map_oper", ""),
-            })
+            update_dict.update(
+                {
+                    "map_type": task_params.get("map_type", "binmap"),
+                    "map_oper": task_params.get("map_oper")
+                    or state.get("map_oper", ""),
+                }
+            )
 
         elif agent == "fail_history_agent":
             update_dict["dh_query"] = task_params.get("dh_query", "")
@@ -1967,30 +2274,38 @@ def supervisor_node(
         elif agent == "relation_tree_agent":
             # lotcd(3자)는 rt_lot_code와 동일 개념 — 구 필드 fallback 포함
             if not update_dict.get("lotcd"):
-                update_dict["lotcd"] = (task_params.get("rt_lot_code") or state.get("lotcd", ""))
+                update_dict["lotcd"] = task_params.get("rt_lot_code") or state.get(
+                    "lotcd", ""
+                )
         # map_agent 필수 파라미터 검증
         if current_task["agent"] == "map_agent":
             if not update_dict.get("lot_ids") and not update_dict.get("groupkey"):
                 user_response = _hitl_response_for(state, current_task, "lot_ids")
                 if not user_response:
-                    user_response = interrupt({
-                        "type": "missing_param",
-                        "param": "lot_ids",
-                        "message": "맵을 조회할 Lot ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
-                        "route": "map_agent",
-                    })
-                update_dict["lot_ids"] = _parse_lot_ids({"lot_ids": str(user_response).strip()})
+                    user_response = interrupt(
+                        {
+                            "type": "missing_param",
+                            "param": "lot_ids",
+                            "message": "맵을 조회할 Lot ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
+                            "route": "map_agent",
+                        }
+                    )
+                update_dict["lot_ids"] = _parse_lot_ids(
+                    {"lot_ids": str(user_response).strip()}
+                )
 
             normalized = _normalize_map_oper(update_dict.get("map_oper", ""))
             if not normalized:
                 user_response = _hitl_response_for(state, current_task, "map_oper")
                 if not user_response:
-                    user_response = interrupt({
-                        "type": "missing_param",
-                        "param": "map_oper",
-                        "message": "PT1H / PT1C 중 어떤 공정의 맵을 조회할까요?",
-                        "route": "map_agent",
-                    })
+                    user_response = interrupt(
+                        {
+                            "type": "missing_param",
+                            "param": "map_oper",
+                            "message": "PT1H / PT1C 중 어떤 공정의 맵을 조회할까요?",
+                            "route": "map_agent",
+                        }
+                    )
                 normalized = _normalize_map_oper(str(user_response))
             update_dict["map_oper"] = normalized or "PT1H"
 
@@ -1999,22 +2314,26 @@ def supervisor_node(
             if not update_dict.get("lotcd"):
                 user_response = _hitl_response_for(state, current_task, "lotcd")
                 if not user_response:
-                    user_response = interrupt({
-                        "type": "missing_param",
-                        "param": "lotcd",
-                        "message": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
-                        "route": "relation_tree_agent",
-                    })
+                    user_response = interrupt(
+                        {
+                            "type": "missing_param",
+                            "param": "lotcd",
+                            "message": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
+                            "route": "relation_tree_agent",
+                        }
+                    )
                 update_dict["lotcd"] = str(user_response).strip()
             if not update_dict.get("cause_oper"):
                 user_response = _hitl_response_for(state, current_task, "cause_oper")
                 if not user_response:
-                    user_response = interrupt({
-                        "type": "missing_param",
-                        "param": "cause_oper",
-                        "message": "연관 분석할 main 공정명을 입력해주세요. (예: STEP07 또는 STEP07,STEP08)",
-                        "route": "relation_tree_agent",
-                    })
+                    user_response = interrupt(
+                        {
+                            "type": "missing_param",
+                            "param": "cause_oper",
+                            "message": "연관 분석할 main 공정명을 입력해주세요. (예: STEP07 또는 STEP07,STEP08)",
+                            "route": "relation_tree_agent",
+                        }
+                    )
                 update_dict["cause_oper"] = str(user_response).strip()
 
         # yield_agent: lotcd 필수. wads_agent는 lotcd 없이도 날짜/파라미터 조건으로 조회 가능.
@@ -2022,12 +2341,14 @@ def supervisor_node(
             if not update_dict.get("lotcd"):
                 user_response = _hitl_response_for(state, current_task, "lotcd")
                 if not user_response:
-                    user_response = interrupt({
-                        "type": "missing_param",
-                        "param": "lotcd",
-                        "message": _lotcd_prompt(current_task["agent"]),
-                        "route": current_task["agent"],
-                    })
+                    user_response = interrupt(
+                        {
+                            "type": "missing_param",
+                            "param": "lotcd",
+                            "message": _lotcd_prompt(current_task["agent"]),
+                            "route": current_task["agent"],
+                        }
+                    )
                 update_dict["lotcd"] = str(user_response).strip()
             normalized_lotcd = _normalize_product_lotcd(update_dict.get("lotcd"))
             if not normalized_lotcd:
@@ -2056,19 +2377,25 @@ def supervisor_node(
                         "value_preview": preview_text(invalid_value),
                     },
                 )
-                user_response = interrupt({
-                    "type": "missing_param",
-                    "param": "lotcd",
-                    "message": _lotcd_prompt(current_task["agent"], invalid_value=invalid_value),
-                    "route": current_task["agent"],
-                })
+                user_response = interrupt(
+                    {
+                        "type": "missing_param",
+                        "param": "lotcd",
+                        "message": _lotcd_prompt(
+                            current_task["agent"], invalid_value=invalid_value
+                        ),
+                        "route": current_task["agent"],
+                    }
+                )
                 normalized_lotcd = _normalize_product_lotcd(user_response)
                 if not normalized_lotcd:
                     return _invalid_lotcd_update(
                         agent=current_task["agent"],
                         task_id=str(current_task.get("task_id") or ""),
                         value=user_response,
-                        message=_lotcd_prompt(current_task["agent"], invalid_value=user_response),
+                        message=_lotcd_prompt(
+                            current_task["agent"], invalid_value=user_response
+                        ),
                         step_count=step_count,
                     )
             update_dict["lotcd"] = normalized_lotcd
@@ -2101,19 +2428,25 @@ def supervisor_node(
                         "value_preview": preview_text(invalid_value),
                     },
                 )
-                user_response = interrupt({
-                    "type": "missing_param",
-                    "param": "lotcd",
-                    "message": _lotcd_prompt(current_task["agent"], invalid_value=invalid_value),
-                    "route": current_task["agent"],
-                })
+                user_response = interrupt(
+                    {
+                        "type": "missing_param",
+                        "param": "lotcd",
+                        "message": _lotcd_prompt(
+                            current_task["agent"], invalid_value=invalid_value
+                        ),
+                        "route": current_task["agent"],
+                    }
+                )
                 normalized_lotcd = _normalize_product_lotcd(user_response)
                 if not normalized_lotcd:
                     return _invalid_lotcd_update(
                         agent=current_task["agent"],
                         task_id=str(current_task.get("task_id") or ""),
                         value=user_response,
-                        message=_lotcd_prompt(current_task["agent"], invalid_value=user_response),
+                        message=_lotcd_prompt(
+                            current_task["agent"], invalid_value=user_response
+                        ),
                         step_count=step_count,
                     )
             update_dict["lotcd"] = normalized_lotcd
@@ -2123,13 +2456,17 @@ def supervisor_node(
             if not update_dict.get("lot_ids"):
                 user_response = _hitl_response_for(state, current_task, "lot_ids")
                 if not user_response:
-                    user_response = interrupt({
-                        "type": "missing_param",
-                        "param": "lot_ids",
-                        "message": "이력을 조회할 LOT ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
-                        "route": "lot_history_agent",
-                    })
-                update_dict["lot_ids"] = _parse_lot_ids({"lot_ids": str(user_response).strip()})
+                    user_response = interrupt(
+                        {
+                            "type": "missing_param",
+                            "param": "lot_ids",
+                            "message": "이력을 조회할 LOT ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
+                            "route": "lot_history_agent",
+                        }
+                    )
+                update_dict["lot_ids"] = _parse_lot_ids(
+                    {"lot_ids": str(user_response).strip()}
+                )
 
         final_task_params = dict(task_params)
         for slot in AGENT_SLOT_SCHEMAS.get(agent, set()):
@@ -2144,10 +2481,13 @@ def supervisor_node(
             },
         }
 
-        stream_event("status", StatusEvent(
-            message=f"▶ [{current_task['task_id']}] {current_task.get('goal', '')}",
-            node="supervisor",
-        ))
+        stream_event(
+            "status",
+            StatusEvent(
+                message=f"▶ [{current_task['task_id']}] {current_task.get('goal', '')}",
+                node="supervisor",
+            ),
+        )
         emit_runtime_detail(
             "supervisor.dispatch_state",
             {
@@ -2165,15 +2505,28 @@ def supervisor_node(
                 "task_goal_preview": preview_text(current_task.get("goal", "")),
                 "remaining_tasks": len(remaining),
                 "step_count": step_count,
-                "params": summarize_params({
-                    key: update_dict.get(key)
-                    for key in (
-                        "lotcd", "lot_ids", "wf_ids", "groupkey", "fail_type",
-                        "cause_oper", "map_type", "map_oper", "dh_query",
-                        "ref_date", "unit", "periods", "wads_start_tm", "wads_end_tm",
-                    )
-                    if key in update_dict
-                }),
+                "params": summarize_params(
+                    {
+                        key: update_dict.get(key)
+                        for key in (
+                            "lotcd",
+                            "lot_ids",
+                            "wf_ids",
+                            "groupkey",
+                            "fail_type",
+                            "cause_oper",
+                            "map_type",
+                            "map_oper",
+                            "dh_query",
+                            "ref_date",
+                            "unit",
+                            "periods",
+                            "wads_start_tm",
+                            "wads_end_tm",
+                        )
+                        if key in update_dict
+                    }
+                ),
             },
         )
         emit_trace_event(
@@ -2184,21 +2537,36 @@ def supervisor_node(
                 "agent": current_task.get("agent", ""),
                 "task_goal_preview": preview_text(current_task.get("goal", "")),
                 "step_count": step_count,
-                "params": summarize_params({
-                    key: update_dict.get(key)
-                    for key in (
-                        "lotcd", "lot_ids", "wf_ids", "groupkey", "fail_type",
-                        "cause_oper", "map_type", "map_oper", "dh_query",
-                        "ref_date", "unit", "periods", "wads_start_tm", "wads_end_tm",
-                    )
-                    if key in update_dict
-                }),
+                "params": summarize_params(
+                    {
+                        key: update_dict.get(key)
+                        for key in (
+                            "lotcd",
+                            "lot_ids",
+                            "wf_ids",
+                            "groupkey",
+                            "fail_type",
+                            "cause_oper",
+                            "map_type",
+                            "map_oper",
+                            "dh_query",
+                            "ref_date",
+                            "unit",
+                            "periods",
+                            "wads_start_tm",
+                            "wads_end_tm",
+                        )
+                        if key in update_dict
+                    }
+                ),
             },
         )
         return Command(update=update_dict, goto=current_task["agent"])
 
     # planner가 빈 계획 반환 (JSON 파싱 실패 fallback)
-    logger.warning("[Supervisor] pending_tasks 없음 — canonical/task_builder 실패 fallback")
+    logger.warning(
+        "[Supervisor] pending_tasks 없음 — canonical/task_builder 실패 fallback"
+    )
     emit_trace_event(
         "supervisor_dispatch",
         source="supervisor",
@@ -2210,12 +2578,19 @@ def supervisor_node(
     )
     messages = state.get("messages", [])
     planner_refusal = next(
-        (m.content for m in reversed(messages)
-         if isinstance(m, AIMessage) and getattr(m, "name", "") == "planner"
-         and isinstance(m.content, str) and m.content.strip()),
+        (
+            m.content
+            for m in reversed(messages)
+            if isinstance(m, AIMessage)
+            and getattr(m, "name", "") == "planner"
+            and isinstance(m.content, str)
+            and m.content.strip()
+        ),
         None,
     )
-    fallback_content = planner_refusal or "요청을 이해하지 못했습니다. 다시 시도해 주세요."
+    fallback_content = (
+        planner_refusal or "요청을 이해하지 못했습니다. 다시 시도해 주세요."
+    )
     return Command(
         update={
             "step_count": step_count,
@@ -2224,8 +2599,6 @@ def supervisor_node(
         },
         goto=END,
     )
-
-
 
 
 # ── 공유 State 정의 ──────────────────────────────────────
@@ -2246,14 +2619,14 @@ class YieldQueryState(TypedDict):
 
     messages: Annotated[list, add_messages]
     step_count: int  # supervisor 루프 카운터
-    trace_id: str    # local observability trace id (overwrite)
-    turn_id: str     # local observability turn id (overwrite)
+    trace_id: str  # local observability trace id (overwrite)
+    turn_id: str  # local observability turn id (overwrite)
 
     # 조회 파라미터
     lotcd: str
     ref_date: str
-    unit: str      # "weekly" | "monthly" | "daily"
-    periods: int   # 조회 기간 수 (0 = 기본값)
+    unit: str  # "weekly" | "monthly" | "daily"
+    periods: int  # 조회 기간 수 (0 = 기본값)
 
     # 결과 데이터
     weeks_data: list
@@ -2275,11 +2648,11 @@ class YieldQueryState(TypedDict):
     filter_params: list  # deprecated: yield_agent always returns the full artifact
 
     # 통합 파라미터 (agent별 분산 → 공통)
-    lot_ids:    list[str]   # 7자 lot 번호 목록
-    wf_ids:     list[str]   # wafer ID 목록
-    groupkey:   str         # 그룹 집계 키
-    fail_type:  str         # 파라미터/불량유형 코드
-    cause_oper: str         # 원인 공정/step명
+    lot_ids: list[str]  # 7자 lot 번호 목록
+    wf_ids: list[str]  # wafer ID 목록
+    groupkey: str  # 그룹 집계 키
+    fail_type: str  # 파라미터/불량유형 코드
+    cause_oper: str  # 원인 공정/step명
 
     # Map Agent 파라미터 (map-specific)
     map_type: str
@@ -2290,11 +2663,15 @@ class YieldQueryState(TypedDict):
 
     # Fail History 결과
     fail_history_artifacts: Annotated[list, operator.add]
-    fail_history_results: list[dict]     # 다음-턴 번호 선택 라우팅용 raw results (overwrite, per-turn reset in agent_server)
+    fail_history_results: list[
+        dict
+    ]  # 다음-턴 번호 선택 라우팅용 raw results (overwrite, per-turn reset in agent_server)
 
     # Day 4: wiki memory 메타 (둘 다 turn별 overwrite, reducer 없음 — plan v3 §State/Checkpoint 가드)
-    wiki_hit_ids: list[str]              # 이번 turn에 wiki_memory가 참조한 노드 id (디버그용)
-    wiki_update_status: str              # "queued" | "summarized" | "persisted" | "dropped" | "skipped"
+    wiki_hit_ids: list[str]  # 이번 turn에 wiki_memory가 참조한 노드 id (디버그용)
+    wiki_update_status: (
+        str  # "queued" | "summarized" | "persisted" | "dropped" | "skipped"
+    )
 
     # Lot History 결과
     lot_history_artifacts: Annotated[list, operator.add]
@@ -2303,7 +2680,7 @@ class YieldQueryState(TypedDict):
     relation_tree_artifacts: Annotated[list, operator.add]
 
     # Map 결과
-    map_result:    str
+    map_result: str
     map_artifacts: Annotated[list, operator.add]
 
     # PPT Export 결과
@@ -2337,11 +2714,13 @@ class YieldQueryState(TypedDict):
     hitl_responses: list[dict]
 
     # Planner 관련
-    task_plan: list[dict]           # task_builder가 생성한 전체 계획 (overwrite)
-    pending_tasks: list[dict]       # 아직 실행 안 된 TaskItem들 (overwrite)
-    current_task: dict              # 현재 executor가 받는 공통 task contract (task_id, agent, params, goal)
-    current_task_id: str            # 현재 실행 중인 task의 ID
-    current_task_goal: str          # 현재 실행 중인 task의 한국어 goal — worker가 query 우선순위로 사용 (#12 fix)
+    task_plan: list[dict]  # task_builder가 생성한 전체 계획 (overwrite)
+    pending_tasks: list[dict]  # 아직 실행 안 된 TaskItem들 (overwrite)
+    current_task: (
+        dict  # 현재 executor가 받는 공통 task contract (task_id, agent, params, goal)
+    )
+    current_task_id: str  # 현재 실행 중인 task의 ID
+    current_task_goal: str  # 현재 실행 중인 task의 한국어 goal — worker가 query 우선순위로 사용 (#12 fix)
 
     # 워커 task별 결과 누적 (#8 phase 1, replanner 사전작업)
     # 각 worker가 정상/에러 종료 시 [(task_id, summary)]를 append.

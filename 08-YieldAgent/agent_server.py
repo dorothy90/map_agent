@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import traceback
 import sys
 import time
 import uuid
@@ -825,7 +826,11 @@ async def chat_stream(request: ChatRequest, req: Request):
                     "task_failed",
                     source="agent_server",
                     severity="error",
-                    payload={"error_type": type(e).__name__},
+                    payload={
+                        "error_type": type(e).__name__,
+                        "error_message": str(e),
+                        "traceback": traceback.format_exc(),
+                    },
                 )
                 yield _sse(ErrorEvent(message=to_user_message(e)))
                 try:
