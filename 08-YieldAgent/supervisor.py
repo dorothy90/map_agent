@@ -1076,7 +1076,7 @@ def task_normalizer_validator_node(
 
 
 _PLAN_REVIEW_SYSTEM = """
-현재 분석 계획과 사용자 응답을 보고 최종 계획을 JSON으로 반환해라.
+현재 분석 계획(canonical request 목록)과 사용자 응답을 보고 최종 요청 목록을 JSON으로 반환해라.
 
 action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
 - "approve" : 승인 (응/ok/확인/좋아/네/그렇게 해/빈 응답 등)
@@ -1084,12 +1084,18 @@ action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
 - "modify"  : 수정 요청 (구체적인 변경 지시)
 
 출력 형식:
-{"action": "approve"|"cancel"|"modify", "tasks": [...]}
+{"action": "approve"|"cancel"|"modify", "requests": [...]}
 
 규칙:
-- tasks는 항상 전체 task 목록 (수정 안 한 task도 포함)
-- task_id, agent, params, goal 필드 유지
-- approve/cancel 시에도 tasks 필드 필수 (approve → 현재 계획 그대로, cancel → [])
+- requests는 항상 전체 canonical request 목록이다. 수정하지 않은 request도 포함한다.
+- request는 intent, agent, slots, goal 필드를 사용한다. task_id/params/tasks를 출력하지 마라.
+- agent는 반드시 다음 중 하나만 사용한다: yield_agent(수율), wads_agent(열화 리포트),
+  map_agent(웨이퍼 맵), fail_history_agent(불량이력), lot_history_agent(lot 이력),
+  relation_tree_agent(연관 분석), ppt_export. 그 외 이름(defect_agent 등) 금지.
+- approve면 현재 요청 그대로 requests에 넣는다.
+- cancel이면 requests는 []로 둔다.
+- modify면 사용자 응답을 반영한 수정된 전체 요청 목록을 requests에 넣는다
+  (기존 request 유지 + 요청된 작업 추가/변경).
 """.strip()
 
 

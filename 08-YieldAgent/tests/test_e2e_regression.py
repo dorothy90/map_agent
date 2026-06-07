@@ -289,6 +289,19 @@ CASES: list[dict] = [
         ],
         "kind": "plan_review_required",
     },
+    # plan_review modify must ACTUALLY modify: a "각각 불량이력도" follow-up adds
+    # fail_history_agent tasks (not drop to 0/unchanged). Regression pin for the
+    # _PLAN_REVIEW_SYSTEM field/shape + valid-agent fix.
+    {
+        "id": "plan_review_modify_adds_tasks",
+        "steps": [
+            {"query": "4SS 열화 리포트 보여줘"},
+            {"query": "1,2번째 리포트 cummap 보여줘"},
+            {"resume": "각각 불량이력도 조사해줘"},
+        ],
+        "kind": "plan_modify",
+        "expect": {"added_agent": "fail_history_agent"},
+    },
     # Step 5②-c: SEQUENTIAL chaining — report-ordinal (#RN) narrows to a report's
     # wafers, then a wafer-ordinal (#N) must pick from THAT narrowed pool, not the
     # earlier full detection. Uses the 2nd report so its lot differs from the full
@@ -352,6 +365,8 @@ def check_case(case: dict, r: TurnResult) -> list[str]:
         return _check_sequential_chain(case, r)
     if kind == "plan_review_required":
         return _check_plan_review_required(case, r)
+    if kind == "plan_modify":
+        return _check_plan_modify(case, r)
     if kind == "deep_followup":
         return _check_deep_followup(case, r)
     if kind == "interrupt_sequence":
@@ -543,6 +558,23 @@ def _check_deep_followup(case: dict, r: TurnResult) -> list[str]:
             f"{agent}.{slot} expected {value!r}, got {got!r} "
             f"(deep follow-up reference unresolved; slots={r.slots_for(agent)})"
         )
+    return fails
+
+
+def _check_plan_modify(case: dict, r: TurnResult) -> list[str]:
+    """A plan_review 'modify' follow-up must actually apply: re-show plan_review with
+    the requested addition present (not drop to 0 tasks / leave it unchanged)."""
+    fails: list[str] = []
+    expect = case.get("expect", {})
+    last = r.turns[-1] if r.turns else r
+    if not last.sse_interrupts("plan_review"):
+        fails.append(
+            f"modify did not re-show plan_review "
+            f"(interrupts={[i.get('interrupt_type') for i in last.sse_interrupts()]})"
+        )
+    added = expect.get("added_agent")
+    if added and added not in last.sse_blob:
+        fails.append(f"modify did not add {added!r} to the plan (dropped to 0 / unchanged?)")
     return fails
 
 
@@ -836,8 +868,9 @@ def _main() -> int:
     # must be deterministic — run them SERIALLY, isolated from the parallel pool, so a
     # failure means a real interrupt-order break, not a load flake. The rest run
     # concurrently for speed.
-    serial_cases = [c for c in cases if c.get("kind") == "interrupt_sequence"]
-    parallel_cases = [c for c in cases if c.get("kind") != "interrupt_sequence"]
+    _serial_kinds = ("interrupt_sequence", "plan_modify")  # resume-based — concurrency-sensitive
+    serial_cases = [c for c in cases if c.get("kind") in _serial_kinds]
+    parallel_cases = [c for c in cases if c.get("kind") not in _serial_kinds]
 
     results: dict[str, tuple[dict, "TurnResult", list[str]]] = {}
     for c in serial_cases:
