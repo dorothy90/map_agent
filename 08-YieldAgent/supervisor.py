@@ -1108,42 +1108,6 @@ def _unique_texts(values: list[Any]) -> list[str]:
     return result
 
 
-def _should_auto_approve_report_map_plan(
-    state: Dict[str, Any], task_plan: list[dict]
-) -> bool:
-    """Skip plan review for deterministic report-ordinal wafer map fanout."""
-
-    if state.get("task_validation_issues"):
-        return False
-
-    reports = (state.get("resolved_refs") or {}).get("reports") or []
-    if not reports or len(task_plan) != len(reports):
-        return False
-
-    for task, report in zip(task_plan, reports):
-        if task.get("agent") != "map_agent":
-            return False
-        params = task.get("params") or {}
-        report_groupkeys = [
-            str(v).strip() for v in report.get("groupkeys") or [] if str(v).strip()
-        ]
-        if (
-            not report_groupkeys
-            or _groupkey_list(params.get("groupkey")) != report_groupkeys
-        ):
-            return False
-        if str(params.get("map_type") or "").lower() != "cummap":
-            return False
-        report_oper = str(report.get("map_oper") or "").strip().upper()
-        if (
-            report_oper
-            and str(params.get("map_oper") or "").strip().upper() != report_oper
-        ):
-            return False
-
-    return True
-
-
 def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     """2개 이상 task일 때만 사용자 승인을 기다린다. 단일 task는 즉시 통과.
 
@@ -1155,16 +1119,6 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     ) or canonical_requests_from_tasks(task_plan)
     if len(task_plan) < 2:
         return {}
-    if _should_auto_approve_report_map_plan(state, task_plan):
-        emit_runtime_detail(
-            "plan_review.auto_approved",
-            {"reason": "deterministic_report_map_fanout", "tasks": task_plan},
-        )
-        return {
-            "canonical_requests": canonical_requests,
-            "task_plan": task_plan,
-            "pending_tasks": task_plan,
-        }
 
     # plan_review 루프 — approve/cancel/modify 반복 가능
     # sequential interrupt 패턴: 루프 각 반복마다 새 interrupt() 생성 → resume 시 순서대로 재생

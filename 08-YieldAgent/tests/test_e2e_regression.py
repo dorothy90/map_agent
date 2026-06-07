@@ -149,6 +149,19 @@ CASES: list[dict] = [
         "kind": "report_resolves",
         "expect": {"ordinal": 2},
     },
+    # Step 5② finalization: a MULTI-task report-map fanout ("1,2번째 리포트 cummap"
+    # -> two map tasks) must go through plan_review (HITL), not a deterministic
+    # auto-approve. (The auto-approve shortcut depended on resolved_refs, which the
+    # reference_resolver removal emptied; this asserts the post-removal HITL path so
+    # the now-inert _should_auto_approve_report_map_plan can be deleted safely.)
+    {
+        "id": "report_map_multi_plan_review",
+        "turns": [
+            "4SS 열화 리포트 보여줘",
+            "1,2번째 리포트 cummap 보여줘",
+        ],
+        "kind": "plan_review_required",
+    },
     # Step 5②-c: SEQUENTIAL chaining — report-ordinal (#RN) narrows to a report's
     # wafers, then a wafer-ordinal (#N) must pick from THAT narrowed pool, not the
     # earlier full detection. Uses the 2nd report so its lot differs from the full
@@ -210,6 +223,8 @@ def check_case(case: dict, r: TurnResult) -> list[str]:
         return _check_report_resolves(case, r)
     if kind == "sequential_chain":
         return _check_sequential_chain(case, r)
+    if kind == "plan_review_required":
+        return _check_plan_review_required(case, r)
     if kind == "reference_unresolved_block":
         return _check_reference_unresolved_block(case, r)
     if kind == "wads_map_chain":
@@ -307,6 +322,25 @@ def _check_report_resolves(case: dict, r: TurnResult) -> list[str]:
         )
     if r.sse_contains(AGENT_ERROR_MARKER):
         fails.append("runtime agent error on resolved report follow-up")
+    return fails
+
+
+def _check_plan_review_required(case: dict, r: TurnResult) -> list[str]:
+    """A multi-task report-map fanout must pause for plan_review (HITL), not be
+    auto-approved. Asserts the path that remains after the deterministic
+    auto-approve shortcut is removed."""
+    fails: list[str] = []
+    n_map = sum(1 for a in r.planned_agents() if a == "map_agent")
+    if n_map < 2:
+        fails.append(
+            f"expected a >=2 map_agent fanout (report ordinals), got {n_map} "
+            f"(agents={r.planned_agents()})"
+        )
+    if not r.sse_interrupts("plan_review"):
+        fails.append(
+            f"multi-task report-map must go through plan_review (HITL), not auto-approve; "
+            f"interrupts={[i.get('interrupt_type') for i in r.sse_interrupts()]}"
+        )
     return fails
 
 
