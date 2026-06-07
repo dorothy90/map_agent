@@ -144,11 +144,11 @@ CASES: list[dict] = [
         ],
         "kind": "interrupt_sequence",
     },
-    # ── 축2 gap pins: planner deep follow-up reference resolution ──
-    # S1 (xfail until 축2): conversational back-reference to the FIRST product two turns
-    # ago ("처음 거"). state.lotcd moved to the 2nd product and recent_results doesn't
-    # encode turn order, so the planner routes right but can't resolve the product.
-    # PASS target = routed to wads_agent AND wads.lotcd == "4SS" (asserted separately).
+    # ── 축2: planner deep follow-up reference resolution (N-turn context) ──
+    # S1 (closed by 축2): conversational back-reference to the FIRST product two turns
+    # ago ("처음 거"). The planner now sees the recent turns and resolves it to the
+    # literal product (4SS), not an ordinal token. PASS = routed to wads_agent AND
+    # wads.lotcd == "4SS" (asserted separately).
     {
         "id": "deep_followup_product_backref",
         "turns": [
@@ -158,8 +158,6 @@ CASES: list[dict] = [
         ],
         "kind": "deep_followup",
         "expect": {"agent": "wads_agent", "slot": "lotcd", "value": "4SS"},
-        "xfail": "축2 미도입 — planner가 대화 턴을 못 봐 '처음 거'(2턴 전 4SS)를 해소 못함. "
-                 "멀티턴 컨텍스트 도입 후 xpass 목표.",
     },
     # S2 regression guard: modify-prior-request resolved via state.lotcd — must keep 4SS.
     {

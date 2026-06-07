@@ -373,35 +373,6 @@ def _recent_results_prompt_context(recent_results: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _previous_assistant_prompt_context(messages: list, last_human: Any) -> str:
-    """Return the assistant message immediately preceding the latest user turn."""
-
-    if not messages or last_human is None:
-        return ""
-    try:
-        last_index = max(
-            index
-            for index, message in enumerate(messages)
-            if message is last_human
-            or getattr(message, "id", None) == getattr(last_human, "id", None)
-        )
-    except ValueError:
-        last_index = len(messages)
-
-    for message in reversed(messages[:last_index]):
-        if not isinstance(message, AIMessage) and getattr(message, "type", "") != "ai":
-            continue
-        content = (
-            message.content
-            if isinstance(message.content, str)
-            else str(message.content)
-        )
-        content = content.strip()
-        if content:
-            return preview_text(content, max_chars=4000)
-    return ""
-
-
 def _normalize_map_oper(raw: str) -> str:
     """interrupt 응답을 정규화: '1h'→'PT1H', 'pt1c'→'PT1C' 등"""
     v = raw.strip().upper()
@@ -762,22 +733,18 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         invoke_messages.append(
             {"role": "system", "content": f"Structured context:\n{meta}"}
         )
-    previous_assistant = _previous_assistant_prompt_context(messages, last_human)
-    if previous_assistant:
-        invoke_messages.append(
-            {
-                "role": "assistant",
-                "content": f"Previous assistant message for follow-up resolution:\n{previous_assistant}",
-            }
-        )
+    # 축2: inject the recent N=3 conversation turns (raw user/assistant text, token-
+    # trimmed) so the planner can resolve follow-up REFERENTS ("그거/처음 거/아까 그").
+    # Slot VALUES still come only from the latest request + structured context (prompt).
+    recent_turns = _get_recent_turns(messages, max_turns=3, exclude_last=last_human)
+    invoke_messages.extend(recent_turns)
     invoke_messages.append({"role": "user", "content": last_human.content})
     emit_runtime_detail(
         "planner.input",
         {
             "last_human": last_human.content,
             "meta": meta,
-            "previous_assistant": previous_assistant,
-            "recent_turns": [],
+            "recent_turns": recent_turns,
             "invoke_messages": invoke_messages,
         },
     )

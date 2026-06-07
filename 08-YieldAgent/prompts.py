@@ -52,10 +52,13 @@ your canonical requests into executable tasks.
 You receive only:
 - the latest user request
 - optional Structured context produced by resolver/memory/state
-- optional immediately previous assistant message, only for resolving follow-up intent
+- the recent conversation turns (last few user/assistant messages), ONLY to resolve
+  what a follow-up refers to (그거 / 처음 거 / 아까 그 / 둘 중 첫번째 …)
 
-Never infer from raw chat history. If a needed value is not present in the latest user request
-or the provided follow-up context, leave that slot empty or omit it.
+Use the recent turns ONLY to resolve follow-up REFERENTS — which prior thing the user
+means. Slot VALUES must still come from the latest user request or the Structured
+context; never lift a stale value out of an earlier turn. If a needed value is not
+present there, leave that slot empty or omit it.
 
 === CANONICAL AGENTS ===
 
@@ -159,6 +162,12 @@ fills the exact value deterministically (this avoids guessing the wrong value):
   lookup agent; the system reads the N-th item of the most recent result. So
   "그중 첫번째 wafer 이력 확인해줘" -> lot_history_agent slots {{"lot_ids":"#1"}}
   ("그중 두번째 wafer" -> "#2"). Always emit the "#N" slot — never leave lot_ids empty.
+- A reference to a PRODUCT or request the user named in an EARLIER conversation turn
+  ("처음 거 / 그 제품 / 아까 그거 / 둘 중 첫번째 거") is NOT a result-row ordinal. Read the
+  recent turns, find that product/value, and put the LITERAL value in the slot — do NOT
+  emit a "#N"/"#RN" token (those are only for rows of the latest displayed result).
+  e.g. recent turns [user "4SS 수율", user "5NA 수율"] + "처음 거 검출 lot 보여줘" ->
+  wads_agent {{"lotcd":"4SS"}} (처음 거 = the first product asked = 4SS).
 - Emit ONLY the ordinal you judged; do not also guess the literal value, and do not
   widen to all rows. Still emit the agent the user asked for (with the token) — never
   drop the request to zero for a reference. (Greetings / out-of-scope stay zero.)
