@@ -2538,6 +2538,30 @@ def supervisor_node(
             },
             task_id=str(current_task.get("task_id") or ""),
         )
+        # supervisor_dispatch and agent_started report the same dispatched params —
+        # build the summary once (6a: was duplicated across both emits).
+        dispatched_params = summarize_params(
+            {
+                key: update_dict.get(key)
+                for key in (
+                    "lotcd",
+                    "lot_ids",
+                    "wf_ids",
+                    "groupkey",
+                    "fail_type",
+                    "cause_oper",
+                    "map_type",
+                    "map_oper",
+                    "dh_query",
+                    "ref_date",
+                    "unit",
+                    "periods",
+                    "wads_start_tm",
+                    "wads_end_tm",
+                )
+                if key in update_dict
+            }
+        )
         emit_trace_event(
             "supervisor_dispatch",
             source="supervisor",
@@ -2547,28 +2571,7 @@ def supervisor_node(
                 "task_goal_preview": preview_text(current_task.get("goal", "")),
                 "remaining_tasks": len(remaining),
                 "step_count": step_count,
-                "params": summarize_params(
-                    {
-                        key: update_dict.get(key)
-                        for key in (
-                            "lotcd",
-                            "lot_ids",
-                            "wf_ids",
-                            "groupkey",
-                            "fail_type",
-                            "cause_oper",
-                            "map_type",
-                            "map_oper",
-                            "dh_query",
-                            "ref_date",
-                            "unit",
-                            "periods",
-                            "wads_start_tm",
-                            "wads_end_tm",
-                        )
-                        if key in update_dict
-                    }
-                ),
+                "params": dispatched_params,
             },
         )
         emit_trace_event(
@@ -2579,28 +2582,7 @@ def supervisor_node(
                 "agent": current_task.get("agent", ""),
                 "task_goal_preview": preview_text(current_task.get("goal", "")),
                 "step_count": step_count,
-                "params": summarize_params(
-                    {
-                        key: update_dict.get(key)
-                        for key in (
-                            "lotcd",
-                            "lot_ids",
-                            "wf_ids",
-                            "groupkey",
-                            "fail_type",
-                            "cause_oper",
-                            "map_type",
-                            "map_oper",
-                            "dh_query",
-                            "ref_date",
-                            "unit",
-                            "periods",
-                            "wads_start_tm",
-                            "wads_end_tm",
-                        )
-                        if key in update_dict
-                    }
-                ),
+                "params": dispatched_params,
             },
         )
         return Command(update=update_dict, goto=current_task["agent"])
