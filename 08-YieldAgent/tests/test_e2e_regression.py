@@ -713,9 +713,21 @@ def _main() -> int:
         return 2
     workers = max(1, int(os.getenv("E2E_WORKERS", "8")))
 
+    # interrupt_sequence cases are resume-based multi-step flows whose query→resume
+    # timing is sensitive to concurrent server load (a busy backend can delay the
+    # interrupt SSE past the drain). They are the Step 6c order safety net, so they
+    # must be deterministic — run them SERIALLY, isolated from the parallel pool, so a
+    # failure means a real interrupt-order break, not a load flake. The rest run
+    # concurrently for speed.
+    serial_cases = [c for c in cases if c.get("kind") == "interrupt_sequence"]
+    parallel_cases = [c for c in cases if c.get("kind") != "interrupt_sequence"]
+
     results: dict[str, tuple[dict, "TurnResult", list[str]]] = {}
+    for c in serial_cases:
+        case, r, fails = _run_one(c)
+        results[case["id"]] = (case, r, fails)
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(_run_one, c): c["id"] for c in cases}
+        futures = {ex.submit(_run_one, c): c["id"] for c in parallel_cases}
         for fut in concurrent.futures.as_completed(futures):
             case, r, fails = fut.result()
             results[case["id"]] = (case, r, fails)
