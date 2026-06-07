@@ -92,6 +92,13 @@ resume fed to the plan-review LLM.
 problem, not a missing slot — it is a separate re-prompt + early-return
 (`_validate_lotcd_or_early_return`, the 6d anchor), kept apart from slot collection.
 
+**Known limitation (str fallback path):** the bare-string resume fills a slot with the
+natural-language answer **raw** — for slots like `lot_ids` this risks a 0-rows
+silent-wrong (the whole sentence lands in the slot, no rows match, query ends quietly).
+The fix direction is to unify resume parsing through the planner (in progress — see the
+`harness-redesign.md` plan). The **dict path (React form) is unaffected**; the contract
+itself stands, this only records the limitation.
+
 **Status:** server + `tests/e2e_client.py` (React stand-in, sends dict resume) implement
 this contract. The **React form client is not yet written** — it is the pending client
 implementation of this section.
