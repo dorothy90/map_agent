@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── Request ──────────────────────────────────────────────
@@ -100,13 +100,33 @@ class ErrorEvent(BaseModel):
     node: str = ""
 
 
+class OptionItem(BaseModel):
+    """interrupt 선택지 한 개.
+
+    - label: 프론트 화면에 보여줄 텍스트
+    - value: 사용자가 선택했을 때 백엔드(resume_value)로 돌려보낼 값
+
+    하위호환: 'PT1H' 같은 단순 문자열을 넣으면 {label, value} 둘 다 그 값으로
+    자동 변환한다. 따라서 기존 `options=['PT1H', 'PT2C']` 코드도 그대로 동작한다.
+    """
+    label: str
+    value: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_str(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"label": data, "value": data}
+        return data
+
+
 class InterruptEvent(BaseModel):
     type: Literal["interrupt"] = "interrupt"
     interrupt_type: str = "missing_param"  # "missing_param" | "plan_review" | HITL issue type
     param: str          # 누락된 파라미터명
     message: str        # 사용자에게 보여줄 한국어 메시지
     route: str = ""     # 대상 에이전트
-    options: list[dict[str, Any]] = Field(default_factory=list)
+    options: list[OptionItem] = Field(default_factory=list)
 
 
 # ── REST Response Models (session history) ───────────────

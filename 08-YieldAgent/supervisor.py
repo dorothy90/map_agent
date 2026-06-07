@@ -2392,6 +2392,10 @@ def supervisor_node(
                             "param": "map_oper",
                             "message": "PT1H / PT1C 중 어떤 공정의 맵을 조회할까요?",
                             "route": "map_agent",
+                            "options": [
+                                {"label": "PT1H", "value": "PT1H"},
+                                {"label": "PT1C", "value": "PT1C"},
+                            ],
                         }
                     )
                 normalized = _normalize_map_oper(str(user_response))
