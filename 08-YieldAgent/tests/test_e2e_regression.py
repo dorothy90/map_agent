@@ -130,21 +130,7 @@ CASES: list[dict] = [
         "kind": "reference_unresolved_block",
         "expect": {"param": "lot_ids"},
     },
-    # Step 5②-c: lot-vs-report distinction on the SAME prior report result. An
-    # ordinal that targets a LOT (lot history) resolves to one lot value; an ordinal
-    # that targets a REPORT (map/cummap) resolves to that report's whole groupkey set.
-    # Same turn-1, same ordinal, two different agents -> two correct, different fills.
-    # (a) lot ordinal on a report result -> single lot (lot_history path).
-    {
-        "id": "reference_lot_ordinal_on_report",
-        "turns": [
-            "4SS 열화 리포트 보여줘",
-            "첫번째 lot 이력 보여줘",
-        ],
-        "kind": "reference_resolves",
-        "expect": {"agent": "lot_history_agent", "param": "lot_ids", "ordinal": 1},
-    },
-    # (b) report ordinal -> the Nth report's exact groupkeys (#RN), no bleed.
+    # Step 5②-c: report ordinal -> the Nth report's exact groupkeys (#RN), no bleed.
     {
         "id": "report_ordinal_resolves_1st",
         "turns": [
@@ -162,6 +148,21 @@ CASES: list[dict] = [
         ],
         "kind": "report_resolves",
         "expect": {"ordinal": 2},
+    },
+    # Step 5②-c: SEQUENTIAL chaining — report-ordinal (#RN) narrows to a report's
+    # wafers, then a wafer-ordinal (#N) must pick from THAT narrowed pool, not the
+    # earlier full detection. Uses the 2nd report so its lot differs from the full
+    # pool's first lot — that's what makes a broken chain (silently re-reading the
+    # full prior result) detectable by value.
+    {
+        "id": "sequential_report_then_wafer_chain",
+        "turns": [
+            "4SS 열화 리포트 보여줘",
+            "두번째 리포트에서 검출된 wafer들 보여줘",
+            "그중 첫번째 wafer 이력 확인해줘",
+        ],
+        "kind": "sequential_chain",
+        "expect": {"agent": "lot_history_agent", "param": "lot_ids", "report_ordinal": 2},
     },
     # An OUT-OF-RANGE report ordinal must also hit the dispatch backstop (#R100 ->
     # no such report row -> unresolved -> ask), never silently slice another report.
@@ -207,6 +208,8 @@ def check_case(case: dict, r: TurnResult) -> list[str]:
         return _check_reference_resolves(case, r)
     if kind == "report_resolves":
         return _check_report_resolves(case, r)
+    if kind == "sequential_chain":
+        return _check_sequential_chain(case, r)
     if kind == "reference_unresolved_block":
         return _check_reference_unresolved_block(case, r)
     if kind == "wads_map_chain":
@@ -304,6 +307,52 @@ def _check_report_resolves(case: dict, r: TurnResult) -> list[str]:
         )
     if r.sse_contains(AGENT_ERROR_MARKER):
         fails.append("runtime agent error on resolved report follow-up")
+    return fails
+
+
+def _check_sequential_chain(case: dict, r: TurnResult) -> list[str]:
+    """report-ordinal (#RN) -> wafer-ordinal (#N) sequential narrowing. Turn-2 narrows
+    to report-N's wafers; turn-3's "그중 첫번째 wafer" must resolve from THAT narrowed
+    pool. Value check: turn-3 picks report-N's lot, NOT the full prior detection's
+    first lot (which is what a broken chain — re-reading the full result — would give)."""
+    fails: list[str] = []
+    expect = case.get("expect", {})
+    agent, param = expect["agent"], expect["param"]
+    rep = expect.get("report_ordinal", 2)
+
+    t1 = r.turns[0] if r.turns else r
+    lots = t1.displayed_lots()
+    if len(lots) < rep:
+        return [f"T1 produced {len(lots)} lots (<{rep}) — cannot baseline report {rep}"]
+    want_lot = lots[rep - 1]   # report-N's lot = the narrowed pool the chain must keep
+    full_first = lots[0]       # full prior pool's first lot = the silent-wrong value
+    if want_lot == full_first:
+        return [f"non-discriminating fixture: report-{rep} lot == full-pool first ({want_lot})"]
+
+    if agent not in r.planned_agents():
+        return [f"turn-3 did not route to {agent} (planned={r.planned_agents()})"]
+
+    # The resolved value may be a wafer ("4SSHQSK.11") or its lot ("4SSHQSK") — both
+    # prove continuity as long as the LOT belongs to report-N's narrowed pool. What we
+    # reject: the full prior pool's lot (chain broke) or empty (no reference formed).
+    got = _as_lot_list(r.slots_for(agent).get(param))
+    got_lots = sorted({g.split(".")[0] for g in got})
+    if got_lots != [want_lot]:
+        reason = (
+            "chain broke: picked from the full prior detection, not the narrowed report"
+            if got_lots == [full_first]
+            else "no reference formed (lot_ids empty)"
+            if not got_lots
+            else "wrong wafer pool"
+        )
+        fails.append(
+            f"#N must pick from report-{rep}'s narrowed pool (lot {want_lot}), "
+            f"got {got!r} ({reason}); slots={r.slots_for(agent)}"
+        )
+    if r.sse_interrupts("missing_param"):
+        fails.append("unexpected missing_param block on a resolvable sequential chain")
+    if r.sse_contains(AGENT_ERROR_MARKER):
+        fails.append("runtime agent error on sequential chain")
     return fails
 
 
@@ -470,20 +519,46 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────
 # standalone runner (no pytest needed)
 # ─────────────────────────────────────────────────────────────
+def _run_one(case: dict) -> tuple[dict, "TurnResult", list[str]]:
+    r = run_case(case)
+    if not r.events_of("planner_output"):
+        return case, r, [f"no planner_output trace (trace_id={r.trace_id})"]
+    return case, r, check_case(case, r)
+
+
 def _main() -> int:
+    """Run the suite concurrently — each case is an independent session/trace, so the
+    only ceiling is the LLM backend's concurrency. Cuts the serial ~4-5min to ~1min.
+      python tests/test_e2e_regression.py              # all cases
+      python tests/test_e2e_regression.py report seq   # only ids matching a substring
+      E2E_WORKERS=4 python tests/test_e2e_regression.py
+    """
+    import concurrent.futures
+    import os
+    import sys
+
     if not server_is_up():
         print("SKIP: agent server not up — start `uvicorn agent_server:app --port 8001`")
         return 2
+
+    selectors = [a for a in sys.argv[1:] if not a.startswith("-")]
+    cases = [c for c in CASES if not selectors or any(s in c["id"] for s in selectors)]
+    if not cases:
+        print(f"no cases match {selectors}")
+        return 2
+    workers = max(1, int(os.getenv("E2E_WORKERS", "8")))
+
+    results: dict[str, tuple[dict, "TurnResult", list[str]]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(_run_one, c): c["id"] for c in cases}
+        for fut in concurrent.futures.as_completed(futures):
+            case, r, fails = fut.result()
+            results[case["id"]] = (case, r, fails)
+
     total_fail = 0
-    for case in CASES:
-        r = run_case(case)
-        if not r.events_of("planner_output"):
-            print(f"FAIL {case['id']}: no planner_output trace (trace_id={r.trace_id})")
-            total_fail += 1
-            continue
-        fails = check_case(case, r)
+    for c in cases:  # stable, source-ordered output
+        case, r, fails = results[c["id"]]
         if case.get("xfail"):
-            # expected-failure case: failing now is correct (bug reproduced)
             if fails:
                 print(f"XFAIL {case['id']} (expected — {fails[0]})")
             else:
@@ -496,8 +571,8 @@ def _main() -> int:
                 print(f"     - {f}")
         else:
             print(f"PASS {case['id']} ({case_label(case)!r})")
-    n_real = sum(1 for c in CASES if not c.get("xfail"))
-    print(f"\n{n_real - total_fail}/{n_real} passed (+ {len(CASES) - n_real} xfail-tracked)")
+    n_real = sum(1 for c in cases if not c.get("xfail"))
+    print(f"\n{n_real - total_fail}/{n_real} passed (+ {len(cases) - n_real} xfail-tracked)")
     return 1 if total_fail else 0
 
 

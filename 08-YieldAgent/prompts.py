@@ -145,14 +145,20 @@ the value yourself — emit an ordinal TOKEN in the dependent slot and the syste
 fills the exact value deterministically (this avoids guessing the wrong value):
 - "첫번째"/"1번째" -> "#1" ; "두번째"/"2번째" -> "#2" ; ... ; "방금"/"마지막" -> "#last".
 - The token type follows the AGENT (not the wording):
-    lot history  ("…lot 이력")        -> lot_history_agent  slots {{"lot_ids":"#N"}}
-    fail history ("…불량이력")         -> fail_history_agent slots {{"fail_type":"#N"}}
-    wafer map / cummap of a REPORT     -> map_agent          slots {{"groupkey":"#RN","map_type":"cummap"}}
+    lot / wafer history ("…lot 이력", "…wafer 이력") -> lot_history_agent  slots {{"lot_ids":"#N"}}
+    fail history ("…불량이력")                        -> fail_history_agent slots {{"fail_type":"#N"}}
+    wafer map / cummap of a REPORT                    -> map_agent          slots {{"groupkey":"#RN","map_type":"cummap"}}
   i.e. a map/cummap of the N-th prior report uses the REPORT token "#RN" in
   groupkey (note the R). Leave map_oper empty — the system fills it from that report.
   e.g. "첫번째 리포트 cummap" -> map_agent {{"groupkey":"#R1","map_type":"cummap"}}
        "1,2번째 리포트 cummap" -> two map_agent requests, groupkey "#R1" and "#R2".
        "두번째 거 cummap"      -> map_agent {{"groupkey":"#R2","map_type":"cummap"}}.
+- A reference into a LIST the PREVIOUS result already showed (a "그중/그 중 N번째 …"
+  follow-up — e.g. after showing a report's wafers, "그중 첫번째 wafer 이력") is an
+  ORDINAL into that shown list, NOT a report selector. Emit the plain "#N" token on the
+  lookup agent; the system reads the N-th item of the most recent result. So
+  "그중 첫번째 wafer 이력 확인해줘" -> lot_history_agent slots {{"lot_ids":"#1"}}
+  ("그중 두번째 wafer" -> "#2"). Always emit the "#N" slot — never leave lot_ids empty.
 - Emit ONLY the ordinal you judged; do not also guess the literal value, and do not
   widen to all rows. Still emit the agent the user asked for (with the token) — never
   drop the request to zero for a reference. (Greetings / out-of-scope stay zero.)
