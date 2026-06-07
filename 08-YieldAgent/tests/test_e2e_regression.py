@@ -144,6 +144,57 @@ CASES: list[dict] = [
         ],
         "kind": "interrupt_sequence",
     },
+    # ── 축2 gap pins: planner deep follow-up reference resolution ──
+    # S1 (xfail until 축2): conversational back-reference to the FIRST product two turns
+    # ago ("처음 거"). state.lotcd moved to the 2nd product and recent_results doesn't
+    # encode turn order, so the planner routes right but can't resolve the product.
+    # PASS target = routed to wads_agent AND wads.lotcd == "4SS" (asserted separately).
+    {
+        "id": "deep_followup_product_backref",
+        "turns": [
+            "4SS 수율 보여줘",
+            "5NA 수율도 보여줘",
+            "처음 거 검출 lot 보여줘",
+        ],
+        "kind": "deep_followup",
+        "expect": {"agent": "wads_agent", "slot": "lotcd", "value": "4SS"},
+        "xfail": "축2 미도입 — planner가 대화 턴을 못 봐 '처음 거'(2턴 전 4SS)를 해소 못함. "
+                 "멀티턴 컨텍스트 도입 후 xpass 목표.",
+    },
+    # S2 regression guard: modify-prior-request resolved via state.lotcd — must keep 4SS.
+    {
+        "id": "deep_followup_modify_keeps_lotcd",
+        "turns": [
+            "4SS 최근 3주 수율 보여줘",
+            "그거 6개월로 바꿔서 보여줘",
+        ],
+        "kind": "deep_followup",
+        "expect": {"agent": "yield_agent", "slot": "lotcd", "value": "4SS"},
+    },
+    # S3 regression guard (control): explicit product name after a switch — must stay 5NA.
+    {
+        "id": "deep_followup_explicit_product",
+        "turns": [
+            "5NA 수율 보여줘",
+            "4SS 수율 보여줘",
+            "5NA 검출 lot 보여줘",
+        ],
+        "kind": "deep_followup",
+        "expect": {"agent": "wads_agent", "slot": "lotcd", "value": "5NA"},
+    },
+    # S4 stale-bleed guard: T3 explicitly names the 2nd product (5NA) — 축2's injected
+    # history must NOT bleed the 1st product (4SS) back in. Slot values come from the
+    # latest request, not past turns.
+    {
+        "id": "deep_followup_stale_bleed_guard",
+        "turns": [
+            "4SS 수율 보여줘",
+            "5NA 수율도 보여줘",
+            "5NA 6개월로 바꿔서 보여줘",
+        ],
+        "kind": "deep_followup",
+        "expect": {"agent": "yield_agent", "slot": "lotcd", "value": "5NA"},
+    },
     # (b) 6d ANCHOR — an invalid (non-product-code) lotcd must hit the validation
     # re-prompt via _normalize_product_lotcd / _PRODUCT_LOTCD_RE. Dual purpose:
     #   1. fixes current invalid-lotcd behavior in place;
@@ -301,6 +352,8 @@ def check_case(case: dict, r: TurnResult) -> list[str]:
         return _check_sequential_chain(case, r)
     if kind == "plan_review_required":
         return _check_plan_review_required(case, r)
+    if kind == "deep_followup":
+        return _check_deep_followup(case, r)
     if kind == "interrupt_sequence":
         return _check_interrupt_sequence(case, r)
     if kind == "invalid_param_block":
@@ -471,6 +524,24 @@ def _check_invalid_param_block(case: dict, r: TurnResult) -> list[str]:
         fails.append(
             f"interrupt message missing {want_msg!r} (the invalid-format re-prompt): "
             f"{[b.get('message') for b in blocks]}"
+        )
+    return fails
+
+
+def _check_deep_followup(case: dict, r: TurnResult) -> list[str]:
+    """A deep follow-up must (1) route to the expected agent AND (2) resolve the
+    expected slot value — asserted SEPARATELY so a routing-ok/value-unresolved gap
+    (the 축2 symptom) is distinguishable from a misroute."""
+    fails: list[str] = []
+    expect = case.get("expect", {})
+    agent, slot, value = expect["agent"], expect["slot"], expect["value"]
+    if agent not in r.planned_agents():
+        fails.append(f"not routed to {agent} (planned={r.planned_agents()})")
+    got = r.slots_for(agent).get(slot)
+    if got != value:
+        fails.append(
+            f"{agent}.{slot} expected {value!r}, got {got!r} "
+            f"(deep follow-up reference unresolved; slots={r.slots_for(agent)})"
         )
     return fails
 
