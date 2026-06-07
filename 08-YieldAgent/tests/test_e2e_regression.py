@@ -79,7 +79,47 @@ CASES: list[dict] = [
         "id": "missing_lotcd_blocks_dispatch",
         "query": "최근 3주간 수율 알려줘",
         "kind": "required_param_block",
-        "expect": {"agent": "yield_agent", "param": "lotcd"},
+        # message_contains pins the MISSING-path prompt, distinct from the INVALID-path
+        # re-prompt asserted by yield_invalid_lotcd_reprompt_6d_anchor.
+        "expect": {
+            "agent": "yield_agent", "param": "lotcd",
+            "message_contains": "입력해주세요",
+        },
+    },
+    # ── Step 6.0: coverage to make the supervisor_node slim-down (Step 6) safe ──
+    # (a) interrupt ORDER pins — Step 6c extracts the per-agent required-param/HITL
+    # blocks into a helper; these resume sequences fail if any interrupt() is
+    # reordered or dropped (the #1 risk of that extraction).
+    {
+        "id": "map_interrupt_order",
+        "steps": [
+            {"query": "wafer map 보여줘", "expect_param": "lot_ids"},
+            {"resume": "4SS2DPD", "expect_param": "map_oper"},
+            {"resume": "PT1H", "expect_param": None},
+        ],
+        "kind": "interrupt_sequence",
+    },
+    {
+        "id": "relation_tree_interrupt_order",
+        "steps": [
+            {"query": "relation tree 분석해줘", "expect_param": "lotcd"},
+            {"resume": "4SS2DPD", "expect_param": "cause_oper"},
+            {"resume": "STEP07", "expect_param": None},
+        ],
+        "kind": "interrupt_sequence",
+    },
+    # (b) 6d ANCHOR — an invalid (non-product-code) lotcd must hit the validation
+    # re-prompt via _normalize_product_lotcd / _PRODUCT_LOTCD_RE. Dual purpose:
+    #   1. fixes current invalid-lotcd behavior in place;
+    #   2. is the comparison anchor for Step 6d (alias chains / _PRODUCT_LOTCD_RE,
+    #      reopened as a separate analysis). When 6d removes the regex guard this
+    #      assertion breaks, forcing an explicit "is dropping this validation
+    #      intended?" decision — same role as the ②-b silent-all-lots xfail.
+    {
+        "id": "yield_invalid_lotcd_reprompt_6d_anchor",
+        "query": "ABCD 수율 알려줘",
+        "kind": "invalid_param_block",
+        "expect": {"param": "lotcd", "message_contains": "형식이 아닙니다"},
     },
     # (2) planner _MAX_TASKS=5 cap must hold (it is now the only fan-out guard).
     {
@@ -225,6 +265,10 @@ def check_case(case: dict, r: TurnResult) -> list[str]:
         return _check_sequential_chain(case, r)
     if kind == "plan_review_required":
         return _check_plan_review_required(case, r)
+    if kind == "interrupt_sequence":
+        return _check_interrupt_sequence(case, r)
+    if kind == "invalid_param_block":
+        return _check_invalid_param_block(case, r)
     if kind == "reference_unresolved_block":
         return _check_reference_unresolved_block(case, r)
     if kind == "wads_map_chain":
@@ -322,6 +366,66 @@ def _check_report_resolves(case: dict, r: TurnResult) -> list[str]:
         )
     if r.sse_contains(AGENT_ERROR_MARKER):
         fails.append("runtime agent error on resolved report follow-up")
+    return fails
+
+
+def _check_interrupt_sequence(case: dict, r: TurnResult) -> list[str]:
+    """Pin the per-task missing-param interrupt ORDER across a query+resume sequence.
+    Each step must pause at exactly the expected interrupt (param, in order); a step
+    with expect_param=None must run without a missing_param interrupt. This is the
+    safety net for Step 6c: extracting the per-agent HITL blocks into a helper must
+    not reorder or drop any interrupt() call."""
+    fails: list[str] = []
+    steps = case["steps"]
+    results = r.turns or [r]
+    if len(results) != len(steps):
+        return [f"ran {len(results)} steps, expected {len(steps)}"]
+    for i, (step, res) in enumerate(zip(steps, results)):
+        label = step.get("query") or f"resume={step.get('resume')!r}"
+        missing = [x for x in res.sse_interrupts("missing_param")]
+        params = [x.get("param") for x in missing]
+        expect = step.get("expect_param")
+        if expect is None:
+            if missing:
+                fails.append(f"step{i} ({label}): expected NO missing_param, got {params}")
+            continue
+        if params != [expect]:
+            fails.append(
+                f"step{i} ({label}): expected exactly missing_param=[{expect!r}] (order), got {params}"
+            )
+            continue
+        want_msg = step.get("message_contains")
+        if want_msg and want_msg not in (missing[0].get("message") or ""):
+            fails.append(
+                f"step{i} ({label}): interrupt message missing {want_msg!r}: "
+                f"{missing[0].get('message')!r}"
+            )
+    return fails
+
+
+def _check_invalid_param_block(case: dict, r: TurnResult) -> list[str]:
+    """An INVALID (not just missing) param must block at dispatch with the validation
+    re-prompt. 6d ANCHOR: pins the _normalize_product_lotcd / _PRODUCT_LOTCD_RE reject
+    behavior so removing that guard in 6d forces an explicit decision (the assertion
+    breaks and asks "is dropping this validation intended?")."""
+    fails: list[str] = []
+    expect = case.get("expect", {})
+    blocks = r.sse_interrupts("missing_param")
+    if not blocks:
+        fails.append(
+            f"no missing_param interrupt for an invalid param "
+            f"(interrupts: {[i.get('interrupt_type') for i in r.sse_interrupts()]})"
+        )
+        return fails
+    params = [b.get("param") for b in blocks]
+    if expect.get("param") and expect["param"] not in params:
+        fails.append(f"missing_param for {params}, expected {expect['param']!r}")
+    want_msg = expect.get("message_contains")
+    if want_msg and not any(want_msg in (b.get("message") or "") for b in blocks):
+        fails.append(
+            f"interrupt message missing {want_msg!r} (the invalid-format re-prompt): "
+            f"{[b.get('message') for b in blocks]}"
+        )
     return fails
 
 
@@ -423,6 +527,13 @@ def _check_required_param_block(case: dict, r: TurnResult) -> list[str]:
     params = [b.get("param") for b in blocks]
     if expect.get("param") and expect["param"] not in params:
         fails.append(f"missing_param interrupt for {params}, expected param {expect['param']!r}")
+    # message_contains pins the MISSING-path prompt, distinct from the INVALID-path
+    # re-prompt — so 6d can't conflate "missing" and "invalid" lotcd handling.
+    want_msg = expect.get("message_contains")
+    if want_msg and not any(want_msg in (b.get("message") or "") for b in blocks):
+        fails.append(
+            f"interrupt message missing {want_msg!r}: {[b.get('message') for b in blocks]}"
+        )
     # the blocked agent must not have produced a yield success artifact
     if r.sse_contains("주간 (최근"):
         fails.append("agent appears to have run despite missing required param")
@@ -509,6 +620,22 @@ def _check_no_agent(case: dict, r: TurnResult) -> list[str]:
 def run_case(case: dict) -> TurnResult:
     """Run a case's turn(s); return the last turn's result. Multi-turn cases use a
     shared Session so follow-up references can see prior-turn results."""
+    if "steps" in case:
+        # interrupt_sequence: one Session driven by query / resume_value steps. Each
+        # step does its own SSE drain, so each step's interrupts are isolated to that
+        # step's TurnResult. We return the FIRST step (the only one with a
+        # planner_output — resume steps continue mid-graph) as primary so the shared
+        # planner_output guard holds; all step results live in .turns for the check.
+        session = Session()
+        results = []
+        for step in case["steps"]:
+            if "resume" in step:
+                results.append(session.turn("", resume_value=step["resume"]))
+            else:
+                results.append(session.turn(step["query"]))
+        primary = results[0]
+        primary.turns = results
+        return primary
     if "turns" in case:
         session = Session()
         results = [session.turn(query) for query in case["turns"]]
@@ -521,6 +648,10 @@ def run_case(case: dict) -> TurnResult:
 
 
 def case_label(case: dict) -> str:
+    if "steps" in case:
+        return " ⟶ ".join(
+            s.get("query") or f"↩{s.get('resume')!r}" for s in case["steps"]
+        )
     return case.get("query") or " ⟶ ".join(case.get("turns", []))
 
 
