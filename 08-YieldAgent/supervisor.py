@@ -2146,6 +2146,80 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 
 # ── Supervisor 노드 ──────────────────────────────────────────
 @observe(name="supervisor_node")
+def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
+    """Project a task's resolved params into the per-agent state fields the agent reads.
+
+    Pure mapping only — no validation/HITL (that stays in supervisor_node). Two
+    subtleties preserved from the inline version:
+    - Order: the common fields set lot_ids/wf_ids/groupkey first, then yield_agent
+      CLEARS them ([]/"") because yield queries by lotcd/period, not by lot.
+    - lotcd inheritance from stale state differs per agent: yield and fail_history
+      fall back to state["lotcd"]; wads does NOT (it can query by date/param alone,
+      so it must not implicitly inherit a previous product code).
+    """
+    proj: dict = {}
+
+    # lotcd 공유 — yield/wads/fail_history만, agent별 상속 차등 유지.
+    if agent == "yield_agent":
+        proj["lotcd"] = task_params.get("lotcd") or state.get("lotcd", "")
+    elif agent == "wads_agent":
+        proj["lotcd"] = task_params.get("lotcd", "")
+    elif agent == "fail_history_agent":
+        proj["lotcd"] = task_params.get("lotcd", state.get("lotcd", ""))
+
+    # 통합 필드: 모든 agent에 공통 적용
+    proj["lot_ids"] = _parse_lot_ids(task_params)
+    proj["wf_ids"] = _parse_wf_ids(task_params)
+    proj["groupkey"] = (
+        task_params.get("groupkey")
+        or task_params.get("map_groupkey")
+        or task_params.get("yield_groupkey")
+        or ""
+    )
+    proj["fail_type"] = _parse_fail_type(task_params)
+    proj["cause_oper"] = _parse_cause_oper(task_params)
+
+    if agent == "yield_agent":
+        proj.update(
+            {
+                "ref_date": task_params.get("ref_date", state.get("ref_date", "")),
+                "unit": task_params.get("unit", state.get("unit", "weekly")),
+                "periods": task_params.get("periods", state.get("periods", 0)),
+                "lot_ids": [],
+                "wf_ids": [],
+                "groupkey": "",
+                "filter_params": [],
+            }
+        )
+
+    elif agent == "wads_agent":
+        proj.update(
+            {
+                "wads_start_tm": task_params.get("wads_start_tm", ""),
+                "wads_end_tm": task_params.get("wads_end_tm")
+                or date.today().strftime("%Y-%m-%d"),
+            }
+        )
+
+    elif agent == "map_agent":
+        proj.update(
+            {
+                "map_type": task_params.get("map_type", "binmap"),
+                "map_oper": task_params.get("map_oper") or state.get("map_oper", ""),
+            }
+        )
+
+    elif agent == "fail_history_agent":
+        proj["dh_query"] = task_params.get("dh_query", "")
+
+    elif agent == "relation_tree_agent":
+        # lotcd(3자)는 rt_lot_code와 동일 개념 — 구 필드 fallback 포함
+        if not proj.get("lotcd"):
+            proj["lotcd"] = task_params.get("rt_lot_code") or state.get("lotcd", "")
+
+    return proj
+
+
 def supervisor_node(
     state: Dict[str, Any], config: RunnableConfig
 ) -> Command[
@@ -2255,70 +2329,10 @@ def supervisor_node(
             "agent_suggestion": "",
         }
 
-        # lotcd는 yield/wads/fail_history가 공유 — 해당 agent 실행 시에만 업데이트.
-        # WADS는 lotcd 없이 날짜/파라미터만으로도 조회 가능하므로 stale state lotcd를
-        # 묵시적으로 상속하지 않는다. follow-up 제품코드는 rewrite/planner가 params에 명시한다.
-        # fail_history_agent는 validator가 invalid product filter를 ""로 지울 수
-        # 있으므로, 명시 빈 값이면 stale state lotcd로 fallback하지 않는다.
-        if agent == "yield_agent":
-            update_dict["lotcd"] = task_params.get("lotcd") or state.get("lotcd", "")
-        elif agent == "wads_agent":
-            update_dict["lotcd"] = task_params.get("lotcd", "")
-        elif agent == "fail_history_agent":
-            update_dict["lotcd"] = task_params.get("lotcd", state.get("lotcd", ""))
+        # Project resolved params into per-agent state fields (6b: extracted to a
+        # helper; order/inheritance preserved — see _project_task_params).
+        update_dict.update(_project_task_params(agent, task_params, state))
 
-        # 통합 필드: 모든 agent에 공통 적용
-        update_dict["lot_ids"] = _parse_lot_ids(task_params)
-        update_dict["wf_ids"] = _parse_wf_ids(task_params)
-        update_dict["groupkey"] = (
-            task_params.get("groupkey")
-            or task_params.get("map_groupkey")
-            or task_params.get("yield_groupkey")
-            or ""
-        )
-        update_dict["fail_type"] = _parse_fail_type(task_params)
-        update_dict["cause_oper"] = _parse_cause_oper(task_params)
-
-        if agent == "yield_agent":
-            update_dict.update(
-                {
-                    "ref_date": task_params.get("ref_date", state.get("ref_date", "")),
-                    "unit": task_params.get("unit", state.get("unit", "weekly")),
-                    "periods": task_params.get("periods", state.get("periods", 0)),
-                    "lot_ids": [],
-                    "wf_ids": [],
-                    "groupkey": "",
-                    "filter_params": [],
-                }
-            )
-
-        elif agent == "wads_agent":
-            update_dict.update(
-                {
-                    "wads_start_tm": task_params.get("wads_start_tm", ""),
-                    "wads_end_tm": task_params.get("wads_end_tm")
-                    or date.today().strftime("%Y-%m-%d"),
-                }
-            )
-
-        elif agent == "map_agent":
-            update_dict.update(
-                {
-                    "map_type": task_params.get("map_type", "binmap"),
-                    "map_oper": task_params.get("map_oper")
-                    or state.get("map_oper", ""),
-                }
-            )
-
-        elif agent == "fail_history_agent":
-            update_dict["dh_query"] = task_params.get("dh_query", "")
-
-        elif agent == "relation_tree_agent":
-            # lotcd(3자)는 rt_lot_code와 동일 개념 — 구 필드 fallback 포함
-            if not update_dict.get("lotcd"):
-                update_dict["lotcd"] = task_params.get("rt_lot_code") or state.get(
-                    "lotcd", ""
-                )
         # map_agent 필수 파라미터 검증
         if current_task["agent"] == "map_agent":
             if not update_dict.get("lot_ids") and not update_dict.get("groupkey"):
