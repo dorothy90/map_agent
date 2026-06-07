@@ -2022,11 +2022,11 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         logger.warning("[Replanner] LLM 호출 실패 — pass-through: %s", e)
         return scratchpad_update
 
-        new_requests = [
-            normalize_canonical_request(request.model_dump())
-            for request in plan.requests
-            if request.intent and request.agent
-        ]
+    new_requests = [
+        normalize_canonical_request(request.model_dump())
+        for request in plan.requests
+        if request.intent and request.agent
+    ]
     if not new_requests:
         logger.warning("[Replanner] LLM이 빈 requests 반환 — pass-through")
         return scratchpad_update
