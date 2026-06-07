@@ -45,6 +45,57 @@ START → rewrite → supervisor ⟷ [yield_agent, wads_agent, map_agent] → EN
 - CLOB 컬럼: output type handler로 `DB_TYPE_LONG` 변환 필요 (wads_agent)
 - LOT_ID: 대소문자 변환 (`lot_id_variants`) 필요
 
+## HITL Contract (missing_param)
+
+When `supervisor._require_agent_params` finds required slots empty, it asks the user
+via a **single structured interrupt**. (plan_review is a *separate* contract — see below.)
+
+**Interrupt payload (server → front), `InterruptEvent`:**
+```jsonc
+{
+  "type": "missing_param",
+  "fields": [                          // SOURCE OF TRUTH — every missing slot
+    {
+      "slot": "lot_ids",               // canonical state field to fill
+      "label": "맵을 조회할 Lot ID …",  // human prompt for this field
+      "type": "lot_ids",               // lot_ids | map_oper | lotcd | cause_oper
+      "required_any_group": "lot_or_groupkey",  // optional: one of the group suffices
+      "validation_hint": "PT1H|PT1C"            // optional
+    }
+    // … all other missing slots
+  ],
+  "param": "lot_ids",   // representative ONLY (single slot → that slot; batch → first).
+                        // observability / back-compat. NEVER infer "only this slot is
+                        // missing" from param in a batch — read `fields`.
+  "message": "다음 정보를 입력해주세요 — …",  // combined one-liner for Streamlit/text UI
+  "route": "map_agent"
+}
+```
+
+**Resume (front → server), `ChatRequest.resume_value`:** a **`{slot: value}` dict** — the
+single canonical path. React renders one input per `fields` entry and replies with the
+dict. A bare **string** is the degraded Streamlit fallback: it fills **only the first
+slot**, leaving the rest missing so they are re-asked next round. **No positional
+parsing** of a string into multiple slots — that silently mis-maps values to slots.
+
+**One interrupt() call per dispatch:** all missing slots for the agent are collected into
+`fields` and asked with a single `interrupt()`. Never split into per-slot calls (that
+regresses to N round-trips). Because only one interrupt is ever pending, LangGraph's
+multiple-pending / interrupt-id-map resume path is never hit; a `{slot:value}` dict is
+treated as a single resume value (its keys are slot names, not interrupt-id hexdigests).
+
+**plan_review is a separate contract:** the structured `fields` contract is
+missing_param-only. `plan_review` keeps its own path — approve / modify / cancel **text**
+resume fed to the plan-review LLM.
+
+**invalid-lotcd is outside the batch:** an invalid (non-product-code) lotcd is a *value*
+problem, not a missing slot — it is a separate re-prompt + early-return
+(`_validate_lotcd_or_early_return`, the 6d anchor), kept apart from slot collection.
+
+**Status:** server + `tests/e2e_client.py` (React stand-in, sends dict resume) implement
+this contract. The **React form client is not yet written** — it is the pending client
+implementation of this section.
+
 ## File Map
 
 ```
