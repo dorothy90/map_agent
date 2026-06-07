@@ -2196,10 +2196,15 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
     return proj
 
 
-def _missing_required_fields(agent: str, update_dict: dict) -> list[dict]:
+def _missing_required_fields(
+    agent: str, update_dict: dict, rejections: dict | None = None
+) -> list[dict]:
     """Required slots still missing for this agent, as fields[] specs — the source of
     truth for "what is missing". required_any (map lot_ids|groupkey) is ONE item.
-    lotcd VALUE validity is NOT here; that is a separate validation step."""
+    lotcd VALUE validity is NOT here; that is a separate validation step.
+
+    `rejections` maps slot -> reason for a value just rejected by its format guard; the
+    re-ask shows that reason so the user knows WHY they are being asked again."""
     fields: list[dict] = []
     if agent == "map_agent":
         if not update_dict.get("lot_ids") and not update_dict.get("groupkey"):
@@ -2239,6 +2244,10 @@ def _missing_required_fields(agent: str, update_dict: dict) -> list[dict]:
                 "label": "이력을 조회할 LOT ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
                 "type": "lot_ids",
             })
+    for field in fields:  # re-ask shows WHY the previous value was rejected
+        reason = (rejections or {}).get(field["slot"])
+        if reason:
+            field["label"] = reason
     return fields
 
 
@@ -2271,14 +2280,52 @@ def _ask_fields(fields: list[dict], current_task: dict) -> dict:
     return {slots[0]: str(answer).strip()}
 
 
-def _apply_field(slot: str, value: Any, update_dict: dict) -> None:
+# REMOVE-IN-축4: this lot_ids format guard is an INTERIM backstop for the HITL
+# str-fallback raw-insert silent-wrong. Remove it once 축4 unifies resume parsing
+# through the planner (lot_ids single-path: planner-canonicalized values only) and
+# that single path is verified — at which point a format guard here is redundant.
+_LOT_ID_RE = re.compile(r"^[0-9Tt][A-Za-z0-9]{6,8}$")
+
+
+def _validate_lot_ids(raw: Any) -> tuple[list[str] | None, list[str]]:
+    """Split a comma-separated lot_ids answer, validate each token, UPPERCASE the valid
+    ones so they match DB-stored lot ids (lot_id_variants only does 4<->T, not case —
+    so a lowercased lot would otherwise miss and 0-row silently).
+
+    Format (type sanity, not semantics): lotcd[3] + 4 chars, plus 1-2 for experimental
+    lots = 7-9 alphanumeric, first char a digit or T (lotcd is digit-prefixed across
+    products: 4SS/5QQ/6AG/…, with the 4<->T variant). All-or-nothing: if ANY token is
+    malformed, returns (None, [bad tokens]) — never a partial fill (dropping a lot
+    silently is itself a silent-wrong). Empty -> (None, [])."""
+    tokens = [t.strip() for t in str(raw).split(",") if t.strip()]
+    if not tokens:
+        return None, []
+    invalid = [t for t in tokens if not _LOT_ID_RE.match(t)]
+    if invalid:
+        return None, invalid
+    return [t.upper() for t in tokens], []
+
+
+def _apply_field(slot: str, value: Any, update_dict: dict) -> str | None:
+    """Apply a HITL answer to its slot. Returns None on success, or a Korean rejection
+    reason (slot left UNfilled) when the value fails its format guard — the caller
+    re-asks with that reason instead of querying garbage (silent-wrong -> backstop)."""
     v = str(value).strip()
     if slot == "lot_ids":
-        update_dict["lot_ids"] = _parse_lot_ids({"lot_ids": v})
-    elif slot == "map_oper":
+        valid, invalid = _validate_lot_ids(v)
+        if valid is None:
+            bad = ", ".join(invalid) if invalid else v
+            return (
+                f"'{bad}'는 lot ID 형식이 맞지 않습니다 (공백·특수문자 없이 7~9자, "
+                f"예: 4SS2DPD). 전체를 다시 입력해주세요. (다중: 4SS2DPD,4SSXCEW)"
+            )
+        update_dict["lot_ids"] = valid
+        return None
+    if slot == "map_oper":
         update_dict["map_oper"] = _normalize_map_oper(v) or "PT1H"
-    else:  # lotcd, cause_oper
-        update_dict[slot] = v
+        return None
+    update_dict[slot] = v
+    return None
 
 
 def _validate_lotcd_or_early_return(
@@ -2358,21 +2405,27 @@ def _require_agent_params(
     """
     agent = current_task["agent"]
 
-    # 1. Batch-ask all missing required slots in one interrupt (dict resume).
+    # 1. Batch-ask all missing required slots in one interrupt (dict resume). A value
+    # that fails its format guard is NOT filled and is re-asked with the reason — so a
+    # malformed answer becomes a backstop, never a silent garbage query.
+    rejections: dict = {}
     while True:
-        fields = _missing_required_fields(agent, update_dict)
+        fields = _missing_required_fields(agent, update_dict, rejections)
         if not fields:
             break
         answers = _ask_fields(fields, current_task)
-        applied = False
+        progressed = False
+        rejections = {}
         for field in fields:
             value = answers.get(field["slot"], "")
             if not str(value).strip():
                 continue  # unanswered (str fallback) — stays missing, re-asked next round
-            _apply_field(field["slot"], value, update_dict)
-            applied = True
-        if not applied:
-            break  # nothing answerable this round — avoid an infinite loop
+            progressed = True
+            reason = _apply_field(field["slot"], value, update_dict)
+            if reason:
+                rejections[field["slot"]] = reason  # invalid -> re-ask with reason (unfilled)
+        if not progressed:
+            break  # nothing answered this round — avoid an infinite loop
 
     # map_oper is always normalized/defaulted (covers the present-but-not-asked case).
     if agent == "map_agent":

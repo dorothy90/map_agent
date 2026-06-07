@@ -106,6 +106,44 @@ CASES: list[dict] = [
         ],
         "kind": "interrupt_sequence",
     },
+    # lot_ids format guard (축1 보강): a malformed answer must NOT be queried silently —
+    # it is rejected at apply and re-asked (backstop) with the reason. Pinned on BOTH
+    # resume paths (str fallback AND dict) because both bypassed the guard before; and
+    # the all-or-nothing multi-lot case (one bad token rejects the whole answer — no
+    # partial fill that would silently drop a lot).
+    {
+        "id": "lot_ids_invalid_reask_str",
+        "steps": [
+            {"query": "wafer map 보여줘", "expect_fields": ["lot_ids", "map_oper"]},
+            # str fallback: whole sentence into first slot -> rejected -> re-ask (with reason)
+            {"resume": "4SSWWK6 로 pt1h 그려줘",
+             "expect_fields": ["lot_ids", "map_oper"], "message_contains": "형식이 맞지 않"},
+            {"resume": {"lot_ids": "4SS2DPD", "map_oper": "PT1H"}, "expect_fields": []},
+        ],
+        "kind": "interrupt_sequence",
+    },
+    {
+        "id": "lot_ids_invalid_reask_dict",
+        "steps": [
+            {"query": "wafer map 보여줘", "expect_fields": ["lot_ids", "map_oper"]},
+            # dict path also bypassed the guard before — must reject + re-ask lot_ids only
+            {"resume": {"lot_ids": "이건 lot 아님", "map_oper": "PT1H"},
+             "expect_fields": ["lot_ids"], "message_contains": "형식이 맞지 않"},
+            {"resume": {"lot_ids": "4SS2DPD"}, "expect_fields": []},
+        ],
+        "kind": "interrupt_sequence",
+    },
+    {
+        "id": "lot_ids_multi_partial_reask",
+        "steps": [
+            {"query": "wafer map 보여줘", "expect_fields": ["lot_ids", "map_oper"]},
+            # one bad token rejects the WHOLE answer (all-or-nothing); reason names it
+            {"resume": {"lot_ids": "4SS2DPD,NOTALOT99", "map_oper": "PT1H"},
+             "expect_fields": ["lot_ids"], "message_contains": "NOTALOT99"},
+            {"resume": {"lot_ids": "4SS2DPD,4SSXCEW"}, "expect_fields": []},
+        ],
+        "kind": "interrupt_sequence",
+    },
     # (b) 6d ANCHOR — an invalid (non-product-code) lotcd must hit the validation
     # re-prompt via _normalize_product_lotcd / _PRODUCT_LOTCD_RE. Dual purpose:
     #   1. fixes current invalid-lotcd behavior in place;
