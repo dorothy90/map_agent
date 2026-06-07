@@ -18,7 +18,9 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     query: str
     session_id: str
-    resume_value: str | None = None  # interrupt resume용
+    # interrupt resume — structured HITL contract: a {slot: value} dict (React form /
+    # e2e). A bare str is the degraded Streamlit fallback (fills only the first slot).
+    resume_value: str | dict[str, Any] | None = None
 
 
 # ── SSE Event Types ──────────────────────────────────────
@@ -103,10 +105,14 @@ class ErrorEvent(BaseModel):
 class InterruptEvent(BaseModel):
     type: Literal["interrupt"] = "interrupt"
     interrupt_type: str = "missing_param"  # "missing_param" | "plan_review" | HITL issue type
-    param: str          # 누락된 파라미터명
-    message: str        # 사용자에게 보여줄 한국어 메시지
+    param: str          # 대표 슬롯명(관측성/하위호환). batch에선 첫 슬롯일 뿐 — 권위는 fields.
+    message: str        # 사용자에게 보여줄 한국어 메시지(Streamlit fallback 표시용)
     route: str = ""     # 대상 에이전트
     options: list[dict[str, Any]] = Field(default_factory=list)
+    # Structured HITL contract: the missing slots to collect in ONE interrupt.
+    # Each: {slot, label, type, required_any_group?, validation_hint?}. The source of
+    # truth for "what is missing" — never infer "only this slot" from `param` in batch.
+    fields: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ── REST Response Models (session history) ───────────────

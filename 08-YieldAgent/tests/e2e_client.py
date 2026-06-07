@@ -124,7 +124,7 @@ class TurnResult:
         return {}
 
 
-def _drain_sse(query: str, session_id: str, timeout: float, resume_value: str | None = None) -> tuple[list[dict], str]:
+def _drain_sse(query: str, session_id: str, timeout: float, resume_value: str | dict | None = None) -> tuple[list[dict], str]:
     events: list[dict] = []
     payload: dict = {"query": query, "session_id": session_id}
     if resume_value is not None:
@@ -179,7 +179,7 @@ class Session:
             str(e.get("event_id")) for e in _load_trace_events(self.trace_id)
         }
 
-    def turn(self, query: str, *, resume_value: str | None = None, timeout: float = 240.0) -> TurnResult:
+    def turn(self, query: str, *, resume_value: str | dict | None = None, timeout: float = 240.0) -> TurnResult:
         sse_events, sse_blob = _drain_sse(query, self.session_id, timeout, resume_value=resume_value)
 
         new_events: list[dict] = []

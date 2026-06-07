@@ -86,25 +86,23 @@ CASES: list[dict] = [
             "message_contains": "입력해주세요",
         },
     },
-    # ── Step 6.0: coverage to make the supervisor_node slim-down (Step 6) safe ──
-    # (a) interrupt ORDER pins — Step 6c extracts the per-agent required-param/HITL
-    # blocks into a helper; these resume sequences fail if any interrupt() is
-    # reordered or dropped (the #1 risk of that extraction).
+    # ── Structured-HITL batch contract (harness redesign 축 1) ──
+    # Both missing required slots arrive in ONE interrupt (fields[]), answered by a
+    # single {slot: value} dict resume — no second interrupt. (Behavior change from the
+    # earlier per-slot sequential asks: map/relation_tree were 2 interrupts, now 1.)
     {
         "id": "map_interrupt_order",
         "steps": [
-            {"query": "wafer map 보여줘", "expect_param": "lot_ids"},
-            {"resume": "4SS2DPD", "expect_param": "map_oper"},
-            {"resume": "PT1H", "expect_param": None},
+            {"query": "wafer map 보여줘", "expect_fields": ["lot_ids", "map_oper"]},
+            {"resume": {"lot_ids": "4SS2DPD", "map_oper": "PT1H"}, "expect_fields": []},
         ],
         "kind": "interrupt_sequence",
     },
     {
         "id": "relation_tree_interrupt_order",
         "steps": [
-            {"query": "relation tree 분석해줘", "expect_param": "lotcd"},
-            {"resume": "4SS2DPD", "expect_param": "cause_oper"},
-            {"resume": "STEP07", "expect_param": None},
+            {"query": "relation tree 분석해줘", "expect_fields": ["lotcd", "cause_oper"]},
+            {"resume": {"lotcd": "4SS2DPD", "cause_oper": "STEP07"}, "expect_fields": []},
         ],
         "kind": "interrupt_sequence",
     },
@@ -370,11 +368,13 @@ def _check_report_resolves(case: dict, r: TurnResult) -> list[str]:
 
 
 def _check_interrupt_sequence(case: dict, r: TurnResult) -> list[str]:
-    """Pin the per-task missing-param interrupt ORDER across a query+resume sequence.
-    Each step must pause at exactly the expected interrupt (param, in order); a step
-    with expect_param=None must run without a missing_param interrupt. This is the
-    safety net for Step 6c: extracting the per-agent HITL blocks into a helper must
-    not reorder or drop any interrupt() call."""
+    """Pin the structured-HITL batch contract across a query+resume sequence.
+
+    Each step with `expect_fields` must pause at exactly ONE missing_param interrupt
+    whose `fields` SLOT SET equals expect_fields (set, not order — fields is an
+    unordered collection the form renders together). A step with expect_fields=[] must
+    run with NO interrupt. This proves batching: all missing slots arrive in one
+    interrupt, and a single dict resume clears them (no second interrupt)."""
     fails: list[str] = []
     steps = case["steps"]
     results = r.turns or [r]
@@ -382,18 +382,26 @@ def _check_interrupt_sequence(case: dict, r: TurnResult) -> list[str]:
         return [f"ran {len(results)} steps, expected {len(steps)}"]
     for i, (step, res) in enumerate(zip(steps, results)):
         label = step.get("query") or f"resume={step.get('resume')!r}"
-        missing = [x for x in res.sse_interrupts("missing_param")]
-        params = [x.get("param") for x in missing]
-        expect = step.get("expect_param")
-        if expect is None:
+        missing = res.sse_interrupts("missing_param")
+        expect = set(step.get("expect_fields") or [])
+        if not expect:
             if missing:
-                fails.append(f"step{i} ({label}): expected NO missing_param, got {params}")
+                got = [x.get("param") for x in missing]
+                fails.append(f"step{i} ({label}): expected NO interrupt (run), got {got}")
             continue
-        if params != [expect]:
+        if len(missing) != 1:
+            params = [x.get("param") for x in missing]
             fails.append(
-                f"step{i} ({label}): expected exactly missing_param=[{expect!r}] (order), got {params}"
+                f"step{i} ({label}): expected exactly ONE batched interrupt for "
+                f"{sorted(expect)}, got {len(missing)} ({params})"
             )
             continue
+        got_slots = {f.get("slot") for f in (missing[0].get("fields") or [])}
+        if got_slots != expect:
+            fails.append(
+                f"step{i} ({label}): interrupt fields {sorted(got_slots)} != "
+                f"expected {sorted(expect)}"
+            )
         want_msg = step.get("message_contains")
         if want_msg and want_msg not in (missing[0].get("message") or ""):
             fails.append(

@@ -871,6 +871,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                                         message=interrupt_data.get("message", ""),
                                         route=interrupt_data.get("route", ""),
                                         options=interrupt_data.get("options", []),
+                                        fields=interrupt_data.get("fields", []),
                                     ))
             except Exception as e:
                 logger.warning("Interrupt 감지 실패: %s", e)

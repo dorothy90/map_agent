@@ -1229,30 +1229,6 @@ def _parse_cause_oper(params: dict) -> str:
     )
 
 
-def _hitl_response_for(state: dict, task: dict, param: str) -> str:
-    """Return a matching HITL response for supervisor projection, if present."""
-
-    task_id = task.get("task_id", "")
-    agent = task.get("agent", "")
-    aliases = {param}
-    if param == "lot_ids":
-        aliases.add("lot_ids|groupkey")
-
-    for record in reversed(state.get("hitl_responses", []) or []):
-        if record.get("issue_type") != "missing_param":
-            continue
-        if record.get("task_id") and record.get("task_id") != task_id:
-            continue
-        if record.get("agent") and record.get("agent") != agent:
-            continue
-        if record.get("param") not in aliases:
-            continue
-        response = str(record.get("response", "")).strip()
-        if response:
-            return response
-    return ""
-
-
 _PRODUCT_LOTCD_RE = re.compile(r"^[0-9][A-Z0-9]{2}$")
 
 
@@ -2220,212 +2196,193 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
     return proj
 
 
+def _missing_required_fields(agent: str, update_dict: dict) -> list[dict]:
+    """Required slots still missing for this agent, as fields[] specs — the source of
+    truth for "what is missing". required_any (map lot_ids|groupkey) is ONE item.
+    lotcd VALUE validity is NOT here; that is a separate validation step."""
+    fields: list[dict] = []
+    if agent == "map_agent":
+        if not update_dict.get("lot_ids") and not update_dict.get("groupkey"):
+            fields.append({
+                "slot": "lot_ids",
+                "label": "맵을 조회할 Lot ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
+                "type": "lot_ids",
+                "required_any_group": "lot_or_groupkey",
+            })
+        if not _normalize_map_oper(update_dict.get("map_oper", "")):
+            fields.append({
+                "slot": "map_oper",
+                "label": "PT1H / PT1C 중 어떤 공정의 맵을 조회할까요?",
+                "type": "map_oper",
+                "validation_hint": "PT1H|PT1C",
+            })
+    elif agent == "relation_tree_agent":
+        if not update_dict.get("lotcd"):
+            fields.append({
+                "slot": "lotcd",
+                "label": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
+                "type": "lotcd",
+            })
+        if not update_dict.get("cause_oper"):
+            fields.append({
+                "slot": "cause_oper",
+                "label": "연관 분석할 main 공정명을 입력해주세요. (예: STEP07 또는 STEP07,STEP08)",
+                "type": "cause_oper",
+            })
+    elif agent == "yield_agent":
+        if not update_dict.get("lotcd"):
+            fields.append({"slot": "lotcd", "label": _lotcd_prompt(agent), "type": "lotcd"})
+    elif agent == "lot_history_agent":
+        if not update_dict.get("lot_ids"):
+            fields.append({
+                "slot": "lot_ids",
+                "label": "이력을 조회할 LOT ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
+                "type": "lot_ids",
+            })
+    return fields
+
+
+def _compose_fields_message(fields: list[dict]) -> str:
+    """Human prompt for the Streamlit fallback. Single field shows its own label;
+    multiple shows them together so one answer can address all."""
+    if len(fields) == 1:
+        return fields[0]["label"]
+    return "다음 정보를 입력해주세요 — " + " / ".join(f["label"] for f in fields)
+
+
+def _ask_fields(fields: list[dict], current_task: dict) -> dict:
+    """ONE interrupt for all missing slots; returns {slot: raw_value}.
+
+    Canonical resume is a {slot: value} dict (React form / e2e client). A bare-string
+    resume (degraded Streamlit fallback) fills ONLY the first slot — the rest stay
+    missing and are re-asked next loop. No positional parsing of a string into multiple
+    slots (that would silently mis-map values). `param` is the first slot for
+    observability only; the source of truth is `fields`."""
+    slots = [f["slot"] for f in fields]
+    answer = interrupt({
+        "type": "missing_param",
+        "param": slots[0],
+        "fields": fields,
+        "message": _compose_fields_message(fields),
+        "route": current_task.get("agent", ""),
+    })
+    if isinstance(answer, dict):
+        return {s: answer.get(s, "") for s in slots}
+    return {slots[0]: str(answer).strip()}
+
+
+def _apply_field(slot: str, value: Any, update_dict: dict) -> None:
+    v = str(value).strip()
+    if slot == "lot_ids":
+        update_dict["lot_ids"] = _parse_lot_ids({"lot_ids": v})
+    elif slot == "map_oper":
+        update_dict["map_oper"] = _normalize_map_oper(v) or "PT1H"
+    else:  # lotcd, cause_oper
+        update_dict[slot] = v
+
+
+def _validate_lotcd_or_early_return(
+    agent: str, update_dict: dict, current_task: dict, step_count: int
+):
+    """yield/wads lotcd VALUE validation — separate from the batch (an invalid value is
+    not a missing slot). Invalid product code -> re-prompt interrupt -> persistent
+    invalid -> early return. 6d ANCHOR: param=lotcd, message contains '형식이 아닙니다'."""
+    normalized_lotcd = _normalize_product_lotcd(update_dict.get("lotcd"))
+    if normalized_lotcd:
+        update_dict["lotcd"] = normalized_lotcd
+        return None
+    invalid_value = update_dict.get("lotcd", "")
+    emit_runtime_detail(
+        "param.invalid",
+        {
+            "agent": agent,
+            "param": "lotcd",
+            "value": invalid_value,
+            "reason": "lotcd_must_be_ascii_product_code",
+            "action": "interrupt",
+        },
+        task_id=str(current_task.get("task_id") or ""),
+    )
+    emit_trace_event(
+        "validation_issue",
+        source="supervisor",
+        severity="error",
+        task_id=str(current_task.get("task_id") or ""),
+        payload={
+            "type": "invalid_param",
+            "agent": agent,
+            "param": "lotcd",
+            "reason": "lotcd_must_be_ascii_product_code",
+            "value_preview": preview_text(invalid_value),
+        },
+    )
+    answer = interrupt({
+        "type": "missing_param",
+        "param": "lotcd",
+        "fields": [{
+            "slot": "lotcd",
+            "label": _lotcd_prompt(agent, invalid_value=invalid_value),
+            "type": "lotcd",
+        }],
+        "message": _lotcd_prompt(agent, invalid_value=invalid_value),
+        "route": agent,
+    })
+    resumed = answer.get("lotcd", "") if isinstance(answer, dict) else answer
+    normalized_lotcd = _normalize_product_lotcd(resumed)
+    if not normalized_lotcd:
+        return _invalid_lotcd_update(
+            agent=agent,
+            task_id=str(current_task.get("task_id") or ""),
+            value=resumed,
+            message=_lotcd_prompt(agent, invalid_value=resumed),
+            step_count=step_count,
+        )
+    update_dict["lotcd"] = normalized_lotcd
+    return None
+
+
 def _require_agent_params(
     update_dict: dict, state: dict, current_task: dict, step_count: int
 ):
-    """Validate per-agent required params, asking via interrupt() when missing/invalid.
+    """Validate per-agent required params via the structured HITL contract (축 1).
 
-    Mutates update_dict in place (lot_ids/map_oper/lotcd/cause_oper). Returns None to
-    continue dispatch, or an early-return value (the invalid-lotcd dead end) that the
-    caller must return as-is.
+    Collects ALL missing required slots for the agent and asks them in ONE interrupt
+    (fields[]) — two empty slots = one prompt, not two. Resume is a {slot: value} dict.
+    Mutates update_dict in place; returns None to continue, or the invalid-lotcd
+    early-return value to be returned as-is.
 
-    interrupt() ORDER is load-bearing for resume: LangGraph matches resume values to
-    interrupt() calls by their order/count during node execution (call-stack depth is
-    irrelevant — this helper runs in the node's task context, sharing its interrupt
-    counter). The blocks are mutually exclusive per agent and the multi-interrupt
-    paths (map lot_ids→map_oper, relation_tree lotcd→cause_oper, yield missing→invalid)
-    keep their lexical order, so the sequence is identical to the inline version.
+    interrupt() count: with a dict resume every slot fills in the first loop round, so
+    there is exactly ONE interrupt() call. (A bare-string fallback fills one slot per
+    round, re-asking the rest — never mis-mapping.) lotcd VALUE validation (yield always,
+    wads if present) stays OUTSIDE the batch as a separate re-prompt + early-return.
     """
-    # map_agent 필수 파라미터 검증
-    if current_task["agent"] == "map_agent":
-        if not update_dict.get("lot_ids") and not update_dict.get("groupkey"):
-            user_response = _hitl_response_for(state, current_task, "lot_ids")
-            if not user_response:
-                user_response = interrupt(
-                    {
-                        "type": "missing_param",
-                        "param": "lot_ids",
-                        "message": "맵을 조회할 Lot ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
-                        "route": "map_agent",
-                    }
-                )
-            update_dict["lot_ids"] = _parse_lot_ids(
-                {"lot_ids": str(user_response).strip()}
-            )
+    agent = current_task["agent"]
 
-        normalized = _normalize_map_oper(update_dict.get("map_oper", ""))
-        if not normalized:
-            user_response = _hitl_response_for(state, current_task, "map_oper")
-            if not user_response:
-                user_response = interrupt(
-                    {
-                        "type": "missing_param",
-                        "param": "map_oper",
-                        "message": "PT1H / PT1C 중 어떤 공정의 맵을 조회할까요?",
-                        "route": "map_agent",
-                    }
-                )
-            normalized = _normalize_map_oper(str(user_response))
-        update_dict["map_oper"] = normalized or "PT1H"
+    # 1. Batch-ask all missing required slots in one interrupt (dict resume).
+    while True:
+        fields = _missing_required_fields(agent, update_dict)
+        if not fields:
+            break
+        answers = _ask_fields(fields, current_task)
+        applied = False
+        for field in fields:
+            value = answers.get(field["slot"], "")
+            if not str(value).strip():
+                continue  # unanswered (str fallback) — stays missing, re-asked next round
+            _apply_field(field["slot"], value, update_dict)
+            applied = True
+        if not applied:
+            break  # nothing answerable this round — avoid an infinite loop
 
-    # relation_tree_agent 필수 파라미터 검증
-    if current_task["agent"] == "relation_tree_agent":
-        if not update_dict.get("lotcd"):
-            user_response = _hitl_response_for(state, current_task, "lotcd")
-            if not user_response:
-                user_response = interrupt(
-                    {
-                        "type": "missing_param",
-                        "param": "lotcd",
-                        "message": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
-                        "route": "relation_tree_agent",
-                    }
-                )
-            update_dict["lotcd"] = str(user_response).strip()
-        if not update_dict.get("cause_oper"):
-            user_response = _hitl_response_for(state, current_task, "cause_oper")
-            if not user_response:
-                user_response = interrupt(
-                    {
-                        "type": "missing_param",
-                        "param": "cause_oper",
-                        "message": "연관 분석할 main 공정명을 입력해주세요. (예: STEP07 또는 STEP07,STEP08)",
-                        "route": "relation_tree_agent",
-                    }
-                )
-            update_dict["cause_oper"] = str(user_response).strip()
+    # map_oper is always normalized/defaulted (covers the present-but-not-asked case).
+    if agent == "map_agent":
+        update_dict["map_oper"] = _normalize_map_oper(update_dict.get("map_oper", "")) or "PT1H"
 
-    # yield_agent: lotcd 필수. wads_agent는 lotcd 없이도 날짜/파라미터 조건으로 조회 가능.
-    if current_task["agent"] == "yield_agent":
-        if not update_dict.get("lotcd"):
-            user_response = _hitl_response_for(state, current_task, "lotcd")
-            if not user_response:
-                user_response = interrupt(
-                    {
-                        "type": "missing_param",
-                        "param": "lotcd",
-                        "message": _lotcd_prompt(current_task["agent"]),
-                        "route": current_task["agent"],
-                    }
-                )
-            update_dict["lotcd"] = str(user_response).strip()
-        normalized_lotcd = _normalize_product_lotcd(update_dict.get("lotcd"))
-        if not normalized_lotcd:
-            invalid_value = update_dict.get("lotcd", "")
-            emit_runtime_detail(
-                "param.invalid",
-                {
-                    "agent": current_task["agent"],
-                    "param": "lotcd",
-                    "value": invalid_value,
-                    "reason": "lotcd_must_be_ascii_product_code",
-                    "action": "interrupt",
-                },
-                task_id=str(current_task.get("task_id") or ""),
-            )
-            emit_trace_event(
-                "validation_issue",
-                source="supervisor",
-                severity="error",
-                task_id=str(current_task.get("task_id") or ""),
-                payload={
-                    "type": "invalid_param",
-                    "agent": current_task["agent"],
-                    "param": "lotcd",
-                    "reason": "lotcd_must_be_ascii_product_code",
-                    "value_preview": preview_text(invalid_value),
-                },
-            )
-            user_response = interrupt(
-                {
-                    "type": "missing_param",
-                    "param": "lotcd",
-                    "message": _lotcd_prompt(
-                        current_task["agent"], invalid_value=invalid_value
-                    ),
-                    "route": current_task["agent"],
-                }
-            )
-            normalized_lotcd = _normalize_product_lotcd(user_response)
-            if not normalized_lotcd:
-                return _invalid_lotcd_update(
-                    agent=current_task["agent"],
-                    task_id=str(current_task.get("task_id") or ""),
-                    value=user_response,
-                    message=_lotcd_prompt(
-                        current_task["agent"], invalid_value=user_response
-                    ),
-                    step_count=step_count,
-                )
-        update_dict["lotcd"] = normalized_lotcd
-
-    if current_task["agent"] == "wads_agent" and update_dict.get("lotcd"):
-        normalized_lotcd = _normalize_product_lotcd(update_dict.get("lotcd"))
-        if not normalized_lotcd:
-            invalid_value = update_dict.get("lotcd", "")
-            emit_runtime_detail(
-                "param.invalid",
-                {
-                    "agent": current_task["agent"],
-                    "param": "lotcd",
-                    "value": invalid_value,
-                    "reason": "lotcd_must_be_ascii_product_code",
-                    "action": "interrupt",
-                },
-                task_id=str(current_task.get("task_id") or ""),
-            )
-            emit_trace_event(
-                "validation_issue",
-                source="supervisor",
-                severity="error",
-                task_id=str(current_task.get("task_id") or ""),
-                payload={
-                    "type": "invalid_param",
-                    "agent": current_task["agent"],
-                    "param": "lotcd",
-                    "reason": "lotcd_must_be_ascii_product_code",
-                    "value_preview": preview_text(invalid_value),
-                },
-            )
-            user_response = interrupt(
-                {
-                    "type": "missing_param",
-                    "param": "lotcd",
-                    "message": _lotcd_prompt(
-                        current_task["agent"], invalid_value=invalid_value
-                    ),
-                    "route": current_task["agent"],
-                }
-            )
-            normalized_lotcd = _normalize_product_lotcd(user_response)
-            if not normalized_lotcd:
-                return _invalid_lotcd_update(
-                    agent=current_task["agent"],
-                    task_id=str(current_task.get("task_id") or ""),
-                    value=user_response,
-                    message=_lotcd_prompt(
-                        current_task["agent"], invalid_value=user_response
-                    ),
-                    step_count=step_count,
-                )
-        update_dict["lotcd"] = normalized_lotcd
-
-    # lot_history_agent: lot_ids 필수
-    if current_task["agent"] == "lot_history_agent":
-        if not update_dict.get("lot_ids"):
-            user_response = _hitl_response_for(state, current_task, "lot_ids")
-            if not user_response:
-                user_response = interrupt(
-                    {
-                        "type": "missing_param",
-                        "param": "lot_ids",
-                        "message": "이력을 조회할 LOT ID를 입력해주세요. (예: 4SS2DPD 또는 4SS2DPD,4SSXCEW)",
-                        "route": "lot_history_agent",
-                    }
-                )
-            update_dict["lot_ids"] = _parse_lot_ids(
-                {"lot_ids": str(user_response).strip()}
-            )
+    # 2. lotcd value validation — separate from batch, early-return on persistent invalid.
+    if agent == "yield_agent" or (agent == "wads_agent" and update_dict.get("lotcd")):
+        early = _validate_lotcd_or_early_return(agent, update_dict, current_task, step_count)
+        if early is not None:
+            return early
 
     return None
 
