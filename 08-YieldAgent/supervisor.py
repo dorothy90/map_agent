@@ -713,7 +713,8 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     # Reference resolution is planner-owned (reference_resolver removed): build the
     # recent-results context here each turn so follow-up references resolve from the
     # displayed prior results. Also returned to state below for downstream chaining.
-    recent_results = _build_recent_results_index(messages)
+    # 축3: accumulate (K=10) across turns so ordinals survive beyond the last 3 results.
+    recent_results = _accumulate_recent_results(state.get("recent_results"), messages)
     recent_context = _recent_results_prompt_context(recent_results)
     if recent_context:
         meta_parts.append(recent_context)
@@ -1678,12 +1679,25 @@ def _build_recent_results_index(messages: list) -> list[dict]:
     return prune_recent_results(entries)
 
 
+def _accumulate_recent_results(current: list | None, messages: list) -> list:
+    """축3: accumulate the resolver index across turns, decoupled from message prune.
+
+    Merge the carried index (current) with the results currently in messages, dedup by
+    result_id (prune_recent_results keeps the newest per id), and cap to
+    MAX_RECENT_RESULTS (K). A result stays referenceable for K results even after its
+    message is pruned (30-msg cap), so ordinal refs survive far longer than the last 3.
+    Source of truth stays messages; the index is an accumulated projection. Lifetime:
+    agent_server seeds recent_results=[] on a new session, so it clears per session.
+    """
+    return prune_recent_results((current or []) + _build_recent_results_index(messages))
+
+
 def _recent_results_update_from_messages(
     messages: list, current_recent_results: list | None
 ) -> dict:
-    """Return an overwrite update for the derived recent_results index."""
+    """Return an overwrite update for the accumulated recent_results index."""
 
-    recent_results = _build_recent_results_index(messages)
+    recent_results = _accumulate_recent_results(current_recent_results, messages)
     if recent_results == (current_recent_results or []):
         return {}
     return {"recent_results": recent_results}

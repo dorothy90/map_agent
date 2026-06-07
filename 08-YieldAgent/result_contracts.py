@@ -24,7 +24,7 @@ RESULT_ENVELOPE_SCHEMA_VERSION = "result-envelope/v1"
 SUPPORTED_RESULT_ENVELOPE_SCHEMA_VERSIONS = frozenset({RESULT_ENVELOPE_SCHEMA_VERSION})
 CONTRACT_MODEL_CONFIG = ConfigDict(extra="forbid", str_strip_whitespace=True)
 AGENT_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
-MAX_RECENT_RESULTS = 3
+MAX_RECENT_RESULTS = 10  # 축3: resolver index depth (display stays [-3:]; resolution uses K)
 MAX_RECENT_RESULT_ROWS = 50
 MAX_RESULT_ENVELOPE_ROWS = 50
 MAX_RECENT_RESULT_STRING_CHARS = 500

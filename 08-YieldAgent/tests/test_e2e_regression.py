@@ -255,6 +255,43 @@ CASES: list[dict] = [
         "kind": "reference_unresolved_block",
         "expect": {"param": "lot_ids"},
     },
+    # ── 축3: resolver index depth (K=10) — ordinals survive beyond the last 3 results ──
+    # after-target: a wads result pushed ~5 results back is still referenceable. Was
+    # collapsing (recent_results ≤3 pruned it → #unresolved); resolves after K=10.
+    {
+        "id": "ordinal_within_window_resolves",
+        "turns": [
+            "최근 1주일 4SS 검출 lot 알려줘",
+            "4SS 최근 2주 수율 보여줘",
+            "4SS 최근 6개월 수율 추세 보여줘",
+            "4SS 최근 3주 수율 보여줘",
+            "4SS 지난 5일 수율 보여줘",
+            "첫번째 검출 lot 이력 보여줘",
+        ],
+        "kind": "reference_resolves",
+        "expect": {"agent": "lot_history_agent", "param": "lot_ids", "ordinal": 1},
+    },
+    # boundary: beyond K (11+ results back) must be an explicit out-of-range BLOCK
+    # (backstop), never a silent-wrong. Holds before and after 축3 (just deeper window).
+    {
+        "id": "ordinal_beyond_window_blocks",
+        "turns": [
+            "최근 1주일 4SS 검출 lot 알려줘",
+            "4SS 최근 2주 수율 보여줘",
+            "4SS 최근 3주 수율 보여줘",
+            "4SS 최근 4주 수율 보여줘",
+            "4SS 최근 5주 수율 보여줘",
+            "4SS 최근 6주 수율 보여줘",
+            "4SS 최근 2개월 수율 보여줘",
+            "4SS 최근 3개월 수율 보여줘",
+            "4SS 최근 4개월 수율 보여줘",
+            "4SS 최근 5개월 수율 보여줘",
+            "4SS 최근 6개월 수율 보여줘",
+            "첫번째 검출 lot 이력 보여줘",
+        ],
+        "kind": "reference_unresolved_block",
+        "expect": {"param": "lot_ids"},
+    },
     # Step 5②-c: report ordinal -> the Nth report's exact groupkeys (#RN), no bleed.
     {
         "id": "report_ordinal_resolves_1st",
