@@ -25,10 +25,13 @@ logger = logging.getLogger("yield_agent.relation_tree_agent")
 @timed
 def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     lot_code  = (state.get("lotcd") or "").strip()
+    # TEMP(relation_tree fail_type): fail_type is now the required analyzed parameter;
+    # cause_oper stays optional. (Full relation analysis is still a placeholder below.)
+    fail_type = (state.get("fail_type") or "").strip()
     main_oper = (state.get("cause_oper") or "").strip()
     current_task_id = state.get("current_task_id", "")
 
-    logger.info("[Relation Tree Agent] lot_code=%s main_oper=%s", lot_code, main_oper)
+    logger.info("[Relation Tree Agent] lot_code=%s fail_type=%s main_oper=%s", lot_code, fail_type, main_oper)
 
     if not lot_code:
         msg = AIMessage(
@@ -44,12 +47,13 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
 
     html_content = (
         f"<h1>Inline-WT 연관 분석: {_h(lot_code)}</h1>"
+        f"<p>fail_type: {_h(fail_type) or '-'}</p>"
         f"<p>main_oper_det_desc: {_h(main_oper) or '-'}</p>"
         f"<p>(상관분석·trend 본구현 예정)</p>"
     )
 
     summary = (
-        f"{lot_code} 연관 분석 (main_oper={main_oper or '-'}) HTML 리포트 생성 완료"
+        f"{lot_code} 연관 분석 (fail_type={fail_type or '-'}, main_oper={main_oper or '-'}) HTML 리포트 생성 완료"
     )
     return {
         "messages": [AIMessage(content=summary, name="relation_tree_agent")],

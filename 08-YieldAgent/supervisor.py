@@ -1774,10 +1774,8 @@ def _needs_replan(pending: list[dict]) -> bool:
             ):
                 return True
         elif agent == "relation_tree_agent":
-            # relation_tree_agent는 lot_ids 아닌 lotcd+cause_oper 사용
-            if _is_placeholder_or_empty(
-                params.get("cause_oper")
-            ) and _is_placeholder_or_empty(params.get("rt_main_oper_det_desc")):
+            # TEMP(relation_tree fail_type): required param is now fail_type (was cause_oper).
+            if _is_placeholder_or_empty(params.get("fail_type")):
                 return True
         elif agent == "fail_history_agent":
             if all(
@@ -2215,11 +2213,12 @@ def _missing_required_fields(
                 "label": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
                 "type": "lotcd",
             })
-        if not update_dict.get("cause_oper"):
+        # TEMP(relation_tree fail_type): required is now lotcd + fail_type (was cause_oper).
+        if not update_dict.get("fail_type"):
             fields.append({
-                "slot": "cause_oper",
-                "label": "연관 분석할 main 공정명을 입력해주세요. (예: STEP07 또는 STEP07,STEP08)",
-                "type": "cause_oper",
+                "slot": "fail_type",
+                "label": "연관 분석할 파라미터(불량유형)를 입력해주세요. (예: VTH 또는 VTH,IDSAT)",
+                "type": "fail_type",
             })
     elif agent == "yield_agent":
         if not update_dict.get("lotcd"):

@@ -6,6 +6,7 @@
 - 공유 상수 (PARA_COLUMNS, BIN_CATEGORY_MAP 등)
 - timed 데코레이터
 """
+
 from __future__ import annotations
 
 import functools
@@ -32,11 +33,20 @@ logger = logging.getLogger("yield_agent.common")
 def to_user_message(exc: Exception) -> str:
     """기술적 예외를 사용자 친화적 한국어 메시지로 변환."""
     msg = str(exc).lower()
-    if isinstance(exc, (oracledb.DatabaseError, oracledb.OperationalError)) or "ora-" in msg:
+    if (
+        isinstance(exc, (oracledb.DatabaseError, oracledb.OperationalError))
+        or "ora-" in msg
+    ):
         return "DB 서버 연결에 실패했습니다. 네트워크/VPN 상태를 확인하세요."
-    if isinstance(exc, (ConnectionError, TimeoutError, OSError)) or "connection refused" in msg or "timed out" in msg:
+    if (
+        isinstance(exc, (ConnectionError, TimeoutError, OSError))
+        or "connection refused" in msg
+        or "timed out" in msg
+    ):
         if "9200" in msg or "opensearch" in msg or "elasticsearch" in msg:
-            return "이력 검색 서비스에 일시적 문제가 있습니다. 잠시 후 다시 시도해 주세요."
+            return (
+                "이력 검색 서비스에 일시적 문제가 있습니다. 잠시 후 다시 시도해 주세요."
+            )
         return "서버 연결에 실패했습니다. 네트워크 상태를 확인하거나 잠시 후 다시 시도해 주세요."
     if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
         if exc.response.status_code == 429:
@@ -61,12 +71,13 @@ def is_transient_error(exc: Exception) -> bool:
         return 500 <= exc.response.status_code < 600
     return False
 
+
 # ============================================================
 # Oracle 연결 설정
 # ============================================================
-ORACLE_USER     = os.getenv("ORACLE_USER")
+ORACLE_USER = os.getenv("ORACLE_USER")
 ORACLE_PASSWORD = os.getenv("ORACLE_PASSWORD")
-ORACLE_DSN      = os.getenv("ORACLE_DSN")
+ORACLE_DSN = os.getenv("ORACLE_DSN")
 
 _pool: oracledb.ConnectionPool | None = None
 _pool_lock = threading.Lock()
@@ -93,7 +104,12 @@ def _get_oracle_pool() -> oracledb.ConnectionPool:
 def get_oracle_connection() -> oracledb.Connection:
     """풀에서 커넥션 획득 (conn.close() 시 풀에 반환)"""
     pool = _get_oracle_pool()
-    logger.info("Oracle 커넥션 획득 시도 (pool: busy=%d, open=%d, max=%d)", pool.busy, pool.opened, pool.max)
+    logger.info(
+        "Oracle 커넥션 획득 시도 (pool: busy=%d, open=%d, max=%d)",
+        pool.busy,
+        pool.opened,
+        pool.max,
+    )
     conn = pool.acquire()
     logger.info("Oracle 커넥션 획득 완료")
     return conn
@@ -128,12 +144,31 @@ def get_4_week_dates(ref: date) -> list[date]:
 
 # 파라미터 컬럼 순서 (pt1h/pt1c PARAM 컬럼 값)
 PARA_COLUMNS: list[str] = [
-    "VTH", "IDSAT", "IDLIN", "IOFF", "ION", "IGATE", "IDDQ",
-    "VMIN", "FMAX", "TPD", "GM_MAX", "SS", "DIBL",
-    "RON", "RDS_ON", "BVDS",
-    "LEAK_ID", "LEAK_IG",
-    "CGB", "CGS", "CGD", "CDS",
-    "RSH", "RD", "RS",
+    "VTH",
+    "IDSAT",
+    "IDLIN",
+    "IOFF",
+    "ION",
+    "IGATE",
+    "IDDQ",
+    "VMIN",
+    "FMAX",
+    "TPD",
+    "GM_MAX",
+    "SS",
+    "DIBL",
+    "RON",
+    "RDS_ON",
+    "BVDS",
+    "LEAK_ID",
+    "LEAK_IG",
+    "CGB",
+    "CGS",
+    "CGD",
+    "CDS",
+    "RSH",
+    "RD",
+    "RS",
 ]
 
 PT1C_COLUMNS: list[str] = ["PT1C", "CFTA"]
@@ -148,16 +183,36 @@ HIGHER_IS_BETTER: set[str] = {"VTH", "IDSAT", "PT1C", "CFTA"}
 # A = Pass(양품), B~Z = 25개 PARA_COLUMNS에 1:1 대응하는 fail bin
 BIN_CATEGORY_MAP: dict[str, str] = {
     "A": "PASS",
-    "B": "VTH",    "C": "IDSAT",   "D": "IDLIN",  "E": "ION",
-    "F": "IGATE",  "G": "IDDQ",    "H": "IOFF",   "I": "VMIN",
-    "J": "FMAX",   "K": "TPD",     "L": "GM_MAX", "M": "SS",
-    "N": "DIBL",   "O": "RON",     "P": "RDS_ON", "Q": "BVDS",
-    "R": "LEAK_ID","S": "LEAK_IG", "T": "CGB",    "U": "CGS",
-    "V": "CGD",    "W": "CDS",     "X": "RSH",    "Y": "RD",
+    "B": "VTH",
+    "C": "IDSAT",
+    "D": "IDLIN",
+    "E": "ION",
+    "F": "IGATE",
+    "G": "IDDQ",
+    "H": "IOFF",
+    "I": "VMIN",
+    "J": "FMAX",
+    "K": "TPD",
+    "L": "GM_MAX",
+    "M": "SS",
+    "N": "DIBL",
+    "O": "RON",
+    "P": "RDS_ON",
+    "Q": "BVDS",
+    "R": "LEAK_ID",
+    "S": "LEAK_IG",
+    "T": "CGB",
+    "U": "CGS",
+    "V": "CGD",
+    "W": "CDS",
+    "X": "RSH",
+    "Y": "RD",
     "Z": "RS",
 }
 
-CATEGORY_TO_BIN: dict[str, str] = {v: k for k, v in BIN_CATEGORY_MAP.items() if v != "PASS"}
+CATEGORY_TO_BIN: dict[str, str] = {
+    v: k for k, v in BIN_CATEGORY_MAP.items() if v != "PASS"
+}
 
 
 # ============================================================
@@ -168,7 +223,7 @@ def get_llm(model: str | None = None, temperature: float = 0) -> "ChatOpenAI":
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
-        model=model or os.getenv("DEFAULT_MODEL", "gpt-oss-120b"),
+        model="z-ai/glm-5.1",
         base_url=os.getenv("OPENROUTER_BASE_URL"),
         api_key=os.getenv("OPENROUTER_API_KEY"),
         temperature=temperature,
@@ -209,9 +264,9 @@ def extract_suggestion(text: str) -> tuple[str, str]:
     Returns:
         (cleaned_text, suggestion)
     """
-    match = re.search(r'\[SUGGESTION:\s*(.*?)\]', text)
+    match = re.search(r"\[SUGGESTION:\s*(.*?)\]", text)
     suggestion = match.group(1).strip() if match else ""
-    cleaned = re.sub(r'\[SUGGESTION:.*?\]', '', text).strip()
+    cleaned = re.sub(r"\[SUGGESTION:.*?\]", "", text).strip()
     return cleaned, suggestion
 
 
@@ -260,6 +315,7 @@ def lot_id_variants(lot_id: str) -> list[str]:
 
 def timed(func):
     """함수 실행 시간을 측정하는 데코레이터"""
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         start = time.time()
@@ -267,4 +323,5 @@ def timed(func):
         result = func(*args, **kwargs)
         logger.info("◀ %s 완료 (%.2fs)", func.__name__, time.time() - start)
         return result
+
     return wrapper

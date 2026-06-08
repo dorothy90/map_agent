@@ -111,15 +111,15 @@ def _end_tm_expr(alias: str = "r") -> str:
     return f"TO_CHAR({alias}.END_TM, 'YYYY-MM-DD HH24:MI:SS') AS END_TM"
 
 
-_END_TM_DATE_JOIN_EXPR = (
-    "TRUNC(CAST(w.END_TM AS DATE)) = TRUNC(CAST(r.END_TM AS DATE))"
-)
+_END_TM_DATE_JOIN_EXPR = "TRUNC(CAST(w.END_TM AS DATE)) = TRUNC(CAST(r.END_TM AS DATE))"
 
 
 def _oracle_identifier(name: str, *, fallback: str) -> str:
     text = str(name or "").strip().upper()
     if not re.fullmatch(r"[A-Z][A-Z0-9_]*", text):
-        logger.warning("Invalid Oracle identifier %r; falling back to %s", name, fallback)
+        logger.warning(
+            "Invalid Oracle identifier %r; falling back to %s", name, fallback
+        )
         return fallback
     return text
 
@@ -228,9 +228,7 @@ def _wads_join_coverage(df: pd.DataFrame) -> dict[str, Any]:
     missing_groupkey_rows = (
         max(joined_rows - groupkey_rows, 0) if has_groupkey_column else 0
     )
-    join_missing = bool(
-        has_groupkey_column and report_rows > 0 and len(groupkeys) == 0
-    )
+    join_missing = bool(has_groupkey_column and report_rows > 0 and len(groupkeys) == 0)
 
     return {
         "joined_rows": joined_rows,
@@ -956,7 +954,7 @@ def wads_query_sql(query_description: str) -> str:
 
     # 1. LLM으로 SQL 생성
     try:
-        llm = get_llm(model=_SQL_GEN_MODEL)
+        llm = get_llm(model="z-ai/glm-5.1")
         prompt = _SQL_GEN_PROMPT.format(
             report_table=_ORACLE_REPORT_TABLE,
             wf_table=_ORACLE_WF_TABLE,

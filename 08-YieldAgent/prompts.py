@@ -98,9 +98,10 @@ present there, leave that slot empty or omit it.
    slots: lot_ids
 
 6. relation_tree_agent
-   capability: Inline-WT relation/trend tree for a lot/product and main operation
+   capability: Inline-WT relation/trend tree for a lot/product and a detected parameter
    intents: relation_tree
-   slots: lotcd, cause_oper
+   slots: lotcd, fail_type, cause_oper
+   Required: lotcd + fail_type (the detected parameter analyzed, e.g. "VTH"). cause_oper optional.
 
 7. ppt_export
    capability: export previous analysis into PPT
@@ -126,11 +127,14 @@ present there, leave that slot empty or omit it.
   slots when the target worker has an executable default.
 - Preserve parameter/fail names exactly as user or Structured context provides them.
 - Keep only slots allowed for the selected agent.
-- For map_agent requests derived from WADS Structured context, prefer the row's
-  groupkey over separate lot_ids/wf_ids, and include map_oper from the same row when present.
-  Do not output a bare map_agent request if Structured context already provides
-  groupkeys or map_oper for the referenced WADS rows. If referenced rows span
-  multiple map_oper values, output one map_agent request per map_oper group.
+- WADS→map/lot chaining (detected SET): when a follow-up asks for the wafer map / cummap /
+  lot history of the DETECTED set as a whole ("그 lot들 wafer map", "검출 wafer cummap",
+  "그 lot들 이력"), output the map_agent / lot_history_agent request with EMPTY lot_ids AND
+  EMPTY map_oper (""), and do NOT inline groupkey/wf_ids. The backend fills lot+oper from the
+  WADS result and, if the detected wafers span multiple map_oper, fans out one map per oper
+  group. Inlining values here drops that oper grouping — leave them empty.
+  (Selecting one SPECIFIC prior report by ordinal is a different case — see REFERENCE
+  RESOLUTION "#RN" below. Use empty slots only for the whole detected set.)
 - Convert dates:
   - yield_agent.ref_date: YYYYMMDD
   - wads_agent.wads_start_tm / wads_end_tm: YYYY-MM-DD
@@ -150,6 +154,7 @@ fills the exact value deterministically (this avoids guessing the wrong value):
 - The token type follows the AGENT (not the wording):
     lot / wafer history ("…lot 이력", "…wafer 이력") -> lot_history_agent  slots {{"lot_ids":"#N"}}
     fail history ("…불량이력")                        -> fail_history_agent slots {{"fail_type":"#N"}}
+    parameter relation tree ("…parameter 연관/relation tree") -> relation_tree_agent slots {{"fail_type":"#N","lotcd":"<product from context>"}}
     wafer map / cummap of a REPORT                    -> map_agent          slots {{"groupkey":"#RN","map_type":"cummap"}}
   i.e. a map/cummap of the N-th prior report uses the REPORT token "#RN" in
   groupkey (note the R). Leave map_oper empty — the system fills it from that report.
@@ -181,6 +186,10 @@ fills the exact value deterministically (this avoids guessing the wrong value):
   -> {{"requests":[{{"intent":"yield_analysis","agent":"yield_agent","slots":{{"lotcd":"5NA","unit":"monthly","periods":6}},"goal":"5NA 최근 6개월 수율 추세"}}],"answer":""}}
 - (follow-up) "두번째 lot 이력 보여줘"  (ordinal reference to a prior result)
   -> {{"requests":[{{"intent":"lot_history","agent":"lot_history_agent","slots":{{"lot_ids":"#2"}},"goal":"두번째 lot 이력"}}],"answer":""}}
+- (WADS list 후) "그 lot들 wafer map 보여줘"  (detected SET — empty slots, backend fills+groups by oper)
+  -> {{"requests":[{{"intent":"map","agent":"map_agent","slots":{{"lot_ids":"","map_oper":"","map_type":"binmap"}},"goal":"검출 lot wafer map"}}],"answer":""}}
+- (WADS report 후) "두번째 parameter relation tree"  (ordinal into the detected parameters)
+  -> {{"requests":[{{"intent":"relation_tree","agent":"relation_tree_agent","slots":{{"lotcd":"4SS","fail_type":"#2"}},"goal":"두번째 parameter 연관분석"}}],"answer":""}}
 
 === OUTPUT FORMAT ===
 Return exactly one JSON object. No markdown, no explanation:

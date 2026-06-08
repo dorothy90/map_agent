@@ -39,6 +39,9 @@ _ORDINAL_SLOT_SEMANTIC = {
     ("map_agent", "lot_ids"): "lot_id",
     ("fail_history_agent", "fail_type"): "parameter",
     ("wads_agent", "fail_type"): "parameter",
+    # TEMP(relation_tree fail_type): relation_tree now takes the detected parameter via
+    # fail_type, so "N번째 parameter relation tree" -> fail_type="#N" must resolve here.
+    ("relation_tree_agent", "fail_type"): "parameter",
 }
 
 # Fallback row keys per semantic, used when a result has no semantic-tagged column.

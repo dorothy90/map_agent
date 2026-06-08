@@ -99,10 +99,11 @@ CASES: list[dict] = [
         "kind": "interrupt_sequence",
     },
     {
+        # TEMP(relation_tree fail_type): required is now lotcd + fail_type (was cause_oper).
         "id": "relation_tree_interrupt_order",
         "steps": [
-            {"query": "relation tree 분석해줘", "expect_fields": ["lotcd", "cause_oper"]},
-            {"resume": {"lotcd": "4SS2DPD", "cause_oper": "STEP07"}, "expect_fields": []},
+            {"query": "relation tree 분석해줘", "expect_fields": ["lotcd", "fail_type"]},
+            {"resume": {"lotcd": "4SS2DPD", "fail_type": "VTH"}, "expect_fields": []},
         ],
         "kind": "interrupt_sequence",
     },

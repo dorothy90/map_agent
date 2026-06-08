@@ -4,6 +4,7 @@ Fail History Agent — 함수형 노드 (B2, no ReAct)
 search → wiki-first면 vault 합성본 그대로, 아니면 LLM 1회 합성 → 인용 문서 표시.
 LLM에게 도구 결정을 맡기지 않는다. 코드가 직접 함수 호출.
 """
+
 from __future__ import annotations
 
 import json
@@ -32,7 +33,7 @@ load_dotenv(override=True)
 
 logger = logging.getLogger("yield_agent.fail_history_agent")
 
-_fh_model = get_llm(model=os.getenv("RETRIEVE_CHAIN_MODEL"))
+_fh_model = get_llm(model="z-ai/glm-5.1")
 
 _PRODUCT_CODE_RE = re.compile(r"^[0-9][A-Za-z0-9]{2}$")
 _LOT_ID_RE = re.compile(r"^[A-Za-z0-9]{7}$")
@@ -47,22 +48,27 @@ def _product_filter_from_lotcd(value: str) -> str:
     if _PRODUCT_CODE_RE.fullmatch(text):
         return text
     if _LOT_ID_RE.fullmatch(text):
-        logger.info("[FH Agent] LOT ID-like lotcd ignored for product metadata filter: %s", text)
+        logger.info(
+            "[FH Agent] LOT ID-like lotcd ignored for product metadata filter: %s", text
+        )
         return ""
-    logger.info("[FH Agent] non-product lotcd ignored for product metadata filter: %s", text)
+    logger.info(
+        "[FH Agent] non-product lotcd ignored for product metadata filter: %s", text
+    )
     return ""
 
 
-
 def _extract_cited_doc_ids(answer: str) -> Set[str]:
-    return set(re.findall(r'\[FH-([^\]]+)\]', answer))
+    return set(re.findall(r"\[FH-([^\]]+)\]", answer))
 
 
 def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) -> str:
     if not results:
         return ""
     download_base = os.getenv("DOWNLOAD_BASE_URL", "").rstrip("/")
-    display = [r for r in results if r.get("doc_id") in cited_ids] if cited_ids else results
+    display = (
+        [r for r in results if r.get("doc_id") in cited_ids] if cited_ids else results
+    )
     if not display:
         display = results
 
@@ -76,15 +82,17 @@ def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) ->
         action = (r.get("action") or "").strip().replace("\n", " ")
         source_file = r.get("source_file") or r.get("filenm") or ""
         url = f"{download_base}/{source_file}" if download_base and source_file else ""
-        doc_name = source_file.split('/')[-1] if source_file else "다운로드"
+        doc_name = source_file.split("/")[-1] if source_file else "다운로드"
 
-        lines.append(f"**{i}. {date} | Product: `{product}` | Fail: `{fail_type}` | Oper: `{oper}`**")
+        lines.append(
+            f"**{i}. {date} | Product: `{product}` | Fail: `{fail_type}` | Oper: `{oper}`**"
+        )
         lines.append(f"- **원인:** {cause}")
         lines.append(f"- **조치:** {action}")
         if url:
             lines.append(f"- **문서:** [{doc_name}]({url})")
         lines.append("")
-        
+
     return "\n".join(lines).strip()
 
 
@@ -98,7 +106,9 @@ def _synthesize_answer(
 ) -> str:
     """raw 검색 결과 → 자연어 답변 (LLM 1회)."""
     current_date = datetime.now().strftime("%Y년 %m월 %d일")
-    system_prompt = FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE.format(current_date=current_date)
+    system_prompt = FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE.format(
+        current_date=current_date
+    )
 
     ctx_parts = []
     if lotcd:
@@ -113,7 +123,8 @@ def _synthesize_answer(
     results = raw.get("results", [])
     input_parts = [
         f"[사용자 쿼리]\n{query}",
-        f"[검색 결과 ({len(results)}건)]\n" + json.dumps(results, ensure_ascii=False, indent=2),
+        f"[검색 결과 ({len(results)}건)]\n"
+        + json.dumps(results, ensure_ascii=False, indent=2),
     ]
     if raw.get("retrieval_mode") == "wiki-assisted":
         wiki_body = raw.get("wiki_concept_body", "")
@@ -139,23 +150,33 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     lotcd = state.get("lotcd", "")
     product_filter = _product_filter_from_lotcd(lotcd)
     dh_query = state.get("dh_query", "")
-    dh_fail_type  = state.get("fail_type", "")
+    dh_fail_type = state.get("fail_type", "")
     dh_cause_oper = state.get("cause_oper", "")
 
     logger.info(
         "[FH Agent] lotcd=%s, product_filter=%s, dh_query=%s, dh_fail_type=%s, dh_cause_oper=%s",
-        lotcd, product_filter, dh_query, dh_fail_type, dh_cause_oper,
+        lotcd,
+        product_filter,
+        dh_query,
+        dh_fail_type,
+        dh_cause_oper,
     )
 
     # 요청별 격리 ContextVar 초기화
-    wiki_storage: Dict[str, Any] = {"hit_ids": [], "last_status": "skipped", "queries": []}
+    wiki_storage: Dict[str, Any] = {
+        "hit_ids": [],
+        "last_status": "skipped",
+        "queries": [],
+    }
     _wiki_payload_var.set(wiki_storage)
-    _supervisor_parsed_var.set({
-        "product": product_filter,
-        "fail_type": dh_fail_type,
-        "cause_oper": dh_cause_oper,
-        "query_hint": dh_query,
-    })
+    _supervisor_parsed_var.set(
+        {
+            "product": product_filter,
+            "fail_type": dh_fail_type,
+            "cause_oper": dh_cause_oper,
+            "query_hint": dh_query,
+        }
+    )
 
     messages = state.get("messages", [])
     last_human = next(
@@ -163,7 +184,9 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         None,
     )
     task_goal = state.get("current_task_goal", "")
-    query = task_goal or (last_human.content if last_human else f"{lotcd} 불량이력 조회")
+    query = task_goal or (
+        last_human.content if last_human else f"{lotcd} 불량이력 조회"
+    )
     logger.info("[FH Agent] 쿼리: %s (task_goal=%r)", query, task_goal)
 
     # 1) 검색 (함수 직접 호출)
@@ -198,18 +221,25 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
                 "fail_types": [dh_fail_type] if dh_fail_type else [],
                 "cause_opers": [dh_cause_oper] if dh_cause_oper else [],
             },
-            provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
+            provenance={
+                "task_id": state.get("current_task_id", ""),
+                "task_goal": state.get("current_task_goal", ""),
+            },
         )
         return {
             "messages": [error_message],
             "fail_history_artifacts": [],
             "fail_history_results": [],
-            "past_steps": [(state.get("current_task_id", ""), f"불량이력 영구 오류: {e}")],
+            "past_steps": [
+                (state.get("current_task_id", ""), f"불량이력 영구 오류: {e}")
+            ],
         }
 
     retrieval_mode = raw.get("retrieval_mode", "baseline")
     results = raw.get("results", [])
-    logger.info("[FH Agent] retrieval_mode=%s, results=%d", retrieval_mode, len(results))
+    logger.info(
+        "[FH Agent] retrieval_mode=%s, results=%d", retrieval_mode, len(results)
+    )
 
     # 2) 답변 합성
     if retrieval_mode == "wiki-first":
@@ -220,7 +250,9 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         logger.info("[FH Agent] 결과 0건 — LLM 호출 0회")
     else:
         try:
-            answer = _synthesize_answer(query, raw, product_filter, dh_fail_type, dh_cause_oper, config)
+            answer = _synthesize_answer(
+                query, raw, product_filter, dh_fail_type, dh_cause_oper, config
+            )
         except Exception as e:
             if is_transient_error(e):
                 logger.warning("[FH Agent] 합성 transient 오류, retry 위임: %s", e)
@@ -245,7 +277,9 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     else:
         message_content = f"### 💡 [답변]\n\n{answer}"
     result_message = AIMessage(content=message_content, name="fail_history_agent")
-    doc_ids = [r.get("doc_id") for r in results if isinstance(r, dict) and r.get("doc_id")]
+    doc_ids = [
+        r.get("doc_id") for r in results if isinstance(r, dict) and r.get("doc_id")
+    ]
     grounded_summary = derive_summary_from_rows(
         source_agent="fail_history_agent",
         rows=results,
@@ -269,8 +303,15 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             "cause_opers": [dh_cause_oper] if dh_cause_oper else [],
             "doc_ids": doc_ids,
         },
-        provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
-        metadata={"row_count": len(results), "cited_doc_count": len(cited_ids), "wiki_hit_count": len(wiki_storage.get("hit_ids") or [])},
+        provenance={
+            "task_id": state.get("current_task_id", ""),
+            "task_goal": state.get("current_task_goal", ""),
+        },
+        metadata={
+            "row_count": len(results),
+            "cited_doc_count": len(cited_ids),
+            "wiki_hit_count": len(wiki_storage.get("hit_ids") or []),
+        },
     )
 
     wiki_hit_ids = list(dict.fromkeys(wiki_storage.get("hit_ids") or []))
