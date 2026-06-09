@@ -26,8 +26,11 @@ AGENT_SLOT_RULES: dict[str, dict[str, Any]] = {
         "required": ("lot_ids",),
     },
     "relation_tree_agent": {
-        "allowed": {"lotcd", "cause_oper"},
-        "required": ("lotcd", "cause_oper"),
+        # TEMP(relation_tree fail_type): fail_type is now the analyzed parameter (required
+        # with lotcd). Without it in `allowed`, _clean_slots dropped a "#N" ordinal token
+        # before apply_ordinal_ref could resolve it -> silent interrupt. cause_oper stays optional.
+        "allowed": {"lotcd", "fail_type", "cause_oper"},
+        "required": ("lotcd", "fail_type"),
     },
     "ppt_export": {
         "allowed": set(),
