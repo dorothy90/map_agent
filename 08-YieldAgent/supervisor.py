@@ -1104,6 +1104,9 @@ action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
 - cancel이면 requests는 []로 둔다.
 - modify면 사용자 응답을 반영한 수정된 전체 요청 목록을 requests에 넣는다
   (기존 request 유지 + 요청된 작업 추가/변경).
+- 사용자가 이전 결과를 참조하면("N번째 리포트", "그 lot들", "검출 parameter" 등) 아래 제공되는
+  Structured context의 reports/rows에서 값을 읽어 slots에 넣어라. 값을 직접 모르면 슬롯에
+  "#N"(N번째 결과 행) 또는 "#RN"(N번째 리포트) 토큰을 넣으면 시스템이 정확히 채운다.
 """.strip()
 
 
@@ -1145,20 +1148,26 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         if not resp:
             break  # 빈 응답 → approve, LLM 호출 없이 즉시 통과
 
+        # #1: give the modify LLM the same structured-result context the planner gets,
+        # so result-dependent modifications ("3·4번째 리포트 파라미터도 추가") can resolve.
+        recent_results = state.get("recent_results", []) or []
+        recent_context = _recent_results_prompt_context(recent_results)
         try:
-            raw = _model.invoke(
-                [
-                    {"role": "system", "content": _PLAN_REVIEW_SYSTEM},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"현재 canonical requests:\n{json.dumps(canonical_requests, ensure_ascii=False)}\n\n"
-                            f"화면 표시용 현재 task 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n"
-                            f'사용자 응답: "{resp}"'
-                        ),
-                    },
-                ]
-            ).content.strip()
+            review_messages: list[dict] = [{"role": "system", "content": _PLAN_REVIEW_SYSTEM}]
+            if recent_context:
+                review_messages.append({
+                    "role": "system",
+                    "content": f"Structured context (prior results you may reference):\n{recent_context}",
+                })
+            review_messages.append({
+                "role": "user",
+                "content": (
+                    f"현재 canonical requests:\n{json.dumps(canonical_requests, ensure_ascii=False)}\n\n"
+                    f"화면 표시용 현재 task 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n"
+                    f'사용자 응답: "{resp}"'
+                ),
+            })
+            raw = _model.invoke(review_messages).content.strip()
             result = extract_json_from_llm(raw, PlanReviewResult)
         except Exception as e:
             logger.warning("[PlanReview] LLM 판단 실패 (%s) — 계획 재표시", e)
@@ -1168,6 +1177,13 @@ def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             normalize_canonical_request(request.model_dump())
             for request in result.requests
         ]
+        # #1: resolve ordinal refs ("#N"/"#RN") in the modified requests against
+        # recent_results, exactly like the planner — so a token the modify LLM emits
+        # for "N번째 리포트/parameter" is filled deterministically (never a wrong value).
+        for _cr in result_requests:
+            _cr["slots"], _ = apply_ordinal_ref(
+                _cr.get("agent", ""), _cr.get("slots") or {}, recent_results
+            )
         logger.info(
             "[PlanReview] action=%s requests=%s",
             result.action,
