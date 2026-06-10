@@ -310,66 +310,106 @@ def _get_recent_turns(
     return result
 
 
+# Full result blocks are emitted newest-first until this CHARACTER budget is hit;
+# older results then fall back to a 1-line summary so the planner still knows they
+# exist. A resource budget governs how much detail is shown — not a magic turn count
+# (#2: the planner was capped to the last 3 of K=10 accumulated results, so it was
+# blind to older referenceable results even though resolution covered all K).
+_RECENT_CONTEXT_FULL_BUDGET_CHARS = 6000
+
+_RECENT_CONTEXT_PREFERRED_KEYS = (
+    "parameter", "param", "fail_type", "cnt", "count", "detection_count",
+    "lot_id", "lot_ids", "wf_ids", "lotcd", "groupkey", "groupkeys",
+    "map_oper", "category", "end_tm",
+)
+
+
+def _recent_result_full_block(result: dict[str, Any]) -> list[str]:
+    """Full detail for one result: summary + per-report tags + up to 5 compact rows."""
+    rows = result.get("rows") or []
+    columns = [
+        {"name": column.get("name"), "semantic": column.get("semantic")}
+        for column in (result.get("columns") or [])
+        if isinstance(column, dict)
+    ][:8]
+    block = [
+        "result: "
+        f"result_id={result.get('result_id', '')} "
+        f"source_agent={result.get('source_agent', '')} "
+        f"kind={result.get('kind', '')} "
+        f"title={preview_text(result.get('title', ''), max_chars=80)} "
+        f"row_count={len(rows)} "
+        f"columns={json.dumps(columns, ensure_ascii=False)}"
+    ]
+    # carry-both: expose per-report ordinal/parameter/oper so the planner is aware of
+    # "N번째 리포트" targets, not just the per-wafer rows.
+    reports = result.get("reports") or []
+    report_tags = [
+        f"{rp.get('report_index', i)}:{rp.get('parameter', '')}/{rp.get('map_oper', '')}"
+        for i, rp in enumerate(reports, start=1)
+        if isinstance(rp, dict)
+    ]
+    if report_tags:
+        block.append(f"reports: [{', '.join(report_tags)}]")
+    for index, row in enumerate(rows[:5], start=1):
+        if not isinstance(row, dict):
+            continue
+        compact_row = {
+            key: row.get(key)
+            for key in _RECENT_CONTEXT_PREFERRED_KEYS
+            if row.get(key) not in (None, "")
+        }
+        if compact_row:
+            block.append(f"row_{index}: {json.dumps(compact_row, ensure_ascii=False)}")
+    return block
+
+
+def _recent_result_condensed_line(result: dict[str, Any]) -> str:
+    """One-line summary for older results kept for awareness (beyond the full budget)."""
+    rows = result.get("rows") or []
+    reports = result.get("reports") or []
+    params = _unique_texts(
+        [str(rp.get("parameter") or "") for rp in reports if isinstance(rp, dict)]
+        or [str(r.get("parameter") or r.get("fail_type") or "") for r in rows if isinstance(r, dict)]
+    )[:6]
+    return (
+        "result(condensed): "
+        f"result_id={result.get('result_id', '')} "
+        f"source_agent={result.get('source_agent', '')} "
+        f"kind={result.get('kind', '')} "
+        f"row_count={len(rows)} reports={len(reports)} "
+        f"params={json.dumps(params, ensure_ascii=False)}"
+    )
+
+
 def _recent_results_prompt_context(recent_results: list[dict[str, Any]]) -> str:
     """Compact structured result context for follow-up planning.
 
-    This intentionally exposes result metadata and row order, not raw assistant
-    prose, so follow-ups can refer to prior tables without replaying suggestions.
+    Exposes result metadata and row order (not raw assistant prose) so follow-ups can
+    refer to prior tables. #2: shows ALL accumulated results so the planner is aware of
+    every result it can reference — full detail for the most recent within a character
+    budget, a 1-line summary for older ones (no magic turn cap; budget governs).
     """
-
     if not recent_results:
         return ""
     lines = [
         "Recent structured results are ordered as displayed to the user. Follow-up references to ranks, rows, or prior items refer to that displayed order.",
     ]
-    preferred_keys = (
-        "parameter",
-        "param",
-        "fail_type",
-        "cnt",
-        "count",
-        "detection_count",
-        "lot_id",
-        "lot_ids",
-        "wf_ids",
-        "lotcd",
-        "groupkey",
-        "groupkeys",
-        "map_oper",
-        "category",
-        "end_tm",
-    )
-    for result in recent_results[-3:]:
-        rows = result.get("rows") or []
-        columns = [
-            {
-                "name": column.get("name"),
-                "semantic": column.get("semantic"),
-            }
-            for column in (result.get("columns") or [])
-            if isinstance(column, dict)
-        ][:8]
-        lines.append(
-            "result: "
-            f"result_id={result.get('result_id', '')} "
-            f"source_agent={result.get('source_agent', '')} "
-            f"kind={result.get('kind', '')} "
-            f"title={preview_text(result.get('title', ''), max_chars=80)} "
-            f"row_count={len(rows)} "
-            f"columns={json.dumps(columns, ensure_ascii=False)}"
-        )
-        for index, row in enumerate(rows[:5], start=1):
-            if not isinstance(row, dict):
-                continue
-            compact_row = {
-                key: row.get(key)
-                for key in preferred_keys
-                if row.get(key) not in (None, "")
-            }
-            if compact_row:
-                lines.append(
-                    f"row_{index}: {json.dumps(compact_row, ensure_ascii=False)}"
-                )
+    # Newest-first: keep emitting full blocks until the character budget is exhausted;
+    # always keep at least the newest result full.
+    budget = _RECENT_CONTEXT_FULL_BUDGET_CHARS
+    full_from = len(recent_results)
+    for i in range(len(recent_results) - 1, -1, -1):
+        cost = sum(len(x) for x in _recent_result_full_block(recent_results[i]))
+        if i != len(recent_results) - 1 and cost > budget:
+            break
+        budget -= cost
+        full_from = i
+    for i, result in enumerate(recent_results):
+        if i >= full_from:
+            lines.extend(_recent_result_full_block(result))
+        else:
+            lines.append(_recent_result_condensed_line(result))
     return "\n".join(lines)
 
 
