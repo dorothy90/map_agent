@@ -2240,6 +2240,9 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
             {
                 "map_type": task_params.get("map_type", "binmap"),
                 "map_oper": task_params.get("map_oper") or state.get("map_oper", ""),
+                # wafer-number pattern filter (LLM fills wf_mod/wf_rem; SQL applies MOD).
+                "wf_mod": task_params.get("wf_mod") or 0,
+                "wf_rem": task_params.get("wf_rem") or 0,
             }
         )
 
@@ -2664,6 +2667,8 @@ def supervisor_node(
                     "cause_oper",
                     "map_type",
                     "map_oper",
+                    "wf_mod",
+                    "wf_rem",
                     "dh_query",
                     "ref_date",
                     "unit",
@@ -2793,6 +2798,8 @@ class YieldQueryState(TypedDict):
     # Map Agent 파라미터 (map-specific)
     map_type: str
     map_oper: str
+    wf_mod: int  # wafer-number pattern divisor (짝수=2, 3배수=3 …); 0/absent = no filter
+    wf_rem: int  # remainder for the pattern (짝수=0, 홀수=1, N배수=0)
 
     # Fail History 파라미터
     dh_query: str

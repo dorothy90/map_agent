@@ -81,6 +81,8 @@ def _query_wafer_data(
     wf_ids: Optional[str] = None,
     groupkey: Optional[str] = None,
     oper: Optional[str] = None,
+    wf_mod: int = 0,
+    wf_rem: int = 0,
 ) -> list:
     """Oracle DB에서 wafer 데이터 조회
 
@@ -106,6 +108,16 @@ def _query_wafer_data(
         cur = conn.cursor()
         results = []
 
+        # wafer-number pattern filter (짝수/홀수/N배수): LLM sets wf_mod/wf_rem, code/SQL
+        # filters the ACTUAL wafers (no precomputed list / wafer-range assumption). Applied
+        # to every query path below — including groupkey/cummap, not just bare lot_ids.
+        try:
+            _wf_m, _wf_r = int(wf_mod or 0), int(wf_rem or 0)
+        except (TypeError, ValueError):
+            _wf_m, _wf_r = 0, 0
+        _mod_sql = " AND MOD(wf_id, :wfmod) = :wfrem" if _wf_m > 1 else ""
+        _mod_params = {"wfmod": _wf_m, "wfrem": _wf_r} if _wf_m > 1 else {}
+
         if lot_ids:
             lot_list = [x.strip() for x in lot_ids.split(",")]
             # 4↔T 변환: 각 lot_id에 대해 variant 추가
@@ -126,10 +138,11 @@ def _query_wafer_data(
                 for i, wf_id in enumerate(wf_id_list):
                     params[f"wf{i}"] = wf_id
 
+            params.update(_mod_params)
             sql = f"""
                 SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                 FROM {ORACLE_TABLE}
-                WHERE lot_id IN ({lot_placeholders}){wf_filter}{oper_filter}
+                WHERE lot_id IN ({lot_placeholders}){wf_filter}{_mod_sql}{oper_filter}
                 ORDER BY lot_id, wf_id
                 FETCH FIRST 10000 ROWS ONLY
             """
@@ -149,6 +162,10 @@ def _query_wafer_data(
                     parts = spec.rsplit(".", 1)
                     spec_lot_id = parts[0]
                     spec_wf_id = int(parts[1])
+                    # wafer pattern filter on an exact groupkey wafer: drop it if it does
+                    # not match (짝수/홀수/N배수 of a detected-wafer/cummap set).
+                    if _wf_m > 1 and spec_wf_id % _wf_m != _wf_r:
+                        continue
                     variants = lot_id_variants(spec_lot_id)
                     sql = f"""
                         SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
@@ -161,10 +178,10 @@ def _query_wafer_data(
                     sql = f"""
                         SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                         FROM {ORACLE_TABLE}
-                        WHERE lot_id IN (:lot_a, :lot_b){oper_filter}
+                        WHERE lot_id IN (:lot_a, :lot_b){_mod_sql}{oper_filter}
                         ORDER BY wf_id
                     """
-                    cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1], **oper_param})
+                    cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1], **_mod_params, **oper_param})
                 columns = [desc[0].lower() for desc in cur.description]
                 for row in cur.fetchall():
                     record = dict(zip(columns, row))
@@ -182,11 +199,11 @@ def _query_wafer_data(
                 sql = f"""
                     SELECT lot_id, wf_id, map_val_json, fab_id, lot_cd, start_tm, end_tm
                     FROM {ORACLE_TABLE}
-                    WHERE lot_id IN (:lot_a, :lot_b){oper_filter}
+                    WHERE lot_id IN (:lot_a, :lot_b){_mod_sql}{oper_filter}
                     ORDER BY wf_id
                     FETCH FIRST 10000 ROWS ONLY
                 """
-                cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1], **oper_param})
+                cur.execute(sql, {"lot_a": variants[0], "lot_b": variants[-1], **_mod_params, **oper_param})
             else:
                 placeholders = ",".join([f":wf{i}" for i in range(len(wf_id_list))])
                 sql = f"""
@@ -530,6 +547,8 @@ def show_wafer_map(
     groupkey: Optional[str] = None,
     map_type: str = "binmap",
     oper: Optional[str] = None,
+    wf_mod: int = 0,
+    wf_rem: int = 0,
 ) -> str:
     """Wafer map 시각화 (DB 조회 + PNG 생성)
 
@@ -537,7 +556,8 @@ def show_wafer_map(
         str: 결과 메시지 (PNG 파일 경로 포함)
     """
     map_data_list = _query_wafer_data(
-        lot_id=lot_id, lot_ids=lot_ids, wf_ids=wf_ids, groupkey=groupkey, oper=oper
+        lot_id=lot_id, lot_ids=lot_ids, wf_ids=wf_ids, groupkey=groupkey, oper=oper,
+        wf_mod=wf_mod, wf_rem=wf_rem,
     )
     if not map_data_list:
         return "조회된 데이터가 없습니다. lot_id와 wf_id를 확인해주세요."
@@ -622,10 +642,12 @@ def _handle_standard_map(state: dict) -> dict:
         groupkey = ",".join(str(v).strip() for v in groupkey if str(v).strip())
     map_type = state.get("map_type", "binmap")
     oper     = state.get("map_oper", "")
+    wf_mod   = state.get("wf_mod") or 0  # wafer-number pattern (짝수=2, 3배수=3 …); 0 = none
+    wf_rem   = state.get("wf_rem") or 0
 
     logger.info(
-        "[MapAgent] _handle_standard_map: lot_id=%r, lot_ids=%r, wf_ids=%r, groupkey=%r, map_type=%s, oper=%s",
-        lot_id, lot_ids, wf_ids, groupkey, map_type, oper,
+        "[MapAgent] _handle_standard_map: lot_id=%r, lot_ids=%r, wf_ids=%r, groupkey=%r, map_type=%s, oper=%s, wf_mod=%r, wf_rem=%r",
+        lot_id, lot_ids, wf_ids, groupkey, map_type, oper, wf_mod, wf_rem,
     )
 
     result_str = show_wafer_map(
@@ -635,6 +657,8 @@ def _handle_standard_map(state: dict) -> dict:
         groupkey=groupkey or None,
         map_type=map_type,
         oper=oper or None,
+        wf_mod=wf_mod,
+        wf_rem=wf_rem,
     )
 
     png_paths = re.findall(r'[\w./\-]+\.png', result_str)

@@ -84,8 +84,11 @@ present there, leave that slot empty or omit it.
 3. map_agent
    capability: wafer binmap/cummap visualization
    intents: map
-   slots: lot_ids, wf_ids, groupkey, map_type, map_oper
+   slots: lot_ids, wf_ids, groupkey, map_type, map_oper, wf_mod, wf_rem
    map_type: "binmap"|"cummap"|"all"; map_oper: "PT1H"|"PT1C".
+   wf_mod/wf_rem: wafer 번호 패턴 필터 (정수). 특정 번호 패턴의 wafer만 보려는 경우에만:
+     "짝수"->wf_mod=2,wf_rem=0 ; "홀수"->wf_mod=2,wf_rem=1 ; "3배수"->wf_mod=3,wf_rem=0 ;
+     "N배수"->wf_mod=N,wf_rem=0. 번호 패턴 언급이 없으면 둘 다 생략한다.
 
 4. fail_history_agent
    capability: defect/fail history RAG search
