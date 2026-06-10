@@ -585,6 +585,9 @@ class RecentResultIndexEntry(BaseModel):
     columns: list[ResultColumn] = Field(default_factory=list)
     rows: list[dict[str, Any]] = Field(default_factory=list)
     artifact_refs: list[RecentArtifactRef] = Field(default_factory=list)
+    # carry-both (i): per-report rows (html-stripped) for report-ordinal (#RN) resolution,
+    # carried separately from `rows` (which stays per-wafer for #N and planner context).
+    reports: list[dict[str, Any]] = Field(default_factory=list)
 
     @field_validator("rows")
     @classmethod
@@ -596,6 +599,17 @@ class RecentResultIndexEntry(BaseModel):
                 raise ValueError(f"rows[{i}] must be an object")
             _ensure_json_compatible(row, f"rows[{i}]")
         return rows
+
+    @field_validator("reports")
+    @classmethod
+    def reports_must_be_bounded_json_objects(cls, reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if len(reports) > MAX_RECENT_RESULT_ROWS:
+            raise ValueError(f"reports must contain at most {MAX_RECENT_RESULT_ROWS} reports")
+        for i, report in enumerate(reports):
+            if not isinstance(report, dict):
+                raise ValueError(f"reports[{i}] must be an object")
+            _ensure_json_compatible(report, f"reports[{i}]")
+        return reports
 
 
 class ResultEnvelopeV1(BaseModel):
@@ -842,6 +856,10 @@ def build_recent_result_index_entry(payload: ResultEnvelopeV1 | dict[str, Any]) 
         for ref in dumped.get("artifact_refs", [])[:MAX_RECENT_ARTIFACT_REFS]
         if ref.get("artifact_id")
     ]
+    # carry-both (i): surface the source agent's per-report rows (e.g. wads reports) so
+    # report-ordinal (#RN) resolution can index the Nth report independently of `rows`.
+    report_index = (dumped.get("extensions") or {}).get(dumped["source_agent"], {}).get("reports", [])
+    reports = [r for r in report_index if isinstance(r, dict)][:MAX_RECENT_RESULT_ROWS]
     entry = RecentResultIndexEntry(
         result_id=dumped["result_id"],
         source_agent=dumped["source_agent"],
@@ -851,6 +869,7 @@ def build_recent_result_index_entry(payload: ResultEnvelopeV1 | dict[str, Any]) 
         columns=dumped.get("columns", []),
         rows=rows,
         artifact_refs=artifact_refs,
+        reports=reports,
     )
     return entry.model_dump(mode="json")
 

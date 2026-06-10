@@ -1376,12 +1376,22 @@ def _is_report_row(row: Any) -> bool:
     )
 
 
+def _report_rows_of(result: dict) -> list:
+    """Per-report rows for #RN ordinal resolution. carry-both (i): prefer the dedicated
+    `reports` channel (carried even when displayed `rows` are per-wafer); fall back to
+    legacy report-shaped rows for results produced before the channel existed."""
+    reports = result.get("reports")
+    if isinstance(reports, list) and any(_is_report_row(r) for r in reports):
+        return [r for r in reports if _is_report_row(r)]
+    return [r for r in (result.get("rows") or []) if _is_report_row(r)]
+
+
 def _latest_report_result(state: dict) -> dict | None:
-    """Most-recent wads result whose rows are report rows (report_index/groupkeys)."""
+    """Most-recent wads result carrying per-report rows (reports channel or legacy rows)."""
     for result in reversed(state.get("recent_results", []) or []):
         if not isinstance(result, dict) or result.get("source_agent") != "wads_agent":
             continue
-        if any(_is_report_row(r) for r in (result.get("rows") or [])):
+        if _report_rows_of(result):
             return result
     return None
 
@@ -1396,9 +1406,9 @@ def _resolve_report_ordinal(state: dict, ordinal: int) -> tuple[list[str], str] 
     result = _latest_report_result(state)
     if not result:
         return None
-    rows = result.get("rows") or []
+    rows = _report_rows_of(result)
     idx = ordinal - 1
-    if idx < 0 or idx >= len(rows) or not _is_report_row(rows[idx]):
+    if idx < 0 or idx >= len(rows):
         return None
     row = rows[idx]
     groupkeys = _unique_texts(_groupkey_list(row.get("groupkeys") or row.get("groupkey")))

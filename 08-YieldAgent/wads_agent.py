@@ -682,6 +682,20 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     result_message = AIMessage(content=answer, name="wads_agent")
     out_messages: list = [result_message]
     row_parameters = _wads_parameters_from_rows(result_rows)
+    # carry-both (i): keep the per-report structure (html-stripped) alongside the
+    # displayed rows so report-ordinal (#RN) can resolve the Nth report even when
+    # `result_rows` is per-wafer (sql_result-driven). Order by END_TM DESC so the
+    # channel matches the displayed table (SQL ORDER BY END_TM DESC) — i.e. "첫번째
+    # 리포트" == the first report the user sees — instead of get_html_report call order.
+    report_index_rows = sorted(
+        (
+            {k: v for k, v in report.items() if k != "html"}
+            for report in (reports_payload or [])
+            if isinstance(report, dict)
+        ),
+        key=lambda rep: str(rep.get("end_tm") or ""),
+        reverse=True,
+    )
     attach_result_envelope(
         result_message,
         logger=logger,
@@ -691,6 +705,9 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         title="wads_result",
         summary=answer,
         rows=result_rows,
+        extensions=(
+            {"wads_agent": {"reports": report_index_rows}} if report_index_rows else None
+        ),
         entities={
             "lot_ids": wads_lot_ids,
             "products": [lotcd] if lotcd else [],
