@@ -243,6 +243,13 @@ _AGENT_NAMES = {
 
 _MAX_CONTEXT_TOKENS = 30_000
 
+# Planner referent window: how many recent raw conversation turns the planner sees ONLY
+# to resolve follow-up referents ("그거/처음 거/아까 그"). Kept tight on purpose — recent
+# referents are near, and older raw turns mislead resolution; cross-turn DATA depth is
+# carried by recent_results (K=10, shown in full via _recent_results_prompt_context), not
+# raw turns. _MAX_CONTEXT_TOKENS still trims this further as a safety budget.
+_PLANNER_REFERENT_TURNS = 3
+
 
 def _get_recent_turns(
     messages: list, max_turns: int = 5, exclude_last: HumanMessage | None = None
@@ -777,7 +784,7 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     # 축2: inject the recent N=3 conversation turns (raw user/assistant text, token-
     # trimmed) so the planner can resolve follow-up REFERENTS ("그거/처음 거/아까 그").
     # Slot VALUES still come only from the latest request + structured context (prompt).
-    recent_turns = _get_recent_turns(messages, max_turns=3, exclude_last=last_human)
+    recent_turns = _get_recent_turns(messages, max_turns=_PLANNER_REFERENT_TURNS, exclude_last=last_human)
     invoke_messages.extend(recent_turns)
     invoke_messages.append({"role": "user", "content": last_human.content})
     emit_runtime_detail(
