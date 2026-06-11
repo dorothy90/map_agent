@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import re
-import textwrap
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -38,6 +37,7 @@ logger = logging.getLogger("yield_agent.map_agent")
 
 from common import (  # noqa: E402
     get_oracle_connection as _get_oracle_connection_common,
+    html_escape as _h,
     lot_id_variants,
     timed,
 )
@@ -541,38 +541,43 @@ def _query_wafer_data_by_date(
         conn.close()
 
 
-def _cummap_subtitle(
-    map_data_list: list,
+def _wafer_list_details_html(
+    render_rows: list,
     label: str = "",
+    oper: str = "",
     wf_mod: int = 0,
     wf_rem: int = 0,
-    width: int = 70,
-    max_lines: int = 2,
-) -> Optional[str]:
-    """cummap 제목 아래 subtitle. 요청 문자열이 아니라 **실제로 그려진 wafer**(map_data_list)
-    에서 만들어 필터 적용 사실을 보이게 하고, 고정 폭으로 wrap해 PNG 크기를 일정하게 한다."""
-    parts: list[str] = []
-    if label:
-        parts.append(str(label))
-    wfs = sorted(
-        {int(d["wf_id"]) for d in map_data_list
-         if str(d.get("wf_id", "")).strip().lstrip("-").isdigit()}
-    )
-    if wfs:
-        parts.append(f"Wafers ({len(wfs)}): " + ",".join(str(w) for w in wfs))
+    max_height: int = 420,
+) -> str:
+    """접이식(<details>) 'wafer list 보기' 버튼 — JS-free·복사 가능한 표.
+    컬럼: LOT / WF / 검출파라미터 / 검출날짜 / Oper. render_rows=[(lot, wf:int, end_tm)].
+    parameter는 #RN 리포트 라벨(label), 날짜는 wafer별 end_tm, oper는 map_oper."""
+    if not render_rows:
+        return ""
     try:
         _m, _r = int(wf_mod or 0), int(wf_rem or 0)
     except (TypeError, ValueError):
         _m, _r = 0, 0
-    if _m > 1:
-        parts.append(f"Pattern: MOD(wf_id,{_m})={_r}")
-    if not parts:
-        return None
-    wrapped = textwrap.wrap(" | ".join(parts), width=width) or [""]
-    if len(wrapped) > max_lines:
-        wrapped = wrapped[:max_lines]
-        wrapped[-1] = wrapped[-1].rstrip() + " …"
-    return "\n".join(wrapped)
+    pat = f" · MOD(wf_id,{_m})={_r}" if _m > 1 else ""
+    th = 'style="padding:3px 10px;border-bottom:2px solid #ccc;text-align:left;white-space:nowrap"'
+    td = 'style="padding:2px 10px;border-bottom:1px solid #eee;white-space:nowrap"'
+    body = "".join(
+        f"<tr><td {td}>{_h(lot)}</td><td {td}>{wf}</td>"
+        f"<td {td}>{_h(label) or '-'}</td>"
+        f"<td {td}>{_h(str(end_tm)[:10]) or '-'}</td>"
+        f"<td {td}>{_h(oper) or '-'}</td></tr>"
+        for lot, wf, end_tm in render_rows
+    )
+    return (
+        '<details style="margin:6px 0;font-size:12px">'
+        '<summary style="cursor:pointer;font-weight:600">'
+        f"📋 wafer list 보기 ({len(render_rows)}개){_h(pat)}</summary>"
+        f'<div style="max-height:{max_height}px;overflow:auto;margin-top:6px">'
+        '<table style="border-collapse:collapse">'
+        f"<thead><tr><th {th}>LOT</th><th {th}>WF</th><th {th}>Parameter</th>"
+        f"<th {th}>Date</th><th {th}>Oper</th></tr></thead>"
+        f"<tbody>{body}</tbody></table></div></details>"
+    )
 
 
 def show_wafer_map(
@@ -596,7 +601,7 @@ def show_wafer_map(
         wf_mod=wf_mod, wf_rem=wf_rem,
     )
     if not map_data_list:
-        return "조회된 데이터가 없습니다. lot_id와 wf_id를 확인해주세요."
+        return "조회된 데이터가 없습니다. lot_id와 wf_id를 확인해주세요.", []
 
     n_wafers = len(map_data_list)
     lot_info = map_data_list[0]["lot_id"]
@@ -613,11 +618,10 @@ def show_wafer_map(
             results.append(f"Binmap: {filepath}")
 
     if "cummap" in requested_types:
-        # subtitle from the ACTUAL rendered wafers (not the requested string), so a wf_mod
-        # filter is visible and the title width (→ PNG size) stays bounded.
-        cummap_subtitle = _cummap_subtitle(map_data_list, label=label, wf_mod=wf_mod, wf_rem=wf_rem)
+        # No wafer-list subtitle on the PNG — the rendered wafers go into a groupkey
+        # table beside the image (multi-lot safe + keeps the PNG a fixed size).
         filepath, avg_pass_rate = _visualize_cummap(
-            map_data_list, bin_type=bin_type, subtitle=cummap_subtitle, oper=oper,
+            map_data_list, bin_type=bin_type, subtitle=None, oper=oper,
         )
         if filepath:
             results.append(f"Cummap: {filepath} (평균 Pass Rate: {avg_pass_rate:.1f}%)")
@@ -625,12 +629,18 @@ def show_wafer_map(
             results.append("Cummap 생성 실패")
 
     if not results:
-        return "유효한 map_type이 지정되지 않았습니다. (binmap, cummap, all 중 선택)"
+        return "유효한 map_type이 지정되지 않았습니다. (binmap, cummap, all 중 선택)", []
 
+    # actual rendered (lot, wafer, end_tm) for the collapsible wafer-list table
+    render_rows = sorted(
+        (str(d.get("lot_id", "")), int(d["wf_id"]), str(d.get("end_tm") or ""))
+        for d in map_data_list
+        if str(d.get("wf_id", "")).strip().lstrip("-").isdigit()
+    )
     result_msg = "이미지가 생성되었습니다:\n"
     result_msg += "\n".join(f"  - {r}" for r in results)
     result_msg += f"\n\n- Lot: {lot_info}\n- Wafer 수: {n_wafers}개\n- Oper: {oper}"
-    return result_msg
+    return result_msg, render_rows
 
 
 # ============================================================
@@ -682,7 +692,7 @@ def _handle_standard_map(state: dict) -> dict:
         lot_id, lot_ids, wf_ids, groupkey, map_type, oper, wf_mod, wf_rem, label,
     )
 
-    result_str = show_wafer_map(
+    result_str, render_rows = show_wafer_map(
         lot_id=None if groupkey else (lot_id or None),
         lot_ids=None if groupkey else (lot_ids or None),
         wf_ids=None if groupkey else (wf_ids or None),
@@ -698,11 +708,21 @@ def _handle_standard_map(state: dict) -> dict:
     html_parts = []
     for p in png_paths:
         if os.path.exists(p):
-            kind = "Cummap" if "cummap" in os.path.basename(p).lower() else "Binmap"
+            is_cummap = "cummap" in os.path.basename(p).lower()
+            kind = "Cummap" if is_cummap else "Binmap"
             label_tag = f"{label} " if label else ""
             oper_tag = f"[{oper}] " if oper else ""
             caption = f"{oper_tag}{label_tag}{kind}".strip()
-            html_parts.append(_png_to_html(p, caption))
+            img_html = _png_to_html(p, caption)
+            # cummap: a collapsible "wafer list 보기" with the actual rendered wafers
+            # (binmap subplots are already labeled lot.wf).
+            if is_cummap:
+                details_html = _wafer_list_details_html(
+                    render_rows, label=label, oper=oper, wf_mod=wf_mod, wf_rem=wf_rem
+                )
+                if details_html:
+                    img_html = f"<div>{img_html}{details_html}</div>"
+            html_parts.append(img_html)
     map_html = "\n".join(html_parts) if html_parts else ""
 
     artifacts = []
