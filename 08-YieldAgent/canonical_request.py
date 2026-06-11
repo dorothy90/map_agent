@@ -13,7 +13,7 @@ AGENT_SLOT_RULES: dict[str, dict[str, Any]] = {
         "required": (),
     },
     "map_agent": {
-        "allowed": {"lot_ids", "wf_ids", "groupkey", "map_type", "map_oper", "wf_mod", "wf_rem"},
+        "allowed": {"lot_ids", "wf_ids", "groupkey", "map_type", "map_oper", "wf_mod", "wf_rem", "map_label"},
         "required": ("map_oper",),
         "required_any": (("lot_ids", "groupkey"),),
     },

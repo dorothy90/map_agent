@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import textwrap
 import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -540,6 +541,40 @@ def _query_wafer_data_by_date(
         conn.close()
 
 
+def _cummap_subtitle(
+    map_data_list: list,
+    label: str = "",
+    wf_mod: int = 0,
+    wf_rem: int = 0,
+    width: int = 70,
+    max_lines: int = 2,
+) -> Optional[str]:
+    """cummap 제목 아래 subtitle. 요청 문자열이 아니라 **실제로 그려진 wafer**(map_data_list)
+    에서 만들어 필터 적용 사실을 보이게 하고, 고정 폭으로 wrap해 PNG 크기를 일정하게 한다."""
+    parts: list[str] = []
+    if label:
+        parts.append(str(label))
+    wfs = sorted(
+        {int(d["wf_id"]) for d in map_data_list
+         if str(d.get("wf_id", "")).strip().lstrip("-").isdigit()}
+    )
+    if wfs:
+        parts.append(f"Wafers ({len(wfs)}): " + ",".join(str(w) for w in wfs))
+    try:
+        _m, _r = int(wf_mod or 0), int(wf_rem or 0)
+    except (TypeError, ValueError):
+        _m, _r = 0, 0
+    if _m > 1:
+        parts.append(f"Pattern: MOD(wf_id,{_m})={_r}")
+    if not parts:
+        return None
+    wrapped = textwrap.wrap(" | ".join(parts), width=width) or [""]
+    if len(wrapped) > max_lines:
+        wrapped = wrapped[:max_lines]
+        wrapped[-1] = wrapped[-1].rstrip() + " …"
+    return "\n".join(wrapped)
+
+
 def show_wafer_map(
     lot_id: Optional[str] = None,
     lot_ids: Optional[str] = None,
@@ -549,6 +584,7 @@ def show_wafer_map(
     oper: Optional[str] = None,
     wf_mod: int = 0,
     wf_rem: int = 0,
+    label: str = "",
 ) -> str:
     """Wafer map 시각화 (DB 조회 + PNG 생성)
 
@@ -577,14 +613,9 @@ def show_wafer_map(
             results.append(f"Binmap: {filepath}")
 
     if "cummap" in requested_types:
-        subtitle_parts = []
-        if lot_ids:
-            subtitle_parts.append(f"Lots: {lot_ids}")
-        if wf_ids:
-            subtitle_parts.append(f"Wafers: {wf_ids}")
-        if groupkey:
-            subtitle_parts.append(f"Groupkey: {groupkey}")
-        cummap_subtitle = " | ".join(subtitle_parts) if subtitle_parts else None
+        # subtitle from the ACTUAL rendered wafers (not the requested string), so a wf_mod
+        # filter is visible and the title width (→ PNG size) stays bounded.
+        cummap_subtitle = _cummap_subtitle(map_data_list, label=label, wf_mod=wf_mod, wf_rem=wf_rem)
         filepath, avg_pass_rate = _visualize_cummap(
             map_data_list, bin_type=bin_type, subtitle=cummap_subtitle, oper=oper,
         )
@@ -644,10 +675,11 @@ def _handle_standard_map(state: dict) -> dict:
     oper     = state.get("map_oper", "")
     wf_mod   = state.get("wf_mod") or 0  # wafer-number pattern (짝수=2, 3배수=3 …); 0 = none
     wf_rem   = state.get("wf_rem") or 0
+    label    = state.get("map_label") or ""  # e.g. report parameter "JUNCTION" (#RN cummap)
 
     logger.info(
-        "[MapAgent] _handle_standard_map: lot_id=%r, lot_ids=%r, wf_ids=%r, groupkey=%r, map_type=%s, oper=%s, wf_mod=%r, wf_rem=%r",
-        lot_id, lot_ids, wf_ids, groupkey, map_type, oper, wf_mod, wf_rem,
+        "[MapAgent] _handle_standard_map: lot_id=%r, lot_ids=%r, wf_ids=%r, groupkey=%r, map_type=%s, oper=%s, wf_mod=%r, wf_rem=%r, label=%r",
+        lot_id, lot_ids, wf_ids, groupkey, map_type, oper, wf_mod, wf_rem, label,
     )
 
     result_str = show_wafer_map(
@@ -659,6 +691,7 @@ def _handle_standard_map(state: dict) -> dict:
         oper=oper or None,
         wf_mod=wf_mod,
         wf_rem=wf_rem,
+        label=label,
     )
 
     png_paths = re.findall(r'[\w./\-]+\.png', result_str)
@@ -666,7 +699,9 @@ def _handle_standard_map(state: dict) -> dict:
     for p in png_paths:
         if os.path.exists(p):
             kind = "Cummap" if "cummap" in os.path.basename(p).lower() else "Binmap"
-            caption = f"[{oper}] {kind}" if oper else kind
+            label_tag = f"{label} " if label else ""
+            oper_tag = f"[{oper}] " if oper else ""
+            caption = f"{oper_tag}{label_tag}{kind}".strip()
             html_parts.append(_png_to_html(p, caption))
     map_html = "\n".join(html_parts) if html_parts else ""
 

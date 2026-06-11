@@ -1459,8 +1459,8 @@ def _latest_report_result(state: dict) -> dict | None:
     return None
 
 
-def _resolve_report_ordinal(state: dict, ordinal: int) -> tuple[list[str], str] | None:
-    """row[ordinal-1] of the latest report result -> (groupkeys, map_oper).
+def _resolve_report_ordinal(state: dict, ordinal: int) -> tuple[list[str], str, str] | None:
+    """row[ordinal-1] of the latest report result -> (groupkeys, map_oper, parameter).
 
     None if there is no report-structured result or the ordinal is out of range —
     the caller marks it unresolved so the dispatch missing-param backstop asks
@@ -1477,7 +1477,7 @@ def _resolve_report_ordinal(state: dict, ordinal: int) -> tuple[list[str], str] 
     groupkeys = _unique_texts(_groupkey_list(row.get("groupkeys") or row.get("groupkey")))
     if not groupkeys:
         return None
-    return groupkeys, _map_oper_from_wads_row(row)
+    return groupkeys, _map_oper_from_wads_row(row), str(row.get("parameter") or "")
 
 
 def _apply_report_ordinal_to_map_task(task: dict, state: dict, trace: list[dict]) -> dict:
@@ -1493,10 +1493,12 @@ def _apply_report_ordinal_to_map_task(task: dict, state: dict, trace: list[dict]
     ordinal = int(match.group(1))
     resolved = _resolve_report_ordinal(state, ordinal)
     if resolved:
-        groupkeys, oper = resolved
+        groupkeys, oper, parameter = resolved
         params["groupkey"] = ",".join(groupkeys)
         if oper and _is_placeholder_or_empty(params.get("map_oper")):
             params["map_oper"] = oper
+        if parameter:  # carry the report's parameter as the cummap display label
+            params["map_label"] = parameter
         trace.append({
             "event": "report_ordinal_resolved", "task_id": task.get("task_id", ""),
             "agent": "map_agent", "ordinal": ordinal,
@@ -2243,6 +2245,8 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
                 # wafer-number pattern filter (LLM fills wf_mod/wf_rem; SQL applies MOD).
                 "wf_mod": task_params.get("wf_mod") or 0,
                 "wf_rem": task_params.get("wf_rem") or 0,
+                # cummap display label (backend-resolved, e.g. #RN report parameter).
+                "map_label": task_params.get("map_label") or "",
             }
         )
 
@@ -2669,6 +2673,7 @@ def supervisor_node(
                     "map_oper",
                     "wf_mod",
                     "wf_rem",
+                    "map_label",
                     "dh_query",
                     "ref_date",
                     "unit",
@@ -2800,6 +2805,7 @@ class YieldQueryState(TypedDict):
     map_oper: str
     wf_mod: int  # wafer-number pattern divisor (짝수=2, 3배수=3 …); 0/absent = no filter
     wf_rem: int  # remainder for the pattern (짝수=0, 홀수=1, N배수=0)
+    map_label: str  # display label for the cummap (e.g. #RN report parameter "JUNCTION")
 
     # Fail History 파라미터
     dh_query: str
