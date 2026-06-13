@@ -460,7 +460,51 @@ def _visualize_cummap_inner(
     valid_rates = pass_rate[~np.isnan(pass_rate)]
     avg_pass_rate = float(np.mean(valid_rates) * 100) if len(valid_rates) > 0 else 0.0
 
-    fig, ax = plt.subplots(figsize=(10, 8))
+    import matplotlib.patches as patches
+    
+    fig, ax = plt.subplots(figsize=(8, 7))
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#f8fafc")
+    
+    # Softer, modern green-to-red gradient color palette
+    colors = ["#ef4444", "#f59e0b", "#10b981"]
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list("modern_yield", colors)
+    
+    im = ax.imshow(pass_rate, cmap=cmap, vmin=0, vmax=1, interpolation="nearest", zorder=2)
+    
+    # Wafer circular boundary
+    center_x = (width - 1) / 2.0
+    center_y = (height - 1) / 2.0
+    radius = max(width, height) / 2.0 + 0.2
+    
+    wafer_circle = patches.Circle(
+        (center_x, center_y),
+        radius=radius,
+        edgecolor="#94a3b8",
+        facecolor="none",
+        linewidth=2.5,
+        linestyle="-",
+        alpha=0.8,
+        zorder=3
+    )
+    ax.add_patch(wafer_circle)
+    
+    # White grid lines separating dies
+    ax.set_xticks(np.arange(-0.5, width, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, height, 1), minor=True)
+    ax.grid(which="minor", color="#ffffff", linestyle="-", linewidth=1.5, zorder=2.5)
+    
+    # Ticks formatting matching modern slate palette
+    ax.set_xticks(np.arange(0, width, max(1, width // 5)))
+    ax.set_yticks(np.arange(0, height, max(1, height // 5)))
+    ax.set_xticklabels([str(int(x + min_col)) for x in ax.get_xticks()], fontsize=8, color="#64748b")
+    ax.set_yticklabels([str(int(y + min_row)) for y in ax.get_yticks()], fontsize=8, color="#64748b")
+    ax.tick_params(colors="#cbd5e1", width=1, length=4, which="major")
+    ax.tick_params(bottom=False, left=False, which="minor")
+    
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+        
     unique_lots = list(set(d["lot_id"] for d in map_data_list))
     cat_label = f" [{category_name}]" if category_name else ""
     oper_label = f"[{oper}] " if oper else ""
@@ -470,15 +514,19 @@ def _visualize_cummap_inner(
         title = f"{oper_label}Cummap{cat_label} ({bin_type}) - {len(unique_lots)} Lots\n({n_wafers} wafers, Avg Pass Rate: {avg_pass_rate:.1f}%)"
     if subtitle:
         title += f"\n{subtitle}"
-    ax.set_title(title, fontsize=14)
-
-    im = ax.imshow(pass_rate, cmap="RdYlGn", vmin=0, vmax=1, interpolation="nearest")
-    cbar = plt.colorbar(im, ax=ax, shrink=0.8)
-    cbar.set_label("Pass Rate", fontsize=12)
+        
+    ax.set_title(title, fontsize=11, fontweight="bold", pad=12, color="#1e293b")
+    ax.set_xlabel("Col", fontsize=9, fontweight="semibold", color="#64748b", labelpad=4)
+    ax.set_ylabel("Row", fontsize=9, fontweight="semibold", color="#64748b", labelpad=4)
+    
+    # Modern colorbar
+    cbar = fig.colorbar(im, ax=ax, shrink=0.7, aspect=22, pad=0.05)
+    cbar.outline.set_visible(False)
+    cbar.ax.tick_params(size=0, labelsize=8, colors="#64748b")
     cbar.set_ticks([0, 0.25, 0.5, 0.75, 1.0])
     cbar.set_ticklabels(["0%\n(Fail)", "25%", "50%", "75%", "100%\n(Pass)"])
-    ax.set_xlabel("Col")
-    ax.set_ylabel("Row")
+    cbar.set_label("Pass Rate", fontsize=9, fontweight="bold", color="#475569", labelpad=8)
+    
     plt.tight_layout()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -547,7 +595,7 @@ def _wafer_list_details_html(
     oper: str = "",
     wf_mod: int = 0,
     wf_rem: int = 0,
-    max_height: int = 420,
+    max_height: int = 200,
 ) -> str:
     """접이식(<details>) 'wafer list 보기' 버튼 — JS-free·복사 가능한 표.
     컬럼: LOT / WF / 검출파라미터 / 검출날짜 / Oper. render_rows=[(lot, wf:int, end_tm)].
@@ -559,24 +607,36 @@ def _wafer_list_details_html(
     except (TypeError, ValueError):
         _m, _r = 0, 0
     pat = f" · MOD(wf_id,{_m})={_r}" if _m > 1 else ""
-    th = 'style="padding:3px 10px;border-bottom:2px solid #ccc;text-align:left;white-space:nowrap"'
-    td = 'style="padding:2px 10px;border-bottom:1px solid #eee;white-space:nowrap"'
     body = "".join(
-        f"<tr><td {td}>{_h(lot)}</td><td {td}>{wf}</td>"
-        f"<td {td}>{_h(label) or '-'}</td>"
-        f"<td {td}>{_h(str(end_tm)[:10]) or '-'}</td>"
-        f"<td {td}>{_h(oper) or '-'}</td></tr>"
+        f"<tr>"
+        f'<td><span class="badge-lot">{_h(lot)}</span></td>'
+        f'<td><span class="badge-wafer">#{wf}</span></td>'
+        f"<td>{_h(label) or '-'}</td>"
+        f"<td>{_h(str(end_tm)[:10]) or '-'}</td>"
+        f"<td>{_h(oper) or '-'}</td>"
+        f"</tr>"
         for lot, wf, end_tm in render_rows
     )
     return (
-        '<details style="margin:6px 0;font-size:12px">'
-        '<summary style="cursor:pointer;font-weight:600">'
-        f"📋 wafer list 보기 ({len(render_rows)}개){_h(pat)}</summary>"
-        f'<div style="max-height:{max_height}px;overflow:auto;margin-top:6px">'
-        '<table style="border-collapse:collapse">'
-        f"<thead><tr><th {th}>LOT</th><th {th}>WF</th><th {th}>Parameter</th>"
-        f"<th {th}>Date</th><th {th}>Oper</th></tr></thead>"
-        f"<tbody>{body}</tbody></table></div></details>"
+        f'<details class="wafer-details">'
+        f'<summary>'
+        f"📋 Wafer List ({len(render_rows)}개){_h(pat)}"
+        f'</summary>'
+        f'<div class="wafer-scroll-container" style="max-height:{max_height}px">'
+        f'<table class="wafer-table">'
+        f"<thead>"
+        f"<tr>"
+        f"<th>LOT ID</th>"
+        f"<th>Wafer ID</th>"
+        f"<th>Parameter</th>"
+        f"<th>Date</th>"
+        f"<th>Oper</th>"
+        f"</tr>"
+        f"</thead>"
+        f"<tbody>{body}</tbody>"
+        f"</table>"
+        f"</div>"
+        f"</details>"
     )
 
 
@@ -647,19 +707,14 @@ def show_wafer_map(
 # HTML 변환 헬퍼
 # ============================================================
 def _png_to_html(png_path: str, title: str) -> str:
-    """PNG 파일을 base64 인코딩하여 <img> 태그 HTML로 반환 후 파일 삭제"""
+    """PNG 파일을 base64 인코딩하여 data URL로 반환 후 파일 삭제"""
     with open(png_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode()
     try:
         os.remove(png_path)
     except OSError:
         logger.debug("PNG 임시 파일 삭제 실패: %s", png_path)
-    return (
-        f'<div style="margin:8px 0">'
-        f'<p style="font-weight:600">{title}</p>'
-        f'<img src="data:image/png;base64,{b64}" style="max-width:100%"/>'
-        f'</div>'
-    )
+    return f"data:image/png;base64,{b64}"
 
 
 # ============================================================
@@ -676,6 +731,181 @@ def _result_to_html(result_str: str, label: str, oper: str, render_rows: list, w
     """show_wafer_map 결과의 PNG 경로들을 캡션 단 HTML 조각 리스트로 변환.
     cummap엔 렌더된 wafer 목록(collapsible)을 덧붙인다. (단일/그룹 경로 공용)"""
     html_parts: list[str] = []
+    
+    style_block = """
+    <style>
+        .map-card {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03);
+            margin: 12px 0;
+            padding: 16px;
+            box-sizing: border-box;
+        }
+        .map-card-header {
+            font-size: 14px;
+            font-weight: 700;
+            color: #1e293b;
+            margin-bottom: 12px;
+            border-bottom: 1px solid #f1f5f9;
+            padding-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .map-card-image-wrapper {
+            text-align: center;
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 8px;
+            border: 1px solid #f1f5f9;
+            margin-bottom: 12px;
+        }
+        .map-card-image {
+            max-width: 100%;
+            max-height: 260px;
+            object-fit: contain;
+            display: block;
+            margin: 0 auto;
+            transition: max-height 0.25s ease, box-shadow 0.25s ease;
+        }
+        .zoom-checkbox {
+            display: none;
+        }
+        .zoom-label {
+            cursor: zoom-in;
+            display: block;
+            position: relative;
+            transition: all 0.2s ease;
+        }
+        .zoom-checkbox:checked + .zoom-label {
+            cursor: zoom-out;
+        }
+        .zoom-checkbox:checked + .zoom-label .map-card-image {
+            max-height: none;
+            max-width: 100%;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+        }
+        .zoom-label::after {
+            content: "🔍 Click to zoom";
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            background: rgba(15, 23, 42, 0.75);
+            color: #ffffff;
+            font-size: 10px;
+            font-weight: 500;
+            padding: 4px 8px;
+            border-radius: 4px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.15s ease;
+        }
+        .zoom-label:hover::after {
+            opacity: 1;
+        }
+        .zoom-checkbox:checked + .zoom-label::after {
+            content: "🔍 Click to shrink";
+        }
+        .wafer-details {
+            margin-top: 12px;
+            font-size: 12px;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #ffffff;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+        }
+        .wafer-details summary {
+            cursor: pointer;
+            padding: 10px 14px;
+            background: #f8fafc;
+            font-weight: 600;
+            color: #475569;
+            user-select: none;
+            outline: none;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: background 0.15s ease;
+        }
+        .wafer-details summary:hover {
+            background: #f1f5f9;
+        }
+        .wafer-details[open] summary {
+            border-bottom: 1px solid #e2e8f0;
+            background: #f1f5f9;
+        }
+        .wafer-scroll-container {
+            overflow-y: auto;
+            background: #ffffff;
+        }
+        /* Webkit scrollbar customization */
+        .wafer-scroll-container::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        .wafer-scroll-container::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        .wafer-scroll-container::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+        .wafer-scroll-container::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+        .wafer-table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+        .wafer-table th {
+            background: #f8fafc;
+            padding: 8px 12px;
+            font-weight: 600;
+            color: #475569;
+            border-bottom: 2px solid #e2e8f0;
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        .wafer-table td {
+            padding: 6px 12px;
+            border-bottom: 1px solid #f1f5f9;
+            color: #334155;
+            white-space: nowrap;
+        }
+        .wafer-table tbody tr:nth-child(even) {
+            background: #f8fafc;
+        }
+        .wafer-table tbody tr:hover {
+            background: #f1f5f9;
+        }
+        .badge-lot {
+            background: #eff6ff;
+            color: #1d4ed8;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+            border: 1px solid #dbeafe;
+        }
+        .badge-wafer {
+            background: #f0fdf4;
+            color: #15803d;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 600;
+            border: 1px solid #dcfce7;
+        }
+    </style>
+    """
+    
+    html_parts.append(style_block)
+
     for p in re.findall(r'[\w./\-]+\.png', result_str):
         if not os.path.exists(p):
             continue
@@ -684,14 +914,28 @@ def _result_to_html(result_str: str, label: str, oper: str, render_rows: list, w
         label_tag = f"{label} " if label else ""
         oper_tag = f"[{oper}] " if oper else ""
         caption = f"{oper_tag}{label_tag}{kind}".strip()
-        img_html = _png_to_html(p, caption)
+        img_src = _png_to_html(p, caption)
+        
+        details_html = ""
         if is_cummap:
             details_html = _wafer_list_details_html(
                 render_rows, label=label, oper=oper, wf_mod=wf_mod, wf_rem=wf_rem
             )
-            if details_html:
-                img_html = f"<div>{img_html}{details_html}</div>"
-        html_parts.append(img_html)
+            
+        img_id = os.path.basename(p).split('.')[0].replace('-', '_')
+        card_html = (
+            f'<div class="map-card">'
+            f'  <div class="map-card-header">🗺️ {caption}</div>'
+            f'  <div class="map-card-image-wrapper">'
+            f'    <input type="checkbox" id="{img_id}" class="zoom-checkbox"/>'
+            f'    <label for="{img_id}" class="zoom-label">'
+            f'      <img class="map-card-image" src="{img_src}"/>'
+            f'    </label>'
+            f'  </div>'
+            f'  {details_html}'
+            f'</div>'
+        )
+        html_parts.append(card_html)
     return html_parts
 
 
