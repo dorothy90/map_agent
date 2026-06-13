@@ -137,6 +137,7 @@ def _query_with_slot_context(
     start_tm: str,
     end_tm: str,
     parameter: str,
+    category: str = "",
 ) -> str:
     slots: list[str] = []
     if lotcd:
@@ -145,6 +146,8 @@ def _query_with_slot_context(
         slots.append(f"- date_range: {start_tm or '전체'} ~ {end_tm or '전체'}")
     if parameter:
         slots.append(f"- parameter: {parameter}")
+    if category:
+        slots.append(f"- category: {category} (공정 — PT1H_TEST/PT1C_TEST 중 해당 공정만)")
     if not slots:
         return query
     return (
@@ -170,6 +173,7 @@ def _wads_prompt(state: dict) -> list:
     start_tm = state.get("_start_tm", "")
     end_tm = state.get("_end_tm", "")
     parameter = state.get("_parameter", "")
+    category = state.get("_category", "")
     if lotcd or end_tm or parameter:
         ctx = f"\n\n[조회 컨텍스트] lotcd={lotcd}"
         if start_tm:
@@ -178,6 +182,8 @@ def _wads_prompt(state: dict) -> list:
             ctx += f", 날짜: {end_tm}"
         if parameter:
             ctx += f", parameter={parameter}"
+        if category:
+            ctx += f", category={category}(공정)"
         system_prompt += ctx
 
     return [SystemMessage(content=system_prompt)] + list(state.get("messages", []))
@@ -356,6 +362,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     end_tm = state.get("wads_end_tm", "")
     start_tm = state.get("wads_start_tm", "")
     parameter = state.get("fail_type", "")
+    category = state.get("wads_category", "")
     if not end_tm:
         end_tm = date.today().strftime("%Y-%m-%d")
 
@@ -394,6 +401,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             "start_tm": start_tm,
             "end_tm": end_tm,
             "parameter": parameter,
+            "category": category,
             "task_id": state.get("current_task_id", ""),
             "task_goal": state.get("current_task_goal", ""),
         },
@@ -420,6 +428,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         start_tm=start_tm,
         end_tm=end_tm,
         parameter=parameter,
+        category=category,
     )
     logger.info("[WADS Agent] 쿼리: %s (task_goal=%r)", query_for_worker, task_goal)
 
@@ -441,6 +450,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
                 "_start_tm": start_tm,
                 "_end_tm": end_tm,
                 "_parameter": parameter,
+                "_category": category,
             },
             config=sub_config,
         )

@@ -99,7 +99,7 @@ def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm,
         lines = []
         for a in anomaly_params:
             lines.append(
-                f"- {a['param']}: {a['prev_val']} → {a['curr_val']} "
+                f"- {a['param']} ({a['process']}): {a['prev_val']} → {a['curr_val']} "
                 f"({a['change_pct']:+.1f}%, {a['direction']})"
             )
         anomaly_summary = "\n".join(lines)
@@ -294,7 +294,13 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
             logger.error("[Yield Agent] _fetch_periods 실패: %s", e, exc_info=True)
             weeks_data = []
         try:
-            wafer_rows = f_sc_pt1h.result() + f_sc_pt1c.result()
+            pt1h_rows = f_sc_pt1h.result()
+            pt1c_rows = f_sc_pt1c.result()
+            for r in pt1h_rows:
+                r["process"] = "PT1H"
+            for r in pt1c_rows:
+                r["process"] = "PT1C"
+            wafer_rows = pt1h_rows + pt1c_rows
         except Exception as e:
             logger.error("[Yield Agent] wafer fetch 실패: %s", e, exc_info=True)
             wafer_rows = []
@@ -373,7 +379,7 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     if anomaly_params:
         anomaly_lines = "\n".join(
-            f"- {a['param']}: {a['prev_val']} → {a['curr_val']} ({a['change_pct']:+.1f}%, {a['direction']})"
+            f"- {a['param']} ({a['process']}): {a['prev_val']} → {a['curr_val']} ({a['change_pct']:+.1f}%, {a['direction']})"
             for a in anomaly_params[:5]
         )
         result_msg += f"\n\n---\n\n**⚠️ 이상 감지된 파라미터 ({len(anomaly_params)}개)**\n{anomaly_lines}"
@@ -414,8 +420,8 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         "past_steps": [(
             state.get("current_task_id", ""),
             result_msg[:300] + (
-                f" | anomaly_params: 열화={[p['param'] for p in anomaly_params if p.get('direction') == '열화']}"
-                f", 개선={[p['param'] for p in anomaly_params if p.get('direction') == '개선']}"
+                f" | anomaly_params: 열화={['%s(%s)' % (p['param'], p['process']) for p in anomaly_params if p.get('direction') == '열화']}"
+                f", 개선={['%s(%s)' % (p['param'], p['process']) for p in anomaly_params if p.get('direction') == '개선']}"
                 if anomaly_params else ""
             ),
         )],

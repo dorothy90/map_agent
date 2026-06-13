@@ -141,11 +141,12 @@ def _build_scatter_html(
     all_periods = sorted({r.get("period", "") for r in wafer_rows})
     use_periods = len(all_periods) > 1
 
-    param_period_data: dict[str, dict[str, list[dict]]] = defaultdict(
+    # (process, param) 합성 키 — PT1H VTH와 PT1C VTH를 별도 series로 분리
+    param_period_data: dict[tuple[str, str], dict[str, list[dict]]] = defaultdict(
         lambda: defaultdict(list)
     )
     for r in wafer_rows:
-        param_period_data[r["param"]][r.get("period", "")].append(
+        param_period_data[(r.get("process", ""), r["param"])][r.get("period", "")].append(
             {
                 "x": r["ts"],
                 "y": round(r["value"], 4),
@@ -161,23 +162,25 @@ def _build_scatter_html(
     improved = [a for a in anomaly_params if a["direction"] == "개선"][:3]
     degraded = [a for a in anomaly_params if a["direction"] == "열화"][:3]
 
-    rows_config: list[tuple[str, str, str, list[tuple[str, str]]]] = []
-    # (Section Title, CSS Type, Accent Color, Charts)
-    rows_config.append(("수율 파라미터 (Yield)", "fixed", "#1890ff", [("VTH", "VTH"), ("PT1C", "PT1C")]))
+    rows_config: list[tuple[str, str, str, list[tuple[str, str, str]]]] = []
+    # (Section Title, CSS Type, Accent Color, Charts[(label, process, param)])
+    rows_config.append(("수율 파라미터 (Yield)", "fixed", "#1890ff", [("VTH", "PT1H", "VTH"), ("PT1C", "PT1C", "PT1C")]))
     if improved:
         rows_config.append(
-            ("개선 파라미터 (Improved)", "improved", "#52c41a", [(a["param"], a["param"]) for a in improved])
+            ("개선 파라미터 (Improved)", "improved", "#52c41a",
+             [(f"{a['param']} ({a['process']})", a["process"], a["param"]) for a in improved])
         )
     if degraded:
         rows_config.append(
-            ("열화 파라미터 (Degraded)", "degraded", "#ff4d4f", [(a["param"], a["param"]) for a in degraded])
+            ("열화 파라미터 (Degraded)", "degraded", "#ff4d4f",
+             [(f"{a['param']} ({a['process']})", a["process"], a["param"]) for a in degraded])
         )
 
     sections_html = []
     chart_id = 0
     for row_title, cat_type, accent_color, charts in rows_config:
         category_cards = []
-        for label, param_name in charts:
+        for label, proc, param_name in charts:
             cid = f"sc_{chart_id}"
             chart_id += 1
 
@@ -185,7 +188,7 @@ def _build_scatter_html(
                 datasets = []
                 for pl in all_periods:
                     color = period_color[pl]
-                    pts = param_period_data.get(param_name, {}).get(pl, [])
+                    pts = param_period_data.get((proc, param_name), {}).get(pl, [])
                     if not pts:
                         continue
                     datasets.append(
@@ -205,7 +208,7 @@ def _build_scatter_html(
                     )
                 datasets_js = _json.dumps(datasets, ensure_ascii=False)
             else:
-                pts = param_period_data.get(param_name, {}).get(
+                pts = param_period_data.get((proc, param_name), {}).get(
                     all_periods[0] if all_periods else "", []
                 )
                 datasets_js = _json.dumps(
@@ -491,7 +494,8 @@ def _build_html_table(
     gms_cols = GMS_COLUMNS
     BLUE_COLS = {"VTH", "IDSAT"}
 
-    anomaly_map = {a["param"]: a for a in anomaly_params} if anomaly_params else {}
+    # canonical key 기준(PT1H=bare param, PT1C="pt1c_"+param)으로 키잉 → 같은 이름이어도 공정 구분
+    anomaly_map = {a["key"]: a for a in anomaly_params} if anomaly_params else {}
 
     # Delta 계산 (최신주 - 직전주, 화면 표시 기준과 동일하게 소수점 2자리 반올림 후 차이 계산)
     delta_pt1h: dict = {}
@@ -756,10 +760,21 @@ td.delta-pos { background: #f6ffed !important; color: #389e0d !important; font-w
 
     for j, col in enumerate(PT1C_COLUMNS):
         sep = ' style="border-left: 2px solid #bfbfbf;"' if j == 0 else ""
+        akey = f"pt1c_{col}"
+        badge = ""
+        tip = ""
+        if akey in anomaly_map:
+            a = anomaly_map[akey]
+            badge = (
+                '<span class="badge-d">↓</span>'
+                if a["direction"] == "열화"
+                else '<span class="badge-i">↑</span>'
+            )
+            tip = f' title="{a["prev_val"]} → {a["curr_val"]} ({a["change_pct"]:+.1f}%)"'
         html += (
-            f'<th class="th-param th-amber-pt1c"{sep}>'
+            f'<th class="th-param th-amber-pt1c"{sep}{tip}>'
             f'<div class="th-param-inner">'
-            f'<div class="hname">{col}</div>'
+            f'<div class="hname">{col}{badge}</div>'
             f"</div></th>"
         )
 
@@ -794,8 +809,17 @@ td.delta-pos { background: #f6ffed !important; color: #389e0d !important; font-w
 
         for j, col in enumerate(PT1C_COLUMNS):
             display = _fmt_val(wd.get(f"pt1c_{col}", "-"))
-            sep = ' class="td-pt1c-sep"' if j == 0 else ""
-            html += f"<td{sep}>{display}</td>"
+            sep_cls = "td-pt1c-sep" if j == 0 else ""
+            akey = f"pt1c_{col}"
+            if i == last_idx and akey in anomaly_map:
+                a = anomaly_map[akey]
+                anom_cls = "degraded" if a["direction"] == "열화" else "improved"
+                cls = f"{sep_cls} {anom_cls}".strip()
+                tip = f"{a['prev_val']} → {a['curr_val']} ({a['change_pct']:+.1f}%)"
+                html += f'<td class="{cls}" title="{tip}">{display}</td>'
+            else:
+                cls_attr = f' class="{sep_cls}"' if sep_cls else ""
+                html += f"<td{cls_attr}>{display}</td>"
 
         for j, col in enumerate(gms_cols):
             display = _fmt_gms_val(wd.get(f"gms_{col}", "-"))
@@ -887,11 +911,11 @@ def _detect_anomalies(
     degraded = []
     improved = []
 
-    all_params = [(p, p) for p in PARA_COLUMNS] + [
-        (f"pt1c_{p}", p) for p in PT1C_COLUMNS
+    all_params = [("PT1H", p, p) for p in PARA_COLUMNS] + [
+        ("PT1C", f"pt1c_{p}", p) for p in PT1C_COLUMNS
     ]
 
-    for data_key, param in all_params:
+    for process, data_key, param in all_params:
         pv = prev.get(data_key)
         cv = curr.get(data_key)
         if pv in (None, "-", 0, "") or cv in (None, "-", ""):
@@ -914,6 +938,8 @@ def _detect_anomalies(
         )
         entry = {
             "param": param,
+            "process": process,
+            "key": data_key,
             "prev_val": round(pv, 2),
             "curr_val": round(cv, 2),
             "change_pct": round(change_pct, 1),

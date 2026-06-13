@@ -2234,6 +2234,8 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
                 "wads_start_tm": task_params.get("wads_start_tm", ""),
                 "wads_end_tm": task_params.get("wads_end_tm")
                 or date.today().strftime("%Y-%m-%d"),
+                # 공정 필터 ("PT1H"/"PT1C") — yield 열화 fan-out 시 공정을 CATEGORY로 전달
+                "wads_category": task_params.get("wads_category", ""),
             }
         )
 
@@ -2680,6 +2682,7 @@ def supervisor_node(
                     "periods",
                     "wads_start_tm",
                     "wads_end_tm",
+                    "wads_category",
                 )
                 if key in update_dict
             }
@@ -2785,6 +2788,7 @@ class YieldQueryState(TypedDict):
     # WADS 관련
     wads_start_tm: str
     wads_end_tm: str
+    wads_category: str  # 공정 필터 ("PT1H"/"PT1C") → CATEGORY(PT1H_TEST/PT1C_TEST)
     wads_artifacts: Annotated[list, operator.add]
 
     # 이상감지

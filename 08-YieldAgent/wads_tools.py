@@ -275,6 +275,7 @@ def _wafer_groups_for_reports(
     end_tm: Optional[str],
     start_tm: Optional[str],
     parameter: Optional[str],
+    category: Optional[str] = None,
 ) -> dict[tuple[str, str, str, str], dict[str, list[str]]]:
     try:
         wafer_df = _query_wads_data(
@@ -282,6 +283,7 @@ def _wafer_groups_for_reports(
             end_tm=end_tm,
             start_tm=start_tm,
             parameter=parameter,
+            category=category,
             columns=(
                 f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, {_wf_groupkey_expr()}"
             ),
@@ -310,6 +312,7 @@ def _query_wads_data(
     end_tm: Optional[str] = None,
     start_tm: Optional[str] = None,
     parameter: Optional[str] = None,
+    category: Optional[str] = None,
     columns: str = "*",
     join_wafers: bool = False,
 ) -> pd.DataFrame:
@@ -348,6 +351,12 @@ def _query_wads_data(
     if parameter:
         conditions.append("UPPER(r.PARAMETER) LIKE UPPER(:parameter)")
         bind_vars["parameter"] = f"%{parameter}%"
+    if category:
+        # "PT1H"/"PT1H_TEST"/"pt1h" 어떤 입력이든 "PT1H"/"PT1C"로 정규화 후 부분일치
+        oper = _category_to_map_oper(category)
+        if oper:
+            conditions.append("UPPER(r.CATEGORY) LIKE :category")
+            bind_vars["category"] = f"%{oper}%"
 
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     from_clause = f"FROM {_ORACLE_REPORT_TABLE} r"
@@ -412,6 +421,7 @@ def wads_query_data(
     end_tm: Optional[str] = None,
     start_tm: Optional[str] = None,
     parameter: Optional[str] = None,
+    category: Optional[str] = None,
 ) -> str:
     """
     WADS 데이터를 조회합니다. 선택적 필터를 적용하여 매칭되는 데이터의 메타정보를 반환합니다.
@@ -421,6 +431,7 @@ def wads_query_data(
         end_tm: 종료시간 필터 (예: "2026-01-01", "18:07"). 부분 일치 검색. 미입력시 전체 조회.
         start_tm: 시작 날짜 필터 (예: "2026-03-19"). end_tm과 함께 사용하면 날짜 범위 조회. 미입력시 end_tm 단일 필터.
         parameter: fail_type 필터 (예: "EASY", "EASY(W)", "TWT"). 부분 일치 검색. 미입력시 전체 조회.
+        category: 공정 필터 ("PT1H" 또는 "PT1C"). CATEGORY(PT1H_TEST/PT1C_TEST)로 필터. 미입력시 전체 조회.
 
     Returns:
         조회 결과 요약 메시지 (실제 데이터는 별도 저장됨)
@@ -431,12 +442,14 @@ def wads_query_data(
     end_tm = end_tm or defaults.get("end_tm")
     start_tm = start_tm or defaults.get("start_tm")
     parameter = parameter or defaults.get("parameter")
+    category = category or defaults.get("category")
     logger.info(
-        "[wads_query_data] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s",
+        "[wads_query_data] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s, category=%s",
         lotcd,
         end_tm,
         start_tm,
         parameter,
+        category,
     )
 
     try:
@@ -445,6 +458,7 @@ def wads_query_data(
             end_tm=end_tm,
             start_tm=start_tm,
             parameter=parameter,
+            category=category,
             columns=(
                 f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, {_wf_groupkey_expr()}"
             ),
@@ -565,6 +579,7 @@ def wads_get_html_report(
     end_tm: Optional[str] = None,
     start_tm: Optional[str] = None,
     parameter: Optional[str] = None,
+    category: Optional[str] = None,
 ) -> str:
     """
     WADS HTML 리포트를 조회합니다. 선택적 필터를 적용하여 매칭되는 데이터의 HTML 콘텐츠를 반환합니다.
@@ -575,6 +590,7 @@ def wads_get_html_report(
         end_tm: 종료시간 필터 (예: "2026-01-01", "18:07"). 부분 일치 검색. 미입력시 전체 조회.
         start_tm: 시작 날짜 필터 (예: "2026-03-19"). end_tm과 함께 사용하면 날짜 범위 조회. 미입력시 end_tm 단일 필터.
         parameter: fail_type 필터 (예: "EASY", "EASY(W)", "TWT"). 부분 일치 검색. 미입력시 전체 조회.
+        category: 공정 필터 ("PT1H" 또는 "PT1C"). CATEGORY(PT1H_TEST/PT1C_TEST)로 필터. 미입력시 전체 조회.
 
     Returns:
         조회 결과 요약 메시지 (실제 HTML은 별도 저장됨)
@@ -585,12 +601,14 @@ def wads_get_html_report(
     end_tm = end_tm or defaults.get("end_tm")
     start_tm = start_tm or defaults.get("start_tm")
     parameter = parameter or defaults.get("parameter")
+    category = category or defaults.get("category")
     logger.info(
-        "[wads_get_html_report] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s",
+        "[wads_get_html_report] 호출: lotcd=%s, end_tm=%s, start_tm=%s, parameter=%s, category=%s",
         lotcd,
         end_tm,
         start_tm,
         parameter,
+        category,
     )
 
     try:
@@ -599,6 +617,7 @@ def wads_get_html_report(
             end_tm=end_tm,
             start_tm=start_tm,
             parameter=parameter,
+            category=category,
             columns=(f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, r.HTML"),
         )
     except Exception as e:
@@ -641,6 +660,7 @@ def wads_get_html_report(
         end_tm=end_tm,
         start_tm=start_tm,
         parameter=parameter,
+        category=category,
     )
     report_start_index = len(storage["reports"]) + 1
     for offset, (_, row) in enumerate(filtered_df.iterrows()):

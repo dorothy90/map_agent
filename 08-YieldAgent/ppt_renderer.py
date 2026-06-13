@@ -202,7 +202,8 @@ def _render_unified_table(slide, elem: ElementDesign, design: PresentationDesign
     unit = state.get("unit", "weekly")
 
     period_label = {"weekly": "WEEK", "monthly": "MONTH", "daily": "DATE"}.get(unit, "WEEK")
-    anomaly_map = {a["param"]: a for a in anomaly_params} if anomaly_params else {}
+    # canonical key(PT1H=bare, PT1C="pt1c_"+param) 기준 → 같은 이름이어도 공정별 구분
+    anomaly_map = {a["key"]: a for a in anomaly_params} if anomaly_params else {}
 
     # 전체 파라미터 (25 + 2 + 5 = 32)
     groups = [
@@ -262,9 +263,8 @@ def _render_unified_table(slide, elem: ElementDesign, design: PresentationDesign
     for j, (display, data_key) in enumerate(all_params):
         cell = table.cell(1, 1 + j)
         cell.text = display
-        base_param = data_key.replace("pt1c_", "").replace("gms_", "")
-        if base_param in anomaly_map:
-            bg = _hex_to_rgb(cs.danger) if anomaly_map[base_param].get("direction") == "열화" else _hex_to_rgb(cs.success)
+        if data_key in anomaly_map:
+            bg = _hex_to_rgb(cs.danger) if anomaly_map[data_key].get("direction") == "열화" else _hex_to_rgb(cs.success)
         else:
             bg = _hex_to_rgb("#64748B")
         _style_cell(cell, Pt(5), True, RGBColor(0xFF, 0xFF, 0xFF), bg, font)
@@ -287,9 +287,8 @@ def _render_unified_table(slide, elem: ElementDesign, design: PresentationDesign
         for j, (display, data_key) in enumerate(all_params):
             cell = table.cell(row_idx, 1 + j)
             cell.text = _fmt_val(wd.get(data_key, "-"))
-            base_param = data_key.replace("pt1c_", "").replace("gms_", "")
-            if i == last_idx and base_param in anomaly_map:
-                a = anomaly_map[base_param]
+            if i == last_idx and data_key in anomaly_map:
+                a = anomaly_map[data_key]
                 fc = _hex_to_rgb(cs.danger) if a.get("direction") == "열화" else _hex_to_rgb(cs.success)
                 _style_cell(cell, Pt(5), True, fc, bg, font)
             else:
@@ -313,28 +312,23 @@ def _render_scatter_chart(slide, elem: ElementDesign, ref: str,
     fig.patch.set_facecolor("white")
 
     if ref == "scatter_pt1h_pt1c":
-        params = []
-        for a in anomaly_params:
-            p = a["param"]
-            if p in PARA_COLUMNS:
-                params.append((p, p))
-            elif p in PT1C_COLUMNS:
-                params.append((p, f"pt1c_{p}"))
+        params = [
+            (f"{a['param']} ({a['process']})", a["key"]) for a in anomaly_params
+        ]
         _plot_multi_trend(ax, params[:6], weeks_data, periods, mpl_colors, "PT1H / PT1C")
 
     elif ref == "scatter_degradation":
         if anomaly_params:
             for idx, a in enumerate(anomaly_params[:6]):
                 param = a["param"]
-                data_key = f"pt1c_{param}" if param in PT1C_COLUMNS else param
-                values = _extract_values(weeks_data, data_key)
+                values = _extract_values(weeks_data, a["key"])
                 x_valid = [i for i, v in enumerate(values) if v is not None]
                 y_valid = [values[i] for i in x_valid]
                 color = cs.danger if a.get("direction") == "열화" else cs.success
                 marker = "v" if a.get("direction") == "열화" else "^"
                 direction = a.get("direction", "?")
                 pct = a.get("change_pct", 0.0)
-                label = f"{param} ({direction} {pct:+.1f}%)"
+                label = f"{param} ({a['process']}, {direction} {pct:+.1f}%)"
                 ax.scatter(x_valid, y_valid, marker=marker, color=color, s=40, zorder=3, label=label)
                 ax.plot(x_valid, y_valid, color=color, linewidth=1, alpha=0.4)
             ax.legend(fontsize=6, loc="best", framealpha=0.8)

@@ -76,7 +76,9 @@ present there, leave that slot empty or omit it.
 2. wads_agent
    capability: WADS degradation detection list/report
    intents: wads_list, wads_report
-   slots: lotcd, wads_start_tm, wads_end_tm, fail_type
+   slots: lotcd, wads_start_tm, wads_end_tm, fail_type, wads_category
+   wads_category: "PT1H"|"PT1C" — 검출 공정 필터(CATEGORY=PT1H_TEST/PT1C_TEST). optional.
+     yield 열화 fan-out 시 anomaly의 공정을 넣어 같은 이름 param의 공정을 구분한다.
    lotcd is optional. Date-only WADS requests are executable with lotcd="".
    wads_list means aggregate/list/rank degradation-detected parameters or detection counts.
    wads_report means detailed degradation evidence/report for specific parameter(s) or detections.
@@ -215,7 +217,7 @@ TODAY's DATE: {today}
 
 === AVAILABLE AGENTS & SLOTS ===
 - yield_agent       : lotcd, ref_date, unit, periods
-- wads_agent        : lotcd, wads_start_tm, wads_end_tm, fail_type
+- wads_agent        : lotcd, wads_start_tm, wads_end_tm, fail_type, wads_category
 - map_agent         : lot_ids, wf_ids, groupkey, map_type, map_oper
 - fail_history_agent: dh_query, fail_type, cause_oper, lotcd
 - lot_history_agent : lot_ids
@@ -231,9 +233,13 @@ TODAY's DATE: {today}
 4. 빈 chained-input을 채워라:
    - map_agent의 groupkey="" → 이전 task(예: wads) 결과의 모든 GROUPKEY(lot.wf)를 채움
    - lot_history_agent의 lot_ids=[] → 이전 task 결과의 모든 LOT ID를 채움
-   - fail_history_agent의 fail_type="" 이고 이전 결과에 파라미터 목록이 있으면:
-     · past_steps에 "anomaly_params: 열화=[A,B,C]" 형식 → A·B·C 각각 task로 복제
-       (fail_type: A, B, C)
+   - fail_type="" 이고 이전 결과에 파라미터 목록이 있으면 (fail_history_agent / wads_agent):
+     · past_steps의 "anomaly_params: 열화=[...]" 항목은 "VTH(PT1H)"처럼 "param(process)" 형식이다.
+       각 파라미터를 task로 복제하라.
+     · fail_type에는 param만 넣어라 (예: "VTH(PT1H)" → fail_type="VTH").
+     · wads_agent로 fan-out 시 process를 wads_category에 매핑하라
+       (예: "VTH(PT1H)" → fail_type="VTH", wads_category="PT1H"). 같은 param이 PT1H/PT1C
+       양쪽에 있을 때 공정을 구분해 정확한 검출 리포트를 찾기 위함이다.
      · past_steps에 "detected_params: [X]" 형식 → X를 fail_type에 채움
    - fail_history_agent의 dh_query="" → 이전 task의 핵심 키워드로 채움
 5. **모든 GROUPKEY/LOT ID를 추출해라 (subset 아님)**. 이전 결과에 7개 GROUPKEY가 있으면 7개 모두 채워라.
@@ -249,10 +255,15 @@ Example 1 (groupkey / lot_ids 채우기):
 - pending requests: [{{"intent":"map","agent":"map_agent","slots":{{"map_type":"cummap","map_oper":"PT1H","lot_ids":[]}},"goal":"PT1H cummap 시각화"}}, {{"intent":"lot_history","agent":"lot_history_agent","slots":{{"lot_ids":[]}},"goal":"검출된 lot 이력"}}]
 - output: {{"requests":[{{"intent":"map","agent":"map_agent","slots":{{"map_type":"cummap","map_oper":"PT1H","groupkey":"4SSOZUW.03,4SSZGDM.08,..."}},"goal":"PT1H cummap 시각화"}},{{"intent":"lot_history","agent":"lot_history_agent","slots":{{"lot_ids":["4SSOZUW","4SSZGDM"]}},"goal":"검출된 lot 이력"}}]}}
 
-Example 2 (fan-out: 열화 파라미터 3개):
-- past_steps: [("task_1", "4SS 수율 조회 완료. ... | anomaly_params: 열화=['VTH','IDSAT','IOFF'], 개선=['ION']")]
+Example 2 (fan-out: 열화 파라미터 3개 → fail_history. process는 fail_type에서 떼어낸다):
+- past_steps: [("task_1", "4SS 수율 조회 완료. ... | anomaly_params: 열화=['VTH(PT1H)','IDSAT(PT1H)','IOFF(PT1H)'], 개선=['ION(PT1H)']")]
 - pending requests: [{{"intent":"fail_history_search","agent":"fail_history_agent","slots":{{"fail_type":"","lotcd":"4SS"}},"goal":"열화 파라미터 불량이력"}}]
 - output: {{"requests":[{{"intent":"fail_history_search","agent":"fail_history_agent","slots":{{"fail_type":"VTH","lotcd":"4SS"}},"goal":"[VTH] 열화 파라미터 불량이력"}},{{"intent":"fail_history_search","agent":"fail_history_agent","slots":{{"fail_type":"IDSAT","lotcd":"4SS"}},"goal":"[IDSAT] 열화 파라미터 불량이력"}},{{"intent":"fail_history_search","agent":"fail_history_agent","slots":{{"fail_type":"IOFF","lotcd":"4SS"}},"goal":"[IOFF] 열화 파라미터 불량이력"}}]}}
+
+Example 3 (fan-out: 열화 파라미터 → wads_agent, 공정→wads_category):
+- past_steps: [("task_1", "4SS 수율 조회 완료. ... | anomaly_params: 열화=['VTH(PT1H)','PT1C(PT1C)'], 개선=[]")]
+- pending requests: [{{"intent":"wads_report","agent":"wads_agent","slots":{{"fail_type":"","wads_category":"","lotcd":"4SS"}},"goal":"열화 파라미터 WADS 검출 리포트"}}]
+- output: {{"requests":[{{"intent":"wads_report","agent":"wads_agent","slots":{{"fail_type":"VTH","wads_category":"PT1H","lotcd":"4SS"}},"goal":"[VTH/PT1H] WADS 검출 리포트"}},{{"intent":"wads_report","agent":"wads_agent","slots":{{"fail_type":"PT1C","wads_category":"PT1C","lotcd":"4SS"}},"goal":"[PT1C/PT1C] WADS 검출 리포트"}}]}}
 """
 
 # ── Rewrite 시스템 프롬프트 ─────────────────────────────────────
