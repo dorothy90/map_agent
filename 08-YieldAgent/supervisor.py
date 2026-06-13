@@ -1236,91 +1236,118 @@ def _unique_texts(values: list[Any]) -> list[str]:
     return result
 
 
-def plan_review_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
-    """2개 이상 task일 때만 사용자 승인을 기다린다. 단일 task는 즉시 통과.
-
-    Validation/HITL handles missing params. This node only handles plan review.
-    """
-    task_plan = state.get("task_plan", [])
-    canonical_requests = state.get(
-        "canonical_requests"
-    ) or canonical_requests_from_tasks(task_plan)
-    if len(task_plan) < 2:
-        return {}
-
-    # plan_review 루프 — approve/cancel/modify 반복 가능
-    # sequential interrupt 패턴: 루프 각 반복마다 새 interrupt() 생성 → resume 시 순서대로 재생
-    while True:
-        user_response = interrupt(
-            {"type": "plan_review", "tasks": task_plan, "missing_params": []}
-        )
-        resp = (user_response or "").strip()
-
-        if not resp:
-            break  # 빈 응답 → approve, LLM 호출 없이 즉시 통과
-
-        # #1: give the modify LLM the same structured-result context the planner gets,
-        # so result-dependent modifications ("3·4번째 리포트 파라미터도 추가") can resolve.
-        recent_results = state.get("recent_results", []) or []
-        recent_context = _recent_results_prompt_context(recent_results)
-        try:
-            review_messages: list[dict] = [{"role": "system", "content": _PLAN_REVIEW_SYSTEM}]
-            if recent_context:
-                review_messages.append({
-                    "role": "system",
-                    "content": f"Structured context (prior results you may reference):\n{recent_context}",
-                })
-            review_messages.append({
-                "role": "user",
-                "content": (
-                    f"현재 canonical requests:\n{json.dumps(canonical_requests, ensure_ascii=False)}\n\n"
-                    f"화면 표시용 현재 task 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n"
-                    f'사용자 응답: "{resp}"'
-                ),
-            })
-            raw = _model.invoke(review_messages).content.strip()
-            result = extract_json_from_llm(raw, PlanReviewResult)
-        except Exception as e:
-            logger.warning("[PlanReview] LLM 판단 실패 (%s) — 계획 재표시", e)
-            continue  # interrupt 재호출 → 사용자에게 계획 다시 표시
-
-        result_requests = [
-            normalize_canonical_request(request.model_dump())
-            for request in result.requests
-        ]
-        # #1: resolve ordinal refs ("#N"/"#RN") in the modified requests against
-        # recent_results, exactly like the planner — so a token the modify LLM emits
-        # for "N번째 리포트/parameter" is filled deterministically (never a wrong value).
-        for _cr in result_requests:
-            _cr["slots"], _ = apply_ordinal_ref(
-                _cr.get("agent", ""), _cr.get("slots") or {}, recent_results
-            )
-        logger.info(
-            "[PlanReview] action=%s requests=%s",
-            result.action,
-            [(r.get("intent"), r.get("agent")) for r in result_requests],
-        )
-
-        if result.action == "cancel":
-            return {
-                "response": "사용자가 분석 계획을 취소했습니다.",
-                "canonical_request": {},
-                "canonical_requests": [],
-                "task_plan": [],
-                "pending_tasks": [],
-            }
-        if result.action == "approve":
-            break
-        # modify → task_plan 갱신 후 루프 재시작 (새 interrupt로 수정된 플랜 재표시)
-        canonical_requests = result_requests
-        task_plan = build_tasks_from_canonical_requests(canonical_requests)
-
+def _plan_review_commit(canonical_requests: list, task_plan: list) -> dict:
+    """plan_review가 state에 commit하는 4개 키 (approve/modify 공통)."""
     return {
         "canonical_request": canonical_requests[0] if canonical_requests else {},
         "canonical_requests": canonical_requests,
         "task_plan": task_plan,
         "pending_tasks": task_plan,
     }
+
+
+def plan_review_node(
+    state: Dict[str, Any], config: RunnableConfig
+) -> Command[Literal["plan_review", "supervisor"]]:
+    """2개 이상 task일 때만 사용자 승인을 기다린다. 단일 task는 즉시 통과.
+
+    Validation/HITL handles missing params. This node only handles plan review.
+
+    구조 계약 (LangGraph interrupt replay 안전): **이 노드 1회 실행 = interrupt 1개 + LLM 1회.**
+    modify면 갱신 plan을 state에 commit하고 Command(goto="plan_review")로 새 super-step에
+    재진입한다. while 루프 안에서 interrupt와 LLM을 반복하면, resume 시 노드가 처음부터
+    재실행되며 직전 interrupt 사이의 비결정적 _model.invoke가 다시 호출되어(replay) modify
+    결과를 덮어쓴다. 노드(super-step) 분리로 각 LLM 분류가 자기 interrupt 뒤에서 정확히
+    한 번만 실행되도록 한다.
+    참고: https://docs.langchain.com/oss/python/langgraph/interrupts#side-effects-called-before-interrupt-must-be-idempotent
+    """
+    task_plan = state.get("task_plan", [])
+    canonical_requests = state.get(
+        "canonical_requests"
+    ) or canonical_requests_from_tasks(task_plan)
+    if len(task_plan) < 2:
+        return Command(goto="supervisor")
+
+    # ── interrupt 1회 (이 노드 실행당 하나만) ──
+    user_response = interrupt(
+        {"type": "plan_review", "tasks": task_plan, "missing_params": []}
+    )
+    resp = (user_response or "").strip()
+
+    if not resp:
+        # 빈 응답 → approve, LLM 호출 없이 현재 plan commit 후 통과
+        return Command(
+            goto="supervisor",
+            update=_plan_review_commit(canonical_requests, task_plan),
+        )
+
+    # ── LLM 분류 1회 (interrupt 뒤 = resume마다 정확히 한 번, replay 안 됨) ──
+    # #1: give the modify LLM the same structured-result context the planner gets,
+    # so result-dependent modifications ("3·4번째 리포트 파라미터도 추가") can resolve.
+    recent_results = state.get("recent_results", []) or []
+    recent_context = _recent_results_prompt_context(recent_results)
+    try:
+        review_messages: list[dict] = [{"role": "system", "content": _PLAN_REVIEW_SYSTEM}]
+        if recent_context:
+            review_messages.append({
+                "role": "system",
+                "content": f"Structured context (prior results you may reference):\n{recent_context}",
+            })
+        review_messages.append({
+            "role": "user",
+            "content": (
+                f"현재 canonical requests:\n{json.dumps(canonical_requests, ensure_ascii=False)}\n\n"
+                f"화면 표시용 현재 task 계획:\n{json.dumps(task_plan, ensure_ascii=False)}\n\n"
+                f'사용자 응답: "{resp}"'
+            ),
+        })
+        raw = _model.invoke(review_messages).content.strip()
+        result = extract_json_from_llm(raw, PlanReviewResult)
+    except Exception as e:
+        logger.warning("[PlanReview] LLM 판단 실패 (%s) — 계획 재표시", e)
+        # 같은 plan으로 재질문: 새 super-step에서 interrupt 재생성
+        return Command(goto="plan_review")
+
+    result_requests = [
+        normalize_canonical_request(request.model_dump())
+        for request in result.requests
+    ]
+    # #1: resolve ordinal refs ("#N"/"#RN") in the modified requests against
+    # recent_results, exactly like the planner — so a token the modify LLM emits
+    # for "N번째 리포트/parameter" is filled deterministically (never a wrong value).
+    for _cr in result_requests:
+        _cr["slots"], _ = apply_ordinal_ref(
+            _cr.get("agent", ""), _cr.get("slots") or {}, recent_results
+        )
+    logger.info(
+        "[PlanReview] action=%s requests=%s",
+        result.action,
+        [(r.get("intent"), r.get("agent")) for r in result_requests],
+    )
+
+    if result.action == "cancel":
+        return Command(
+            goto="supervisor",
+            update={
+                "response": "사용자가 분석 계획을 취소했습니다.",
+                "canonical_request": {},
+                "canonical_requests": [],
+                "task_plan": [],
+                "pending_tasks": [],
+            },
+        )
+    if result.action == "approve":
+        return Command(
+            goto="supervisor",
+            update=_plan_review_commit(canonical_requests, task_plan),
+        )
+
+    # modify → 갱신 plan을 state에 commit하고 self-loop (다음 super-step에서 새 interrupt)
+    new_task_plan = build_tasks_from_canonical_requests(result_requests)
+    return Command(
+        goto="plan_review",
+        update=_plan_review_commit(result_requests, new_task_plan),
+    )
 
 
 # ── Replanner 노드 (#8 phase 3a) ──────────────────────────────
@@ -2390,11 +2417,15 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
 
     elif agent == "fail_history_agent":
         proj["dh_query"] = task_params.get("dh_query", "")
+        # WADS report별 불량이력 fan-out 입력 [{lotcd, parameter, lot_ids}, …].
+        proj["fail_groups"] = task_params.get("fail_groups") or []
 
     elif agent == "relation_tree_agent":
         # lotcd(3자)는 rt_lot_code와 동일 개념 — 구 필드 fallback 포함
         if not proj.get("lotcd"):
             proj["lotcd"] = task_params.get("rt_lot_code") or state.get("lotcd", "")
+        # WADS report별 연관분석 fan-out 입력 [{lotcd, parameter, lot_ids}, …].
+        proj["rt_groups"] = task_params.get("rt_groups") or []
 
     return proj
 
@@ -3192,14 +3223,90 @@ def _build_postwads_map_task(state: Dict[str, Any], task_plan: list) -> dict:
     )
 
 
-# Phase 3에서 fail_history_agent/relation_tree_agent 항목만 추가하면 되는 라우팅 테이블.
+def _postwads_detected_params(state: Dict[str, Any]) -> str:
+    """WADS 검출 report들의 parameter를 distinct join → fail_type 슬롯 값.
+    fail_history/relation_tree 체이닝의 검출 파라미터 입력. 없으면 ""(빈 값이면 dispatch
+    missing_param HITL이 보완)."""
+    params: list[str] = []
+    for r in _latest_wads_reports(state):
+        p = str(r.get("parameter") or "").strip()
+        if p and p not in params:
+            params.append(p)
+    return ",".join(params)
+
+
+def _postwads_report_groups(state: Dict[str, Any]) -> list[dict]:
+    """WADS report별 후속(fail_history/relation_tree) fan-out 입력.
+    각 group = {lotcd, parameter, lot_ids}. cummap의 map_groups와 대칭 — 에이전트가
+    group마다 따로 분석/검색한다(파라미터 뭉치기 금지). parameter 없는 report는 제외."""
+    groups: list[dict] = []
+    for r in _latest_wads_reports(state):
+        param = str(r.get("parameter") or "").strip()
+        if not param:
+            continue
+        groups.append({
+            "lotcd": str(r.get("lotcd") or state.get("lotcd", "")).strip(),
+            "parameter": param,
+            "lot_ids": [str(x).strip() for x in (r.get("lot_ids") or []) if str(x).strip()],
+        })
+    return groups
+
+
+def _build_postwads_fail_history_task(state: Dict[str, Any], task_plan: list) -> dict:
+    """WADS 검출을 report별로 불량이력 검색하는 단일 task (_build_postwads_map_task 대칭).
+    report별 데이터는 fail_groups로 운반하고 fail_history_agent가 group마다 검색한다.
+    top-level lotcd/fail_type은 dispatch 가드/요약용·fallback(groups 없으면 단일 검색)."""
+    lotcd = state.get("lotcd", "")
+    fail_type = _postwads_detected_params(state)
+    groups = _postwads_report_groups(state)
+    slots: dict[str, Any] = {"lotcd": lotcd, "fail_type": fail_type}
+    if groups:
+        slots["fail_groups"] = groups
+    return build_task_from_canonical_request(
+        {
+            "intent": "fail_history_search",
+            "agent": "fail_history_agent",
+            "slots": slots,
+            "goal": f"{lotcd} {fail_type or '검출 파라미터'} 불량이력 검색".strip(),
+        },
+        task_id=f"task_{len(task_plan) + 1}_fail_history",
+    )
+
+
+def _build_postwads_relation_tree_task(state: Dict[str, Any], task_plan: list) -> dict:
+    """WADS 검출을 report별로 Inline-WT 연관 분석하는 단일 task (_build_postwads_map_task 대칭).
+    report별 데이터는 rt_groups로 운반하고 relation_tree_agent가 group마다 분석한다.
+    top-level lotcd/fail_type은 dispatch required(map_oper 외 lotcd+fail_type) 가드 충족용."""
+    lotcd = state.get("lotcd", "")
+    fail_type = _postwads_detected_params(state)
+    groups = _postwads_report_groups(state)
+    slots: dict[str, Any] = {"lotcd": lotcd, "fail_type": fail_type}
+    if groups:
+        slots["rt_groups"] = groups
+    return build_task_from_canonical_request(
+        {
+            "intent": "relation_tree",
+            "agent": "relation_tree_agent",
+            "slots": slots,
+            "goal": f"{lotcd} {fail_type or '검출 파라미터'} Inline-WT 연관 분석".strip(),
+        },
+        task_id=f"task_{len(task_plan) + 1}_relation_tree",
+    )
+
+
+# 후속 라우팅 테이블 — value(선택지)→구체 task 빌더. 검출 파라미터(fail_type)/lotcd는
+# state에서 빌더가 채우고, 부족분은 dispatch missing_param HITL이 보완한다.
 _POSTWADS_ROUTES = {
     "map_agent": _build_postwads_map_task,
+    "fail_history_agent": _build_postwads_fail_history_task,
+    "relation_tree_agent": _build_postwads_relation_tree_task,
 }
 
-# interrupt 선택지 (Phase 3에서 항목 추가). value는 _POSTWADS_ROUTES 키 또는 'none'(안 함).
+# interrupt 선택지. value는 _POSTWADS_ROUTES 키 또는 'none'(안 함).
 _POSTWADS_OPTIONS = [
     {"label": "cummap/binmap 맵 조회", "value": "map_agent"},
+    {"label": "불량이력 조회", "value": "fail_history_agent"},
+    {"label": "LOTCD 연계 분석", "value": "relation_tree_agent"},
     {"label": "안 함", "value": "none"},
 ]
 
@@ -3410,6 +3517,7 @@ class YieldQueryState(TypedDict):
 
     # Fail History 파라미터
     dh_query: str
+    fail_groups: list  # WADS report별 불량이력 fan-out [{lotcd, parameter, lot_ids}, …] (overwrite)
 
     # Fail History 결과
     fail_history_artifacts: Annotated[list, operator.add]
@@ -3426,7 +3534,9 @@ class YieldQueryState(TypedDict):
     # Lot History 결과
     lot_history_artifacts: Annotated[list, operator.add]
 
-    # Relation Tree (Inline-WT 연관 분석) 결과
+    # Relation Tree (Inline-WT 연관 분석)
+    rt_groups: list  # WADS report별 연관분석 fan-out [{lotcd, parameter, lot_ids}, …] (overwrite)
+    # Relation Tree 결과
     relation_tree_artifacts: Annotated[list, operator.add]
 
     # Map 결과
@@ -3526,7 +3636,8 @@ workflow.add_node("relation_tree_agent", relation_tree_agent_node, retry_policy=
 workflow.add_edge(START, "planner")
 workflow.add_edge("planner", "task_normalizer_validator")
 workflow.add_edge("task_normalizer_validator", "plan_review")
-workflow.add_edge("plan_review", "supervisor")
+# plan_review → supervisor / plan_review(self-loop): Command(goto=...)가 처리.
+# 정적 엣지를 두면 modify self-loop과 충돌하고, interrupt 사이 LLM replay 버그를 유발한다.
 # supervisor → agent: Command(goto=...)가 처리 (conditional_edges 불필요)
 # agent → replanner → supervisor: 공식 plan-and-execute 패턴 (#8 phase 2)
 workflow.add_edge("yield_agent", "replanner")
