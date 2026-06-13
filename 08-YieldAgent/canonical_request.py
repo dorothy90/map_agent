@@ -5,7 +5,9 @@ from typing import Any
 
 AGENT_SLOT_RULES: dict[str, dict[str, Any]] = {
     "yield_agent": {
-        "allowed": {"lotcd", "ref_date", "unit", "periods"},
+        # time_range: 라벨 기반 조회 기간 객체 {unit,start,end}. supervisor가 dispatch
+        # 직전 ref_date/periods/unit으로 변환·소비한다(아래 _apply_time_range_dict).
+        "allowed": {"lotcd", "ref_date", "unit", "periods", "time_range"},
         "required": ("lotcd",),
     },
     "wads_agent": {

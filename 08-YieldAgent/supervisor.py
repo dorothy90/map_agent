@@ -16,7 +16,7 @@ import json
 import operator
 import logging
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Dict, Literal, TypedDict
 
 from dotenv import load_dotenv
@@ -154,6 +154,85 @@ class CanonicalPlanResponse(BaseModel):
         default="",
         description="도구 실행 없이 제공 context만으로 답할 수 있을 때의 사용자 응답",
     )
+
+
+# ── yield 조회 기간: 라벨 기반 time_range → ref_date/periods/unit 변환 ──────────
+# LLM이 YYYYMMDD/periods 산술을 직접 하면 "16-17주차" 같은 특정 범위가 "최근 N주"로
+# 떨어지는 silent-wrong이 생긴다. planner는 자연 라벨(time_range)만 뱉고, supervisor가
+# dispatch 직전 코드로 ref_date/periods/unit으로 변환한다(yield_agent_node는 무수정).
+class TimeRange(BaseModel):
+    """yield_agent 조회 기간을 라벨 기반으로 표현.
+
+    라벨 포맷:
+      weekly:  "YYYY-Www"   (예: "2026-W17") — ISO 주차
+      monthly: "YYYY-MM"    (예: "2026-02")
+      daily:   "YYYY-MM-DD" (예: "2026-05-06")
+    단일 시점이면 start == end."""
+
+    unit: Literal["weekly", "monthly", "daily"] = Field(description="시간 단위")
+    start: str = Field(description="시작 라벨 (포함)")
+    end: str = Field(description="끝 라벨 (포함)")
+
+
+def _parse_iso_week_label(label: str) -> tuple[int, int]:
+    """'2026-W17' / '2026-w17' → (2026, 17)"""
+    year_s, week_s = label.strip().replace("w", "W").split("-W", 1)
+    return int(year_s), int(week_s)
+
+
+def _parse_year_month_label(label: str) -> tuple[int, int]:
+    """'2026-02' → (2026, 2)"""
+    year_s, month_s = label.strip().split("-", 1)
+    return int(year_s), int(month_s)
+
+
+def resolve_time_range(tr: TimeRange) -> tuple[str, int, str]:
+    """TimeRange 라벨 → (ref_date YYYYMMDD, periods, unit). end 시점이 기준일."""
+    unit = tr.unit
+    start, end = (tr.start or "").strip(), (tr.end or "").strip()
+    if not start or not end:
+        raise ValueError(f"time_range start/end empty: start={start!r} end={end!r}")
+
+    if unit == "weekly":
+        sy, sw = _parse_iso_week_label(start)
+        ey, ew = _parse_iso_week_label(end)
+        start_monday = date.fromisocalendar(sy, sw, 1)
+        end_monday = date.fromisocalendar(ey, ew, 1)
+        weeks = ((end_monday - start_monday).days // 7) + 1
+        return end_monday.strftime("%Y%m%d"), max(1, weeks), "weekly"
+
+    if unit == "monthly":
+        sy, sm = _parse_year_month_label(start)
+        ey, em = _parse_year_month_label(end)
+        months = (ey - sy) * 12 + (em - sm) + 1
+        return f"{ey:04d}{em:02d}01", max(1, months), "monthly"
+
+    if unit == "daily":
+        sd = datetime.strptime(start, "%Y-%m-%d").date()
+        ed = datetime.strptime(end, "%Y-%m-%d").date()
+        days = (ed - sd).days + 1
+        return ed.strftime("%Y%m%d"), max(1, days), "daily"
+
+    raise ValueError(f"unknown time_range.unit: {unit!r}")
+
+
+def _apply_time_range_dict(params: dict) -> None:
+    """task_params 안의 time_range를 ref_date/periods/unit으로 변환·치환(in-place).
+    변환 성공 시 time_range 키는 제거한다(yield_agent_node는 ref_date/periods/unit만 읽음).
+    변환 실패/부재 시 기존 슬롯을 건드리지 않아 backward-compatible."""
+    tr_data = params.get("time_range")
+    if not isinstance(tr_data, dict):
+        return
+    try:
+        ref, periods, unit = resolve_time_range(TimeRange(**tr_data))
+    except Exception as e:
+        logger.warning("[Supervisor] task_params.time_range 변환 실패: %s | data=%r", e, tr_data)
+        params.pop("time_range", None)
+        return
+    params["ref_date"] = ref
+    params["periods"] = periods
+    params["unit"] = unit
+    params.pop("time_range", None)
 
 
 _EMPTY_PLAN_RESPONSE_SYSTEM = """
@@ -757,12 +836,15 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         return {}
 
     today = date.today()
+    _iy, _iw, _ = today.isocalendar()
     prompt = CANONICAL_PLANNER_SYSTEM_PROMPT.format(
         today=today.strftime("%Y년 %m월 %d일 (%A)"),
         today_yyyymmdd=today.strftime("%Y%m%d"),
         today_yyyy_mm_dd=today.strftime("%Y-%m-%d"),
         week_ago_yyyy_mm_dd=(today - timedelta(days=6)).strftime("%Y-%m-%d"),
         year=today.year,
+        today_iso_week=f"{_iy}-W{_iw:02d}",
+        today_year_month=today.strftime("%Y-%m"),
     )
 
     meta_parts: list[str] = []
@@ -2659,6 +2741,8 @@ def supervisor_node(
             return confirm_cleanup
         # C1: 코드 기반 chained input 해소 — wads_sql_result 메시지에서 lot_ids 자동 주입 (LLM 불필요)
         task_params = _resolve_chained_params(current_task, state)
+        # planner가 yield 기간을 라벨 time_range로 넘긴 경우 → ref_date/periods/unit으로 변환(in-place).
+        _apply_time_range_dict(task_params)
 
         task_message = AIMessage(
             content=f"[Task {current_task.get('task_id', '?')}] {current_task.get('goal', '')}",

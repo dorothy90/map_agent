@@ -68,10 +68,8 @@ present there, leave that slot empty or omit it.
    slots:
      - lotcd: 3-char product code, e.g. "4SS", "5NA". This is the PRODUCT being analyzed.
        A bare product token in a yield request (e.g. "4SS 수율") ALWAYS goes here, never into unit.
-     - ref_date: reference date in YYYYMMDD. Default to TODAY if not stated.
-     - unit: one of "weekly" | "monthly" | "daily" ONLY. Never put a product code here.
-       "N주/주간" -> "weekly", "N달/개월/월별" -> "monthly", "N일/일별" -> "daily". Default "weekly".
-     - periods: integer count of units, e.g. 3 (not "3w", not "3주"). Default omit (executor uses its own default).
+     - time_range: 라벨 기반 조회 기간 객체 (아래 YIELD TIME RANGE 섹션 참고). 시간 미지정이면 이 필드를 omit.
+       ref_date/unit/periods를 직접 계산해 넣지 마라 — supervisor가 time_range를 변환한다.
 
 2. wads_agent
    capability: WADS degradation detection list/report
@@ -148,7 +146,7 @@ present there, leave that slot empty or omit it.
   (Selecting one SPECIFIC prior report by ordinal is a different case — see REFERENCE
   RESOLUTION "#RN" below. Use empty slots only for the whole detected set.)
 - Convert dates:
-  - yield_agent.ref_date: YYYYMMDD
+  - yield_agent: 날짜/기간은 ref_date/periods가 아니라 time_range 라벨 객체로 넣어라 (아래 YIELD TIME RANGE 섹션).
   - wads_agent.wads_start_tm / wads_end_tm: YYYY-MM-DD
   - "최근 1주일" / "지난 7일" means start=(today-6 days), end="{today_yyyy_mm_dd}"
   - "오늘" means "{today_yyyy_mm_dd}"
@@ -156,6 +154,30 @@ present there, leave that slot empty or omit it.
   - "1월 20일" means "{year}-01-20"
   - If unresolved, omit the date slot or use "".
 - Never output placeholders like "<task_1 result>", "{{from_task_1}}", or "task result".
+
+=== YIELD TIME RANGE (yield_agent 전용) ===
+yield_agent params의 `time_range`는 라벨 기반 객체다. ref_date/periods 산술을 직접 하지 마라.
+오늘: {today_yyyy_mm_dd}  |  이번 ISO 주차: {today_iso_week}  |  이번 달: {today_year_month}
+
+형식:
+  "time_range": {{"unit": "weekly"|"monthly"|"daily", "start": <라벨>, "end": <라벨>}}
+  단일 시점이면 start == end. 시간 미지정이면 time_range를 아예 넣지 마라 (기본: weekly 최근 4주).
+
+라벨 포맷:
+  weekly:  "YYYY-Www"   (예: "2026-W17")  ← ISO 주차
+  monthly: "YYYY-MM"    (예: "2026-02")
+  daily:   "YYYY-MM-DD" (예: "2026-05-06")
+
+자연어 → time_range 예시:
+  "16-17주차"   → {{"unit":"weekly",  "start":"{year}-W16", "end":"{year}-W17"}}
+  "11주차"      → {{"unit":"weekly",  "start":"{year}-W11", "end":"{year}-W11"}}
+  "이번주"      → {{"unit":"weekly",  "start":"{today_iso_week}", "end":"{today_iso_week}"}}
+  "최근 6주"    → unit=weekly, end="{today_iso_week}", start=(end -5주)
+  "2월"         → {{"unit":"monthly", "start":"{year}-02", "end":"{year}-02"}}
+  "최근 3달"    → unit=monthly, end="{today_year_month}", start=(end -2달)
+  "5월 2일~6일" → {{"unit":"daily",   "start":"{year}-05-02", "end":"{year}-05-06"}}
+  "지난 7일"    → unit=daily, end="{today_yyyy_mm_dd}", start=(end -6일)
+주의: "N주차"는 단일 주차(start==end), "N주(치)"는 최근 N주(end=이번 주차).
 
 === REFERENCE RESOLUTION ===
 The "Recent structured results" context lists prior results in displayed order.
@@ -191,11 +213,13 @@ fills the exact value deterministically (this avoids guessing the wrong value):
 
 === WORKED EXAMPLES ===
 - "최근 3주간 4SS 수율 알려줘"
-  -> {{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"lotcd":"4SS","unit":"weekly","periods":3}},"goal":"4SS 최근 3주 수율 조회"}}],"answer":""}}
+  -> {{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"lotcd":"4SS","time_range":{{"unit":"weekly","start":"<이번 주차 -2>","end":"{today_iso_week}"}}}},"goal":"4SS 최근 3주 수율 조회"}}],"answer":""}}
+- "4SS 16-17주차 수율"
+  -> {{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"lotcd":"4SS","time_range":{{"unit":"weekly","start":"{year}-W16","end":"{year}-W17"}}}},"goal":"4SS 16~17주차 수율 조회"}}],"answer":""}}
 - "오늘 4SS 수율 알려줘"
-  -> {{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"lotcd":"4SS","unit":"daily","periods":1}},"goal":"4SS 오늘 수율 조회"}}],"answer":""}}
+  -> {{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"lotcd":"4SS","time_range":{{"unit":"daily","start":"{today_yyyy_mm_dd}","end":"{today_yyyy_mm_dd}"}}}},"goal":"4SS 오늘 수율 조회"}}],"answer":""}}
 - "5NA 최근 6개월 수율 추세"
-  -> {{"requests":[{{"intent":"yield_analysis","agent":"yield_agent","slots":{{"lotcd":"5NA","unit":"monthly","periods":6}},"goal":"5NA 최근 6개월 수율 추세"}}],"answer":""}}
+  -> {{"requests":[{{"intent":"yield_analysis","agent":"yield_agent","slots":{{"lotcd":"5NA","time_range":{{"unit":"monthly","start":"<이번 달 -5>","end":"{today_year_month}"}}}},"goal":"5NA 최근 6개월 수율 추세"}}],"answer":""}}
 - (follow-up) "두번째 lot 이력 보여줘"  (ordinal reference to a prior result)
   -> {{"requests":[{{"intent":"lot_history","agent":"lot_history_agent","slots":{{"lot_ids":"#2"}},"goal":"두번째 lot 이력"}}],"answer":""}}
 - (WADS list 후) "그 lot들 wafer map 보여줘"  (detected SET — empty slots, backend fills+groups by oper)
@@ -207,7 +231,7 @@ fills the exact value deterministically (this avoids guessing the wrong value):
 Return exactly one JSON object. No markdown, no explanation:
 {{"requests":[{{"intent":"...","agent":"...","slots":{{...}},"goal":"..."}}],"answer":""}}
 "ambiguous_slots" is optional per request — include it ONLY for genuine ambiguity:
-{{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"unit":"weekly","periods":3}},"goal":"수율 조회","ambiguous_slots":[{{"slot":"lotcd","candidates":["4SS","4SS를 기간단위로"],"reason":"'4SS'가 제품코드인지 기간 표현인지 모호합니다. 선택해주세요."}}]}}],"answer":""}}
+{{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"time_range":{{"unit":"weekly","start":"{year}-W16","end":"{year}-W17"}}}},"goal":"수율 조회","ambiguous_slots":[{{"slot":"lotcd","candidates":["4SS","4SS를 기간단위로"],"reason":"'4SS'가 제품코드인지 기간 표현인지 모호합니다. 선택해주세요."}}]}}],"answer":""}}
 When answering directly from context, return:
 {{"requests":[],"answer":"..."}}
 	"""
@@ -225,7 +249,7 @@ Your job: update slots of REMAINING canonical requests based on results from alr
 TODAY's DATE: {today}
 
 === AVAILABLE AGENTS & SLOTS ===
-- yield_agent       : lotcd, ref_date, unit, periods
+- yield_agent       : lotcd, time_range({{unit,start,end}} 라벨 객체)
 - wads_agent        : lotcd, wads_start_tm, wads_end_tm, fail_type, wads_category
 - map_agent         : lot_ids, wf_ids, groupkey, map_type, map_oper
 - fail_history_agent: dh_query, fail_type, cause_oper, lotcd
