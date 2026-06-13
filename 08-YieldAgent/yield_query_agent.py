@@ -383,7 +383,7 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
             for a in anomaly_params[:5]
         )
         result_msg += f"\n\n---\n\n**⚠️ 이상 감지된 파라미터 ({len(anomaly_params)}개)**\n{anomaly_lines}"
-        result_msg += "\n\n> WADS 열화 검출 리포트를 확인하시겠습니까?"
+        # WADS 리포트 확인은 yield_wads_gate 노드가 실제 interrupt()로 묻는다 (죽은 텍스트 제거).
     else:
         result_msg += "\n\n> ✅ 이상 파라미터 없음 (±10% 기준)"
 

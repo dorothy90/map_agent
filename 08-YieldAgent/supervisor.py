@@ -38,6 +38,7 @@ from langchain_core.messages import ToolMessage
 from common import stream_event, get_llm, extract_json_from_llm, is_transient_error
 from canonical_request import (
     AGENT_SLOT_SCHEMAS,
+    build_task_from_canonical_request,
     build_tasks_from_canonical_requests,
     canonical_requests_from_tasks,
     normalize_canonical_request,
@@ -133,6 +134,14 @@ class CanonicalRequestItem(BaseModel):
     )
     goal: str = Field(default="", description="사용자에게 표시할 한국어 목표")
     answer: str = Field(default="", description="잘못 중첩된 direct answer 보정용")
+    ambiguous_slots: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "진짜 모호해서(여러 해석이 모두 그럴듯해 하나로 확신 불가) 사용자 확인이 필요한 슬롯만. "
+            "각 항목: {\"slot\":슬롯명, \"candidates\":[후보값,...], \"reason\":한국어 질문}. "
+            "해당 슬롯은 slots에서 비워두고 여기 적는다. 기본값이 있는 미지정은 모호가 아니다 → 빈 리스트."
+        ),
+    )
 
 
 class CanonicalPlanResponse(BaseModel):
@@ -984,9 +993,22 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         },
     )
 
+    # 모호 슬롯 수집 (시나리오 2): plan.requests(intent+agent 필터)는 build_tasks의
+    # task_{i} 순서와 1:1 → task_id로 태깅해 supervisor의 missing_param HITL이 options로 묻는다.
+    ambiguous_slots: list[dict] = []
+    for _i, _req in enumerate(
+        (r for r in plan.requests if r.intent and r.agent), start=1
+    ):
+        for _amb in getattr(_req, "ambiguous_slots", None) or []:
+            if isinstance(_amb, dict) and _amb.get("slot"):
+                ambiguous_slots.append(
+                    {"task_id": f"task_{_i}", "agent": _req.agent, **_amb}
+                )
+
     update = {
         "canonical_request": canonical_requests[0],
         "canonical_requests": canonical_requests,
+        "ambiguous_slots": ambiguous_slots,
         # recent_results was populated by reference_resolver; planner owns it now.
         # Downstream (validator's _apply_recent_wads_to_map_tasks) reads it from state.
         "recent_results": recent_results,
@@ -2009,6 +2031,13 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         )
         _emit_task_outcome_trace(state, str(last_task_id or ""))
 
+    # ── 결정론적 후속 제안 (B안): yield 이상감지 시 confirm 필요한 WADS task를 큐에 추가 ──
+    # 완료판정보다 먼저 실행 — pending이 비어도 후속을 넣어 턴이 조기 종료되지 않게 한다.
+    # task_plan에도 append해 완료판정(아래)·max_steps 정합을 맞춘다.
+    followup = _maybe_propose_wads_followup(state)
+    if followup:
+        return {**scratchpad_update, **followup}
+
     # ── canonical plan-and-execute 종료 판정 ──
     # 모든 planned task가 실행되었고 남은 pending이 없으면 plan 완료.
     # past_steps는 per-turn reset(`agent_server.py`)이라 턴 내 실행 기록만 반영.
@@ -2319,6 +2348,46 @@ def _missing_required_fields(
     return fields
 
 
+def _ambiguous_fields(
+    agent: str, task_id: str, update_dict: dict, state: dict
+) -> list[dict]:
+    """모호 슬롯(시나리오 2)을 choice 필드로 변환 — 누락이 아니라 '값이 모호'한 케이스.
+
+    planner가 state["ambiguous_slots"]에 적은 항목 중 이 task의, 아직 안 채워진,
+    이 agent가 받는 슬롯만 options 필드로 만든다. 이미 값이 있으면(=resume로 선택됨) skip."""
+    out: list[dict] = []
+    allowed = AGENT_SLOT_SCHEMAS.get(agent, set())
+    for amb in state.get("ambiguous_slots") or []:
+        if not isinstance(amb, dict) or amb.get("task_id") != task_id:
+            continue
+        slot = amb.get("slot")
+        if not slot or slot not in allowed:
+            continue
+        if str(update_dict.get(slot) or "").strip():
+            continue  # 이미 채워짐 (resume 선택값) → 다시 묻지 않음
+        candidates = [str(c).strip() for c in (amb.get("candidates") or []) if str(c).strip()]
+        if not candidates:
+            continue
+        out.append({
+            "slot": slot,
+            "label": amb.get("reason") or f"'{slot}' 값이 모호합니다. 선택해주세요.",
+            "type": "choice",
+            "options": candidates,
+        })
+    return out
+
+
+def _merge_fields(*field_lists: list[dict]) -> list[dict]:
+    """슬롯 기준 dedup — 같은 슬롯이 누락+모호로 겹치면 options가 있는 쪽(모호)을 우선한다."""
+    by_slot: dict[str, dict] = {}
+    for fields in field_lists:
+        for field in fields:
+            slot = field.get("slot")
+            if slot not in by_slot or (field.get("options") and not by_slot[slot].get("options")):
+                by_slot[slot] = field
+    return list(by_slot.values())
+
+
 def _compose_fields_message(fields: list[dict]) -> str:
     """Human prompt for the Streamlit fallback. Single field shows its own label;
     multiple shows them together so one answer can address all."""
@@ -2477,8 +2546,12 @@ def _require_agent_params(
     # that fails its format guard is NOT filled and is re-asked with the reason — so a
     # malformed answer becomes a backstop, never a silent garbage query.
     rejections: dict = {}
+    task_id = str(current_task.get("task_id") or "")
     while True:
-        fields = _missing_required_fields(agent, update_dict, rejections)
+        fields = _merge_fields(
+            _missing_required_fields(agent, update_dict, rejections),
+            _ambiguous_fields(agent, task_id, update_dict, state),
+        )
         if not fields:
             break
         answers = _ask_fields(fields, current_task)
@@ -2512,6 +2585,7 @@ def supervisor_node(
     state: Dict[str, Any], config: RunnableConfig
 ) -> Command[
     Literal[
+        "supervisor",  # confirm 거절 후 다음 pending task를 dispatch하러 재진입
         "yield_agent",
         "wads_agent",
         "map_agent",
@@ -2577,6 +2651,12 @@ def supervisor_node(
     if pending:
         current_task = pending[0]
         remaining = pending[1:]
+        # ── 실행 확인 (B안): missing_param과 같은 dispatch 직전 멱등 구간에서 interrupt ──
+        # confirm_tasks에 이 task가 있으면 확인. 거절 → Command(드롭 후 다음 pending/END) 반환.
+        # 승인/미해당 → confirm_tasks 정리 dict(아래 update_dict에 merge).
+        confirm_cleanup = _confirm_or_drop(current_task, remaining, state, step_count)
+        if isinstance(confirm_cleanup, Command):
+            return confirm_cleanup
         # C1: 코드 기반 chained input 해소 — wads_sql_result 메시지에서 lot_ids 자동 주입 (LLM 불필요)
         task_params = _resolve_chained_params(current_task, state)
 
@@ -2620,6 +2700,8 @@ def supervisor_node(
         # Project resolved params into per-agent state fields (6b: extracted to a
         # helper; order/inheritance preserved — see _project_task_params).
         update_dict.update(_project_task_params(agent, task_params, state))
+        # confirm 승인 시 처리된 task_id를 confirm_tasks에서 제거 (미해당이면 {} → no-op).
+        update_dict.update(confirm_cleanup)
 
         # Required-param validation + HITL interrupts (6c: extracted to a helper).
         # The helper mutates update_dict in place and either returns None (continue)
@@ -2750,6 +2832,158 @@ def supervisor_node(
     )
 
 
+# ── HITL 확인 메커니즘 (task 속성 기반, B안) ──────────────────────────
+# "확인 후 실행"은 그래프 노드가 아니라 task 속성으로 처리한다: replanner가 confirm이 필요한
+# 후속 task를 pending에 넣으며 state["confirm_tasks"]에 메시지를 달면, supervisor가 dispatch
+# 직전(무거운 부수효과 이전, missing_param과 같은 멱등 구간)에 interrupt로 확인한다. 체이닝이
+# 늘어도 신규 노드 0개. yes/no 해석만 LLM이 하고(키워드 금지), 후속 task 생성은 결정론으로 둔다.
+_CONFIRM_SYSTEM = (
+    "사용자에게 후속 작업을 실행할지 물었고, 아래는 사용자의 자유 응답이다. "
+    "응답이 긍정(예/진행/확인/보겠다)인지 부정(아니오/취소/거절/안 본다)인지 판단해라. "
+    "오직 'yes' 또는 'no' 한 단어만 출력해라."
+)
+
+
+def _interpret_confirmation(answer: Any) -> bool:
+    """사용자 자유응답의 yes/no를 LLM으로 해석 (키워드 매칭 금지, plan_review 패턴 재사용).
+
+    빈 응답은 거절로 처리한다. LLM 실패 시에도 안전하게 거절(후속 미실행)한다."""
+    if isinstance(answer, dict):
+        text = answer.get("task_confirm") or next(iter(answer.values()), "")
+    else:
+        text = answer
+    text = str(text or "").strip()
+    if not text:
+        return False
+    try:
+        verdict = (
+            _model.invoke(
+                [
+                    {"role": "system", "content": _CONFIRM_SYSTEM},
+                    {"role": "user", "content": text},
+                ],
+                config={"callbacks": _lf_callbacks()},
+            ).content
+            or ""
+        ).strip().lower()
+    except Exception as e:
+        logger.warning("[Confirm] 응답 해석 LLM 실패 (%s) — 거절 처리", e)
+        return False
+    return verdict.startswith("y")
+
+
+def _build_wads_followup_task(state: Dict[str, Any], anomaly_params: list[dict]) -> dict:
+    """이상 파라미터 → WADS follow-up task (replanner의 결정론 경로에서 호출).
+    anomaly_params↔fail_type는 동일 도메인 파라미터(yield_query_agent.py 참조)라 기계적
+    projection이지 의미 판단이 아니다. 누락 시간창 등은 supervisor의 기존 missing_param
+    HITL이 dispatch 직전에 채운다."""
+    lotcd = state.get("lotcd", "")
+    param_names = [p.get("param") for p in anomaly_params if p.get("param")]
+    fail_type = ",".join(dict.fromkeys(param_names))
+    task_id = f"task_{len(state.get('task_plan') or []) + 1}_wads"
+    return build_task_from_canonical_request(
+        {
+            "intent": "wads_report",
+            "agent": "wads_agent",
+            "slots": {"lotcd": lotcd, "fail_type": fail_type},
+            "goal": f"{lotcd} 이상 파라미터 WADS 열화 검출 리포트 조회",
+        },
+        task_id=task_id,
+    )
+
+
+_WADS_CONFIRM_MESSAGE = "WADS 열화 검출 리포트를 확인하시겠습니까?"
+
+
+def _maybe_propose_wads_followup(state: Dict[str, Any]) -> dict:
+    """결정론적 후속 제안: yield 이상감지 시 confirm 필요한 WADS task를 큐에 추가한다.
+    이미 WADS가 계획/큐에 있으면(직접 요청 or 이미 제안됨) 재제안하지 않는다 — 이상감지 후
+    매 replanner pass마다 재발동하는 무한 추가를 막는 가드. 반환: pending_tasks/task_plan
+    (append)/confirm_tasks 업데이트 dict, 제안 없으면 {}."""
+    anomaly_params = state.get("anomaly_params") or []
+    if not anomaly_params:
+        return {}
+    pending = state.get("pending_tasks") or []
+    task_plan = state.get("task_plan") or []
+    if any(
+        t.get("agent") == "wads_agent"
+        for t in (pending + task_plan)
+        if isinstance(t, dict)
+    ):
+        return {}
+    wads_task = _build_wads_followup_task(state, anomaly_params)
+    task_id = wads_task["task_id"]
+    logger.info("[Replanner] 이상감지 → WADS confirm task 제안: %s", task_id)
+    return {
+        # pending_tasks/task_plan은 overwrite 채널 — 기존 큐 보존 위해 반드시 append.
+        "pending_tasks": pending + [wads_task],
+        "task_plan": task_plan + [wads_task],
+        "confirm_tasks": {
+            **(state.get("confirm_tasks") or {}),
+            task_id: _WADS_CONFIRM_MESSAGE,
+        },
+    }
+
+
+def _confirm_or_drop(
+    current_task: dict, remaining: list[dict], state: Dict[str, Any], step_count: int
+):
+    """dispatch 직전 confirm 처리 (missing_param과 같은 멱등 구간 — 무거운 부수효과 이전).
+    confirm_tasks에 이 task가 없으면 {} 반환(그대로 진행).
+    있으면 interrupt로 확인:
+      - 승인 → {"confirm_tasks": <id 제거>} 반환(caller가 dispatch update에 merge).
+      - 거절 → task 드롭. remaining 있으면 supervisor 재진입, 없으면 응답 set 후 END Command 반환."""
+    confirm_tasks = state.get("confirm_tasks") or {}
+    task_id = str(current_task.get("task_id") or "")
+    message = confirm_tasks.get(task_id)
+    if not message:
+        return {}
+    answer = interrupt({
+        "type": "confirm",
+        "interrupt_type": "task_confirm",
+        "param": "task_confirm",
+        "message": message,
+        # InterruptEvent.options 스키마는 list[dict] — label/value 형태.
+        "options": [{"label": "예", "value": "예"}, {"label": "아니오", "value": "아니오"}],
+        "route": current_task.get("agent", ""),
+    })
+    new_confirm = {k: v for k, v in confirm_tasks.items() if k != task_id}
+    if _interpret_confirmation(answer):
+        return {"confirm_tasks": new_confirm}  # 승인 → dispatch 계속
+    logger.info("[Confirm] task %s 거절 → 드롭 (remaining=%d)", task_id, len(remaining))
+    if remaining:
+        # 남은 task가 있으면 supervisor 재진입해 그걸 dispatch.
+        return Command(
+            update={
+                "step_count": step_count,
+                "pending_tasks": remaining,
+                "confirm_tasks": new_confirm,
+            },
+            goto="supervisor",
+        )
+    # 남은 task 없음 → 직전 agent 결과로 턴 정상 종료 (replanner 완료판정과 동일 메시지 규칙).
+    last_agent_msg = next(
+        (
+            m.content
+            for m in reversed(state.get("messages", []))
+            if isinstance(m, AIMessage)
+            and getattr(m, "name", "") in _AGENT_NAMES
+            and isinstance(m.content, str)
+            and m.content.strip()
+        ),
+        "분석을 완료했습니다.",
+    )
+    return Command(
+        update={
+            "step_count": step_count,
+            "pending_tasks": [],
+            "confirm_tasks": new_confirm,
+            "response": last_agent_msg,
+        },
+        goto=END,
+    )
+
+
 # ── 공유 State 정의 ──────────────────────────────────────
 class YieldQueryState(TypedDict):
     """Yield Query Supervisor의 공유 State
@@ -2851,6 +3085,14 @@ class YieldQueryState(TypedDict):
     # ReferenceResolver v1 scratchpad (overwrite, deterministic only)
     resolved_refs: dict
     reference_issues: list[dict]
+
+    # 모호 슬롯 (시나리오 2, overwrite): planner가 채우고 supervisor missing_param HITL이 소비.
+    # 각 항목 {task_id, agent, slot, candidates:[...], reason}.
+    ambiguous_slots: list[dict]
+
+    # 실행 확인 대기 task (B안, overwrite): replanner가 {task_id: 확인메시지}를 채우고
+    # supervisor가 dispatch 직전 interrupt로 확인 → 처리된 id는 제거. 신규 노드 없이 체이닝 확인.
+    confirm_tasks: dict
 
     # Canonical request scratchpad (overwrite). Planner/replanner produce this
     # contract; task_builder converts it into executable tasks.

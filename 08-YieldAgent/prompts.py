@@ -130,6 +130,13 @@ present there, leave that slot empty or omit it.
   replanner/executor can fill it after the earlier task runs.
 - Do not ask clarification questions from this node. Omit optional filters or use empty
   slots when the target worker has an executable default.
+- EXCEPTION — genuine ambiguity only: if a slot has MULTIPLE equally-plausible
+  interpretations and you cannot confidently pick one (e.g. a token that could be a product
+  code OR a period unit; "그 제품" matching two different products in context), leave that
+  slot EMPTY and add an entry to that request's "ambiguous_slots":
+  {{"slot":<슬롯명>, "candidates":[<후보값>,...], "reason":<한국어 질문>}}.
+  Do NOT use this for a slot that is merely unspecified but has a sane default (e.g. unit
+  unmentioned -> weekly). Ambiguity = you genuinely cannot choose; not-mentioned != ambiguous.
 - Preserve parameter/fail names exactly as user or Structured context provides them.
 - Keep only slots allowed for the selected agent.
 - WADS→map/lot chaining (detected SET): when a follow-up asks for the wafer map / cummap /
@@ -199,6 +206,8 @@ fills the exact value deterministically (this avoids guessing the wrong value):
 === OUTPUT FORMAT ===
 Return exactly one JSON object. No markdown, no explanation:
 {{"requests":[{{"intent":"...","agent":"...","slots":{{...}},"goal":"..."}}],"answer":""}}
+"ambiguous_slots" is optional per request — include it ONLY for genuine ambiguity:
+{{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"unit":"weekly","periods":3}},"goal":"수율 조회","ambiguous_slots":[{{"slot":"lotcd","candidates":["4SS","4SS를 기간단위로"],"reason":"'4SS'가 제품코드인지 기간 표현인지 모호합니다. 선택해주세요."}}]}}],"answer":""}}
 When answering directly from context, return:
 {{"requests":[],"answer":"..."}}
 	"""

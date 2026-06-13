@@ -286,6 +286,40 @@ def _sse(event: dict | object) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _interrupt_sse_events(interrupt_data: dict) -> list[str]:
+    """interrupt payload → SSE 라인 리스트. in-loop(astream의 __interrupt__ 청크)와
+    post-loop(aget_state) 양쪽에서 동일 포맷으로 emit하기 위해 공유한다."""
+    if not isinstance(interrupt_data, dict):
+        return []
+    if interrupt_data.get("type") == "plan_review":
+        tasks = interrupt_data.get("tasks", [])
+        missing_params = interrupt_data.get("missing_params", [])
+        return [
+            _sse(MessageEvent(
+                agent="plan_review",
+                content=_build_plan_review_message(tasks, missing_params),
+            )),
+            _sse(InterruptEvent(
+                interrupt_type="plan_review",
+                param="plan_review",
+                message="분석 계획을 승인하시겠습니까?",
+                route="",
+            )),
+        ]
+    return [
+        _sse(InterruptEvent(
+            interrupt_type=interrupt_data.get(
+                "interrupt_type", interrupt_data.get("type", "missing_param")
+            ),
+            param=interrupt_data.get("param", ""),
+            message=interrupt_data.get("message", ""),
+            route=interrupt_data.get("route", ""),
+            options=interrupt_data.get("options", []),
+            fields=interrupt_data.get("fields", []),
+        )),
+    ]
+
+
 def _detect_artifact_type(data: str) -> ArtifactType:
     """아티팩트 데이터에서 타입 추론"""
     if not data:
@@ -594,6 +628,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                 query=request.query,
             ))
 
+            interrupt_emitted = False
             try:
                 # stream_mode=["updates", "custom"]:
                 #   "updates" → 기존 node state 업데이트 (messages, artifacts 등)
@@ -618,6 +653,15 @@ async def chat_stream(request: ChatRequest, req: Request):
                     # updates 이벤트: node state 업데이트 — 기존 처리 로직 유지
                     # interrupt() 발생 시 data가 dict가 아닐 수 있음 (tuple 등) → 스킵
                     if not isinstance(data, dict):
+                        continue
+                    # interrupt 청크: astream이 __interrupt__ 채널로 payload를 직접 흘려준다.
+                    # post-loop aget_state는 무거운 노드(yield_agent) 직후 일시적으로 stale해
+                    # gate interrupt를 놓칠 수 있으므로 in-loop에서 우선 emit한다 (post-loop는 fallback).
+                    if "__interrupt__" in data:
+                        for intr in data["__interrupt__"] or []:
+                            for sse_line in _interrupt_sse_events(getattr(intr, "value", {})):
+                                yield sse_line
+                            interrupt_emitted = True
                         continue
                     for node_name, node_state in data.items():
                         # node_state가 dict가 아닌 경우 (interrupt 등) 스킵
@@ -839,42 +883,22 @@ async def chat_stream(request: ChatRequest, req: Request):
                     pass
                 return
 
-            # ── interrupt 감지: 그래프가 일시정지된 경우 SSE로 전달 ──
-            try:
-                final_state = await graph.aget_state(config)
-                if final_state and final_state.tasks:
-                    for task in final_state.tasks:
-                        if hasattr(task, "interrupts") and task.interrupts:
-                            for intr in task.interrupts:
-                                interrupt_data = intr.value
-                                emit_runtime_detail("interrupt", interrupt_data)
-                                if interrupt_data.get("type") == "plan_review":
-                                    tasks = interrupt_data.get("tasks", [])
-                                    missing_params = interrupt_data.get("missing_params", [])
-                                    yield _sse(MessageEvent(
-                                        agent="plan_review",
-                                        content=_build_plan_review_message(tasks, missing_params),
-                                    ))
-                                    yield _sse(InterruptEvent(
-                                        interrupt_type="plan_review",
-                                        param="plan_review",
-                                        message="분석 계획을 승인하시겠습니까?",
-                                        route="",
-                                    ))
-                                else:
-                                    yield _sse(InterruptEvent(
-                                        interrupt_type=interrupt_data.get(
-                                            "interrupt_type",
-                                            interrupt_data.get("type", "missing_param"),
-                                        ),
-                                        param=interrupt_data.get("param", ""),
-                                        message=interrupt_data.get("message", ""),
-                                        route=interrupt_data.get("route", ""),
-                                        options=interrupt_data.get("options", []),
-                                        fields=interrupt_data.get("fields", []),
-                                    ))
-            except Exception as e:
-                logger.warning("Interrupt 감지 실패: %s", e)
+            # ── interrupt 감지(fallback): in-loop에서 이미 emit했으면 건너뛴다.
+            # aget_state는 무거운 노드 직후 stale할 수 있어 in-loop emit이 1차, 여기가 2차다.
+            if not interrupt_emitted:
+                try:
+                    final_state = await graph.aget_state(config)
+                    if final_state and final_state.tasks:
+                        for task in final_state.tasks:
+                            if hasattr(task, "interrupts") and task.interrupts:
+                                for intr in task.interrupts:
+                                    interrupt_data = intr.value
+                                    emit_runtime_detail("interrupt", interrupt_data)
+                                    for sse_line in _interrupt_sse_events(interrupt_data):
+                                        yield sse_line
+                                    interrupt_emitted = True
+                except Exception as e:
+                    logger.warning("Interrupt 감지 실패: %s", e)
 
             # Langfuse output 기록
             try:
