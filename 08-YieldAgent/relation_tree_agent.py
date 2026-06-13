@@ -33,6 +33,34 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
 
     logger.info("[Relation Tree Agent] lot_code=%s fail_type=%s main_oper=%s", lot_code, fail_type, main_oper)
 
+    # WADS 검출 후속(rt_groups): report별로 각각 연관 분석(파라미터 뭉치기 금지). cummap fan-out 대칭.
+    rt_groups = state.get("rt_groups") or []
+    if rt_groups:
+        artifacts: list[dict] = []
+        labels: list[str] = []
+        for g in rt_groups:
+            g_lotcd = (str(g.get("lotcd") or lot_code)).strip()
+            g_param = (str(g.get("parameter") or "")).strip()
+            g_lots = ",".join(str(x).strip() for x in (g.get("lot_ids") or []) if str(x).strip())
+            artifacts.append({
+                "type": "html",
+                "mime": "text/html",
+                "data": (
+                    f"<h1>Inline-WT 연관 분석: {_h(g_lotcd)} / {_h(g_param) or '-'}</h1>"
+                    f"<p>lots: {_h(g_lots) or '-'}</p>"
+                    f"<p>(상관분석·trend 본구현 예정)</p>"
+                ),
+                "title": f"relation_tree_{g_param or g_lotcd}",
+            })
+            labels.append(g_param or g_lotcd)
+        summary = f"WADS 검출 {len(artifacts)}개 리포트 연관 분석(파라미터별): {', '.join(labels)}"
+        return {
+            "messages": [AIMessage(content=summary, name="relation_tree_agent")],
+            "relation_tree_artifacts": artifacts,
+            "agent_suggestion": "",
+            "past_steps": [(current_task_id, summary[:300])],
+        }
+
     if not lot_code:
         msg = AIMessage(
             content="LOT 코드가 제공되지 않았습니다. 연관 분석을 수행하려면 LOT 코드를 알려주세요.",

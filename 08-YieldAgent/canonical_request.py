@@ -20,7 +20,8 @@ AGENT_SLOT_RULES: dict[str, dict[str, Any]] = {
         "required_any": (("lot_ids", "groupkey"),),
     },
     "fail_history_agent": {
-        "allowed": {"lotcd", "fail_type", "cause_oper", "dh_query"},
+        # fail_groups: WADS report별 fan-out 입력 [{lotcd, parameter, lot_ids}, …] (postwads 체이닝)
+        "allowed": {"lotcd", "fail_type", "cause_oper", "dh_query", "fail_groups"},
         "required": (),
     },
     "lot_history_agent": {
@@ -31,7 +32,8 @@ AGENT_SLOT_RULES: dict[str, dict[str, Any]] = {
         # TEMP(relation_tree fail_type): fail_type is now the analyzed parameter (required
         # with lotcd). Without it in `allowed`, _clean_slots dropped a "#N" ordinal token
         # before apply_ordinal_ref could resolve it -> silent interrupt. cause_oper stays optional.
-        "allowed": {"lotcd", "fail_type", "cause_oper"},
+        # rt_groups: WADS report별 fan-out 입력 [{lotcd, parameter, lot_ids}, …] (postwads 체이닝)
+        "allowed": {"lotcd", "fail_type", "cause_oper", "rt_groups"},
         "required": ("lotcd", "fail_type"),
     },
     "ppt_export": {

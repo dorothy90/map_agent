@@ -558,6 +558,9 @@ async def chat_stream(request: ChatRequest, req: Request):
             "confirm_tasks": {},
             # WADS report별 cummap fan-out 입력 — 매 새 turn 리셋(이전 turn 그룹 잔존 방지).
             "map_groups": [],
+            # WADS report별 불량이력/연관분석 fan-out 입력 — 매 새 turn 리셋.
+            "fail_groups": [],
+            "rt_groups": [],
         }
 
         # 첫 번째 턴이면 나머지 기본값도 함께 전달 (#18 fix: YieldQueryState 전체 키 명시 init)
@@ -573,6 +576,8 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "anomaly_params": [],
                 "postwads_offered": False,
                 "map_groups": [],
+                "fail_groups": [],
+                "rt_groups": [],
                 "filter_params": [],
                 "lot_ids":    [],
                 "wf_ids":     [],

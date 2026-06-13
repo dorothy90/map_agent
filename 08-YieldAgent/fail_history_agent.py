@@ -143,10 +143,120 @@ def _synthesize_answer(
     return ai.content if hasattr(ai, "content") else str(ai)
 
 
+def _fail_history_per_report(state: dict, config: RunnableConfig, fail_groups: list) -> dict:
+    """WADS report별 불량이력 fan-out: group(파라미터)마다 따로 검색·합성 후 한 메시지로 결합.
+    cummap의 map_groups 내부 루프와 대칭. 단일 경로(fail_groups 없음)는 건드리지 않는다."""
+    base_lotcd = state.get("lotcd", "")
+    dh_cause_oper = state.get("cause_oper", "")
+    last_human = next(
+        (m for m in reversed(state.get("messages", [])) if isinstance(m, HumanMessage)),
+        None,
+    )
+    task_goal = state.get("current_task_goal", "")
+
+    sections: list[str] = []
+    all_results: list[dict] = []
+    suggestions: list[str] = []
+    wiki_hits: list[str] = []
+    params_seen: list[str] = []
+    wiki_status = "skipped"
+
+    for g in fail_groups:
+        param = str(g.get("parameter") or "").strip()
+        g_lotcd = str(g.get("lotcd") or base_lotcd).strip()
+        product = _product_filter_from_lotcd(g_lotcd)
+        query = task_goal or (
+            last_human.content if last_human else f"{g_lotcd} {param} 불량이력 조회"
+        )
+        if param:
+            params_seen.append(param)
+        wiki_storage: Dict[str, Any] = {"hit_ids": [], "last_status": "skipped", "queries": []}
+        _wiki_payload_var.set(wiki_storage)
+        _supervisor_parsed_var.set(
+            {"product": product, "fail_type": param, "cause_oper": dh_cause_oper, "query_hint": ""}
+        )
+        try:
+            raw = do_search(query=query, product=product, fail_type=param, cause_oper=dh_cause_oper, top_k=5)
+        except Exception as e:
+            if is_transient_error(e):
+                raise
+            logger.error("[FH Agent] (%s) 검색 영구 오류: %s", param, e, exc_info=True)
+            sections.append(f"## {param or g_lotcd}\n\n불량이력 검색 중 오류가 발생했습니다.")
+            continue
+
+        results = raw.get("results", [])
+        retrieval_mode = raw.get("retrieval_mode", "baseline")
+        if retrieval_mode == "wiki-first":
+            answer = raw.get("rendered_answer", "wiki 합성 본문이 비어 있습니다.")
+        elif not results:
+            answer = "조건에 맞는 불량이력이 없습니다. 검색어나 필터를 조정해보세요. [SUGGESTION: ]"
+        else:
+            try:
+                answer = _synthesize_answer(query, raw, product, param, dh_cause_oper, config)
+            except Exception as e:
+                if is_transient_error(e):
+                    raise
+                logger.error("[FH Agent] (%s) 합성 영구 오류: %s", param, e, exc_info=True)
+                answer = "검색은 됐지만 답변 합성 중 오류가 발생했습니다. [SUGGESTION: ]"
+
+        super_body = raw.get("super_reference_body") or ""
+        if super_body:
+            answer = answer.rstrip() + "\n\n---\n\n## 관련 패턴 (참고용)\n\n" + super_body
+        answer, suggestion = extract_suggestion(answer)
+        cited = _extract_cited_doc_ids(answer)
+        block = _format_cited_results(results, cited)
+        body = f"{answer}\n\n---\n\n{block}" if block else answer
+        sections.append(f"## {param or g_lotcd}\n\n{body}")
+        all_results.extend(results)
+        if suggestion:
+            suggestions.append(suggestion)
+        wiki_hits.extend(wiki_storage.get("hit_ids") or [])
+        wiki_status = wiki_storage.get("last_status", wiki_status)
+
+    message_content = "### 💡 [답변] (WADS 검출 파라미터별)\n\n" + "\n\n---\n\n".join(sections)
+    result_message = AIMessage(content=message_content, name="fail_history_agent")
+    product_filter = _product_filter_from_lotcd(base_lotcd)
+    doc_ids = [r.get("doc_id") for r in all_results if isinstance(r, dict) and r.get("doc_id")]
+    grounded_summary = derive_summary_from_rows(
+        source_agent="fail_history_agent", rows=all_results, artifacts=[],
+        fallback=message_content, title="fail_history",
+    )
+    attach_result_envelope(
+        result_message, logger=logger, source_agent="fail_history_agent",
+        kind="document" if all_results else "summary",
+        status="success" if all_results else "empty",
+        title="fail_history", summary=grounded_summary, rows=all_results,
+        entities={
+            "products": [product_filter] if product_filter else [],
+            "parameters": params_seen, "fail_types": params_seen,
+            "cause_opers": [dh_cause_oper] if dh_cause_oper else [], "doc_ids": doc_ids,
+        },
+        provenance={
+            "task_id": state.get("current_task_id", ""),
+            "task_goal": state.get("current_task_goal", ""),
+        },
+        metadata={"row_count": len(all_results), "report_count": len(fail_groups)},
+    )
+    return {
+        "messages": [result_message],
+        "fail_history_artifacts": [],
+        "fail_history_results": all_results,
+        "agent_suggestion": suggestions[0] if suggestions else "",
+        "past_steps": [(state.get("current_task_id", ""), message_content[:300])],
+        "wiki_hit_ids": list(dict.fromkeys(wiki_hits)),
+        "wiki_update_status": wiki_status,
+    }
+
+
 @observe(name="fail_history_agent_node")
 @timed
 def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
-    """함수형 노드: search → (wiki-first 즉시 / 아니면 LLM 1회 합성) → 인용 문서 표시."""
+    """함수형 노드: search → (wiki-first 즉시 / 아니면 LLM 1회 합성) → 인용 문서 표시.
+    WADS 검출 후속(fail_groups)이면 report별 fan-out으로 위임한다."""
+    fail_groups = state.get("fail_groups") or []
+    if fail_groups:
+        return _fail_history_per_report(state, config, fail_groups)
+
     lotcd = state.get("lotcd", "")
     product_filter = _product_filter_from_lotcd(lotcd)
     dh_query = state.get("dh_query", "")
