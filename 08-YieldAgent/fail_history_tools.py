@@ -177,6 +177,18 @@ def _expand_acronyms(query: str) -> str:
     return expanded
 
 
+# fail_type 입력에서 PT1H_TEST_ / PT1C_TEST_ 접두를 제거 (대소문자 무시).
+# 인덱스의 fail_type 값은 stage 접두 없이 저장되므로, 외부에서 stage 접두가 붙어
+# 들어와도 prefix filter가 0-hit 나지 않도록 정규화한다.
+_FAIL_TYPE_STAGE_PREFIX_RE = re.compile(r"^(?:PT1[HC]_TEST_)+", re.IGNORECASE)
+
+
+def _normalize_fail_type(fail_type: str) -> str:
+    if not fail_type:
+        return fail_type
+    return _FAIL_TYPE_STAGE_PREFIX_RE.sub("", fail_type)
+
+
 # ── OpenSearch 하이브리드 검색 ────────────────────────────────
 @observe(name="fh_search_opensearch")
 def _search_opensearch(
@@ -189,6 +201,8 @@ def _search_opensearch(
     """BM25 + kNN 하이브리드 검색 실행"""
     client = _get_opensearch_client()
 
+    fail_type = _normalize_fail_type(fail_type)
+
     # 약어 확장 후 임베딩 생성
     expanded_query = _expand_acronyms(query)
     embedding = _get_embedding(expanded_query)
@@ -196,13 +210,21 @@ def _search_opensearch(
     # 메타데이터 필터 구성
     # product / fail_type은 text + .keyword 매핑 → 정확매칭 위해 .keyword 사용
     # cause_oper는 keyword 단일 매핑 → 그대로 사용
-    # fail_type 값은 인덱스에 "EASY(W)"처럼 alias 포함으로 저장 → prefix 매칭으로
-    #   사용자 입력("EASY")과 alias 포함값 양쪽 모두 수용 가능
+    # fail_type 값은 인덱스에 "EASY(W)" 또는 "pteidx_snc_n/o"처럼 접두/접미가 붙어
+    #   저장될 수 있음 → substring(wildcard) 매칭으로 사용자 입력("EASY","snc_no")이
+    #   인덱스 값 어디에 있든 잡히도록 처리. case_insensitive로 대소문자 차이도 수용.
     filters = []
     if product:
         filters.append({"term": {"product.keyword": product}})
     if fail_type:
-        filters.append({"prefix": {"fail_type.keyword": fail_type}})
+        filters.append({
+            "wildcard": {
+                "fail_type.keyword": {
+                    "value": f"*{fail_type}*",
+                    "case_insensitive": True,
+                }
+            }
+        })
     if cause_oper:
         filters.append({"term": {"cause_oper": cause_oper}})
 
@@ -217,9 +239,13 @@ def _search_opensearch(
         bm25_query = {"bool": {"must": [bm25_query], "filter": filters}}
 
     # kNN 쿼리 (메타데이터 필터 포함)
+    # ※ kNN + filter 조합에서 OpenSearch가 exact-kNN 경로로 떨어지면,
+    #   필터된 후보군에 embedding=null인 문서가 섞일 때
+    #   "cannot read field 'point' because this.point is null" 오류 발생.
+    #   filter에 항상 `exists: embedding`을 함께 걸어 null 후보를 배제.
     knn_body: Dict[str, Any] = {"vector": embedding, "k": top_k}
-    if filters:
-        knn_body["filter"] = {"bool": {"filter": filters}}
+    knn_filters = filters + [{"exists": {"field": "embedding"}}]
+    knn_body["filter"] = {"bool": {"filter": knn_filters}}
     knn_query: Dict[str, Any] = {
         "knn": {
             "embedding": knn_body
@@ -255,8 +281,26 @@ def _search_opensearch(
             body=search_body,
         )
     except Exception as e:
-        logger.error("OpenSearch 검색 실패: %s", e, exc_info=True)
-        raise
+        # OpenSearch hybrid search + normalization-processor 는 sub-query 결과 수가
+        # 어긋나면(특히 kNN 후보가 0건일 때) `index -X out of bounds for length Y`
+        # 같은 search_phase_execution_exception 을 던지는 알려진 버그가 있다.
+        # BM25-only 로 폴백해 사용자에게 빈 화면 대신 결과를 돌려준다.
+        msg = str(e)
+        is_hybrid_bug = (
+            "search_phase_execution_exception" in msg
+            or "out of bounds" in msg
+            or "this.point is null" in msg
+        )
+        if not is_hybrid_bug:
+            logger.error("OpenSearch 검색 실패: %s", e, exc_info=True)
+            raise
+        logger.warning("[_search_opensearch] hybrid 실패 — BM25-only 폴백: %s", e)
+        bm25_only_body = {"size": top_k, "query": bm25_query}
+        try:
+            response = client.search(index=_OPENSEARCH_INDEX, body=bm25_only_body)
+        except Exception as e2:
+            logger.error("OpenSearch BM25 폴백도 실패: %s", e2, exc_info=True)
+            raise
 
     results = []
     for hit in response.get("hits", {}).get("hits", []):
@@ -460,6 +504,28 @@ def do_search(
         logger.error("[do_search] 검색 오류: %s", e, exc_info=True)
         raise
 
+    # 0-hit fallback: fail_type 필터로 인해 결과가 비었을 가능성이 있으면
+    # fail_type 필터를 빼고 1회 재검색 (BM25/kNN이 fail_type을 텍스트로 매칭).
+    # 예: 사용자 "snc_no" / 인덱스값 "pteidx_snc_n/o"처럼 wildcard도 빗나가는 케이스.
+    fail_type_filter_dropped = False
+    if not results and fail_type:
+        logger.info(
+            "[do_search] 0-hit with fail_type=%r — fail_type 필터 제거 후 재시도",
+            fail_type,
+        )
+        try:
+            results = _search_opensearch(
+                query=query,
+                product=product,
+                fail_type="",
+                cause_oper=cause_oper,
+                top_k=top_k,
+            )
+            fail_type_filter_dropped = True
+        except Exception as e:
+            logger.error("[do_search] fallback 검색 오류: %s", e, exc_info=True)
+            raise
+
     if not results:
         return {
             "total": 0,
@@ -503,6 +569,7 @@ def do_search(
         "results": results,
         "wiki_memory": wiki_mem,
         "retrieval_mode": "baseline",
+        "fail_type_filter_dropped": fail_type_filter_dropped,
     }
 
     if gate_result and gate_result.get("gate") == "wiki-assisted":
