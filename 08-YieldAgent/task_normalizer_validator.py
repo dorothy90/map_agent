@@ -27,6 +27,9 @@ FIELD_ALIASES = {
 # while keeping "첫번째 = row[0]" a 100% deterministic code operation, not an LLM guess.
 
 _ORDINAL_TOKEN_RE = re.compile(r"^#(\d+|last|latest)$")
+# "#RN" = N번째 WADS 리포트 참조. #N(행 ordinal)과 별개의 토큰으로, 리포트 줄을
+# 직접 인덱싱한다(report N = report_rows[N-1]).
+_REPORT_TOKEN_RE = re.compile(r"^#R(\d+)$")
 
 # Sentinel left in a slot when an ordinal reference could not be resolved (out of
 # range / no source). It is non-empty on purpose so wads chaining skips it; the
@@ -105,6 +108,45 @@ def _resolve_ordinal_value(recent_results: list[dict[str, Any]] | None, semantic
     return None
 
 
+def _is_report_row(row: Any) -> bool:
+    """A report row = one degradation report (one parameter×lot with its wafers).
+    Mirror of supervisor._is_report_row (supervisor imports this module, not vice versa)."""
+    return isinstance(row, dict) and (
+        row.get("report_index") not in (None, "")
+        or (row.get("groupkeys") and row.get("parameter"))
+    )
+
+
+def _report_rows_of(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-report rows for #RN ordinal resolution. Prefer the dedicated `reports`
+    channel (carried even when displayed `rows` are per-wafer); fall back to legacy
+    report-shaped rows. Mirror of supervisor._report_rows_of."""
+    reports = result.get("reports")
+    if isinstance(reports, list) and any(_is_report_row(r) for r in reports):
+        return [r for r in reports if _is_report_row(r)]
+    return [r for r in (result.get("rows") or []) if _is_report_row(r)]
+
+
+def _resolve_report_ordinal_value(
+    recent_results: list[dict[str, Any]] | None, semantic: str, ordinal: int
+) -> str | None:
+    """N번째 리포트(report_rows[N-1])에서 semantic 값을 읽는다.
+
+    #N(_resolve_ordinal_value)은 per-wafer 행의 DISTINCT 값을 인덱싱하지만, #RN은
+    리포트 줄을 직접 인덱싱한다(report N = row[N-1]) — 인덱싱 체계가 다르다.
+    lot 추출('groupkey=lot.wf')은 _row_semantic_value가 그대로 처리한다.
+    범위 밖/소스 없음이면 None (caller가 UNRESOLVED_REF로 마크 → dispatch backstop이 물음)."""
+    for result in reversed(recent_results or []):
+        rows = _report_rows_of(result)
+        if not rows:
+            continue
+        idx = ordinal - 1
+        if idx < 0 or idx >= len(rows):
+            return None
+        return _row_semantic_value(rows[idx], semantic, None)
+    return None
+
+
 def apply_ordinal_ref(agent: str, slots: dict[str, Any], recent_results: list[dict[str, Any]] | None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Resolve planner ordinal tokens ("#N"/"#last") in slots into concrete values.
 
@@ -117,6 +159,26 @@ def apply_ordinal_ref(agent: str, slots: dict[str, Any], recent_results: list[di
     for slot, value in list(resolved.items()):
         if not isinstance(value, str):
             continue
+
+        # "#RN" (report ordinal) — resolve from the Nth WADS report row. map_agent의
+        # groupkey="#RN"은 (map_agent,groupkey)가 semantic 테이블에 없어 토큰 그대로
+        # 두고 supervisor map 경로가 처리한다.
+        report_match = _REPORT_TOKEN_RE.match(value.strip())
+        if report_match:
+            semantic = _ORDINAL_SLOT_SEMANTIC.get((agent, slot))
+            if not semantic:
+                continue
+            out = _resolve_report_ordinal_value(
+                recent_results, semantic, int(report_match.group(1))
+            )
+            if out is None:
+                resolved[slot] = UNRESOLVED_REF
+                trace.append({"event": "report_ordinal_ref_unresolved", "agent": agent, "slot": slot, "token": value})
+            else:
+                resolved[slot] = out
+                trace.append({"event": "report_ordinal_ref_resolved", "agent": agent, "slot": slot, "token": value, "value": out})
+            continue
+
         match = _ORDINAL_TOKEN_RE.match(value.strip())
         if not match:
             continue
