@@ -672,6 +672,29 @@ def map_agent_node(state: dict, config: RunnableConfig) -> dict:
     return _handle_standard_map(state)
 
 
+def _result_to_html(result_str: str, label: str, oper: str, render_rows: list, wf_mod: int, wf_rem: int) -> list[str]:
+    """show_wafer_map 결과의 PNG 경로들을 캡션 단 HTML 조각 리스트로 변환.
+    cummap엔 렌더된 wafer 목록(collapsible)을 덧붙인다. (단일/그룹 경로 공용)"""
+    html_parts: list[str] = []
+    for p in re.findall(r'[\w./\-]+\.png', result_str):
+        if not os.path.exists(p):
+            continue
+        is_cummap = "cummap" in os.path.basename(p).lower()
+        kind = "Cummap" if is_cummap else "Binmap"
+        label_tag = f"{label} " if label else ""
+        oper_tag = f"[{oper}] " if oper else ""
+        caption = f"{oper_tag}{label_tag}{kind}".strip()
+        img_html = _png_to_html(p, caption)
+        if is_cummap:
+            details_html = _wafer_list_details_html(
+                render_rows, label=label, oper=oper, wf_mod=wf_mod, wf_rem=wf_rem
+            )
+            if details_html:
+                img_html = f"<div>{img_html}{details_html}</div>"
+        html_parts.append(img_html)
+    return html_parts
+
+
 def _handle_standard_map(state: dict) -> dict:
     """기존 binmap/cummap 생성 로직"""
     lot_ids_list = state.get("lot_ids") or []
@@ -692,38 +715,52 @@ def _handle_standard_map(state: dict) -> dict:
         lot_id, lot_ids, wf_ids, groupkey, map_type, oper, wf_mod, wf_rem, label,
     )
 
-    result_str, render_rows = show_wafer_map(
-        lot_id=None if groupkey else (lot_id or None),
-        lot_ids=None if groupkey else (lot_ids or None),
-        wf_ids=None if groupkey else (wf_ids or None),
-        groupkey=groupkey or None,
-        map_type=map_type,
-        oper=oper or None,
-        wf_mod=wf_mod,
-        wf_rem=wf_rem,
-        label=label,
-    )
-
-    png_paths = re.findall(r'[\w./\-]+\.png', result_str)
-    html_parts = []
-    for p in png_paths:
-        if os.path.exists(p):
-            is_cummap = "cummap" in os.path.basename(p).lower()
-            kind = "Cummap" if is_cummap else "Binmap"
-            label_tag = f"{label} " if label else ""
-            oper_tag = f"[{oper}] " if oper else ""
-            caption = f"{oper_tag}{label_tag}{kind}".strip()
-            img_html = _png_to_html(p, caption)
-            # cummap: a collapsible "wafer list 보기" with the actual rendered wafers
-            # (binmap subplots are already labeled lot.wf).
-            if is_cummap:
-                details_html = _wafer_list_details_html(
-                    render_rows, label=label, oper=oper, wf_mod=wf_mod, wf_rem=wf_rem
-                )
-                if details_html:
-                    img_html = f"<div>{img_html}{details_html}</div>"
-            html_parts.append(img_html)
-    map_html = "\n".join(html_parts) if html_parts else ""
+    groups = state.get("map_groups") or []
+    if groups:
+        # WADS report별 cummap fan-out — group(parameter+map_oper)마다 cummap 1장씩 결합.
+        html_parts: list[str] = []
+        map_rows = []
+        png_count = 0
+        for g in groups:
+            g_gks = ",".join(str(x).strip() for x in (g.get("groupkeys") or []) if str(x).strip())
+            if not g_gks:
+                continue
+            g_oper = g.get("map_oper") or oper
+            g_label = g.get("parameter") or label
+            g_res, g_rows = show_wafer_map(
+                groupkey=g_gks, map_type="cummap", oper=g_oper or None,
+                wf_mod=wf_mod, wf_rem=wf_rem, label=g_label,
+            )
+            g_html = _result_to_html(g_res, g_label, g_oper, g_rows, wf_mod, wf_rem)
+            html_parts.extend(g_html)
+            png_count += len(g_html)
+            map_rows.append({"groupkey": g_gks, "map_type": "cummap", "map_oper": g_oper, "parameter": g_label})
+        map_html = "\n".join(html_parts)
+        result_str = f"WADS 검출 {len(map_rows)}개 리포트의 cummap을 그렸습니다."
+        map_type = "cummap"
+    else:
+        result_str, render_rows = show_wafer_map(
+            lot_id=None if groupkey else (lot_id or None),
+            lot_ids=None if groupkey else (lot_ids or None),
+            wf_ids=None if groupkey else (wf_ids or None),
+            groupkey=groupkey or None,
+            map_type=map_type,
+            oper=oper or None,
+            wf_mod=wf_mod,
+            wf_rem=wf_rem,
+            label=label,
+        )
+        html_parts = _result_to_html(result_str, label, oper, render_rows, wf_mod, wf_rem)
+        map_html = "\n".join(html_parts) if html_parts else ""
+        png_count = len(re.findall(r'[\w./\-]+\.png', result_str))
+        map_rows = [{
+            "lot_ids": lot_ids_list,
+            "wf_ids": state.get("wf_ids") or [],
+            "groupkey": groupkey,
+            "map_type": map_type,
+            "map_oper": oper,
+            "png_count": png_count,
+        }]
 
     artifacts = []
     if map_html:
@@ -732,21 +769,12 @@ def _handle_standard_map(state: dict) -> dict:
     try:
         get_client().update_current_span(output={
             "map_result": result_str,
-            "png_count": len(png_paths),
+            "png_count": png_count,
             "map_type": map_type,
             "oper": oper,
         })
     except Exception:
         pass
-
-    map_rows = [{
-        "lot_ids": lot_ids_list,
-        "wf_ids": state.get("wf_ids") or [],
-        "groupkey": groupkey,
-        "map_type": map_type,
-        "map_oper": oper,
-        "png_count": len(png_paths),
-    }]
     result_summary = derive_summary_from_rows(
         source_agent="map_agent",
         rows=map_rows,
@@ -771,7 +799,7 @@ def _handle_standard_map(state: dict) -> dict:
         },
         artifacts=artifacts,
         provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
-        metadata={"artifact_count": len(artifacts or []), "png_count": len(png_paths)},
+        metadata={"artifact_count": len(artifacts or []), "png_count": png_count},
     )
     return {
         "messages": [result_message],

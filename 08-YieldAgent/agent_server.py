@@ -62,7 +62,7 @@ from local_trace import (  # noqa: E402
     reset_trace_context,
     set_trace_context,
 )
-from supervisor import workflow  # noqa: E402
+from supervisor import workflow, _resume_is_interrupt_answer  # noqa: E402
 from repl_agent.router import router as repl_router  # noqa: E402
 
 configure_runtime_terminal_logger()
@@ -476,6 +476,26 @@ async def chat_stream(request: ChatRequest, req: Request):
         "recursion_limit": 30,
     }
 
+    # HITL 오인 가드: resume 입력이 대기 중 게이트의 '답'이 아니라 '새 질문'이면,
+    # 게이트를 드롭(stale 작업 실행 방지)하고 fresh 턴으로 재처리한다. 자동 제안 게이트만 대상.
+    # (missing_param/plan_review는 빈 응답이 재질문이라 드레인 부적합 → 제외.)
+    if (
+        request.resume_value is not None
+        and pending_interrupt_for_trace.get("interrupt_type")
+        in {"task_confirm", "postwads_choice"}
+        and not _resume_is_interrupt_answer(request.resume_value, pending_interrupt_for_trace)
+    ):
+        logger.info(
+            "[Resume] 새 의도 감지(pending=%s) → 게이트 드롭 후 fresh 재처리: %r",
+            pending_interrupt_for_trace.get("interrupt_type"),
+            preview_text(request.query),
+        )
+        try:
+            await graph.ainvoke(Command(resume=""), config)  # 빈 응답→거절→제안 task 드롭→END
+        except Exception as e:
+            logger.warning("[Resume] 게이트 드롭 드레인 실패: %s", e)
+        request.resume_value = None  # 아래 fresh 경로로 낙하 (request.query == 새 질문 텍스트)
+
     # resume 요청인 경우: interrupt에서 재개
     if request.resume_value is not None:
         stream_input = Command(resume=request.resume_value)
@@ -532,6 +552,12 @@ async def chat_stream(request: ChatRequest, req: Request):
             #            최종 결과 영향은 미미함.
             # weeks_data, table_result, analysis_result는 리셋 안 함 — PPT follow-up에서 필요.
             "anomaly_params": [],
+            # Step 5: WADS 검출 후속 선택 제안 가드 — 매 새 turn 리셋(resume에는 적용 안 됨).
+            "postwads_offered": False,
+            # 확인 대기 게이트 — 매 새 turn 리셋(미리셋 시 stale confirm 게이트가 턴 넘어 잔존).
+            "confirm_tasks": {},
+            # WADS report별 cummap fan-out 입력 — 매 새 turn 리셋(이전 turn 그룹 잔존 방지).
+            "map_groups": [],
         }
 
         # 첫 번째 턴이면 나머지 기본값도 함께 전달 (#18 fix: YieldQueryState 전체 키 명시 init)
@@ -545,6 +571,8 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "wads_start_tm": "",
                 "wads_end_tm": "",
                 "anomaly_params": [],
+                "postwads_offered": False,
+                "map_groups": [],
                 "filter_params": [],
                 "lot_ids":    [],
                 "wf_ids":     [],

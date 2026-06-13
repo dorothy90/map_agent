@@ -121,6 +121,28 @@ def _wads_parameters_from_rows(rows: list[dict]) -> list[str]:
     return extract_parameter_values(rows)
 
 
+def _anomaly_overlap_note(state: dict, detected_params: list[str]) -> str:
+    """이번 WADS 조회 기간 검출 파라미터 중 yield 열화감지(anomaly_params)와 겹치는 항목을
+    사후 언급한다 — 필터링이 아니라 단순 교차참조. yield→wads 체인에서만 의미가 있어
+    anomaly_params가 비어 있으면(standalone wads) 빈 문자열을 반환해 아무 것도 덧붙이지 않는다.
+    겹치는 항목이 있으면 그 목록을, 없으면 '없습니다'만 언급한다."""
+    anomalies = state.get("anomaly_params") or []
+    if not anomalies:
+        return ""
+    detected = {str(p).strip().upper() for p in (detected_params or []) if str(p).strip()}
+    overlap = [a for a in anomalies if str(a.get("param", "")).strip().upper() in detected]
+    if not overlap:
+        return "\n\n---\n\n📌 이번 조회 기간 열화감지 검출 파라미터 중 수율 조회에서 열화파라미터로 검출된 항목은 **없습니다**."
+
+    def _fmt(a: dict) -> str:
+        extra = ", ".join(x for x in (a.get("process", ""), a.get("direction", "")) if x)
+        param = a.get("param", "")
+        return f"{param}({extra})" if extra else str(param)
+
+    items = ", ".join(_fmt(a) for a in overlap)
+    return f"\n\n---\n\n📌 이번 조회 기간 열화감지 검출 파라미터 중 수율 조회에서 **열화파라미터로 검출된 검출된 항목**: {items}"
+
+
 def _is_wafer_list_request(text: str) -> bool:
     lowered = str(text or "").lower()
     wafer_terms = ("wafer", "웨이퍼", "wf", "groupkey", "group key")
@@ -689,9 +711,13 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             f"{active_stats.get('report_rows', 0)}건 조회됐지만 연결된 wafer GROUPKEY는 0건입니다. "
             "DF_WADS_WF_LIST의 LOT_CD, OPER_PARA, END_TM 날짜 조인 키를 확인해야 합니다."
         )
+    row_parameters = _wads_parameters_from_rows(result_rows)
+    # yield 열화감지(anomaly_params)와의 교차참조 사후 언급 — 필터가 아니라 단순 언급.
+    # 조인 실패 에러 메시지 경로에는 붙이지 않는다.
+    if not (join_missing and wafer_list_request):
+        answer += _anomaly_overlap_note(state, row_parameters)
     result_message = AIMessage(content=answer, name="wads_agent")
     out_messages: list = [result_message]
-    row_parameters = _wads_parameters_from_rows(result_rows)
     # carry-both (i): keep the per-report structure (html-stripped) alongside the
     # displayed rows so report-ordinal (#RN) can resolve the Nth report even when
     # `result_rows` is per-wafer (sql_result-driven). Order by END_TM DESC so the

@@ -1485,6 +1485,23 @@ def _latest_wads_result(state: dict) -> dict:
     return {}
 
 
+def _latest_wads_reports(state: dict) -> list[dict]:
+    """최신 wads_agent 결과 envelope의 per-report 목록을 읽는다.
+    각 report = {parameter, map_oper, groupkeys, ...} (wads_tools가 이미 구성해 envelope에 첨부).
+    없으면 []. report별 cummap fan-out 입력으로 사용."""
+    for message in reversed(state.get("messages", []) or []):
+        if isinstance(message, AIMessage) and getattr(message, "name", "") == "wads_agent":
+            reports = (
+                ((getattr(message, "additional_kwargs", None) or {}).get("result") or {})
+                .get("extensions", {})
+                .get("wads_agent", {})
+                .get("reports")
+            )
+            if isinstance(reports, list) and reports:
+                return [r for r in reports if isinstance(r, dict)]
+    return []
+
+
 def _wads_groupkeys_by_map_oper(wads_data: dict) -> dict[str, list[str]]:
     raw = wads_data.get("groupkeys_by_map_oper") or {}
     if not isinstance(raw, dict):
@@ -2120,6 +2137,12 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     if followup:
         return {**scratchpad_update, **followup}
 
+    # ── Step 5: wads 검출 후속 선택(map/...) sentinel 제안 (wads followup과 같은 결정론 경로) ──
+    # wads followup 이후에 호출 — wads가 실행돼 검출 결과가 있을 때만 발동(detected_count>0).
+    postwads = _maybe_propose_postwads_choice(state)
+    if postwads:
+        return {**scratchpad_update, **postwads}
+
     # ── canonical plan-and-execute 종료 판정 ──
     # 모든 planned task가 실행되었고 남은 pending이 없으면 plan 완료.
     # past_steps는 per-turn reset(`agent_server.py`)이라 턴 내 실행 기록만 반영.
@@ -2360,6 +2383,8 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
                 "wf_rem": task_params.get("wf_rem") or 0,
                 # cummap display label (backend-resolved, e.g. #RN report parameter).
                 "map_label": task_params.get("map_label") or "",
+                # WADS report별 cummap fan-out 입력 [{parameter, map_oper, groupkeys}, …].
+                "map_groups": task_params.get("map_groups") or [],
             }
         )
 
@@ -2733,6 +2758,9 @@ def supervisor_node(
     if pending:
         current_task = pending[0]
         remaining = pending[1:]
+        # ── Step 5: WADS 검출 후속 선택 sentinel은 dispatch 직전에 3택1로 치환(신규 노드 0개) ──
+        if current_task.get("agent") == "__postwads_choice__":
+            return _choose_postwads_or_drop(current_task, remaining, state, step_count)
         # ── 실행 확인 (B안): missing_param과 같은 dispatch 직전 멱등 구간에서 interrupt ──
         # confirm_tasks에 이 task가 있으면 확인. 거절 → Command(드롭 후 다음 pending/END) 반환.
         # 승인/미해당 → confirm_tasks 정리 dict(아래 update_dict에 merge).
@@ -2956,21 +2984,69 @@ def _interpret_confirmation(answer: Any) -> bool:
     return verdict.startswith("y")
 
 
-def _build_wads_followup_task(state: Dict[str, Any], anomaly_params: list[dict]) -> dict:
-    """이상 파라미터 → WADS follow-up task (replanner의 결정론 경로에서 호출).
-    anomaly_params↔fail_type는 동일 도메인 파라미터(yield_query_agent.py 참조)라 기계적
-    projection이지 의미 판단이 아니다. 누락 시간창 등은 supervisor의 기존 missing_param
-    HITL이 dispatch 직전에 채운다."""
+_RESUME_INTENT_SYSTEM = (
+    "아래 JSON은 시스템이 사용자에게 띄운 HITL 질문(message)과 선택지(options), "
+    "그리고 사용자의 다음 입력(input)이다. 입력이 그 질문에 대한 '답'(예/아니오·제시된 선택지·"
+    "요청한 값 제공)인지, 아니면 그 질문과 무관한 '새로운 요청/질문'인지 판정해라. "
+    "오직 'answer' 또는 'new' 한 단어만 출력해라."
+)
+
+
+def _resume_is_interrupt_answer(resume_value: Any, pending_interrupt: dict) -> bool:
+    """resume 입력이 대기 중 interrupt에 대한 '답'인지(True) '새 의도'인지(False) 판정.
+    키워드 매칭 금지(LLM). 옵션 value/label과 정확히 일치하면 LLM 없이 답으로 본다.
+    빈/구조화 응답·LLM 실패 시 안전하게 True(답) 반환 — 기존 resume 동작 유지(회귀 방지)."""
+    if isinstance(resume_value, dict):
+        text = next((str(v) for v in resume_value.values() if str(v).strip()), "")
+    else:
+        text = str(resume_value or "")
+    text = text.strip()
+    if not text:
+        return True
+    options = [o for o in (pending_interrupt.get("options") or []) if isinstance(o, dict)]
+    for opt in options:
+        if text in (str(opt.get("value", "")), str(opt.get("label", ""))):
+            return True
+    payload = {
+        "message": pending_interrupt.get("message", ""),
+        "options": [{"label": o.get("label"), "value": o.get("value")} for o in options],
+        "input": text,
+    }
+    try:
+        verdict = (
+            _model.invoke(
+                [
+                    {"role": "system", "content": _RESUME_INTENT_SYSTEM},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                ],
+                config={"callbacks": _lf_callbacks()},
+            ).content
+            or ""
+        ).strip().lower()
+    except Exception as e:
+        logger.warning("[Resume] 의도 판정 LLM 실패 (%s) — 답으로 처리(기존 동작)", e)
+        return True
+    return not verdict.startswith("new")
+
+
+def _build_wads_followup_task(state: Dict[str, Any]) -> dict:
+    """yield 이상감지 → WADS follow-up task (replanner의 결정론 경로에서 호출).
+    파라미터 필터(fail_type)는 넘기지 않는다 — 기간을 통째로 조회해 report별 map_oper/fail_type을
+    확보하고, yield 열화감지 파라미터와의 교차 여부는 wads_agent가 anomaly_params로 사후 언급한다.
+    시간창은 어제 하루(start=end=어제) 기본 세팅이라 confirm 1회로 바로 실행된다(별도 날짜 HITL 불필요)."""
     lotcd = state.get("lotcd", "")
-    param_names = [p.get("param") for p in anomaly_params if p.get("param")]
-    fail_type = ",".join(dict.fromkeys(param_names))
     task_id = f"task_{len(state.get('task_plan') or []) + 1}_wads"
+    yday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
     return build_task_from_canonical_request(
         {
             "intent": "wads_report",
             "agent": "wads_agent",
-            "slots": {"lotcd": lotcd, "fail_type": fail_type},
-            "goal": f"{lotcd} 이상 파라미터 WADS 열화 검출 리포트 조회",
+            "slots": {
+                "lotcd": lotcd,
+                "wads_start_tm": yday,
+                "wads_end_tm": yday,
+            },
+            "goal": f"{lotcd} WADS 열화 검출 리포트 조회",
         },
         task_id=task_id,
     )
@@ -2995,7 +3071,7 @@ def _maybe_propose_wads_followup(state: Dict[str, Any]) -> dict:
         if isinstance(t, dict)
     ):
         return {}
-    wads_task = _build_wads_followup_task(state, anomaly_params)
+    wads_task = _build_wads_followup_task(state)
     task_id = wads_task["task_id"]
     logger.info("[Replanner] 이상감지 → WADS confirm task 제안: %s", task_id)
     return {
@@ -3068,6 +3144,208 @@ def _confirm_or_drop(
     )
 
 
+# ── Step 5: WADS 검출 후속 선택(map/fail_history/relation_tree) ──────────────
+# yield→wads와 동일한 결정론 제안 패턴의 확장. wads가 파라미터를 검출하면 후속 선택 sentinel
+# task를 큐에 넣고(replanner), supervisor dispatch 멱등 구간에서 3택1 interrupt로 확정한다.
+# 신규 그래프 노드 0개 — sentinel은 dispatch 직전에 구체 task로 치환된다.
+_POSTWADS_CHOICE_MESSAGE = "WADS 검출 결과로 이어서 무엇을 조회할까요?"
+
+
+def _build_postwads_map_task(state: Dict[str, Any], task_plan: list) -> dict:
+    """WADS 검출 wafer의 cummap을 report(parameter+map_oper)별로 그리는 단일 map task.
+    per-report 데이터는 wads 결과 envelope(_latest_wads_reports)에서 가져와 map_groups로 운반하고,
+    map_agent가 group별로 cummap을 루프 렌더한다(report별로 따로 → binmap 1장 뭉침 방지).
+    reports가 없으면 빈 chained 슬롯으로 두고 _resolve_chained_params가 단일 cummap을 채운다(fallback)."""
+    lotcd = state.get("lotcd", "")
+    task_id = f"task_{len(task_plan) + 1}_map"
+    map_groups: list[dict] = []
+    for r in _latest_wads_reports(state):
+        gks = [str(g).strip() for g in (r.get("groupkeys") or []) if str(g).strip()]
+        if not gks:
+            continue
+        map_groups.append({
+            "parameter": str(r.get("parameter") or ""),
+            "map_oper": _normalize_map_oper(str(r.get("map_oper") or "")),
+            "groupkeys": gks,
+        })
+    slots: dict[str, Any] = {"lotcd": lotcd, "map_type": "cummap"}
+    if map_groups:
+        # required(map_oper + lot_ids|groupkey) 충족용 top-level 값 + 렌더 주도용 map_groups.
+        union: list[str] = []
+        for g in map_groups:
+            for gk in g["groupkeys"]:
+                if gk not in union:
+                    union.append(gk)
+        slots.update({
+            "map_groups": map_groups,
+            "groupkey": ",".join(union),
+            "map_oper": map_groups[0]["map_oper"],
+        })
+    return build_task_from_canonical_request(
+        {
+            "intent": "map",
+            "agent": "map_agent",
+            "slots": slots,
+            "goal": f"{lotcd} WADS 검출 wafer cummap 조회",
+        },
+        task_id=task_id,
+    )
+
+
+# Phase 3에서 fail_history_agent/relation_tree_agent 항목만 추가하면 되는 라우팅 테이블.
+_POSTWADS_ROUTES = {
+    "map_agent": _build_postwads_map_task,
+}
+
+# interrupt 선택지 (Phase 3에서 항목 추가). value는 _POSTWADS_ROUTES 키 또는 'none'(안 함).
+_POSTWADS_OPTIONS = [
+    {"label": "cummap/binmap 맵 조회", "value": "map_agent"},
+    {"label": "안 함", "value": "none"},
+]
+
+_POSTWADS_CHOICE_SYSTEM = (
+    "WADS 검출 결과로 이어서 실행할 후속 작업 선택지를 사용자에게 제시했다. 아래 JSON은 제시된 "
+    "선택지(options)와 사용자의 자유 응답(answer)이다. 사용자가 고른 선택지의 value를 정확히 하나만 "
+    "출력해라. 아무것도 고르지 않거나 거절(안 함/취소/그만)이면 'none'을 출력해라. value 문자열 하나만 출력."
+)
+
+
+def _interpret_postwads_choice(answer: Any) -> str:
+    """사용자 응답 → 선택된 route 키('map_agent' 등) 또는 ''(미선택/거절). 키워드 매칭 금지.
+    UI 버튼 클릭(정확히 일치하는 value/label)은 LLM 없이 즉시 매핑하고, 자유응답만 LLM이 해석한다."""
+    if isinstance(answer, dict):
+        text = answer.get("postwads_choice") or next(iter(answer.values()), "")
+    else:
+        text = answer
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    for opt in _POSTWADS_OPTIONS:  # UI 클릭 경로 — LLM 불필요
+        if text == opt.get("value") or text == opt.get("label"):
+            v = str(opt.get("value") or "")
+            return v if v in _POSTWADS_ROUTES else ""
+    try:  # 자유응답 → LLM 분류 (_interpret_confirmation과 동일 패턴, 키워드 금지)
+        verdict = (
+            _model.invoke(
+                [
+                    {"role": "system", "content": _POSTWADS_CHOICE_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {"options": _POSTWADS_OPTIONS, "answer": text},
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+                config={"callbacks": _lf_callbacks()},
+            ).content
+            or ""
+        ).strip()
+    except Exception as e:
+        logger.warning("[PostWADS] 선택 해석 LLM 실패 (%s) — 미선택 처리", e)
+        return ""
+    return verdict if verdict in _POSTWADS_ROUTES else ""
+
+
+def _maybe_propose_postwads_choice(state: Dict[str, Any]) -> dict:
+    """결정론적 후속 제안: wads가 파라미터를 검출하면 후속 선택 sentinel task를 큐에 추가한다.
+    턴당 1회(postwads_offered) + 다운스트림(map/fail_history/relation_tree)이 이미 계획/큐에 있으면
+    재제안하지 않는다. 실제 선택 interrupt는 supervisor가 dispatch 직전 _choose_postwads_or_drop로 한다.
+    반환: pending_tasks/task_plan(append) + postwads_offered 업데이트 dict, 제안 없으면 {}."""
+    if state.get("postwads_offered"):
+        return {}
+    wads_data = _latest_wads_result(state)
+    detected = (
+        int(wads_data.get("detected_count") or 0)
+        or len(wads_data.get("lot_ids") or [])
+        or len(wads_data.get("groupkeys") or [])
+    )
+    if not detected:
+        return {}
+    pending = state.get("pending_tasks") or []
+    task_plan = state.get("task_plan") or []
+    downstream = {"map_agent", "fail_history_agent", "relation_tree_agent"}
+    if any(
+        isinstance(t, dict) and t.get("agent") in downstream
+        for t in (pending + task_plan)
+    ):
+        return {}
+    task_id = f"task_{len(task_plan) + 1}_postwads_choice"
+    sentinel = {
+        "task_id": task_id,
+        "agent": "__postwads_choice__",
+        "goal": "WADS 검출 후속 선택",
+        "params": {},
+    }
+    logger.info("[Replanner] WADS 검출 → 후속 선택 sentinel 제안: %s", task_id)
+    return {
+        "pending_tasks": pending + [sentinel],
+        "task_plan": task_plan + [sentinel],
+        "postwads_offered": True,
+    }
+
+
+def _choose_postwads_or_drop(
+    current_task: dict, remaining: list[dict], state: Dict[str, Any], step_count: int
+) -> Command:
+    """dispatch 직전 후속 선택 처리 (_confirm_or_drop과 같은 멱등 구간 — 무거운 부수효과 이전).
+    sentinel(__postwads_choice__)을 받아 선택 interrupt를 띄우고:
+      - route 선택 → 해당 구체 task를 큐 맨 앞에 넣고 supervisor 재진입(=치환, 신규 노드 0개).
+      - 미선택/거절 → sentinel 드롭. remaining 있으면 supervisor 재진입, 없으면 직전 wads 결과로 턴 종료."""
+    answer = interrupt({
+        "type": "confirm",
+        "interrupt_type": "postwads_choice",
+        "param": "postwads_choice",
+        "message": _POSTWADS_CHOICE_MESSAGE,
+        "options": _POSTWADS_OPTIONS,
+        "route": "",
+    })
+    chosen = _interpret_postwads_choice(answer)
+    task_plan = state.get("task_plan") or []
+    if chosen in _POSTWADS_ROUTES:
+        concrete = _POSTWADS_ROUTES[chosen](state, task_plan)
+        logger.info("[PostWADS] 선택=%s → %s 큐 추가(치환)", chosen, concrete.get("task_id"))
+        return Command(
+            update={
+                "step_count": step_count,
+                "pending_tasks": [concrete] + remaining,
+                "task_plan": task_plan + [concrete],
+                "postwads_offered": True,
+            },
+            goto="supervisor",
+        )
+    logger.info("[PostWADS] 후속 미선택 → sentinel 드롭 (remaining=%d)", len(remaining))
+    if remaining:
+        return Command(
+            update={
+                "step_count": step_count,
+                "pending_tasks": remaining,
+                "postwads_offered": True,
+            },
+            goto="supervisor",
+        )
+    last_agent_msg = next(
+        (
+            m.content
+            for m in reversed(state.get("messages", []))
+            if isinstance(m, AIMessage)
+            and getattr(m, "name", "") in _AGENT_NAMES
+            and isinstance(m.content, str)
+            and m.content.strip()
+        ),
+        "분석을 완료했습니다.",
+    )
+    return Command(
+        update={
+            "step_count": step_count,
+            "pending_tasks": [],
+            "postwads_offered": True,
+            "response": last_agent_msg,
+        },
+        goto=END,
+    )
+
+
 # ── 공유 State 정의 ──────────────────────────────────────
 class YieldQueryState(TypedDict):
     """Yield Query Supervisor의 공유 State
@@ -3128,6 +3406,7 @@ class YieldQueryState(TypedDict):
     wf_mod: int  # wafer-number pattern divisor (짝수=2, 3배수=3 …); 0/absent = no filter
     wf_rem: int  # remainder for the pattern (짝수=0, 홀수=1, N배수=0)
     map_label: str  # display label for the cummap (e.g. #RN report parameter "JUNCTION")
+    map_groups: list  # WADS report별 cummap fan-out [{parameter, map_oper, groupkeys}, …] (overwrite)
 
     # Fail History 파라미터
     dh_query: str
@@ -3177,6 +3456,10 @@ class YieldQueryState(TypedDict):
     # 실행 확인 대기 task (B안, overwrite): replanner가 {task_id: 확인메시지}를 채우고
     # supervisor가 dispatch 직전 interrupt로 확인 → 처리된 id는 제거. 신규 노드 없이 체이닝 확인.
     confirm_tasks: dict
+
+    # Step 5: WADS 검출 후속 선택을 이번 turn에 이미 제안했는지 (overwrite, turn별 리셋).
+    # replanner가 sentinel 제안 시 True로 세팅 → 같은 turn 재제안/무한 추가 방지.
+    postwads_offered: bool
 
     # Canonical request scratchpad (overwrite). Planner/replanner produce this
     # contract; task_builder converts it into executable tasks.
