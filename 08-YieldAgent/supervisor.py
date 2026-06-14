@@ -2171,6 +2171,19 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
         # WADS report별 연관분석 fan-out 입력 [{lotcd, parameter, lot_ids}, …].
         proj["rt_groups"] = task_params.get("rt_groups") or []
 
+    elif agent == "mining_agent":
+        # 상류(wads→wt_resp) 공유키 상속: lotcd, fail_type, wads_category(=mode).
+        proj["lotcd"] = task_params.get("lotcd") or state.get("lotcd", "")
+        proj["fail_type"] = _parse_fail_type(task_params) or state.get("fail_type", "")
+        proj["wads_category"] = task_params.get("wads_category") or state.get("wads_category", "")
+        # group_good/group_bad: 사용자 직접 입력 또는 상류 결과 상속 (chained-input).
+        proj["group_good"] = task_params.get("group_good") or state.get("group_good") or []
+        proj["group_bad"] = task_params.get("group_bad") or state.get("group_bad") or []
+        # mining 고유 슬롯
+        proj["tech"] = task_params.get("tech") or state.get("tech", "")
+        proj["user_id"] = task_params.get("user_id") or state.get("user_id", "")
+        proj["rank_limit"] = task_params.get("rank_limit") or state.get("rank_limit") or 10
+
     return proj
 
 
@@ -3283,6 +3296,14 @@ class YieldQueryState(TypedDict):
     # Relation Tree 결과
     relation_tree_artifacts: Annotated[list, operator.add]
 
+    # Mining (gini 기반 기여 파라미터 마이닝) — 상류 공유키 재사용:
+    # lot_cd=lotcd, fail_name=fail_type, mode=wads_category (별도 키 없음).
+    group_good: list  # 양품 그룹 식별자 (사용자 직접/상류 상속, overwrite)
+    group_bad: list  # 불량 그룹 식별자 (사용자 직접/상류 상속, overwrite)
+    tech: str  # 기술/공정 세대 코드
+    user_id: str  # 요청 사용자 ID
+    rank_limit: int  # 상위 N개 제한 (0/absent = 기본 10)
+
     # Map 결과
     map_result: str
     map_artifacts: Annotated[list, operator.add]
@@ -3356,6 +3377,7 @@ from fail_history_agent import fail_history_agent_node  # noqa: E402
 from ppt_export_agent import ppt_export_node  # noqa: E402
 from lot_history_agent import lot_history_agent_node  # noqa: E402
 from relation_tree_agent import relation_tree_agent_node  # noqa: E402
+from mining_agent import mining_agent_node  # noqa: E402
 
 # 에이전트 노드 재시도 정책 (Oracle/LLM 일시적 오류 자동 재시도)
 # LangGraph 기본(default_retry_on)은 OSError/TimeoutError를 거부하므로
@@ -3376,6 +3398,7 @@ workflow.add_node("fail_history_agent", fail_history_agent_node, retry_policy=_r
 workflow.add_node("ppt_export", ppt_export_node, retry_policy=_retry)
 workflow.add_node("lot_history_agent", lot_history_agent_node, retry_policy=_retry)
 workflow.add_node("relation_tree_agent", relation_tree_agent_node, retry_policy=_retry)
+workflow.add_node("mining_agent", mining_agent_node, retry_policy=_retry)
 
 workflow.add_edge(START, "planner")
 workflow.add_edge("planner", "task_normalizer_validator")
@@ -3391,6 +3414,7 @@ workflow.add_edge("fail_history_agent", "replanner")
 workflow.add_edge("ppt_export", "replanner")
 workflow.add_edge("lot_history_agent", "replanner")
 workflow.add_edge("relation_tree_agent", "replanner")
+workflow.add_edge("mining_agent", "replanner")
 
 
 # canonical plan-and-execute should_end: replanner가 set한 response로 END 분기 결정.

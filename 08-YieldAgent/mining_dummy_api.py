@@ -1,0 +1,57 @@
+"""
+Mining API 더미 데이터 소스
+===========================
+실제 mining API(HTTP/Oracle)가 아직 없으므로, 호출 시 pandas DataFrame 묶음
+(dict[str, pd.DataFrame])을 반환하는 더미 함수를 둔다.
+
+추후 실제 API가 생기면 `fetch_mining_dataframes` 본문만 requests 호출 등으로 교체하면
+되도록 경계를 깨끗이 둔다. (호출부 `_call_minig_api`는 무수정)
+"""
+
+from __future__ import annotations
+
+from typing import Dict, List
+
+import pandas as pd
+
+
+def fetch_mining_dataframes(
+    lot_cd: str,
+    group_good: List[str],
+    group_bad: List[str],
+    fail_name: str,
+    mode: str,
+    tech: str,
+    user_id: str,
+    rank_limit: int,
+) -> Dict[str, pd.DataFrame]:
+    """더미: 입력 파라미터를 살짝 반영한 DataFrame 묶음을 반환한다.
+
+    반환 키:
+      - "df_GINI.parq"    : gini 분석용 (parameter, gini 컬럼)
+      - "df_summary.parq" : 요약 테이블
+      - "df_empty.parq"   : 빈 DataFrame (files_downloaded 필터 동작 확인용)
+    """
+    df_gini = pd.DataFrame(
+        {
+            "parameter": [f"{tech}_P{i:02d}" for i in range(1, rank_limit + 1)],
+            "gini": [round(0.9 - i * 0.05, 4) for i in range(rank_limit)],
+            "lot_cd": [lot_cd] * rank_limit,
+            "fail_name": [fail_name] * rank_limit,
+        }
+    )
+
+    df_summary = pd.DataFrame(
+        {
+            "group": ["good", "bad"],
+            "n_lots": [len(group_good), len(group_bad)],
+            "mode": [mode, mode],
+            "user_id": [user_id, user_id],
+        }
+    )
+
+    return {
+        "df_GINI.parq": df_gini,
+        "df_summary.parq": df_summary,
+        "df_empty.parq": pd.DataFrame(),
+    }

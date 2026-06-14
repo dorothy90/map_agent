@@ -36,6 +36,12 @@ AGENT_SLOT_RULES: dict[str, dict[str, Any]] = {
         "allowed": {"lotcd", "fail_type", "cause_oper", "rt_groups"},
         "required": ("lotcd", "fail_type"),
     },
+    "mining_agent": {
+        # 상류(wads→wt_resp) 공유키 재사용: lotcd, fail_type, wads_category(=mode).
+        # group_good/group_bad: 사용자 직접 입력 또는 상류 결과로 채워지는 chained-input (optional).
+        "allowed": {"lotcd", "fail_type", "wads_category", "group_good", "group_bad", "tech", "user_id", "rank_limit"},
+        "required": (),
+    },
     "ppt_export": {
         "allowed": set(),
         "required": (),
@@ -125,6 +131,8 @@ def _default_intent_for_agent(agent: str) -> str:
         return "lot_history"
     if agent == "relation_tree_agent":
         return "relation_tree"
+    if agent == "mining_agent":
+        return "mining"
     if agent == "ppt_export":
         return "ppt_export"
     return ""
@@ -183,6 +191,10 @@ def _canonical_goal(intent: str, agent: str, slots: dict[str, Any]) -> str:
         lotcd = _clean_text(slots.get("lotcd")) or "지정 LOT"
         cause_oper = _clean_text(slots.get("cause_oper")) or "지정 공정"
         return f"{lotcd} {cause_oper} Inline-WT 연관 분석".strip()
+    if agent == "mining_agent":
+        product = _clean_text(slots.get("lotcd")) or "지정 제품"
+        parameter = _clean_text(slots.get("fail_type")) or "지정 파라미터"
+        return f"{product} {parameter} 마이닝 분석".strip()
     if agent == "ppt_export":
         return "분석 결과 PPT 생성"
     return f"{intent} 실행"

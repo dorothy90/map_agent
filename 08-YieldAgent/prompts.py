@@ -111,6 +111,19 @@ present there, leave that slot empty or omit it.
    intents: ppt_export
    slots: {{}}
 
+8. mining_agent
+   capability: gini 기반 양품/불량 그룹 비교 기여 파라미터 마이닝 (보통 wads→wt_resp 후속)
+   intents: mining
+   slots: lotcd, fail_type, wads_category, group_good, group_bad, tech, user_id, rank_limit
+     - lotcd: 3-char product code, e.g. "4SS". 상류 wads 결과에서 상속 가능.
+     - fail_type: 분석 대상 파라미터/불량명, 괄호 안에 bin category 포함. e.g. "DIBL(D)", "TWT(T)"
+       (유효값: DIBL(D)/BVDS(B)/VMIN(M)/IDDQ(F)/GATE_OX(G)/FMAX(X)/TWT(T)/IGATE(P)/RON(R)). 상류 상속 가능.
+     - wads_category: "PT1H"|"PT1C" — 분석 mode(공정). 상류 wads에서 상속.
+     - group_good / group_bad: 양품/불량 그룹 LOT ID(7자 영숫자, 예: "TSAH083")/GROUPKEY 목록.
+       사용자가 직접 주거나 상류(wt_resp/wads) 결과로 채워지는 chained-input —
+       없으면 비워두면 backend가 채운다.
+     - tech: 기술/공정 세대 코드. user_id: 요청 사용자 ID. rank_limit: 상위 N개(미지정 10).
+
 === DECISION PRINCIPLES ===
 - Output zero requests for greetings, help, out-of-scope questions, or meaningless input.
 - If the latest request can be answered entirely from Structured context or the immediately
@@ -255,6 +268,7 @@ TODAY's DATE: {today}
 - fail_history_agent: dh_query, fail_type, cause_oper, lotcd
 - lot_history_agent : lot_ids
 - relation_tree_agent : lotcd, cause_oper
+- mining_agent      : lotcd, fail_type, wads_category, group_good, group_bad, tech, user_id, rank_limit
 - ppt_export        : (no params)
 
 === KEY RULES ===
