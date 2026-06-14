@@ -26,7 +26,6 @@ from langchain_core.callbacks import BaseCallbackHandler
 TRACE_SCHEMA_VERSION = "local-trace/v1"
 TRACE_EVENT_TYPES = frozenset({
     "user_turn_started",
-    "rewrite_output",
     "planner_output",
     "task_builder_output",
     "reference_resolved",
@@ -384,13 +383,6 @@ def _format_terminal_event(event: dict[str, Any]) -> str | None:
     if event.get("turn_id") and event["turn_id"] != _RENDER_STATE["turn_id"]:
         _reset_turn(event)
 
-    if event_type == "rewrite_output":
-        if not payload.get("changed"):
-            return "  " + _c(_tag("rewrite"), "dim") + _c(" (unchanged)", "dim")
-        before = payload.get("input_preview") or ""
-        after = payload.get("rewritten_preview") or ""
-        return "  " + _c(_tag("rewrite"), "dim") + f' "{before}" → ' + _c(f'"{after}"', "cyan")
-
     if event_type == "reference_resolved":
         status = payload.get("status", "")
         if status == "issue":
@@ -732,24 +724,6 @@ def _compact_runtime_detail(label: str, payload: Any) -> str:
             f"{message_text}"
         )
 
-    if label == "rewrite.input":
-        return (
-            f"{label} user_len={_len_text(payload.get('last_human'))}"
-            f" meta={bool(payload.get('meta'))}"
-            f" recent={_list_len(payload.get('recent_turns'))}"
-            f" messages={_list_len(payload.get('invoke_messages'))}"
-        )
-
-    if label == "rewrite.tool":
-        args = payload.get("args") or {}
-        return f"{label} name={payload.get('name', '-')} args={','.join(_dict_keys(args)) or '-'} result_len={_len_text(payload.get('result'))}"
-
-    if label == "rewrite.output":
-        return (
-            f"{label} input_len={_len_text(payload.get('input'))}"
-            f" output_len={_len_text(payload.get('rewritten'))}"
-            f" changed={payload.get('input') != payload.get('rewritten')}"
-        )
 
     if label == "planner.input":
         return (

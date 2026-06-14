@@ -23,17 +23,14 @@ from dotenv import load_dotenv
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
-    RemoveMessage,
     trim_messages,
 )
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.runnables import RunnableConfig
-from langfuse import get_client, observe
+from langfuse import observe
 from langgraph.graph import StateGraph, START, END, add_messages
 from langgraph.types import Command, RetryPolicy, interrupt
 from pydantic import BaseModel, Field
-
-from langchain_core.messages import ToolMessage
 
 from common import stream_event, get_llm, extract_json_from_llm, is_transient_error
 from canonical_request import (
@@ -48,14 +45,12 @@ from models import StatusEvent
 from prompts import (
     CANONICAL_PLANNER_SYSTEM_PROMPT,
     REPLANNER_SYSTEM_PROMPT,
-    REWRITE_SYSTEM_PROMPT_TEMPLATE,
 )
 from result_contracts import (
     ResultContractError,
     build_recent_result_index_entry,
     prune_recent_results,
 )
-from rewrite_tools import REWRITE_TOOLS
 from task_normalizer_validator import (
     UNRESOLVED_REF,
     apply_ordinal_ref,
@@ -78,40 +73,9 @@ logger = logging.getLogger("yield_agent.supervisor")
 
 # ── LLM 모델 ────────────────────────────────────────────────
 _model = get_llm()
-_rewrite_model = _model.bind_tools(REWRITE_TOOLS)
-
-# 도구 이름 → 함수 매핑 (rewrite tool-calling에서 사용)
-_rewrite_tool_map = {t.name: t for t in REWRITE_TOOLS}
 
 
 # ── Pydantic 라우팅 결정 모델 ────────────────────────────────
-class TaskItem(BaseModel):
-    """deterministic task builder가 생성하는 공통 작업 단위"""
-
-    task_id: str = Field(description="고유 ID (예: 'task_1')")
-    agent: Literal[
-        "yield_agent",
-        "wads_agent",
-        "map_agent",
-        "fail_history_agent",
-        "ppt_export",
-        "lot_history_agent",
-        "relation_tree_agent",
-    ] = Field(description="실행할 에이전트")
-    params: dict = Field(
-        default={}, description="에이전트별 파라미터 (map_lot_ids, map_type 등)"
-    )
-    goal: str = Field(
-        description="이 작업의 목표 (한국어, 예: 'lot 3,4번 cummap 생성')"
-    )
-
-
-class PlanResponse(BaseModel):
-    """공통 task contract 래퍼. Runtime LLM planner 출력은 CanonicalPlanResponse를 사용한다."""
-
-    tasks: list[TaskItem] = Field(description="실행할 작업 목록")
-
-
 class CanonicalRequestItem(BaseModel):
     """LLM canonicalizer output before deterministic task building."""
 
@@ -293,26 +257,6 @@ class PlanReviewResult(BaseModel):
         default_factory=list,
         description="최종 canonical request 목록 (approve 시 현재 요청 그대로, modify 시 수정된 전체 목록)",
     )
-
-
-_CONFIRMATION_REVIEW_SYSTEM = """
-현재 실행 확인 질문, 현재 canonical request 목록, 사용자 응답을 보고 최종 요청 목록을 JSON으로 반환해라.
-
-action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
-- "approve" : 사용자가 현재 계획 그대로 계속 진행하겠다는 의도
-- "cancel"  : 사용자가 실행 중단 또는 거절을 의도
-- "modify"  : 사용자가 범위, 파라미터, 작업 수, 조건 변경을 요청함
-
-출력 형식:
-{"action": "approve"|"cancel"|"modify", "requests": [...]}
-
-규칙:
-- requests는 항상 전체 canonical request 목록이다. 수정하지 않은 request도 포함한다.
-- request는 intent, agent, slots, goal 필드를 사용한다. task_id/params/tasks를 출력하지 마라.
-- approve면 현재 요청 그대로 requests에 넣는다.
-- cancel이면 requests는 []로 둔다.
-- modify면 사용자 응답을 반영한 수정된 전체 요청 목록을 requests에 넣는다.
-""".strip()
 
 
 _MAX_CHECKPOINT_MESSAGES = 30
@@ -518,206 +462,6 @@ def _normalize_map_oper(raw: str) -> str:
     if v.startswith("PT1") and len(v) > 3 and v[3] in ("H", "C"):
         return v[:4]
     return ""
-
-
-@observe(name="rewrite_node")
-def rewrite_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
-    messages = state.get("messages", [])
-    if not messages:
-        logger.warning("[Rewrite] early return: no messages in state")
-        return {}
-
-    # 체크포인트 메시지 pruning: 오래된 메시지 제거하여 체크포인트 크기 제한
-    prune_ops = []
-    retained_messages = messages
-    if len(messages) > _MAX_CHECKPOINT_MESSAGES:
-        excess = messages[: len(messages) - _MAX_CHECKPOINT_MESSAGES]
-        prune_ops = [RemoveMessage(id=m.id) for m in excess if getattr(m, "id", None)]
-        excess_ids = {m.id for m in excess if getattr(m, "id", None)}
-        retained_messages = [
-            m for m in messages if getattr(m, "id", None) not in excess_ids
-        ]
-
-    # 마지막 HumanMessage 추출 (MongoDBSaver 역직렬화 후 isinstance 실패 방어)
-    last_human = next(
-        (
-            m
-            for m in reversed(messages)
-            if isinstance(m, HumanMessage) or getattr(m, "type", "") == "human"
-        ),
-        None,
-    )
-    if not last_human:
-        logger.warning(
-            "[Rewrite] early return: no HumanMessage found (last 5 types: %s)",
-            [type(m).__name__ for m in messages[-5:]],
-        )
-        return _recent_results_update_from_messages(
-            retained_messages,
-            state.get("recent_results", []),
-        )
-
-    if state.get("resolved_refs"):
-        logger.info(
-            "[Rewrite] resolved_refs present; preserving raw user reference text"
-        )
-        emit_runtime_detail(
-            "rewrite.output",
-            {
-                "input": last_human.content,
-                "rewritten": last_human.content,
-                "reason": "resolved_refs_authoritative",
-            },
-        )
-        emit_trace_event(
-            "rewrite_output",
-            source="rewrite",
-            payload={
-                "input_preview": preview_text(last_human.content),
-                "rewritten_preview": preview_text(last_human.content),
-                "changed": False,
-                "reason": "resolved_refs_authoritative",
-                "input_length": len(str(last_human.content)),
-                "rewritten_length": len(str(last_human.content)),
-            },
-        )
-        update = _recent_results_update_from_messages(
-            retained_messages,
-            state.get("recent_results", []),
-        )
-        if prune_ops:
-            update["messages"] = prune_ops
-        return update
-
-    # 최근 5턴 대화 히스토리 추출 (마지막 HumanMessage 제외)
-    recent = _get_recent_turns(messages, max_turns=5, exclude_last=last_human)
-
-    # state 메타데이터 (lotcd, agent_suggestion 등 — 대화에 없을 수 있는 정보)
-    meta_parts = []
-    if state.get("lotcd"):
-        meta_parts.append(f"현재 제품: {state['lotcd']}")
-    if state.get("lotcd"):
-        meta_parts.append(f"이전 relation_tree lot: {state['lotcd']}")
-    if state.get("cause_oper"):
-        meta_parts.append(f"이전 relation_tree main_oper: {state['cause_oper']}")
-    if state.get("agent_suggestion"):
-        meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
-    meta = "\n".join(meta_parts) if meta_parts else ""
-
-    # LLM 호출: system + recent messages + user message
-    today = date.today()
-    rewrite_prompt = REWRITE_SYSTEM_PROMPT_TEMPLATE.format(
-        today=today.strftime("%Y년 %m월 %d일 (%A)"),
-        year=today.year,
-    )
-    invoke_messages: list[dict] = [{"role": "system", "content": rewrite_prompt}]
-    if meta:
-        invoke_messages.append(
-            {"role": "system", "content": f"State metadata:\n{meta}"}
-        )
-    invoke_messages.extend(recent)
-    invoke_messages.append(
-        {"role": "user", "content": f"Rewrite this message: {last_human.content}"}
-    )
-    emit_runtime_detail(
-        "rewrite.input",
-        {
-            "last_human": last_human.content,
-            "meta": meta,
-            "recent_turns": recent,
-            "invoke_messages": invoke_messages,
-        },
-    )
-
-    logger.debug(
-        "[Rewrite] context_summary meta=%s recent_turns=%d user_len=%d suggestion_present=%s",
-        bool(meta),
-        len(recent),
-        len(str(last_human.content)),
-        bool(state.get("agent_suggestion")),
-    )
-
-    try:
-        # Multi-round tool calling loop: LLM이 여러 tool을 순차/병렬로 호출할 수 있으므로
-        # tool_calls가 나오지 않을 때까지 반복. max_rounds로 무한루프 방지.
-        max_rounds = 4
-        conversation = list(invoke_messages)
-        response = _rewrite_model.invoke(
-            conversation,
-            config={"callbacks": _lf_callbacks()},
-        )
-        for _ in range(max_rounds):
-            tool_calls = getattr(response, "tool_calls", None)
-            if not tool_calls:
-                break
-            conversation.append(response)  # AIMessage with tool_calls
-            for tc in tool_calls:
-                tool_fn = _rewrite_tool_map.get(tc["name"])
-                if tool_fn:
-                    result = tool_fn.invoke(tc["args"])
-                    conversation.append(
-                        ToolMessage(content=str(result), tool_call_id=tc["id"])
-                    )
-                    emit_runtime_detail(
-                        "rewrite.tool",
-                        {
-                            "name": tc["name"],
-                            "args": tc.get("args", {}),
-                            "result": result,
-                        },
-                    )
-                    logger.debug("[Rewrite] tool '%s' executed", tc["name"])
-                else:
-                    conversation.append(
-                        ToolMessage(content="unknown tool", tool_call_id=tc["id"])
-                    )
-            response = _rewrite_model.invoke(
-                conversation,
-                config={"callbacks": _lf_callbacks()},
-            )
-        rewritten = (response.content or "").strip()
-        if not rewritten:
-            logger.warning("[Rewrite] 최종 content 비어있음 — 원문 유지")
-            rewritten = last_human.content
-    except Exception as e:
-        logger.error("[Rewrite] LLM 호출 실패: %s", e, exc_info=True)
-        # 원본 메시지 유지 (rewrite 실패 시 원문으로 진행)
-        return {
-            **_recent_results_update_from_messages(
-                retained_messages,
-                state.get("recent_results", []),
-            ),
-            "messages": prune_ops,
-        }
-
-    logger.debug(
-        "[Rewrite] completed input_len=%d output_len=%d",
-        len(str(last_human.content)),
-        len(rewritten),
-    )
-    emit_runtime_detail(
-        "rewrite.output", {"input": last_human.content, "rewritten": rewritten}
-    )
-    emit_trace_event(
-        "rewrite_output",
-        source="rewrite",
-        payload={
-            "input_preview": preview_text(last_human.content),
-            "rewritten_preview": preview_text(rewritten),
-            "changed": str(last_human.content) != str(rewritten),
-            "input_length": len(str(last_human.content)),
-            "rewritten_length": len(str(rewritten)),
-        },
-    )
-
-    # 동일 ID로 교체 → add_messages가 제자리 업데이트, 풀 리스트 반환 불필요
-    return {
-        **_recent_results_update_from_messages(
-            retained_messages,
-            state.get("recent_results", []),
-        ),
-        "messages": prune_ops + [HumanMessage(content=rewritten, id=last_human.id)],
-    }
 
 
 def _build_tasks_update(canonical_requests: list[dict]) -> dict:
@@ -3587,7 +3331,7 @@ class YieldQueryState(TypedDict):
 
     # Planner 관련
     task_plan: list[dict]  # task_builder가 생성한 전체 계획 (overwrite)
-    pending_tasks: list[dict]  # 아직 실행 안 된 TaskItem들 (overwrite)
+    pending_tasks: list[dict]  # 아직 실행 안 된 task dict들 (overwrite)
     current_task: (
         dict  # 현재 executor가 받는 공통 task contract (task_id, agent, params, goal)
     )

@@ -299,48 +299,6 @@ Example 3 (fan-out: 열화 파라미터 → wads_agent, 공정→wads_category):
 - output: {{"requests":[{{"intent":"wads_report","agent":"wads_agent","slots":{{"fail_type":"VTH","wads_category":"PT1H","lotcd":"4SS"}},"goal":"[VTH/PT1H] WADS 검출 리포트"}},{{"intent":"wads_report","agent":"wads_agent","slots":{{"fail_type":"PT1C","wads_category":"PT1C","lotcd":"4SS"}},"goal":"[PT1C/PT1C] WADS 검출 리포트"}}]}}
 """
 
-# ── Rewrite 시스템 프롬프트 ─────────────────────────────────────
-
-REWRITE_SYSTEM_PROMPT_TEMPLATE = """\
-You are a query rewriter for a semiconductor yield analysis system.
-You will receive the recent conversation history and the user's latest message.
-Rewrite the user's message to be explicit and unambiguous.
-
-TODAY's DATE: {today}
-
-Rules:
-- Read the conversation history to understand what the user is referring to
-- If the user responds with a short affirmative ("응", "네", "좋아", "부탁해") or adds conditions to a previous AI suggestion, incorporate the suggestion's intent into the rewrite
-- If the latest message is only a short value or filter, do not invent a new analysis intent from stale context.
-  Attach it to the immediately preceding unresolved request or missing-parameter question when one exists; otherwise return the latest message unchanged.
-- **[Inline-WT 선택]** 이전 에이전트 제안(agent_suggestion)에 "Inline-WT 연계 분석"이 포함돼 있고, 사용자가 숫자("1", "2", "1번") 또는 공정명("CONTACT ETCH", "BG CMP" 등)만 단독 입력한 경우 → 직전 fail_history 결과에서 해당 번호의 cause_oper를 찾아 "LOT_CODE CAUSE_OPER Inline-WT 연계 분석" 형태로 리라이팅 (절대 "상세 보여줘" 형태로 변환하지 말 것)
-- If the message already has clear intent, return it UNCHANGED
-- Expand ambiguous references using conversation context (e.g., product code, agent type)
-- When a date is mentioned without a year (e.g., "3월 2일"), assume the current year ({year})
-- Do NOT expand or convert date expressions — keep them as the user wrote them (e.g., "3월 2일" stays "3월 2일")
-- If specific parameter names are mentioned, preserve them exactly
-- PT1H, PT1C 등은 반도체 공정명(oper)이다. ISO 8601 duration이 아니므로 절대 변환하지 마라.
-  예: "PT1H binmap" → 그대로 유지 (절대 "1시간"으로 변환하지 말 것)
-- When the user mentions wafer ID patterns (N배수, N의 배수, 홀수, 짝수, N~M번, 처음 N개, 마지막 N개),
-  use the compute_wafer_ids tool to calculate exact wafer IDs, then include the computed IDs in the rewritten query.
-  Example: "4SS2DPD 3배수 wafer binmap" + tool result "03,06,09,12,15,18,21,24"
-  → rewrite to: "4SS2DPD wafer 03,06,09,12,15,18,21,24 binmap 보여줘"
-- MULTI-PATTERN: 한 쿼리에서 여러 wafer 패턴(예: 짝수와 홀수, 3배수와 5배수)을 동시에 언급하면,
-  compute_wafer_ids 도구를 **각 패턴마다 별도로 호출**하고, 각 결과를 명시적 숫자 목록으로 치환한 뒤
-  원문의 연결어("각각", "와/과", "/")를 유지하여 병합할 것. 절대 한글 패턴어("짝수"/"홀수")를 그대로 남기지 말 것.
-  Example: "4SSQ6H6,4SA2NNR 짝수/홀수 cummap 각각 보여줘"
-  + compute_wafer_ids(pattern_type="even") → "02,04,06,08,10,12,14,16,18,20,22,24"
-  + compute_wafer_ids(pattern_type="odd")  → "01,03,05,07,09,11,13,15,17,19,21,23,25"
-  → rewrite to: "4SSQ6H6,4SA2NNR wafer 02,04,06,08,10,12,14,16,18,20,22,24 cummap와 wafer 01,03,05,07,09,11,13,15,17,19,21,23,25 cummap 각각 보여줘"
-- For queries without wafer patterns, do NOT call any tools — just rewrite as before
-- IMPORTANT: tool(compute_wafer_ids) 사용 후 최종 리라이팅 시, 대화 히스토리에 있는 lot ID, map 유형 등 이전 맥락을 반드시 유지하여 결합할 것.
-  예: 이전 대화에서 "4SAFMUG,4SSEBLP 맵 보여줘"를 처리했고 사용자가 "3배수만 보여줘"라고 하면
-  → tool result "03,06,09,12,15,18,21,24"와 이전 lot ID를 결합하여
-  → "4SAFMUG,4SSEBLP wafer 03,06,09,12,15,18,21,24 binmap 보여줘"로 리라이팅
-- follow-up 질의에서 사용자가 새 lot을 명시하지 않으면, 직전 조회의 lot ID를 그대로 사용
-- Respond with ONLY the rewritten query string. No explanation.
-"""
-
 # ── WADS 시스템 프롬프트 ────────────────────────────────────────
 
 WADS_SYSTEM_PROMPT_TEMPLATE = (
