@@ -1922,6 +1922,12 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     if mainoper:
         return {**scratchpad_update, **mainoper}
 
+    # ── wt_resp 후속 mining 실행 확인 sentinel 제안 (같은 결정론 경로) ──
+    # wt_resp가 group_good/bad를 산출했을 때만 발동 → mining 실행 confirm → mining 체이닝.
+    mining = _maybe_propose_mining_choice(state)
+    if mining:
+        return {**scratchpad_update, **mining}
+
     # ── canonical plan-and-execute 종료 판정 ──
     # 모든 planned task가 실행되었고 남은 pending이 없으면 plan 완료.
     # past_steps는 per-turn reset(`agent_server.py`)이라 턴 내 실행 기록만 반영.
@@ -2585,6 +2591,9 @@ def supervisor_node(
         # ── relation_tree 후속 main_oper 선택 sentinel → dispatch 직전 치환(wt_resp 체이닝) ──
         if current_task.get("agent") == "__mainoper_choice__":
             return _choose_mainoper_or_drop(current_task, remaining, state, step_count)
+        # ── wt_resp 후속 mining 실행 확인 sentinel → dispatch 직전 치환(mining 체이닝) ──
+        if current_task.get("agent") == "__mining_choice__":
+            return _choose_mining_or_drop(current_task, remaining, state, step_count)
         # ── 실행 확인 (B안): missing_param과 같은 dispatch 직전 멱등 구간에서 interrupt ──
         # confirm_tasks에 이 task가 있으면 확인. 거절 → Command(드롭 후 다음 pending/END) 반환.
         # 승인/미해당 → confirm_tasks 정리 dict(아래 update_dict에 merge).
@@ -3551,6 +3560,110 @@ def _choose_mainoper_or_drop(
                 "task_plan": task_plan + [concrete],
                 "mainoper_offered": True,
                 "cause_oper": chosen,
+            },
+            goto="supervisor",
+        )
+    return _drop_choice_sentinel(remaining, state, step_count)
+
+
+# ── wt_resp → mining 실행 확인 HITL ──────────────────────────────────────────
+# wt_resp_agent가 group_good/group_bad를 산출하면 "mining 실행할까요?" confirm interrupt를 띄우고
+# 승인 시 5개 state(lotcd/cause_oper/fail_type/group_good/group_bad)로 mining_agent에 체이닝한다.
+# main_oper HITL과의 사이에 wt_resp dispatch가 끼어 super-step 자연 분리 → 단일 interrupt=replay-safe.
+_MINING_CHOICE_MESSAGE = "선택한 양품/불량 그룹으로 mining 분석을 실행할까요?"
+_MINING_OPTIONS = [
+    {"label": "실행", "value": "yes"},
+    {"label": "안 함", "value": "no"},
+]
+
+
+def _maybe_propose_mining_choice(state: Dict[str, Any]) -> dict:
+    """결정론 후속 제안: wt_resp가 방금 실행돼 group_good/bad가 채워졌으면 mining 실행 확인 sentinel 추가.
+    턴당 1회(mining_offered) + mining 이미 큐면 재제안 안 함."""
+    if state.get("mining_offered"):
+        return {}
+    latest_agent = next(
+        (
+            getattr(m, "name", "")
+            for m in reversed(state.get("messages", []) or [])
+            if isinstance(m, AIMessage) and getattr(m, "name", "") in _AGENT_NAMES
+        ),
+        "",
+    )
+    if latest_agent != "wt_resp_agent":
+        return {}
+    if not (state.get("group_good") or state.get("group_bad")):
+        return {}
+    pending = state.get("pending_tasks") or []
+    task_plan = state.get("task_plan") or []
+    if any(
+        isinstance(t, dict) and t.get("agent") == "mining_agent" for t in (pending + task_plan)
+    ):
+        return {}
+    task_id = f"task_{len(task_plan) + 1}_mining_choice"
+    sentinel = {
+        "task_id": task_id,
+        "agent": "__mining_choice__",
+        "goal": "mining 실행 확인",
+        "params": {},
+    }
+    logger.info("[Replanner] wt_resp 완료 → mining 실행 확인 sentinel 제안: %s", task_id)
+    return {
+        "pending_tasks": pending + [sentinel],
+        "task_plan": task_plan + [sentinel],
+        "mining_offered": True,
+    }
+
+
+def _choose_mining_or_drop(
+    current_task: dict, remaining: list[dict], state: Dict[str, Any], step_count: int
+) -> Command:
+    """dispatch 직전 mining 실행 확인 (단일 interrupt=replay-safe). 승인 → mining_agent task로 치환
+    (5 state 상속). 거절 → sentinel 드롭."""
+    task_plan = state.get("task_plan") or []
+    answer = interrupt({
+        "type": "confirm",
+        "interrupt_type": "postwads_choice",  # 기존 타입 재사용 → agent_server 가드/resume 무변경
+        "param": "mining_choice",
+        "message": _MINING_CHOICE_MESSAGE,
+        "options": _MINING_OPTIONS,
+        "route": "",
+    })
+    if isinstance(answer, dict):
+        text = answer.get("mining_choice") or next(iter(answer.values()), "")
+    else:
+        text = answer
+    text = str(text or "").strip()
+    if text in ("yes", "실행"):  # UI 클릭 — LLM 불필요
+        run = True
+    elif text in ("no", "안 함", ""):
+        run = False
+    else:  # 자유응답 → LLM yes/no 해석
+        run = _interpret_confirmation(answer)
+    if run:
+        lotcd = state.get("lotcd", "")
+        concrete = build_task_from_canonical_request(
+            {
+                "intent": "mining",
+                "agent": "mining_agent",
+                "slots": {
+                    "lotcd": lotcd,
+                    "fail_type": state.get("fail_type", ""),
+                    "cause_oper": state.get("cause_oper", ""),
+                    "group_good": state.get("group_good") or [],
+                    "group_bad": state.get("group_bad") or [],
+                },
+                "goal": f"{lotcd} mining 분석".strip(),
+            },
+            task_id=f"task_{len(task_plan) + 1}_mining",
+        )
+        logger.info("[Mining] 실행 승인 → mining task 큐 추가(치환): %s", concrete.get("task_id"))
+        return Command(
+            update={
+                "step_count": step_count,
+                "pending_tasks": [concrete] + remaining,
+                "task_plan": task_plan + [concrete],
+                "mining_offered": True,
             },
             goto="supervisor",
         )

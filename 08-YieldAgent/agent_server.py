@@ -556,6 +556,11 @@ async def chat_stream(request: ChatRequest, req: Request):
             "postwads_offered": False,
             # relation_tree main_oper 선택 제안 가드 — 매 새 turn 리셋.
             "mainoper_offered": False,
+            # wt_resp→mining 실행 확인 제안 가드 — 매 새 turn 리셋.
+            "mining_offered": False,
+            # wt_resp가 산출하는 양품/불량 그룹 — 매 새 turn 리셋(이전 turn 그룹 누수 방지).
+            "group_good": [],
+            "group_bad": [],
             # 확인 대기 게이트 — 매 새 turn 리셋(미리셋 시 stale confirm 게이트가 턴 넘어 잔존).
             "confirm_tasks": {},
             # WADS report별 cummap fan-out 입력 — 매 새 turn 리셋(이전 turn 그룹 잔존 방지).

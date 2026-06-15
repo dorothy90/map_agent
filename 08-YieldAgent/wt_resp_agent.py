@@ -23,18 +23,43 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langfuse import observe
 
-from common import timed, html_escape as _h
+from common import timed, html_escape as _h, get_oracle_connection
 
 logger = logging.getLogger("yield_agent.wt_resp_agent")
 
 
-def _as_list(value: Any) -> List[str]:
-    """선택 그룹값을 문자열 리스트로 정규화 (타입 가드 수준만)."""
-    if not value:
-        return []
-    if isinstance(value, str):
-        return [value.strip()] if value.strip() else []
-    return [str(v).strip() for v in value if str(v).strip()]
+def _query_good_bad(lotcd: str, fail_type: str, category: str = "") -> tuple[List[str], List[str]]:
+    """DF_WADS_GOOD_BAD_LOT에서 (lotcd, fail_type[, category])로 good/bad LOT_ID 목록 조회.
+    키=(LOTCD,CATEGORY,PARAMETER). PARAMETER=fail_type. main_oper로는 필터 안 함(컬럼 없음).
+    LIKE %val% — lotcd 제품코드 부분일치 (wads_tools _query_wads_data 패턴 미러)."""
+    if not lotcd or not fail_type:
+        return [], []
+    sql = (
+        "SELECT GOOD_LOT_ID, BAD_LOT_ID FROM DF_WADS_GOOD_BAD_LOT "
+        "WHERE UPPER(LOTCD) LIKE UPPER(:lotcd) AND UPPER(PARAMETER) LIKE UPPER(:fail_type)"
+    )
+    binds = {"lotcd": f"%{lotcd}%", "fail_type": f"%{fail_type}%"}
+    if category:
+        sql += " AND UPPER(CATEGORY) LIKE UPPER(:category)"
+        binds["category"] = f"%{category}%"
+    conn = get_oracle_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, binds)
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+    good: List[str] = []
+    bad: List[str] = []
+    for r in rows:
+        g = str((r[0] if r else "") or "").strip()
+        b = str((r[1] if len(r) > 1 else "") or "").strip()
+        if g and g not in good:
+            good.append(g)
+        if b and b not in bad:
+            bad.append(b)
+    return good, bad
 
 
 @observe(name="wt_resp_agent_node")
@@ -43,17 +68,13 @@ def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     lotcode = (state.get("lotcd") or "").strip()
     wt_para = (state.get("fail_type") or "").strip()
     main_oper = (state.get("cause_oper") or "").strip()
-    extra_good = _as_list(state.get("group_good"))
-    extra_bad = _as_list(state.get("group_bad"))
     current_task_id = state.get("current_task_id", "")
 
     logger.info(
-        "[WT Resp Agent] lotcode=%s wt_para=%s main_oper=%s extra_good=%d extra_bad=%d",
+        "[WT Resp Agent] lotcode=%s wt_para=%s main_oper=%s",
         lotcode,
         wt_para,
         main_oper,
-        len(extra_good),
-        len(extra_bad),
     )
 
     # 필수 슬롯 검증: lotcode / wt_para / main_oper
@@ -81,17 +102,26 @@ def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "past_steps": [(current_task_id, f"필수 항목 누락: {', '.join(missing)}")],
         }
 
+    # DF_WADS_GOOD_BAD_LOT에서 양품/불량 그룹 LOT_ID를 산출 → state에 기록(다음 mining이 상속).
+    category = (state.get("wads_category") or "").strip()
+    group_good, group_bad = _query_good_bad(lotcode, wt_para, category)
+    logger.info(
+        "[WT Resp Agent] group_good=%d group_bad=%d (DF_WADS_GOOD_BAD_LOT)",
+        len(group_good),
+        len(group_bad),
+    )
+
     html_content = (
         f"<h1>WT Resp 분석: {_h(lotcode)} / {_h(wt_para)}</h1>"
         f"<p>main_oper: {_h(main_oper)}</p>"
-        f"<p>추가 양품 그룹: {_h(', '.join(extra_good)) or '-'}</p>"
-        f"<p>추가 불량 그룹: {_h(', '.join(extra_bad)) or '-'}</p>"
+        f"<p>양품 그룹(good): {_h(', '.join(group_good)) or '-'}</p>"
+        f"<p>불량 그룹(bad): {_h(', '.join(group_bad)) or '-'}</p>"
         f"<p>(WT 응답 비교 분석 본구현 예정)</p>"
     )
 
     summary = (
         f"{lotcode} WT Resp 분석 (wt_para={wt_para}, main_oper={main_oper}, "
-        f"extra_good={len(extra_good)}, extra_bad={len(extra_bad)}) HTML 리포트 생성 완료"
+        f"good={len(group_good)}, bad={len(group_bad)}) HTML 리포트 생성 완료"
     )
     return {
         "messages": [AIMessage(content=summary, name="wt_resp_agent")],
@@ -103,6 +133,9 @@ def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                 "title": "wt_resp",
             }
         ],
+        # 산출한 그룹을 state에 기록 → mining_agent가 상속(5번째·4번째 state).
+        "group_good": group_good,
+        "group_bad": group_bad,
         "agent_suggestion": "",
         "past_steps": [(current_task_id, summary[:300])],
     }
