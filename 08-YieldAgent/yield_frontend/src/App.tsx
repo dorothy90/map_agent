@@ -21,7 +21,7 @@ type ResumeValue = string | Record<string, unknown>;
 
 function Markdown({ text }: { text: string }) {
   return (
-    <div className="text-sm leading-relaxed [&_code]:rounded [&_code]:bg-background [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.85em] [&_code]:text-[var(--warn)] [&_li]:my-0.5 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5">
+    <div className="text-sm leading-relaxed [&_code]:rounded [&_code]:bg-background [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.85em] [&_code]:text-primary [&_li]:my-0.5 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
     </div>
   );
@@ -215,7 +215,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           <Hexagon className="size-7 fill-primary/20 text-primary drop-shadow-[0_0_8px_var(--primary)]" />
           <div>
-            <h1 className="text-base font-semibold tracking-tight">Yield Agent — 검증 콘솔</h1>
+            <h1 className="font-serif text-base font-semibold tracking-tight">Yield Agent — 검증 콘솔</h1>
             <p className="text-xs text-muted-foreground">
               멀티에이전트 실행과 HITL을 실제 백엔드(:8001)로 검증합니다
             </p>
@@ -250,7 +250,7 @@ export default function App() {
           <div ref={scrollRef} className="flex flex-1 flex-col gap-2.5 overflow-y-auto px-4 pt-4">
             {empty && (
               <div className="my-auto px-4 py-8 text-center text-muted-foreground">
-                <h2 className="mb-2 text-lg font-medium text-foreground">
+                <h2 className="mb-2 font-serif text-lg font-medium text-foreground">
                   수율 데이터에 무엇이든 물어보세요
                 </h2>
                 <p className="text-sm">
