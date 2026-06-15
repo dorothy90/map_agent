@@ -16,9 +16,41 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langfuse import observe
 
-from common import timed, html_escape as _h
+from common import timed, html_escape as _h, get_oracle_connection
+from result_contracts import attach_result_envelope
 
 logger = logging.getLogger("yield_agent.relation_tree_agent")
+
+
+def _query_main_opers(lotcd: str, fail_type: str, category: str = "") -> list[str]:
+    """DF_WADS_MAIN_OPER에서 (lotcd, fail_type[, category])로 연관 main_oper 목록 조회.
+    키=(LOTCD,CATEGORY,PARAMETER). PARAMETER=fail_type. category(wads_category) 있으면 narrowing.
+    LIKE %val% — lotcd 제품코드("4SS") 부분일치 (wads_tools _query_wads_data 패턴 미러)."""
+    if not lotcd or not fail_type:
+        return []
+    sql = (
+        "SELECT DISTINCT MAIN_OPER FROM DF_WADS_MAIN_OPER "
+        "WHERE UPPER(LOTCD) LIKE UPPER(:lotcd) AND UPPER(PARAMETER) LIKE UPPER(:fail_type)"
+    )
+    binds = {"lotcd": f"%{lotcd}%", "fail_type": f"%{fail_type}%"}
+    if category:
+        sql += " AND UPPER(CATEGORY) LIKE UPPER(:category)"
+        binds["category"] = f"%{category}%"
+    sql += " ORDER BY MAIN_OPER"
+    conn = get_oracle_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, binds)
+        rows = cur.fetchall()
+        cur.close()
+    finally:
+        conn.close()
+    out: list[str] = []
+    for r in rows:
+        v = str((r[0] if r else "") or "").strip()
+        if v and v not in out:
+            out.append(v)
+    return out
 
 
 @observe(name="relation_tree_agent_node")
@@ -73,18 +105,34 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
             "past_steps": [(current_task_id, "lot_code 없음 — 연관 분석 스킵")],
         }
 
+    # lotcd+fail_type로 연관 main_oper 후보 조회 → 후속 main_oper 선택 HITL의 선택지가 된다.
+    main_opers = _query_main_opers(lot_code, fail_type, (state.get("wads_category") or "").strip())
+    logger.info("[Relation Tree Agent] main_opers=%d", len(main_opers))
+    opers_html = "".join(f"<li>{_h(m)}</li>" for m in main_opers) or "<li>-</li>"
     html_content = (
         f"<h1>Inline-WT 연관 분석: {_h(lot_code)}</h1>"
         f"<p>fail_type: {_h(fail_type) or '-'}</p>"
-        f"<p>main_oper_det_desc: {_h(main_oper) or '-'}</p>"
+        f"<p>연관 main_oper 후보 ({len(main_opers)}개):</p><ul>{opers_html}</ul>"
         f"<p>(상관분석·trend 본구현 예정)</p>"
     )
 
     summary = (
-        f"{lot_code} 연관 분석 (fail_type={fail_type or '-'}, main_oper={main_oper or '-'}) HTML 리포트 생성 완료"
+        f"{lot_code} 연관 분석 (fail_type={fail_type or '-'}) — 연관 main_oper 후보 {len(main_opers)}개"
+    )
+    msg = AIMessage(content=summary, name="relation_tree_agent")
+    # main_opers를 envelope extensions에 첨부 → supervisor가 읽어 main_oper 선택 HITL 선택지로 사용.
+    attach_result_envelope(
+        msg,
+        logger=logger,
+        source_agent="relation_tree_agent",
+        kind="report",
+        status="success",
+        title="relation_tree",
+        summary=summary,
+        extensions={"relation_tree_agent": {"main_opers": main_opers}},
     )
     return {
-        "messages": [AIMessage(content=summary, name="relation_tree_agent")],
+        "messages": [msg],
         "relation_tree_artifacts": [{
             "type": "html",
             "mime": "text/html",
