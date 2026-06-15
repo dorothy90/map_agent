@@ -39,8 +39,14 @@ AGENT_SLOT_RULES: dict[str, dict[str, Any]] = {
     "mining_agent": {
         # 상류(wads→wt_resp) 공유키 재사용: lotcd, fail_type, wads_category(=mode).
         # group_good/group_bad: 사용자 직접 입력 또는 상류 결과로 채워지는 chained-input (optional).
-        "allowed": {"lotcd", "fail_type", "wads_category", "group_good", "group_bad", "tech", "user_id", "rank_limit"},
+        "allowed": {"lotcd", "fail_type", "cause_oper", "wads_category", "group_good", "group_bad", "tech", "user_id", "rank_limit"},
         "required": (),
+    },
+    "wt_resp_agent": {
+        # relation_tree main_oper 선택 후속: lotcd + fail_type + cause_oper(=선택 main_oper).
+        # group_good/group_bad는 wt_resp가 DF_WADS_GOOD_BAD_LOT에서 산출(입력 슬롯 아님).
+        "allowed": {"lotcd", "fail_type", "cause_oper"},
+        "required": ("lotcd", "fail_type", "cause_oper"),
     },
     "ppt_export": {
         "allowed": set(),
@@ -133,6 +139,8 @@ def _default_intent_for_agent(agent: str) -> str:
         return "relation_tree"
     if agent == "mining_agent":
         return "mining"
+    if agent == "wt_resp_agent":
+        return "wt_resp"
     if agent == "ppt_export":
         return "ppt_export"
     return ""

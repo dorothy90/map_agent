@@ -270,6 +270,8 @@ _AGENT_NAMES = {
     "ppt_export",
     "lot_history_agent",
     "relation_tree_agent",
+    "wt_resp_agent",
+    "mining_agent",
 }
 
 
@@ -2107,6 +2109,9 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
         proj["lotcd"] = task_params.get("lotcd", "")
     elif agent == "fail_history_agent":
         proj["lotcd"] = task_params.get("lotcd", state.get("lotcd", ""))
+    elif agent == "wt_resp_agent":
+        # main_oper 선택 후속: lotcd 상속(없으면 state). fail_type/cause_oper은 공통 블록이 채움.
+        proj["lotcd"] = task_params.get("lotcd") or state.get("lotcd", "")
 
     # 통합 필드: 모든 agent에 공통 적용
     proj["lot_ids"] = _parse_lot_ids(task_params)
@@ -2172,9 +2177,10 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
         proj["rt_groups"] = task_params.get("rt_groups") or []
 
     elif agent == "mining_agent":
-        # 상류(wads→wt_resp) 공유키 상속: lotcd, fail_type, wads_category(=mode).
+        # 상류(wads→wt_resp) 공유키 상속: lotcd, fail_type, wads_category(=mode), cause_oper(main_oper).
         proj["lotcd"] = task_params.get("lotcd") or state.get("lotcd", "")
         proj["fail_type"] = _parse_fail_type(task_params) or state.get("fail_type", "")
+        proj["cause_oper"] = _parse_cause_oper(task_params) or state.get("cause_oper", "")
         proj["wads_category"] = task_params.get("wads_category") or state.get("wads_category", "")
         # group_good/group_bad: 사용자 직접 입력 또는 상류 결과 상속 (chained-input).
         proj["group_good"] = task_params.get("group_good") or state.get("group_good") or []
@@ -2225,6 +2231,25 @@ def _missing_required_fields(
                 "slot": "fail_type",
                 "label": "연관 분석할 파라미터(불량유형)를 입력해주세요. (예: VTH 또는 VTH,IDSAT)",
                 "type": "fail_type",
+            })
+    elif agent == "wt_resp_agent":
+        if not update_dict.get("lotcd"):
+            fields.append({
+                "slot": "lotcd",
+                "label": "WT Resp 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
+                "type": "lotcd",
+            })
+        if not update_dict.get("fail_type"):
+            fields.append({
+                "slot": "fail_type",
+                "label": "WT Resp 분석할 파라미터(불량유형)를 입력해주세요. (예: VTH)",
+                "type": "fail_type",
+            })
+        if not update_dict.get("cause_oper"):
+            fields.append({
+                "slot": "cause_oper",
+                "label": "기준 공정(main_oper)을 입력해주세요.",
+                "type": "cause_oper",
             })
     elif agent == "yield_agent":
         if not update_dict.get("lotcd"):
@@ -2488,6 +2513,8 @@ def supervisor_node(
         "lot_history_agent",
         "ppt_export",
         "relation_tree_agent",
+        "wt_resp_agent",
+        "mining_agent",
         "__end__",
     ]
 ]:
@@ -3504,6 +3531,7 @@ from ppt_export_agent import ppt_export_node  # noqa: E402
 from lot_history_agent import lot_history_agent_node  # noqa: E402
 from relation_tree_agent import relation_tree_agent_node  # noqa: E402
 from mining_agent import mining_agent_node  # noqa: E402
+from wt_resp_agent import wt_resp_agent_node  # noqa: E402
 
 # 에이전트 노드 재시도 정책 (Oracle/LLM 일시적 오류 자동 재시도)
 # LangGraph 기본(default_retry_on)은 OSError/TimeoutError를 거부하므로
@@ -3525,6 +3553,7 @@ workflow.add_node("ppt_export", ppt_export_node, retry_policy=_retry)
 workflow.add_node("lot_history_agent", lot_history_agent_node, retry_policy=_retry)
 workflow.add_node("relation_tree_agent", relation_tree_agent_node, retry_policy=_retry)
 workflow.add_node("mining_agent", mining_agent_node, retry_policy=_retry)
+workflow.add_node("wt_resp_agent", wt_resp_agent_node, retry_policy=_retry)
 
 workflow.add_edge(START, "planner")
 workflow.add_edge("planner", "task_normalizer_validator")
@@ -3541,6 +3570,7 @@ workflow.add_edge("ppt_export", "replanner")
 workflow.add_edge("lot_history_agent", "replanner")
 workflow.add_edge("relation_tree_agent", "replanner")
 workflow.add_edge("mining_agent", "replanner")
+workflow.add_edge("wt_resp_agent", "replanner")
 
 
 # canonical plan-and-execute should_end: replanner가 set한 response로 END 분기 결정.
