@@ -47,7 +47,7 @@ function PptxArtifact({ data, title }: { data: string; title: string }) {
     <a
       href={data}
       download
-      className="flex items-center gap-3 rounded-lg border bg-black/15 px-3 py-2.5 transition-colors hover:border-[var(--warn)]/60"
+      className="flex items-center gap-3 rounded-lg border bg-muted/60 px-3 py-2.5 transition-colors hover:border-[var(--warn)]/60"
     >
       <FileText className="size-7 text-[var(--warn)]" />
       <span className="flex flex-1 flex-col">
@@ -96,7 +96,7 @@ export function ArtifactPanel({ cards }: { cards: CanvasCard[] }) {
     <div className="flex flex-col gap-4">
       {groups.map((g) => (
         <Card key={g.items[0].id} className="animate-[rise_0.32s_ease_both] overflow-hidden">
-          <CardHeader className="border-b bg-black/15">
+          <CardHeader className="border-b bg-muted/50">
             <Badge variant="default">{g.agent || "agent"}</Badge>
             <span className="text-[0.7rem] text-muted-foreground">{g.items.length}개 아티팩트</span>
           </CardHeader>

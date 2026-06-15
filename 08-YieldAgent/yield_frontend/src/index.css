@@ -2,33 +2,33 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* shadcn 토큰 — Claude Code 스타일 (warm 다크 + 테라코타 액센트) */
+/* shadcn 토큰 — Claude 스타일 (warm 아이보리 라이트 + 테라코타 액센트) */
 :root {
   --radius: 0.7rem;
-  --background: oklch(0.17 0.005 60);
-  --foreground: oklch(0.93 0.01 85);
-  --card: oklch(0.21 0.006 60);
-  --card-foreground: oklch(0.93 0.01 85);
-  --popover: oklch(0.21 0.006 60);
-  --popover-foreground: oklch(0.93 0.01 85);
-  --primary: oklch(0.7 0.115 47);
+  --background: oklch(0.98 0.006 95);
+  --foreground: oklch(0.26 0.012 60);
+  --card: oklch(0.995 0.003 95);
+  --card-foreground: oklch(0.26 0.012 60);
+  --popover: oklch(0.995 0.003 95);
+  --popover-foreground: oklch(0.26 0.012 60);
+  --primary: oklch(0.62 0.13 42);
   --primary-foreground: oklch(0.99 0.005 95);
-  --secondary: oklch(0.26 0.006 60);
-  --secondary-foreground: oklch(0.93 0.01 85);
-  --muted: oklch(0.26 0.006 60);
-  --muted-foreground: oklch(0.71 0.012 75);
-  --accent: oklch(0.3 0.008 55);
-  --accent-foreground: oklch(0.96 0.008 85);
-  --destructive: oklch(0.64 0.2 25);
-  --border: oklch(0.29 0.007 60);
-  --input: oklch(0.28 0.007 60);
-  --ring: oklch(0.7 0.115 47);
+  --secondary: oklch(0.95 0.006 90);
+  --secondary-foreground: oklch(0.3 0.012 60);
+  --muted: oklch(0.95 0.006 90);
+  --muted-foreground: oklch(0.52 0.014 65);
+  --accent: oklch(0.93 0.009 75);
+  --accent-foreground: oklch(0.28 0.012 60);
+  --destructive: oklch(0.56 0.2 25);
+  --border: oklch(0.9 0.007 80);
+  --input: oklch(0.9 0.007 80);
+  --ring: oklch(0.62 0.13 42);
   /* 시맨틱 수율 색 */
-  --good: oklch(0.72 0.14 155);
-  --warn: oklch(0.8 0.13 75);
-  --bad: oklch(0.64 0.2 25);
-  --chart-1: oklch(0.7 0.12 47);
-  --chart-grid: oklch(0.3 0.006 60);
+  --good: oklch(0.56 0.13 152);
+  --warn: oklch(0.62 0.13 65);
+  --bad: oklch(0.56 0.2 25);
+  --chart-1: oklch(0.62 0.13 42);
+  --chart-grid: oklch(0.9 0.006 90);
 }
 
 @theme inline {
