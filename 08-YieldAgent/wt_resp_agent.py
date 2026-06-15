@@ -34,11 +34,14 @@ def _query_good_bad(lotcd: str, fail_type: str, category: str = "") -> tuple[Lis
     LIKE %val% — lotcd 제품코드 부분일치 (wads_tools _query_wads_data 패턴 미러)."""
     if not lotcd or not fail_type:
         return [], []
+    # LOTCD에는 제품코드(예 "4SS")가 들어있고 입력 lotcd는 제품코드 또는 풀 lot(예 "4SS2DPD")일 수
+    # 있다 → 테이블의 LOTCD가 입력 lotcd의 부분문자열인 행을 매칭(양쪽 모두 동작).
     sql = (
         "SELECT GOOD_LOT_ID, BAD_LOT_ID FROM DF_WADS_GOOD_BAD_LOT "
-        "WHERE UPPER(LOTCD) LIKE UPPER(:lotcd) AND UPPER(PARAMETER) LIKE UPPER(:fail_type)"
+        "WHERE LOTCD IS NOT NULL AND UPPER(:lotcd) LIKE '%' || UPPER(LOTCD) || '%' "
+        "AND UPPER(PARAMETER) LIKE UPPER(:fail_type)"
     )
-    binds = {"lotcd": f"%{lotcd}%", "fail_type": f"%{fail_type}%"}
+    binds = {"lotcd": lotcd, "fail_type": f"%{fail_type}%"}
     if category:
         sql += " AND UPPER(CATEGORY) LIKE UPPER(:category)"
         binds["category"] = f"%{category}%"

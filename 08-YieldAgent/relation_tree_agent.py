@@ -28,11 +28,14 @@ def _query_main_opers(lotcd: str, fail_type: str, category: str = "") -> list[st
     LIKE %val% — lotcd 제품코드("4SS") 부분일치 (wads_tools _query_wads_data 패턴 미러)."""
     if not lotcd or not fail_type:
         return []
+    # LOTCD에는 제품코드(예 "4SS")가 들어있고 입력 lotcd는 제품코드 또는 풀 lot(예 "4SS2DPD")일 수
+    # 있다 → 테이블의 LOTCD가 입력 lotcd의 부분문자열인 행을 매칭(양쪽 모두 동작).
     sql = (
         "SELECT DISTINCT MAIN_OPER FROM DF_WADS_MAIN_OPER "
-        "WHERE UPPER(LOTCD) LIKE UPPER(:lotcd) AND UPPER(PARAMETER) LIKE UPPER(:fail_type)"
+        "WHERE LOTCD IS NOT NULL AND UPPER(:lotcd) LIKE '%' || UPPER(LOTCD) || '%' "
+        "AND UPPER(PARAMETER) LIKE UPPER(:fail_type)"
     )
-    binds = {"lotcd": f"%{lotcd}%", "fail_type": f"%{fail_type}%"}
+    binds = {"lotcd": lotcd, "fail_type": f"%{fail_type}%"}
     if category:
         sql += " AND UPPER(CATEGORY) LIKE UPPER(:category)"
         binds["category"] = f"%{category}%"
@@ -68,26 +71,48 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
     # WADS 검출 후속(rt_groups): report별로 각각 연관 분석(파라미터 뭉치기 금지). cummap fan-out 대칭.
     rt_groups = state.get("rt_groups") or []
     if rt_groups:
+        category = (state.get("wads_category") or "").strip()
         artifacts: list[dict] = []
         labels: list[str] = []
+        main_opers: list[str] = []  # group들의 연관 main_oper 합집합 → main_oper 선택 HITL 선택지
         for g in rt_groups:
             g_lotcd = (str(g.get("lotcd") or lot_code)).strip()
             g_param = (str(g.get("parameter") or "")).strip()
             g_lots = ",".join(str(x).strip() for x in (g.get("lot_ids") or []) if str(x).strip())
+            for m in _query_main_opers(g_lotcd, g_param, category):
+                if m not in main_opers:
+                    main_opers.append(m)
+            opers_html = "".join(f"<li>{_h(m)}</li>" for m in main_opers) or "<li>-</li>"
             artifacts.append({
                 "type": "html",
                 "mime": "text/html",
                 "data": (
                     f"<h1>Inline-WT 연관 분석: {_h(g_lotcd)} / {_h(g_param) or '-'}</h1>"
                     f"<p>lots: {_h(g_lots) or '-'}</p>"
+                    f"<p>연관 main_oper 후보:</p><ul>{opers_html}</ul>"
                     f"<p>(상관분석·trend 본구현 예정)</p>"
                 ),
                 "title": f"relation_tree_{g_param or g_lotcd}",
             })
             labels.append(g_param or g_lotcd)
-        summary = f"WADS 검출 {len(artifacts)}개 리포트 연관 분석(파라미터별): {', '.join(labels)}"
+        summary = (
+            f"WADS 검출 {len(artifacts)}개 리포트 연관 분석(파라미터별): {', '.join(labels)}"
+            f" — 연관 main_oper 후보 {len(main_opers)}개"
+        )
+        msg = AIMessage(content=summary, name="relation_tree_agent")
+        # main_opers를 envelope에 첨부 → main_oper 선택 HITL 발동(standalone 경로와 동일).
+        attach_result_envelope(
+            msg,
+            logger=logger,
+            source_agent="relation_tree_agent",
+            kind="report",
+            status="success",
+            title="relation_tree",
+            summary=summary,
+            extensions={"relation_tree_agent": {"main_opers": main_opers}},
+        )
         return {
-            "messages": [AIMessage(content=summary, name="relation_tree_agent")],
+            "messages": [msg],
             "relation_tree_artifacts": artifacts,
             "agent_suggestion": "",
             "past_steps": [(current_task_id, summary[:300])],
