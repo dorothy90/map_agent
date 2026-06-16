@@ -224,6 +224,21 @@ fills the exact value deterministically (this avoids guessing the wrong value):
   widen to all rows. Still emit the agent the user asked for (with the token) — never
   drop the request to zero for a reference. (Greetings / out-of-scope stay zero.)
 
+=== fail_type(파라미터) 문맥 상속 ===
+Structured context may contain "직전 선택 파라미터(fail_type): <value>" — the single
+parameter the user picked in the previous turn's postwads step (e.g. FMAX(X)). Decide whether
+THIS request inherits it. It is a value FROM Structured context, so using it is allowed (this is
+not lifting a stale value out of a raw earlier turn).
+
+Apply ONLY when this request names no parameter of its own.
+- INHERIT (put that value in the new request's fail_type slot) when this request CONTINUES the
+  same lot/analysis — a 지시대명사/생략 pointing at the prior analysis target.
+  e.g. "연관공정도 보여줘", "그거 wt resp도", "이 맵 mining 돌려줘".
+- DO NOT INHERIT (leave fail_type empty) when the user raises a different lot/parameter/topic, or
+  the request is independent with no continuity signal.
+- When ambiguous, DO NOT inherit — leaving it empty is safe (the system re-asks). Inheriting
+  wrongly silently analyzes the wrong parameter, which is worse.
+
 === WORKED EXAMPLES ===
 - "최근 3주간 4SS 수율 알려줘"
   -> {{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"lotcd":"4SS","time_range":{{"unit":"weekly","start":"<이번 주차 -2>","end":"{today_iso_week}"}}}},"goal":"4SS 최근 3주 수율 조회"}}],"answer":""}}

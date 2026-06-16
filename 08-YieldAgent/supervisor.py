@@ -91,6 +91,7 @@ class CanonicalRequestItem(BaseModel):
         "ppt_export",
         "lot_history_agent",
         "relation_tree_agent",
+        "mining_agent",
     ] = Field(default="", description="실행 대상 agent")
     slots: dict = Field(
         default_factory=dict,
@@ -609,6 +610,8 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         meta_parts.append(f"이전 lot: {','.join(prev_lots)}")
     if state.get("cause_oper"):
         meta_parts.append(f"이전 main_oper: {state['cause_oper']}")
+    if state.get("selected_fail_type"):
+        meta_parts.append(f"직전 선택 파라미터(fail_type): {state['selected_fail_type']}")
     if state.get("agent_suggestion"):
         meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
     meta = "\n".join(meta_parts)
@@ -2204,9 +2207,13 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
         proj["fail_groups"] = task_params.get("fail_groups") or []
 
     elif agent == "relation_tree_agent":
-        # lotcd(3자)는 rt_lot_code와 동일 개념 — 구 필드 fallback 포함
+        # lotcd(3자)는 rt_lot_code와 동일 개념 — 표준 슬롯 우선, rt_lot_code는 구 필드 fallback
         if not proj.get("lotcd"):
-            proj["lotcd"] = task_params.get("rt_lot_code") or state.get("lotcd", "")
+            proj["lotcd"] = (
+                task_params.get("lotcd")
+                or task_params.get("rt_lot_code")
+                or state.get("lotcd", "")
+            )
         # WADS report별 연관분석 fan-out 입력 [{lotcd, parameter, lot_ids}, …].
         proj["rt_groups"] = task_params.get("rt_groups") or []
 
@@ -2256,7 +2263,7 @@ def _missing_required_fields(
         if not update_dict.get("lotcd"):
             fields.append({
                 "slot": "lotcd",
-                "label": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
+                "label": "연관 분석할 LOT 코드를 입력해주세요. (예: 4SS)",
                 "type": "lotcd",
             })
         # TEMP(relation_tree fail_type): required is now lotcd + fail_type (was cause_oper).
@@ -2270,7 +2277,7 @@ def _missing_required_fields(
         if not update_dict.get("lotcd"):
             fields.append({
                 "slot": "lotcd",
-                "label": "WT Resp 분석할 LOT 코드를 입력해주세요. (예: 4SS2DPD)",
+                "label": "WT Resp 분석할 LOT 코드를 입력해주세요. (예: 4SS)",
                 "type": "lotcd",
             })
         if not update_dict.get("fail_type"):
@@ -3362,14 +3369,17 @@ def _choose_postwads_or_drop(
             return _drop_postwads_sentinel(remaining, state, step_count)
         # commit 후 재진입 (super-step 분리). sentinel엔 인덱스만 운반, task_plan은 안 건드림.
         requeued = {**current_task, "params": {**params, "selected_idx": chosen_idx}}
+        update = {"step_count": step_count, "pending_tasks": [requeued] + remaining}
+        # 사용자가 고른 단일 파라미터를 dispatch와 무관한 전용 필드에 기록(사실만) →
+        # 다음 turn planner가 문맥 상속 판단에 사용. 상속 여부는 planner가 결정(코드 자동상속 X).
+        try:
+            sel_param = str(reports_all[int(chosen_idx)].get("parameter") or "").strip()
+            if sel_param:
+                update["selected_fail_type"] = sel_param
+        except (TypeError, ValueError, IndexError):
+            pass
         logger.info("[PostWADS] fail_type 선택 idx=%s → 재진입", chosen_idx)
-        return Command(
-            update={
-                "step_count": step_count,
-                "pending_tasks": [requeued] + remaining,
-            },
-            goto="supervisor",
-        )
+        return Command(update=update, goto="supervisor")
 
     # ── super-step 2: 분석종류 선택 (selected_idx 확정, 또는 report 없어 1차 생략) ──
     # selected_idx로 report 복원. None(생략)/복원 실패 → reports=None 전체 fallback(회귀안전).
@@ -3744,6 +3754,7 @@ class YieldQueryState(TypedDict):
     wf_ids: list[str]  # wafer ID 목록
     groupkey: str  # 그룹 집계 키
     fail_type: str  # 파라미터/불량유형 코드
+    selected_fail_type: str  # postwads에서 사용자가 마지막으로 고른 단일 파라미터 (planner 문맥 상속용)
     cause_oper: str  # 원인 공정/step명
 
     # Map Agent 파라미터 (map-specific)
