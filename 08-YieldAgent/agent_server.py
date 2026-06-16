@@ -513,6 +513,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             "ppt_artifacts": Overwrite([]),
             "lot_history_artifacts": Overwrite([]),
             "relation_tree_artifacts": Overwrite([]),
+            "mining_artifacts": Overwrite([]),
             # past_steps도 매 turn reset (#8 phase 1) — 이전 turn의 task 결과는 다음 turn 라우팅에 무의미
             "past_steps": Overwrite([]),
             # step_count만 리셋 (퍼-턴 루프 카운터)
@@ -790,6 +791,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                             ("ppt_artifacts", "ppt_export"),
                             ("lot_history_artifacts", "lot_history_agent"),
                             ("relation_tree_artifacts", "relation_tree_agent"),
+                            ("mining_artifacts", "mining_agent"),
                         ]
                         for key, default_agent in artifact_sources:
                             for art in node_state.get(key, []):

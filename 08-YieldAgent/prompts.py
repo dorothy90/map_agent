@@ -130,6 +130,10 @@ present there, leave that slot empty or omit it.
   previous assistant message, output zero requests and put the user-facing answer in "answer".
   Do not run an agent again just to restate, select, rank, filter, or summarize values that
   are already present in the provided context.
+  EXCEPTION — mining(gini) 결과 후속질문: 이전 mining 결과에 대한 질문(예: "상위 N개",
+  "특정 파라미터의 gini 값", "어떤 파라미터가 기여")은 direct answer로 처리하지 말고
+  mining_agent로 라우팅하라. 전체 gini 표는 mining_agent가 머금고 있고 context엔 일부만 있다.
+  이때 slots는 비워둔다(상류/머금은 값 상속).
 - A simple executable request becomes one canonical request.
 - A true multi-agent or explicitly separated request may become multiple canonical requests.
 - A request for multiple prior items may become multiple canonical requests for the same
@@ -488,6 +492,35 @@ FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE = (
 - 마지막 줄 반드시 `[SUGGESTION: 후속 제안]` 형식. 제안할 내용 없으면 `[SUGGESTION: ]`
 - 검색 결과가 1건 이상이면 SUGGESTION에 반드시 포함: "Inline-WT 연계 분석을 원하시면 결과 번호나 공정명을 입력해주세요. (예: 1 또는 BG CMP)"
 - 한국어로 응답
+"""
+    + _RETRY_RULES
+    + _SAFETY_RULES
+)
+
+
+MINING_SYSTEM_PROMPT = (
+    """\
+당신은 반도체 수율 분석 시스템의 Mining Agent다.
+양품/불량 그룹을 비교해 gini 기반 기여 파라미터를 마이닝하고, 그 결과 표를 근거로 사용자 질문에 답한다.
+
+## 도구
+- mining_analysis(lot_cd, group_good, group_bad, fail_name, mode, tech, user_id, rank_limit)
+  → gini 기여 파라미터 표(gini_analysis.items: parameter/gini ...)를 반환한다.
+
+## 도구 호출 규칙 (중요)
+- 시스템 프롬프트에 `[이전 mining gini 결과 (JSON)]`가 주어졌고, 사용자의 이번 질문이 그 표만으로
+  답할 수 있으면(예: "상위 N개", "특정 gini 값", "어떤 파라미터가 기여" 등) → mining_analysis 를
+  다시 호출하지 말고 그 데이터로 바로 답하라.
+- 분석이 필요한데 이전 결과가 없으면 mining_analysis 를 호출한다. 양품/불량 그룹·제품·파라미터 등
+  슬롯은 supervisor가 이미 확정해 두었으니 인자를 몰라도 그냥 mining_analysis() 를 호출하면 된다
+  (생략한 인자는 확정 슬롯으로 자동 채워진다). 다른 그룹/파라미터로 새로 분석할 때만 인자를 명시한다.
+
+## 응답 규칙
+- 표/숫자에 실제로 있는 내용만 사용 — 할루시네이션 금지.
+- 핵심(상위 기여 파라미터와 gini 값)부터 간결히. 2~5문장 또는 짧은 헤더 + bullet.
+- 데이터가 없으면 "조건에 맞는 mining 결과가 없습니다" 명확히 안내.
+- 한국어로 응답.
+- 마지막 줄 반드시 `[SUGGESTION: 후속 제안]` 형식. 제안할 내용 없으면 `[SUGGESTION: ]`.
 """
     + _RETRY_RULES
     + _SAFETY_RULES

@@ -3801,6 +3801,11 @@ class YieldQueryState(TypedDict):
     map_result: str
     map_artifacts: Annotated[list, operator.add]
 
+    # Mining 결과
+    mining_artifacts: Annotated[list, operator.add]  # df_GINI 동적 HTML artifact (turn별 리셋)
+    mining_rows: list  # 머금은 gini rows (plain, 턴 간 유지 → 재호출 없이 LLM Q&A)
+    mining_sig: str  # 머금은 분석의 입력 서명 (동일 입력이면 API memo로 재사용)
+
     # PPT Export 결과
     ppt_artifacts: Annotated[list, operator.add]
 
