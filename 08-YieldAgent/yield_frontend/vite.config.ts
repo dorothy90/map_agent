@@ -13,10 +13,11 @@ export default defineConfig({
     port: 5174,
     strictPort: true,
     proxy: {
-      "/chat": "http://127.0.0.1:8001",
-      "/session": "http://127.0.0.1:8001",
-      "/sessions": "http://127.0.0.1:8001",
-      "/download": "http://127.0.0.1:8001",
+      "/chat": "http://127.0.0.1:8002",
+      "/session": "http://127.0.0.1:8002",
+      "/sessions": "http://127.0.0.1:8002",
+      "/download": "http://127.0.0.1:8002",
+      "/mining": "http://127.0.0.1:8002",
     },
   },
 });

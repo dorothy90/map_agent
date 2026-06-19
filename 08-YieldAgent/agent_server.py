@@ -11,6 +11,7 @@ React 프론트엔드 대응: 타입별 분리된 SSE 이벤트 (message / artif
 import asyncio
 import json
 import logging
+from pydantic import BaseModel
 import os
 import traceback
 import sys
@@ -352,6 +353,33 @@ def _chunk_text(text: str, min_size: int = 3) -> list[str]:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ── Mining TAS 트리거 (stub) ─────────────────────────────
+# mining gini 표의 TAS 버튼이 그 행의 4필드를 보내 호출. 지금은 접수+에코 stub —
+# 실제 분석/타 api 호출은 본문만 추후 교체(경계 유지). 프런트는 /mining 프록시 경유.
+class TasRequest(BaseModel):
+    lotcd: str
+    oper_det_desc: str
+    key_value: str
+    fail_name: str
+
+
+@app.post("/mining/tas")
+async def mining_tas(body: TasRequest):
+    logger.info(
+        "[TAS] lotcd=%s oper_det_desc=%s key_value=%s fail_name=%s",
+        body.lotcd,
+        body.oper_det_desc,
+        body.key_value,
+        body.fail_name,
+    )
+    # TODO: 실제 TAS 분석/타 api 트리거를 여기에 연결.
+    return {
+        "status": "accepted",
+        "received": body.model_dump(),
+        "message": f"TAS 접수: {body.oper_det_desc} / {body.key_value}",
+    }
 
 
 # ── PPTX 파일 다운로드 ───────────────────────────────────

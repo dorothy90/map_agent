@@ -153,6 +153,7 @@ def _call_minig_api(
 _CORE_COLS = [
     "Rank",
     "oper_det_desc",
+    "Key Value",
     "Operation Type",
     "GINI",
     "Score",
@@ -303,11 +304,15 @@ def mining_analysis(
 def _render_mining_gini_html(rows: List[dict], lot_cd: str, fail_name: str, mode: str) -> str:
     if not rows:
         return "<div class='mn-empty'>gini 결과가 없습니다.</div>"
+    import json as _json
+
     cols = list(rows[0].keys())
-    th = "".join(f"<th>{_h(str(c).upper())}</th>" for c in cols)
+    th = "".join(f"<th>{_h(str(c).upper())}</th>" for c in cols) + "<th>TAS</th>"
     body = ""
     for i, r in enumerate(rows):
-        param = _h(str(r.get("oper_det_desc") or r.get("parameter") or r.get("param") or f"row{i}"))
+        oper = str(r.get("oper_det_desc") or r.get("parameter") or r.get("param") or f"row{i}")
+        kv = str(r.get("Key Value") or "")
+        param = _h(oper)
         tds = ""
         for c in cols:
             v = r.get(c, "")
@@ -317,7 +322,13 @@ def _render_mining_gini_html(rows: List[dict], lot_cd: str, fail_name: str, mode
                 tds += f"<td style='text-align:right'>{v:,}</td>"
             else:
                 tds += f"<td>{_h(str(v))}</td>"
-        body += f"<tr class='mn-row' data-idx='{i}' data-param='{param}'>{tds}</tr>"
+        # TAS 버튼: 그 행의 oper_det_desc/Key Value를 data-*로 운반 → 클릭 시 서버 호출.
+        tas_td = (
+            "<td class='tas-cell'>"
+            f"<button class='tas-btn' data-oper='{_h(oper)}' data-kv='{_h(kv)}'>TAS</button>"
+            "<span class='tas-out'></span></td>"
+        )
+        body += f"<tr class='mn-row' data-idx='{i}' data-param='{param}'>{tds}{tas_td}</tr>"
 
     style = (
         "<style>"
@@ -332,6 +343,10 @@ def _render_mining_gini_html(rows: List[dict], lot_cd: str, fail_name: str, mode
         ".mn-t th{background:#f8f9fa;text-transform:uppercase;font-size:12px;letter-spacing:.04em}"
         ".mn-row{cursor:pointer}.mn-row:hover>td{background:#f1f5f9}"
         ".mn-row.sel>td{background:#e0f2fe}"
+        ".tas-cell{white-space:nowrap}"
+        ".tas-btn{padding:2px 8px;border:1px solid #c7d2fe;border-radius:6px;background:#eef2ff;cursor:pointer}"
+        ".tas-btn:disabled{opacity:.5;cursor:not-allowed}"
+        ".tas-out{margin-left:6px;font-size:12px;color:#475569}"
         "</style>"
     )
     toolbar = (
@@ -341,27 +356,35 @@ def _render_mining_gini_html(rows: List[dict], lot_cd: str, fail_name: str, mode
         "</div>"
     )
     table = f"<table class='mn-t'><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table>"
-    # 행 선택(토글) + 버튼 활성화. 클라이언트 동작만(백엔드 트리거는 후속: 부모-iframe 통신).
-    js = """<script>(function(){
-  var sel = new Set();
-  var rows = document.querySelectorAll('.mn-row');
-  var btn = document.getElementById('mn-relation');
-  var cnt = document.getElementById('mn-count');
-  rows.forEach(function(tr){
-    tr.addEventListener('click', function(){
-      var k = tr.getAttribute('data-param');
-      if(sel.has(k)){ sel.delete(k); tr.classList.remove('sel'); }
-      else { sel.add(k); tr.classList.add('sel'); }
-      cnt.textContent = sel.size + '개 선택';
-      btn.disabled = sel.size === 0;
-    });
-  });
-  btn.addEventListener('click', function(){
-    var picked = Array.from(sel);
-    console.log('[mining] selected params', picked);
-    /* 백엔드 트리거는 후속 단계(부모 postMessage 리스너)에서 연결 */
-  });
-})();</script>"""
+    # 행 선택(토글) + TAS 버튼(서버 /mining/tas 호출 → 같은 행에 결과 표시).
+    # 상대 URL → vite 프록시 경유(CORS 무관). srcDoc iframe(allow-scripts)에서 동작.
+    js = (
+        "<script>(function(){"
+        "var sel=new Set();"
+        "var rows=document.querySelectorAll('.mn-row');"
+        "var rbtn=document.getElementById('mn-relation');"
+        "var cnt=document.getElementById('mn-count');"
+        "rows.forEach(function(tr){tr.addEventListener('click',function(){"
+        "var k=tr.getAttribute('data-param');"
+        "if(sel.has(k)){sel.delete(k);tr.classList.remove('sel');}"
+        "else{sel.add(k);tr.classList.add('sel');}"
+        "cnt.textContent=sel.size+'개 선택';rbtn.disabled=sel.size===0;});});"
+        "rbtn.addEventListener('click',function(){console.log('[mining] selected',Array.from(sel));});"
+        f"var LOTCD={_json.dumps(lot_cd)};var FAILNAME={_json.dumps(fail_name)};"
+        "document.querySelectorAll('.tas-btn').forEach(function(b){"
+        "b.addEventListener('click',function(e){"
+        "e.stopPropagation();"  # 행 선택 토글과 충돌 방지
+        "var out=b.parentElement.querySelector('.tas-out');"
+        "b.disabled=true;out.textContent=' 실행중…';"
+        "fetch('/mining/tas',{method:'POST',headers:{'Content-Type':'application/json'},"
+        "body:JSON.stringify({lotcd:LOTCD,oper_det_desc:b.dataset.oper,key_value:b.dataset.kv,fail_name:FAILNAME})})"
+        ".then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})"
+        ".then(function(x){out.textContent=' '+(x.ok?('✓ '+(x.j.message||x.j.status||'ok')):('✗ '+(x.j.detail||'오류')));})"
+        ".catch(function(err){out.textContent=' ✗ '+err;})"
+        ".finally(function(){b.disabled=false;});"
+        "});});"
+        "})();</script>"
+    )
     return (
         f"{style}<div class='mn-card'><div class='mn-title'>"
         f"Mining gini 기여 파라미터 — {_h(lot_cd)} / {_h(fail_name)} ({_h(mode) or '-'})</div>"
