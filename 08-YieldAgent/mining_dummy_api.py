@@ -32,12 +32,36 @@ def fetch_mining_dataframes(
       - "df_summary.parq" : 요약 테이블
       - "df_empty.parq"   : 빈 DataFrame (files_downloaded 필터 동작 확인용)
     """
+    # 실제 mining API df_GINI.parq 스키마를 모사 (추후 실제 호출로 교체 시에도 컬럼 동일).
+    n = max(1, rank_limit)
     df_gini = pd.DataFrame(
         {
-            "parameter": [f"{tech}_P{i:02d}" for i in range(1, rank_limit + 1)],
-            "gini": [round(0.9 - i * 0.05, 4) for i in range(rank_limit)],
-            "lot_cd": [lot_cd] * rank_limit,
-            "fail_name": [fail_name] * rank_limit,
+            "oper_det_desc": [f"{tech or 'T'}_OPER_{i:02d}" for i in range(1, n + 1)],
+            "Key Value": [f"KV{i:02d}" for i in range(1, n + 1)],
+            "Operation Type": ["PHOTO" if i % 2 else "ETCH" for i in range(n)],
+            "Score": [round(0.95 - i * 0.04, 4) for i in range(n)],
+            "Rank_Sum": [i + 1 for i in range(n)],
+            "GINI": [round(0.9 - i * 0.05, 4) for i in range(n)],
+            "Commonality": [round(0.8 - i * 0.03, 4) for i in range(n)],
+            "Purity": [round(0.85 - i * 0.02, 4) for i in range(n)],
+            "JSD": [round(0.5 - i * 0.02, 4) for i in range(n)],
+            "WRAcc": [round(0.3 - i * 0.01, 4) for i in range(n)],
+            f"{fail_name}_AREA": [round(100.0 - i * 5, 2) for i in range(n)],
+            "Left_Sum": [10 + i for i in range(n)],
+            "Bad_Left": [5 + i for i in range(n)],
+            "Good_Left": [5 for _ in range(n)],
+            "Right_Sum": [20 - i for i in range(n)],
+            "Bad_Right": [2 for _ in range(n)],
+            "Good_Right": [18 - i for i in range(n)],
+            "Bad_Progress": [round(0.5 + i * 0.01, 3) for i in range(n)],
+            "Good_Progress": [round(0.4 - i * 0.01, 3) for i in range(n)],
+            "min_end_tm": ["2026-06-01"] * n,
+            "max_end_tm": ["2026-06-15"] * n,
+            "Rank": [i + 1 for i in range(n)],
+            "Ratio": [round(0.6 - i * 0.02, 4) for i in range(n)],
+            "Rank_Ratio": [round((i + 1) / n, 4) for i in range(n)],
+            "Mode": [mode] * n,
+            "FailName": [fail_name] * n,
         }
     )
 

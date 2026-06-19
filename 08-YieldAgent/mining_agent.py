@@ -148,18 +148,50 @@ def _call_minig_api(
     return dataframes
 
 
+# df_GINI 표시/LLM 노출용 핵심 컬럼 (순서 유지). 실제 API 스키마 기준.
+# 도메인에 맞게 가감 가능. {fail_type}_AREA 처럼 이름이 가변인 컬럼은 제외.
+_CORE_COLS = [
+    "Rank",
+    "oper_det_desc",
+    "Operation Type",
+    "GINI",
+    "Score",
+    "Commonality",
+    "Purity",
+    "JSD",
+    "WRAcc",
+    "Ratio",
+    "Rank_Ratio",
+    "Mode",
+    "FailName",
+]
+
+
+def _project_cols(rows: List[dict]) -> List[dict]:
+    """행을 핵심 컬럼(_CORE_COLS, 존재하는 것만 순서대로)으로 투영해 경량화.
+    _CORE_COLS가 하나도 없으면(더미/미지 스키마) 원본 유지 → 회귀안전."""
+    if not rows:
+        return rows
+    present = [c for c in _CORE_COLS if c in rows[0]]
+    if not present:
+        return rows
+    return [{c: r.get(c) for c in present} for r in rows]
+
+
 def _analyze_gini(df_GINI: pd.DataFrame) -> Dict[str, Any]:
-    """gini DataFrame → 상위 기여 파라미터 요약. 타입 가드 수준의 방어만."""
+    """df_GINI → 순위 정렬된 행 목록. 타입 가드 수준의 방어만 (값/컬럼 변형 없음)."""
     if df_GINI is None or df_GINI.empty:
         return {"status": "empty", "rows": 0, "items": []}
-    if "gini" not in df_GINI.columns:
-        return {"status": "no_gini_column", "rows": int(len(df_GINI)), "items": []}
-
-    ranked = df_GINI.sort_values("gini", ascending=False)
+    # 정렬: API가 매긴 Rank 오름차순 우선, 없으면 GINI 내림차순, 둘 다 없으면 원순서.
+    df = df_GINI
+    if "Rank" in df.columns:
+        df = df.sort_values("Rank", ascending=True)
+    elif "GINI" in df.columns:
+        df = df.sort_values("GINI", ascending=False)
     return {
         "status": "ok",
-        "rows": int(len(ranked)),
-        "items": ranked.to_dict(orient="records"),
+        "rows": int(len(df)),
+        "items": df.to_dict(orient="records"),
     }
 
 
@@ -243,7 +275,10 @@ def mining_analysis(
 
     df_GINI = dataframes.get("df_GINI.parq", pd.DataFrame())
     gini_analysis = _analyze_gini(df_GINI)
-    gini_rows = gini_analysis.get("items", [])
+    gini_rows = _project_cols(gini_analysis.get("items", []))  # 핵심 컬럼으로 경량화
+    # LLM 반환·envelope도 동일 subset으로 경량화 (artifact/머금기와 일관)
+    gini_analysis["items"] = gini_rows
+    gini_analysis["rows"] = len(gini_rows)
 
     # ReAct tool 반환은 텍스트뿐 → df_GINI 행을 storage에 stash. 노드가 회수해 artifact/머금기.
     if storage is not None:
@@ -272,7 +307,7 @@ def _render_mining_gini_html(rows: List[dict], lot_cd: str, fail_name: str, mode
     th = "".join(f"<th>{_h(str(c).upper())}</th>" for c in cols)
     body = ""
     for i, r in enumerate(rows):
-        param = _h(str(r.get("parameter") or r.get("param") or f"row{i}"))
+        param = _h(str(r.get("oper_det_desc") or r.get("parameter") or r.get("param") or f"row{i}"))
         tds = ""
         for c in cols:
             v = r.get(c, "")
@@ -346,7 +381,7 @@ def _format_prior_gini(rows: List[dict]) -> str:
 def _unique_params(rows: List[dict]) -> List[str]:
     out: List[str] = []
     for r in rows:
-        p = str(r.get("parameter") or r.get("param") or "").strip()
+        p = str(r.get("oper_det_desc") or r.get("parameter") or r.get("param") or "").strip()
         if p and p not in out:
             out.append(p)
     return out
