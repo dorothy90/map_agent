@@ -161,6 +161,52 @@ class Followup(TypedDict):
 
 **위험:** 고. postwads 2-step HITL(`:3358`)의 super-step 분리를 일반화에서 보존해야 함. **체이닝 4종 e2e 테스트 선행 필수**(AGENTS.md §5).
 
+#### S2+ — 하이브리드 trigger 모델 (후속 "선택"을 선택적으로 LLM에 위임)
+
+`_maybe_propose_*`에는 성격이 다른 4결정이 뭉쳐 있다:
+
+| # | 결정 | 성격 | LLM 적합 |
+|---|---|---|---|
+| 1 | 후속을 제안할까? (`detected_count>0`) | 판단 | ✅ |
+| 2 | 어떤 후속? (map/fail/relation 중) | 판단 | ✅ |
+| 3 | 하류 task 빌드 (slot_map, lot_ids 주입) | 기계적 | ❌ 결정론 |
+| 4 | 가드 + HITL replay (턴1회·중복방지·interrupt 멱등) | 안전장치 | ❌ 결정론 |
+
+핵심: **#1·#2(선택)는 LLM이 더 유연하고, #3·#4(실행)는 절대 결정론.** 선을 #2/#3 사이에 긋는다. 이는 `langgraph-supervisor` 패턴 그대로다 — supervisor LLM이 **알려진 메뉴에서** 다음을 고르고(=#1/#2), handoff 실행은 결정론(=#3/#4). 차이는 "메뉴"가 전역이 아니라 **각 워커가 자기 결과에 붙여 선언**한다는 것(S2)뿐.
+
+**계약 확장:** `Followup`에 `trigger` 필드 1개만 추가.
+```python
+class Followup(TypedDict):
+    ...
+    trigger: Literal["auto", "llm"]   # auto=결정론 트리거, llm=메뉴에서 LLM 선택
+```
+
+**LLM proposer** (replanner 안, **interrupt 이전 replay-safe 지점**, 부수효과 없음):
+```python
+_FOLLOWUP_PROPOSER_SYSTEM = """
+너는 수율 분석 보조다. 방금 분석 결과와 '가능한 후속 메뉴'를 본다.
+제안할 가치가 있는 후속만 골라라(없으면 빈 리스트, 억지 금지).
+- WADS 열화 검출 시 → 그 wafer 맵 또는 불량이력이 통상 유용.
+- 검출 0이면 제안 금지.
+- 메뉴에 없는 agent는 절대 만들지 마라.
+출력: 고른 followup id 리스트(JSON)만.
+"""
+# LLM은 "메뉴에서 고르기"만 → 환각(메뉴 밖 agent) 차단. task 빌드/slot은 결정론 엔진.
+```
+
+**적용 정책 (per-followup 혼용):**
+- **안전·핵심 체인 = `auto`** (재현성 필요): yield 이상감지→wads, postwads 2-step.
+- **탐색적 체인 = `llm`** (유연성 이득): "이 결과 보고 뭘 더 볼까" 류.
+- **실행·가드·HITL은 trigger 무관 결정론.** 하드 가드 유지: **최대 후속 체인 깊이(예: 3)** + 중복 dedup → LLM 폭주 방지.
+
+**비용 (눈 뜨고 선택):**
+1. 재현성↓ — 같은 결과에 제안이 달라질 수 있음(제조 의사결정 도구의 지원 부담). → `auto`/`llm` 분리로 완화.
+2. 가드는 안 사라짐 — `*_offered`/중복방지/체인깊이 가드는 trigger 무관 결정론 유지.
+3. 테스트 변화 — `auto`=단위테스트, `llm`=eval식 퍼지 테스트.
+4. 지연/비용 — agent 완료마다 LLM 1회(replanner가 이미 LLM 호출 시 한계비용 작음).
+
+**위치:** 이 모델은 S2의 부가 옵션이다. 기본은 전부 `auto`(현 동작 보존), 체인별로 `llm`을 opt-in. 별도 단계가 아니라 `trigger` 필드 + proposer 1개로 S2에 흡수.
+
 ---
 
 ### S3 — worker = subgraph (private state)
@@ -214,6 +260,6 @@ class Followup(TypedDict):
 
 **비목표(명시적으로 안 함):**
 - 워커를 자율 에이전트로 전환 ❌ — 결정론·감사성 손상, 도메인 부적합(AGENTS.md §2).
-- swarm식 워커 자율 handoff 도입 ❌.
+- swarm식 워커 자율 handoff 도입 ❌. (S2+ 하이브리드 trigger의 `llm`은 이것과 다름 — 워커가 자유 handoff하는 게 아니라, **선언된 메뉴 안에서만** LLM이 선택하고 실행·가드·HITL은 결정론. langgraph-supervisor식 bounded routing이지 swarm 자율이 아님.)
 - prebuilt `langgraph-supervisor` 전면 채택 ❌ — 현 canonical 계약이 더 적합(handoff 프리미티브는 S2 참고만).
 - **"멀티에이전트"라는 과장된 프레이밍 유지 ❌** — 이 시스템은 *agentic planner + deterministic workflow*다. 정직한 명명이 철학 정합의 일부다(향후 `supervisor`→`dispatcher`, `*_agent`→`*_step` 같은 명칭 정리는 선택적 후속).
