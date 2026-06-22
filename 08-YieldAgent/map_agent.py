@@ -724,6 +724,7 @@ def _png_to_html(png_path: str, title: str) -> str:
 @timed
 def map_agent_node(state: dict, config: RunnableConfig) -> dict:
     """Wafer map 시각화 노드 — supervisor가 직접 호출"""
+    state = {**state, **((state.get("current_task") or {}).get("params") or {})}  # S1-a: task params 우선, scalar fallback
     return _handle_standard_map(state)
 
 

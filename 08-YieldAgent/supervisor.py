@@ -605,9 +605,9 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         meta_parts.append(recent_context)
     if state.get("lotcd"):
         meta_parts.append(f"현재 제품: {state['lotcd']}")
-    prev_lots = state.get("lot_ids") or []
-    if prev_lots:
-        meta_parts.append(f"이전 lot: {','.join(prev_lots)}")
+    # S1-b: god-state lot_ids 제거. reference 해소는 위 recent_results(K=10 윈도우)가 단일 경로이며,
+    # 별도 "이전 lot" 힌트(무윈도우 envelope)는 window 경계를 깨므로(beyond-window가 해소돼버림) 두지 않는다.
+    # ("그 lot들" 결과-파생 체이닝은 _resolve_chained_params가 envelope에서 따로 처리한다.)
     if state.get("cause_oper"):
         meta_parts.append(f"이전 main_oper: {state['cause_oper']}")
     if state.get("selected_fail_type"):
@@ -2658,6 +2658,9 @@ def supervisor_node(
         # task params를 state 필드로 projection — agent별 조건부로 관련 파라미터만 기록.
         # 전 agent 파라미터를 항상 덮으면 checkpoint의 다른 agent 값이 소실됨.
         agent = current_task["agent"]
+        # S1-b: per-agent projection을 '작업셋'(proj)으로만 계산 — god-state로 smear하지 않는다.
+        # 검증/HITL fill은 proj 위에서 수행하고, 결과는 current_task.params(워커가 읽는 단일 출처)로만 싣는다.
+        proj = _project_task_params(agent, task_params, state)
         update_dict: dict = {
             "step_count": step_count,
             "current_task": {
@@ -2670,35 +2673,36 @@ def supervisor_node(
             "messages": [task_message],
             "agent_suggestion": "",
         }
-
-        # Project resolved params into per-agent state fields (6b: extracted to a
-        # helper; order/inheritance preserved — see _project_task_params).
-        update_dict.update(_project_task_params(agent, task_params, state))
         # confirm 승인 시 처리된 task_id를 confirm_tasks에서 제거 (미해당이면 {} → no-op).
         update_dict.update(confirm_cleanup)
 
         # Required-param validation + HITL interrupts (6c: extracted to a helper).
-        # The helper mutates update_dict in place and either returns None (continue)
-        # or an early-return value (invalid-lotcd dead end). interrupt() call order is
-        # preserved exactly — see _require_agent_params.
+        # proj를 in-place로 검증/채움; None이면 계속, 아니면 invalid-lotcd early-return.
+        # interrupt() call order는 그대로 — see _require_agent_params.
         early_return = _require_agent_params(
-            update_dict, state, current_task, step_count
+            proj, state, current_task, step_count
         )
         if early_return is not None:
             return early_return
 
-        final_task_params = dict(task_params)
-        for slot in AGENT_SLOT_SCHEMAS.get(agent, set()):
-            if slot in update_dict:
-                final_task_params[slot] = update_dict[slot]
+        # 워커가 읽는 완전한 task.params = task_params + 해소된 proj (S1-a 단일 출처).
+        final_task_params = {**task_params, **proj}
+        current_params = {
+            key: value
+            for key, value in final_task_params.items()
+            if value not in (None, "", [], {})
+        }
         update_dict["current_task"] = {
             **current_task,
-            "params": {
-                key: value
-                for key, value in final_task_params.items()
-                if value not in (None, "", [], {})
-            },
+            "params": current_params,
         }
+        # S1-b: god-state로는 cross-agent '턴 컨텍스트'(doc §3.1 ctx)만 영속화한다. per-task scalar
+        # (lot_ids/groupkey/map_*/wads_*/dh_query 등)는 더 이상 smear하지 않는다 — 각 워커는 자기
+        # task.params에서 읽고(S1-a), 결과 파생은 envelope로 체이닝된다. ctx 5종은 자기 schema/params에
+        # 없이 god-state로만 읽는 다운스트림(wt_resp/relation의 wads_category 등)을 위해 유지.
+        for _ck in ("lotcd", "fail_type", "cause_oper", "wads_category", "ref_date"):
+            if proj.get(_ck) not in (None, "", [], {}):
+                update_dict[_ck] = proj[_ck]
 
         stream_event(
             "status",
@@ -2719,7 +2723,7 @@ def supervisor_node(
         # build the summary once (6a: was duplicated across both emits).
         dispatched_params = summarize_params(
             {
-                key: update_dict.get(key)
+                key: current_params.get(key)
                 for key in (
                     "lotcd",
                     "lot_ids",
@@ -2740,7 +2744,7 @@ def supervisor_node(
                     "wads_end_tm",
                     "wads_category",
                 )
-                if key in update_dict
+                if key in current_params
             }
         )
         emit_trace_event(

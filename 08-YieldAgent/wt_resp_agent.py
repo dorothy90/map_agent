@@ -68,6 +68,7 @@ def _query_good_bad(lotcd: str, fail_type: str, category: str = "") -> tuple[Lis
 @observe(name="wt_resp_agent_node")
 @timed
 def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
+    state = {**state, **((state.get("current_task") or {}).get("params") or {})}  # S1-a: task params 우선, scalar fallback
     lotcode = (state.get("lotcd") or "").strip()
     wt_para = (state.get("fail_type") or "").strip()
     main_oper = (state.get("cause_oper") or "").strip()

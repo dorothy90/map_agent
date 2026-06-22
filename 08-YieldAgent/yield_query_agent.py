@@ -170,6 +170,7 @@ def _yield_artifact_metadata(artifacts: list[dict]) -> dict[str, str | int | flo
 @timed
 def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     """Yield Agent 노드: State에서 파라미터를 읽어 API 호출 + 테이블 생성"""
+    state = {**state, **((state.get("current_task") or {}).get("params") or {})}  # S1-a: task params 우선, scalar fallback
     lotcd = state.get("lotcd", "4SS")
     ref_date_str = state.get("ref_date", date.today().strftime("%Y%m%d"))
     # Yield agent now always returns the full artifact for lotcd + period.

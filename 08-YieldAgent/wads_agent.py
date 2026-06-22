@@ -380,6 +380,7 @@ def _render_wads_report_html(payload: Any) -> str:
 @timed
 def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     """WADS Agent 노드: 열화 검출 리포트를 Oracle DB에서 조회"""
+    state = {**state, **((state.get("current_task") or {}).get("params") or {})}  # S1-a: task params 우선, scalar fallback
     lotcd = state.get("lotcd", "4SS")
     end_tm = state.get("wads_end_tm", "")
     start_tm = state.get("wads_start_tm", "")

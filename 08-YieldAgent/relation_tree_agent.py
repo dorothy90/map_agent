@@ -59,6 +59,7 @@ def _query_main_opers(lotcd: str, fail_type: str, category: str = "") -> list[st
 @observe(name="relation_tree_agent_node")
 @timed
 def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
+    state = {**state, **((state.get("current_task") or {}).get("params") or {})}  # S1-a: task params 우선, scalar fallback
     lot_code  = (state.get("lotcd") or "").strip()
     # TEMP(relation_tree fail_type): fail_type is now the required analyzed parameter;
     # cause_oper stays optional. (Full relation analysis is still a placeholder below.)

@@ -453,6 +453,7 @@ _mining_graph = create_react_agent(
 def mining_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     """ReAct 노드: state 슬롯으로 mining 실행/질의응답. df_GINI는 동적 HTML artifact +
     result envelope로 내보내고, gini rows는 state(mining_rows)에 머금어 다음 turn Q&A에 재사용."""
+    state = {**state, **((state.get("current_task") or {}).get("params") or {})}  # S1-a: task params 우선, scalar fallback
     lot_cd = (state.get("lotcd") or "").strip()
     fail_name = (state.get("fail_type") or "").strip()
     mode = (state.get("wads_category") or "").strip()
