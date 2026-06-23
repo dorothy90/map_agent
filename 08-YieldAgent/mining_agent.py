@@ -375,14 +375,17 @@ def _render_mining_gini_html(rows: List[dict], lot_cd: str, fail_name: str, mode
         "b.addEventListener('click',function(e){"
         "e.stopPropagation();"  # 행 선택 토글과 충돌 방지
         "var out=b.parentElement.querySelector('.tas-out');"
+        "var w=window.open('','_blank');"  # 클릭 제스처 내에서 새 탭 먼저 확보(팝업차단 회피)
         "b.disabled=true;out.textContent=' 실행중…';"
         "fetch('/mining/tas',{method:'POST',headers:{'Content-Type':'application/json'},"
         "body:JSON.stringify({lotcd:LOTCD,oper_det_desc:b.dataset.oper,key_value:b.dataset.kv,fail_name:FAILNAME})})"
         ".then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})"
         ".then(function(x){"
-        "if(x.ok&&x.j.url){window.open(x.j.url,'_blank');}"  # TAS 엔드포인트가 만든 url로 연결
+        "if(x.ok&&x.j.url){"  # TAS 엔드포인트가 만든 url로 연결
+        "if(w){w.location=x.j.url;}else{window.open(x.j.url,'_blank');}"
+        "}else if(w){w.close();}"
         "out.textContent=' '+(x.ok?('✓ '+(x.j.message||x.j.status||'ok')):('✗ '+(x.j.detail||'오류')));})"
-        ".catch(function(err){out.textContent=' ✗ '+err;})"
+        ".catch(function(err){if(w){w.close();}out.textContent=' ✗ '+err;})"
         ".finally(function(){b.disabled=false;});"
         "});});"
         "})();</script>"
