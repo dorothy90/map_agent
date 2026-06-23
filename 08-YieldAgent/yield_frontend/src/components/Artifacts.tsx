@@ -34,7 +34,7 @@ function HtmlArtifact({ title, data }: { title: string; data: string }) {
     <iframe
       title={title || "html-artifact"}
       srcDoc={data}
-      sandbox="allow-same-origin allow-scripts allow-popups"
+      sandbox="allow-same-origin allow-scripts allow-popups allow-popups-to-escape-sandbox"
       className="w-full rounded-md border bg-white"
       style={{ height: iframeHeight(title, data) }}
     />
