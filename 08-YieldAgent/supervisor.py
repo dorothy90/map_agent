@@ -2566,11 +2566,11 @@ def supervisor_node(
     """
     step_count = state.get("step_count", 0) + 1
 
-    # 최대 스텝 강제 종료 (무한루프 방지) — recursion_limit=30과 정합 맞춤 (#R1 fix).
+    # 최대 스텝 강제 종료 (무한루프 방지) — recursion_limit=64와 정합 맞춤.
     # 사이클당 3노드(supervisor + agent + replanner) + setup 3노드 = 3n+3.
-    # recursion_limit 30 안전 margin 유지를 위해 n+3 (cap 8)로 제한.
-    # n=5 → max_steps=8 → 8 supervisor 진입 × 3노드 + setup 3 = 27 ≤ 30 ✅
-    max_steps = min(len(state.get("task_plan", [])) + 3, 8) or 4
+    # recursion_limit 64 안전 margin 유지를 위해 n+3 (cap 20)로 제한.
+    # max_steps=20 → 20 supervisor 진입 × 3노드 + setup 3 = 63 ≤ 64 ✅
+    max_steps = min(len(state.get("task_plan", [])) + 3, 20) or 4
     if step_count > max_steps:
         logger.warning(
             "[Supervisor] 최대 스텝(%d/%d) 초과 → 강제 종료", step_count, max_steps

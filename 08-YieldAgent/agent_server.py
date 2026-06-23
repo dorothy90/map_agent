@@ -481,8 +481,9 @@ async def chat_stream(request: ChatRequest, req: Request):
     graph = req.app.state.graph
     db = req.app.state.motor_db
     # #23 fix: 5-task plan 처리 시 노드 호출 횟수가 ~12회 (rewrite + planner + supervisor×6 + agents×5)
-    # → limit 20은 빠듯. interrupt resume이나 미래 replanner 추가 여유까지 30으로 상향.
-    base_config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 30}
+    # → limit 20은 빠듯. interrupt resume이나 미래 replanner 추가 여유까지 상향.
+    # max_steps cap 20 (supervisor.py)과 정합: 3×20+3 = 63 ≤ 64.
+    base_config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 64}
     trace_id = make_trace_id(request.session_id)
     turn_id = new_turn_id()
     pending_interrupt_for_trace: dict = {}
@@ -501,7 +502,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             "trace_id": trace_id,
             "turn_id": turn_id,
         },
-        "recursion_limit": 30,
+        "recursion_limit": 64,
     }
 
     # HITL 오인 가드: resume 입력이 대기 중 게이트의 '답'이 아니라 '새 질문'이면,
