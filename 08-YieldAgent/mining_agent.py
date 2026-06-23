@@ -379,7 +379,9 @@ def _render_mining_gini_html(rows: List[dict], lot_cd: str, fail_name: str, mode
         "fetch('/mining/tas',{method:'POST',headers:{'Content-Type':'application/json'},"
         "body:JSON.stringify({lotcd:LOTCD,oper_det_desc:b.dataset.oper,key_value:b.dataset.kv,fail_name:FAILNAME})})"
         ".then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j};});})"
-        ".then(function(x){out.textContent=' '+(x.ok?('✓ '+(x.j.message||x.j.status||'ok')):('✗ '+(x.j.detail||'오류')));})"
+        ".then(function(x){"
+        "if(x.ok&&x.j.url){window.open(x.j.url,'_blank');}"  # TAS 엔드포인트가 만든 url로 연결
+        "out.textContent=' '+(x.ok?('✓ '+(x.j.message||x.j.status||'ok')):('✗ '+(x.j.detail||'오류')));})"
         ".catch(function(err){out.textContent=' ✗ '+err;})"
         ".finally(function(){b.disabled=false;});"
         "});});"

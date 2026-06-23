@@ -365,6 +365,10 @@ class TasRequest(BaseModel):
     fail_name: str
 
 
+# TAS 시스템 base URL — env로 교체 가능(기본값은 placeholder).
+_TAS_BASE_URL = os.getenv("TAS_BASE_URL", "https://tas.example.com/analysis")
+
+
 @app.post("/mining/tas")
 async def mining_tas(body: TasRequest):
     logger.info(
@@ -374,10 +378,21 @@ async def mining_tas(body: TasRequest):
         body.key_value,
         body.fail_name,
     )
-    # TODO: 실제 TAS 분석/타 api 트리거를 여기에 연결.
+    # 그 행의 4필드를 query로 실어 TAS 분석 URL을 조립 → 프런트가 onclick으로 연결.
+    from urllib.parse import urlencode
+
+    url = f"{_TAS_BASE_URL}?" + urlencode(
+        {
+            "lotcd": body.lotcd,
+            "oper_det_desc": body.oper_det_desc,
+            "key_value": body.key_value,
+            "fail_name": body.fail_name,
+        }
+    )
     return {
         "status": "accepted",
         "received": body.model_dump(),
+        "url": url,
         "message": f"TAS 접수: {body.oper_det_desc} / {body.key_value}",
     }
 
