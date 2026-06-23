@@ -1928,30 +1928,16 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         )
         _emit_task_outcome_trace(state, str(last_task_id or ""))
 
-    # ── 결정론적 후속 제안 (B안): yield 이상감지 시 confirm 필요한 WADS task를 큐에 추가 ──
+    # ── 선언적 후속 제안 (S2): 결과 envelope.followups를 읽어 후속을 큐에 추가 ──
     # 완료판정보다 먼저 실행 — pending이 비어도 후속을 넣어 턴이 조기 종료되지 않게 한다.
     # task_plan에도 append해 완료판정(아래)·max_steps 정합을 맞춘다.
-    followup = _maybe_propose_wads_followup(state)
-    if followup:
-        return {**scratchpad_update, **followup}
+    # (yield→wads 마이그레이션됨. postwads/mainoper/mining은 아래 _maybe_propose_*가 병존 처리.)
+    declared = _propose_followups(state)
+    if declared:
+        return {**scratchpad_update, **declared}
 
-    # ── Step 5: wads 검출 후속 선택(map/...) sentinel 제안 (wads followup과 같은 결정론 경로) ──
-    # wads followup 이후에 호출 — wads가 실행돼 검출 결과가 있을 때만 발동(detected_count>0).
-    postwads = _maybe_propose_postwads_choice(state)
-    if postwads:
-        return {**scratchpad_update, **postwads}
-
-    # ── relation_tree main_oper 선택 sentinel 제안 (같은 결정론 경로) ──
-    # relation_tree가 main_opers를 산출했을 때만 발동 → main_oper 선택 → wt_resp 체이닝.
-    mainoper = _maybe_propose_mainoper_choice(state)
-    if mainoper:
-        return {**scratchpad_update, **mainoper}
-
-    # ── wt_resp 후속 mining 실행 확인 sentinel 제안 (같은 결정론 경로) ──
-    # wt_resp가 group_good/bad를 산출했을 때만 발동 → mining 실행 confirm → mining 체이닝.
-    mining = _maybe_propose_mining_choice(state)
-    if mining:
-        return {**scratchpad_update, **mining}
+    # (postwads/relation→main_oper/wt_resp→mining 후속은 S2 _propose_followups로 마이그레이션됨
+    #  — 각각 wads/relation_tree/wt_resp envelope이 선언.)
 
     # ── canonical plan-and-execute 종료 판정 ──
     # 모든 planned task가 실행되었고 남은 pending이 없으면 plan 완료.
@@ -2614,15 +2600,10 @@ def supervisor_node(
     if pending:
         current_task = pending[0]
         remaining = pending[1:]
-        # ── Step 5: WADS 검출 후속 선택 sentinel은 dispatch 직전에 3택1로 치환(신규 노드 0개) ──
-        if current_task.get("agent") == "__postwads_choice__":
-            return _choose_postwads_or_drop(current_task, remaining, state, step_count)
-        # ── relation_tree 후속 main_oper 선택 sentinel → dispatch 직전 치환(wt_resp 체이닝) ──
-        if current_task.get("agent") == "__mainoper_choice__":
-            return _choose_mainoper_or_drop(current_task, remaining, state, step_count)
-        # ── wt_resp 후속 mining 실행 확인 sentinel → dispatch 직전 치환(mining 체이닝) ──
-        if current_task.get("agent") == "__mining_choice__":
-            return _choose_mining_or_drop(current_task, remaining, state, step_count)
+        # ── S2: 선언적 __choice__ sentinel → dispatch 직전 택1 interrupt로 해소(택1 후속의 일반 경로) ──
+        # postwads(2-step)/single 모두 _resolve_followup_or_drop가 followup.choice_kind로 분기.
+        if current_task.get("agent") == "__choice__":
+            return _resolve_followup_or_drop(current_task, remaining, state, step_count)
         # ── 실행 확인 (B안): missing_param과 같은 dispatch 직전 멱등 구간에서 interrupt ──
         # confirm_tasks에 이 task가 있으면 확인. 거절 → Command(드롭 후 다음 pending/END) 반환.
         # 승인/미해당 → confirm_tasks 정리 dict(아래 update_dict에 merge).
@@ -2893,62 +2874,6 @@ def _resume_is_interrupt_answer(resume_value: Any, pending_interrupt: dict) -> b
         logger.warning("[Resume] 의도 판정 LLM 실패 (%s) — 답으로 처리(기존 동작)", e)
         return True
     return not verdict.startswith("new")
-
-
-def _build_wads_followup_task(state: Dict[str, Any]) -> dict:
-    """yield 이상감지 → WADS follow-up task (replanner의 결정론 경로에서 호출).
-    파라미터 필터(fail_type)는 넘기지 않는다 — 기간을 통째로 조회해 report별 map_oper/fail_type을
-    확보하고, yield 열화감지 파라미터와의 교차 여부는 wads_agent가 anomaly_params로 사후 언급한다.
-    시간창은 어제 하루(start=end=어제) 기본 세팅이라 confirm 1회로 바로 실행된다(별도 날짜 HITL 불필요)."""
-    lotcd = state.get("lotcd", "")
-    task_id = f"task_{len(state.get('task_plan') or []) + 1}_wads"
-    yday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    return build_task_from_canonical_request(
-        {
-            "intent": "wads_report",
-            "agent": "wads_agent",
-            "slots": {
-                "lotcd": lotcd,
-                "wads_start_tm": yday,
-                "wads_end_tm": yday,
-            },
-            "goal": f"{lotcd} WADS 열화 검출 리포트 조회",
-        },
-        task_id=task_id,
-    )
-
-
-_WADS_CONFIRM_MESSAGE = "WADS 열화 검출 리포트를 확인하시겠습니까?"
-
-
-def _maybe_propose_wads_followup(state: Dict[str, Any]) -> dict:
-    """결정론적 후속 제안: yield 이상감지 시 confirm 필요한 WADS task를 큐에 추가한다.
-    이미 WADS가 계획/큐에 있으면(직접 요청 or 이미 제안됨) 재제안하지 않는다 — 이상감지 후
-    매 replanner pass마다 재발동하는 무한 추가를 막는 가드. 반환: pending_tasks/task_plan
-    (append)/confirm_tasks 업데이트 dict, 제안 없으면 {}."""
-    anomaly_params = state.get("anomaly_params") or []
-    if not anomaly_params:
-        return {}
-    pending = state.get("pending_tasks") or []
-    task_plan = state.get("task_plan") or []
-    if any(
-        t.get("agent") == "wads_agent"
-        for t in (pending + task_plan)
-        if isinstance(t, dict)
-    ):
-        return {}
-    wads_task = _build_wads_followup_task(state)
-    task_id = wads_task["task_id"]
-    logger.info("[Replanner] 이상감지 → WADS confirm task 제안: %s", task_id)
-    return {
-        # pending_tasks/task_plan은 overwrite 채널 — 기존 큐 보존 위해 반드시 append.
-        "pending_tasks": pending + [wads_task],
-        "task_plan": task_plan + [wads_task],
-        "confirm_tasks": {
-            **(state.get("confirm_tasks") or {}),
-            task_id: _WADS_CONFIRM_MESSAGE,
-        },
-    }
 
 
 def _confirm_or_drop(
@@ -3268,44 +3193,6 @@ def _interpret_postwads_failtype(answer: Any, state: Dict[str, Any]) -> str:
     return chosen if 0 <= idx < n_reports else ""
 
 
-def _maybe_propose_postwads_choice(state: Dict[str, Any]) -> dict:
-    """결정론적 후속 제안: wads가 파라미터를 검출하면 후속 선택 sentinel task를 큐에 추가한다.
-    턴당 1회(postwads_offered) + 다운스트림(map/fail_history/relation_tree)이 이미 계획/큐에 있으면
-    재제안하지 않는다. 실제 선택 interrupt는 supervisor가 dispatch 직전 _choose_postwads_or_drop로 한다.
-    반환: pending_tasks/task_plan(append) + postwads_offered 업데이트 dict, 제안 없으면 {}."""
-    if state.get("postwads_offered"):
-        return {}
-    wads_data = _latest_wads_result(state)
-    detected = (
-        int(wads_data.get("detected_count") or 0)
-        or len(wads_data.get("lot_ids") or [])
-        or len(wads_data.get("groupkeys") or [])
-    )
-    if not detected:
-        return {}
-    pending = state.get("pending_tasks") or []
-    task_plan = state.get("task_plan") or []
-    downstream = {"map_agent", "fail_history_agent", "relation_tree_agent"}
-    if any(
-        isinstance(t, dict) and t.get("agent") in downstream
-        for t in (pending + task_plan)
-    ):
-        return {}
-    task_id = f"task_{len(task_plan) + 1}_postwads_choice"
-    sentinel = {
-        "task_id": task_id,
-        "agent": "__postwads_choice__",
-        "goal": "WADS 검출 후속 선택",
-        "params": {},
-    }
-    logger.info("[Replanner] WADS 검출 → 후속 선택 sentinel 제안: %s", task_id)
-    return {
-        "pending_tasks": pending + [sentinel],
-        "task_plan": task_plan + [sentinel],
-        "postwads_offered": True,
-    }
-
-
 def _drop_postwads_sentinel(
     remaining: list[dict], state: Dict[str, Any], step_count: int
 ) -> Command:
@@ -3417,123 +3304,6 @@ def _choose_postwads_or_drop(
     return _drop_postwads_sentinel(remaining, state, step_count)
 
 
-# ── relation_tree → main_oper 선택 HITL → wt_resp_agent 체이닝 ────────────────
-# relation_tree가 lotcd+fail_type로 연관 main_oper들을 산출(envelope extensions)하면, 후속으로
-# main_oper 1개 선택 interrupt를 띄우고 선택값을 cause_oper로 wt_resp_agent에 체이닝한다.
-# postwads 패턴과 동일(결정론 sentinel + dispatch interrupt, 단일 interrupt=replay-safe).
-_MAINOPER_CHOICE_MESSAGE = "어느 main_oper로 WT Resp 분석을 이어갈까요?"
-_MAINOPER_CHOICE_SYSTEM = (
-    "relation_tree 연관 분석이 산출한 main_oper 후속 선택지를 사용자에게 제시했다. 아래 JSON은 "
-    "제시된 선택지(options: label/value)와 사용자의 자유 응답(answer)이다. 사용자가 고른 선택지의 "
-    "value를 정확히 하나만 출력해라. 아무것도 고르지 않거나 거절(안 함/취소/그만)이면 'none'을 "
-    "출력해라. value 문자열 하나만 출력."
-)
-
-
-def _latest_relation_main_opers(state: dict) -> list[str]:
-    """최신 relation_tree_agent 결과 envelope의 main_opers 목록을 읽는다.
-    rt_groups(postwads fan-out) 경로는 envelope/extensions 미첨부 → [] → 신규 HITL 미발동."""
-    for message in reversed(state.get("messages", []) or []):
-        if isinstance(message, AIMessage) and getattr(message, "name", "") == "relation_tree_agent":
-            opers = (
-                ((getattr(message, "additional_kwargs", None) or {}).get("result") or {})
-                .get("extensions", {})
-                .get("relation_tree_agent", {})
-                .get("main_opers")
-            )
-            if isinstance(opers, list):
-                return [str(o).strip() for o in opers if str(o).strip()]
-            return []
-    return []
-
-
-def _mainoper_options(state: Dict[str, Any]) -> list[dict]:
-    """main_oper 선택지. label=main_oper, value=인덱스 문자열. + '안 함'."""
-    options: list[dict] = []
-    for idx, m in enumerate(_latest_relation_main_opers(state)):
-        options.append({"label": m, "value": str(idx)})
-    options.append({"label": "안 함", "value": "none"})
-    return options
-
-
-def _interpret_mainoper_choice(answer: Any, state: Dict[str, Any]) -> str:
-    """사용자 응답 → 선택된 main_oper 문자열, 미선택/거절이면 ''. 키워드 매칭 금지.
-    클릭(value/label 정확일치) 즉시, 자유응답만 LLM이 인덱스 분류(postwads 패턴)."""
-    opers = _latest_relation_main_opers(state)
-    options = _mainoper_options(state)
-    if isinstance(answer, dict):
-        text = answer.get("mainoper_choice") or next(iter(answer.values()), "")
-    else:
-        text = answer
-    text = str(text or "").strip()
-    if not text:
-        return ""
-    chosen = ""
-    for opt in options:  # UI 클릭 경로 — LLM 불필요
-        if text == opt.get("value") or text == opt.get("label"):
-            chosen = str(opt.get("value") or "")
-            break
-    if not chosen:  # 자유응답 → LLM 분류
-        try:
-            chosen = (
-                _model.invoke(
-                    [
-                        {"role": "system", "content": _MAINOPER_CHOICE_SYSTEM},
-                        {
-                            "role": "user",
-                            "content": json.dumps(
-                                {"options": options, "answer": text}, ensure_ascii=False
-                            ),
-                        },
-                    ],
-                    config={"callbacks": _lf_callbacks()},
-                ).content
-                or ""
-            ).strip()
-        except Exception as e:
-            logger.warning("[MainOper] 선택 해석 LLM 실패 (%s) — 미선택 처리", e)
-            return ""
-    if chosen == "none":
-        return ""
-    if chosen in opers:  # LLM이 라벨(oper)을 직접 반환한 경우
-        return chosen
-    try:
-        idx = int(chosen)
-    except (TypeError, ValueError):
-        return ""
-    return opers[idx] if 0 <= idx < len(opers) else ""
-
-
-def _maybe_propose_mainoper_choice(state: Dict[str, Any]) -> dict:
-    """결정론 후속 제안: relation_tree가 main_opers를 산출하면 main_oper 선택 sentinel을 큐에 추가.
-    턴당 1회(mainoper_offered) + 다운스트림(wt_resp/mining) 이미 큐면 재제안 안 함."""
-    if state.get("mainoper_offered"):
-        return {}
-    opers = _latest_relation_main_opers(state)
-    if not opers:
-        return {}
-    pending = state.get("pending_tasks") or []
-    task_plan = state.get("task_plan") or []
-    downstream = {"wt_resp_agent", "mining_agent"}
-    if any(
-        isinstance(t, dict) and t.get("agent") in downstream for t in (pending + task_plan)
-    ):
-        return {}
-    task_id = f"task_{len(task_plan) + 1}_mainoper_choice"
-    sentinel = {
-        "task_id": task_id,
-        "agent": "__mainoper_choice__",
-        "goal": "relation_tree main_oper 선택",
-        "params": {},
-    }
-    logger.info("[Replanner] relation_tree main_oper → 선택 sentinel 제안: %s", task_id)
-    return {
-        "pending_tasks": pending + [sentinel],
-        "task_plan": task_plan + [sentinel],
-        "mainoper_offered": True,
-    }
-
-
 def _drop_choice_sentinel(
     remaining: list[dict], state: Dict[str, Any], step_count: int
 ) -> Command:
@@ -3561,149 +3331,197 @@ def _drop_choice_sentinel(
     )
 
 
-def _choose_mainoper_or_drop(
-    current_task: dict, remaining: list[dict], state: Dict[str, Any], step_count: int
-) -> Command:
-    """dispatch 직전 main_oper 선택 처리 (단일 interrupt=replay-safe). 선택 → wt_resp_agent task로
-    치환(cause_oper=선택 main_oper, lotcd/fail_type 상속). 미선택/거절 → sentinel 드롭."""
-    task_plan = state.get("task_plan") or []
-    answer = interrupt({
-        "type": "confirm",
-        "interrupt_type": "postwads_choice",  # 기존 타입 재사용 → agent_server 가드/resume 무변경
-        "param": "mainoper_choice",
-        "message": _MAINOPER_CHOICE_MESSAGE,
-        "options": _mainoper_options(state),
-        "route": "",
-    })
-    chosen = _interpret_mainoper_choice(answer, state)
-    if chosen:
-        lotcd = state.get("lotcd", "")
-        fail_type = state.get("fail_type", "")
-        concrete = build_task_from_canonical_request(
-            {
-                "intent": "wt_resp",
-                "agent": "wt_resp_agent",
-                "slots": {"lotcd": lotcd, "fail_type": fail_type, "cause_oper": chosen},
-                "goal": f"{lotcd} {chosen} WT Resp 분석".strip(),
-            },
-            task_id=f"task_{len(task_plan) + 1}_wt_resp",
+# ── S2: 선언적 followup (envelope.followups → propose/resolve) ─────────────────
+# 후속 트리거 판단을 supervisor에서 결과 생성 에이전트로 옮긴다. 에이전트가 자기 결과
+# envelope.followups에 후속을 선언하면(이상감지/검출수/main_oper/group 산출 여부는 에이전트가
+# 안다), replanner가 _propose_followups로 enqueue, supervisor가 dispatch 직전
+# _resolve_followup_or_drop로 confirm/choice interrupt를 해소한다. 4개 _maybe_propose_* +
+# 3개 choice 핸들러를 대체한다(confirm 해소는 기존 _confirm_or_drop 재사용). 마이그레이션
+# 중에는 기존 함수와 병존하며 한 체인씩 신규 경로로 옮긴다.
+def _latest_result_followups(state: Dict[str, Any]) -> list[dict]:
+    """가장 최근 에이전트 결과 envelope의 followups를 읽는다(없으면 []).
+    replanner는 직전 에이전트 완료 직후 돌므로 latest agent message가 방금 끝난 에이전트다."""
+    for message in reversed(state.get("messages", []) or []):
+        if isinstance(message, AIMessage) and getattr(message, "name", "") in _AGENT_NAMES:
+            result = (getattr(message, "additional_kwargs", None) or {}).get("result")
+            if isinstance(result, dict) and isinstance(result.get("followups"), list):
+                return [f for f in result["followups"] if isinstance(f, dict)]
+            return []
+    return []
+
+
+def _propose_followups(state: Dict[str, Any]) -> dict:
+    """선언적 후속 제안(4개 _maybe_propose_*의 일반화). 최신 결과 envelope의 followups를 읽어
+    guard로 중복 차단 후 pending/task_plan에 추가한다:
+      - confirm: agent+default_slots로 구체 task를 만들고 confirm_tasks 등록(_confirm_or_drop이 해소).
+      - choice : __choice__ sentinel(followup 스펙을 params로 운반)로 추가(_resolve_followup_or_drop이 해소).
+    guard: guard_key(턴당 1회 state 플래그) + guard_agents(이미 plan에 있으면 제안 안 함=중복 차단).
+    반환: pending_tasks/task_plan(append)/confirm_tasks/guard_key 업데이트 dict, 제안 없으면 {}."""
+    followups = _latest_result_followups(state)
+    if not followups:
+        return {}
+    pending = list(state.get("pending_tasks") or [])
+    task_plan = list(state.get("task_plan") or [])
+    confirm_tasks = dict(state.get("confirm_tasks") or {})
+    planned_agents = {t.get("agent") for t in (pending + task_plan) if isinstance(t, dict)}
+    extra_updates: dict = {}
+    added = False
+    for fu in followups:
+        guard_key = str(fu.get("guard_key") or "")
+        if guard_key and state.get(guard_key):
+            continue
+        guard_agents = [str(a) for a in (fu.get("guard_agents") or [])]
+        if guard_agents and any(a in planned_agents for a in guard_agents):
+            continue
+        agent = str(fu.get("agent") or "")
+        if not agent:
+            continue
+        if agent == "__choice__":
+            task_id = f"task_{len(task_plan) + 1}_choice"
+            task = {
+                "task_id": task_id,
+                "agent": "__choice__",
+                "goal": str(fu.get("goal") or "후속 선택"),
+                "params": {"followup": fu},
+            }
+        else:
+            task = build_task_from_canonical_request(
+                {
+                    "agent": agent,
+                    "slots": dict(fu.get("default_slots") or {}),
+                    "goal": str(fu.get("goal") or ""),
+                },
+                task_id=f"task_{len(task_plan) + 1}_{agent}",
+            )
+            task_id = task["task_id"]
+            if fu.get("confirm"):
+                confirm_tasks[task_id] = str(
+                    fu.get("confirm_message") or "후속 작업을 실행하시겠습니까?"
+                )
+        pending.append(task)
+        task_plan.append(task)
+        planned_agents.add(agent)
+        if guard_key:
+            extra_updates[guard_key] = True
+        logger.info(
+            "[Followup] 제안: %s agent=%s confirm=%s", task_id, agent, bool(fu.get("confirm"))
         )
-        logger.info("[MainOper] 선택=%s → wt_resp task 큐 추가(치환): %s", chosen, concrete.get("task_id"))
-        return Command(
-            update={
-                "step_count": step_count,
-                "pending_tasks": [concrete] + remaining,
-                "task_plan": task_plan + [concrete],
-                "mainoper_offered": True,
-                "cause_oper": chosen,
-            },
-            goto="supervisor",
-        )
-    return _drop_choice_sentinel(remaining, state, step_count)
-
-
-# ── wt_resp → mining 실행 확인 HITL ──────────────────────────────────────────
-# wt_resp_agent가 group_good/group_bad를 산출하면 "mining 실행할까요?" confirm interrupt를 띄우고
-# 승인 시 5개 state(lotcd/cause_oper/fail_type/group_good/group_bad)로 mining_agent에 체이닝한다.
-# main_oper HITL과의 사이에 wt_resp dispatch가 끼어 super-step 자연 분리 → 단일 interrupt=replay-safe.
-_MINING_CHOICE_MESSAGE = "선택한 양품/불량 그룹으로 mining 분석을 실행할까요?"
-_MINING_OPTIONS = [
-    {"label": "실행", "value": "yes"},
-    {"label": "안 함", "value": "no"},
-]
-
-
-def _maybe_propose_mining_choice(state: Dict[str, Any]) -> dict:
-    """결정론 후속 제안: wt_resp가 방금 실행돼 group_good/bad가 채워졌으면 mining 실행 확인 sentinel 추가.
-    턴당 1회(mining_offered) + mining 이미 큐면 재제안 안 함."""
-    if state.get("mining_offered"):
+        added = True
+    if not added:
         return {}
-    latest_agent = next(
-        (
-            getattr(m, "name", "")
-            for m in reversed(state.get("messages", []) or [])
-            if isinstance(m, AIMessage) and getattr(m, "name", "") in _AGENT_NAMES
-        ),
-        "",
-    )
-    if latest_agent != "wt_resp_agent":
-        return {}
-    if not (state.get("group_good") or state.get("group_bad")):
-        return {}
-    pending = state.get("pending_tasks") or []
-    task_plan = state.get("task_plan") or []
-    if any(
-        isinstance(t, dict) and t.get("agent") == "mining_agent" for t in (pending + task_plan)
-    ):
-        return {}
-    task_id = f"task_{len(task_plan) + 1}_mining_choice"
-    sentinel = {
-        "task_id": task_id,
-        "agent": "__mining_choice__",
-        "goal": "mining 실행 확인",
-        "params": {},
-    }
-    logger.info("[Replanner] wt_resp 완료 → mining 실행 확인 sentinel 제안: %s", task_id)
     return {
-        "pending_tasks": pending + [sentinel],
-        "task_plan": task_plan + [sentinel],
-        "mining_offered": True,
+        "pending_tasks": pending,
+        "task_plan": task_plan,
+        "confirm_tasks": confirm_tasks,
+        **extra_updates,
     }
 
 
-def _choose_mining_or_drop(
-    current_task: dict, remaining: list[dict], state: Dict[str, Any], step_count: int
-) -> Command:
-    """dispatch 직전 mining 실행 확인 (단일 interrupt=replay-safe). 승인 → mining_agent task로 치환
-    (5 state 상속). 거절 → sentinel 드롭."""
-    task_plan = state.get("task_plan") or []
-    answer = interrupt({
-        "type": "confirm",
-        "interrupt_type": "postwads_choice",  # 기존 타입 재사용 → agent_server 가드/resume 무변경
-        "param": "mining_choice",
-        "message": _MINING_CHOICE_MESSAGE,
-        "options": _MINING_OPTIONS,
-        "route": "",
-    })
+_SINGLE_CHOICE_SYSTEM = (
+    "이어서 실행할 후속 작업 선택지를 사용자에게 제시했다. 아래 JSON은 제시된 선택지"
+    "(options: label/value)와 사용자의 자유 응답(answer)이다. 사용자가 고른 선택지의 value를 "
+    "정확히 하나만 출력해라. 아무것도 고르지 않거나 거절(안 함/취소/그만)이면 'none'을 출력해라. "
+    "value 문자열 하나만 출력."
+)
+
+
+def _interpret_single_choice(answer: Any, options: list[dict]) -> dict | None:
+    """사용자 응답 → 선택된 option dict(없으면 None). 키워드 매칭 금지.
+    UI 클릭(value/label 정확일치) 즉시, 자유응답만 LLM이 value 분류(기존 choice 패턴 일반화)."""
     if isinstance(answer, dict):
-        text = answer.get("mining_choice") or next(iter(answer.values()), "")
+        text = answer.get("followup_choice") or next(iter(answer.values()), "")
     else:
         text = answer
     text = str(text or "").strip()
-    if text in ("yes", "실행"):  # UI 클릭 — LLM 불필요
-        run = True
-    elif text in ("no", "안 함", ""):
-        run = False
-    else:  # 자유응답 → LLM yes/no 해석
-        run = _interpret_confirmation(answer)
-    if run:
-        lotcd = state.get("lotcd", "")
+    if not text:
+        return None
+    by_value = {str(o.get("value")): o for o in options if isinstance(o, dict)}
+    by_label = {str(o.get("label")): o for o in options if isinstance(o, dict)}
+    for opt in options:  # UI 클릭 경로 — LLM 불필요
+        if text == str(opt.get("value")) or text == str(opt.get("label")):
+            return opt if str(opt.get("value")) != "none" else None
+    try:  # 자유응답 → LLM 분류
+        verdict = (
+            _model.invoke(
+                [
+                    {"role": "system", "content": _SINGLE_CHOICE_SYSTEM},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {"options": options, "answer": text}, ensure_ascii=False
+                        ),
+                    },
+                ],
+                config={"callbacks": _lf_callbacks()},
+            ).content
+            or ""
+        ).strip()
+    except Exception as e:
+        logger.warning("[Followup] 선택 해석 LLM 실패 (%s) — 미선택 처리", e)
+        return None
+    opt = by_value.get(verdict) or by_label.get(verdict)  # LLM이 value 또는 label 반환 모두 수용
+    return opt if opt and str(opt.get("value")) != "none" else None
+
+
+# ctx 5종 — single-choice 선택 slots에 이 키가 있으면 god-state ctx로도 전파한다
+# (다운스트림이 자기 schema 없이 god-state로 읽는 cause_oper 등 — S1 ctx 운반 보존).
+_CTX_KEYS = ("lotcd", "fail_type", "cause_oper", "wads_category", "ref_date")
+
+
+def _resolve_single_choice(
+    current_task: dict,
+    remaining: list[dict],
+    state: Dict[str, Any],
+    step_count: int,
+    fu: dict,
+) -> Command:
+    """generic 단일 택1 choice 해소 (단일 interrupt=replay-safe).
+    선택 → choice_target_agent task로 치환(default_slots + 선택 option.slots). 미선택/거절 → 드롭."""
+    task_plan = state.get("task_plan") or []
+    # 선언된 선택지 + '안 함'(none) — 거절 경로를 항상 제공.
+    options = [o for o in (fu.get("choice_options") or []) if isinstance(o, dict)]
+    options = options + [{"label": "안 함", "value": "none"}]
+    target_agent = str(fu.get("choice_target_agent") or "")
+    answer = interrupt({
+        "type": "confirm",
+        "interrupt_type": "postwads_choice",  # 기존 타입 재사용 → agent_server 가드/resume 무변경
+        "param": "followup_choice",
+        "message": str(fu.get("choice_message") or "이어서 무엇을 할까요?"),
+        "options": options,
+        "route": "",
+    })
+    chosen = _interpret_single_choice(answer, options)
+    if chosen is not None and target_agent:
+        slots = {**(fu.get("default_slots") or {}), **(chosen.get("slots") or {})}
         concrete = build_task_from_canonical_request(
-            {
-                "intent": "mining",
-                "agent": "mining_agent",
-                "slots": {
-                    "lotcd": lotcd,
-                    "fail_type": state.get("fail_type", ""),
-                    "cause_oper": state.get("cause_oper", ""),
-                    "group_good": state.get("group_good") or [],
-                    "group_bad": state.get("group_bad") or [],
-                },
-                "goal": f"{lotcd} mining 분석".strip(),
-            },
-            task_id=f"task_{len(task_plan) + 1}_mining",
+            {"agent": target_agent, "slots": slots, "goal": str(chosen.get("goal") or "")},
+            task_id=f"task_{len(task_plan) + 1}_{target_agent}",
         )
-        logger.info("[Mining] 실행 승인 → mining task 큐 추가(치환): %s", concrete.get("task_id"))
-        return Command(
-            update={
-                "step_count": step_count,
-                "pending_tasks": [concrete] + remaining,
-                "task_plan": task_plan + [concrete],
-                "mining_offered": True,
-            },
-            goto="supervisor",
+        update: dict = {
+            "step_count": step_count,
+            "pending_tasks": [concrete] + remaining,
+            "task_plan": task_plan + [concrete],
+        }
+        for ck in _CTX_KEYS:  # 선택 slots의 ctx를 god-state로 전파(다운스트림 호환)
+            if slots.get(ck) not in (None, "", [], {}):
+                update[ck] = slots[ck]
+        logger.info(
+            "[Followup] choice 선택 → %s task 치환: %s", target_agent, concrete.get("task_id")
         )
+        return Command(update=update, goto="supervisor")
     return _drop_choice_sentinel(remaining, state, step_count)
+
+
+def _resolve_followup_or_drop(
+    current_task: dict, remaining: list[dict], state: Dict[str, Any], step_count: int
+) -> Command:
+    """dispatch 직전 __choice__ sentinel 해소(3개 choice 핸들러의 일반화). followup.choice_kind 분기:
+    - single  : _resolve_single_choice (택1 → 타깃 agent task 치환).
+    - postwads : 2-step super-step 전용 처리(per-report 빌더 보존)."""
+    fu = (current_task.get("params") or {}).get("followup") or {}
+    if str(fu.get("choice_kind") or "single") == "postwads":
+        return _choose_postwads_or_drop(current_task, remaining, state, step_count)
+    return _resolve_single_choice(current_task, remaining, state, step_count, fu)
 
 
 # ── 공유 State 정의 ──────────────────────────────────────
@@ -3838,7 +3656,6 @@ class YieldQueryState(TypedDict):
     # replanner가 sentinel 제안 시 True로 세팅 → 같은 turn 재제안/무한 추가 방지.
     postwads_offered: bool
     mainoper_offered: bool  # relation_tree main_oper 선택 제안 가드 (turn별 리셋)
-    mining_offered: bool  # wt_resp→mining 실행 confirm 제안 가드 (turn별 리셋)
 
     # Canonical request scratchpad (overwrite). Planner/replanner produce this
     # contract; task_builder converts it into executable tasks.

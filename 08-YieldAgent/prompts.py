@@ -85,6 +85,13 @@ present there, leave that slot empty or omit it.
    capability: wafer binmap/cummap visualization
    intents: map
    slots: lot_ids, wf_ids, groupkey, map_type, map_oper, wf_mod, wf_rem
+   wafer 식별 슬롯은 셋 중 하나만 채운다 — 사용자가 준 토큰의 형식으로 판단:
+     - groupkey: "LOTID.WW" 점(.) 구분 토큰. LOTID는 7자 영숫자, WW는 wafer 번호.
+       (예: "4SAX9QA.07"). 사용자가 이런 점 구분 토큰을 여러 개 공백/콤마로 나열하면
+       전부 콤마로 이은 단일 문자열로 emit하라 (예: "4SAX9QA.07 4SSRUR0.01" →
+       groupkey="4SAX9QA.07,4SSRUR0.01"). 특정 wafer를 콕 집은 조회다.
+     - lot_ids: 점 없는 7자 LOT ID 목록 (예: ["4SAX9QA","4SSRUR0"]). 해당 lot의 전체 wafer.
+     - wf_ids: 단일 lot 안의 wafer 번호(정수) 목록 (예: ["7","15"]). lot_ids 한 개와 함께 쓴다.
    map_type: "binmap"|"cummap"|"all"; map_oper: "PT1H"|"PT1C".
    wf_mod/wf_rem: wafer 번호 패턴 필터 (정수). 특정 번호 패턴의 wafer만 보려는 경우에만:
      "짝수"->wf_mod=2,wf_rem=0 ; "홀수"->wf_mod=2,wf_rem=1 ; "3배수"->wf_mod=3,wf_rem=0 ;
@@ -99,6 +106,9 @@ present there, leave that slot empty or omit it.
    capability: LOT history lookup
    intents: lot_history
    slots: lot_ids
+     - lot_ids: 조회할 LOT ID 목록. LOT ID는 7자 영숫자 토큰(예: "TSSHNCV", "4SS2DPD").
+       사용자가 여러 개를 공백/콤마/줄바꿈으로 나열하면 각각을 분리해 LIST로 emit하라
+       (예: "TSSHNCV TSSH20Y TSSH02N" → ["TSSHNCV","TSSH20Y","TSSH02N"]). 한 개면 단일 문자열 가능.
 
 6. relation_tree_agent
    capability: Inline-WT relation/trend tree for a lot/product and a detected parameter
@@ -254,6 +264,10 @@ Apply ONLY when this request names no parameter of its own.
   -> {{"requests":[{{"intent":"yield_analysis","agent":"yield_agent","slots":{{"lotcd":"5NA","time_range":{{"unit":"monthly","start":"<이번 달 -5>","end":"{today_year_month}"}}}},"goal":"5NA 최근 6개월 수율 추세"}}],"answer":""}}
 - (follow-up) "두번째 lot 이력 보여줘"  (ordinal reference to a prior result)
   -> {{"requests":[{{"intent":"lot_history","agent":"lot_history_agent","slots":{{"lot_ids":"#2"}},"goal":"두번째 lot 이력"}}],"answer":""}}
+- "TSSHNCV TSSH20Y TSSH02N TSSHH0Y 랏이력 알려줘"  (다중 LOT — 공백 구분, 각각 분리해 LIST로)
+  -> {{"requests":[{{"intent":"lot_history","agent":"lot_history_agent","slots":{{"lot_ids":["TSSHNCV","TSSH20Y","TSSH02N","TSSHH0Y"]}},"goal":"4개 LOT 이력 조회"}}],"answer":""}}
+- "4SAX9QA.07 4SAX9QA.15 4SSRUR0.01 4SSYFL6.06 cummap 보여줘"  (점 표기 LOTID.WW = 개별 wafer → groupkey 콤마 문자열)
+  -> {{"requests":[{{"intent":"map","agent":"map_agent","slots":{{"groupkey":"4SAX9QA.07,4SAX9QA.15,4SSRUR0.01,4SSYFL6.06","map_type":"cummap"}},"goal":"지정 wafer cummap"}}],"answer":""}}
 - (WADS list 후) "그 lot들 wafer map 보여줘"  (detected SET — empty slots, backend fills+groups by oper)
   -> {{"requests":[{{"intent":"map","agent":"map_agent","slots":{{"lot_ids":"","map_oper":"","map_type":"binmap"}},"goal":"검출 lot wafer map"}}],"answer":""}}
 - (WADS report 후) "두번째 parameter relation tree"  (ordinal into the detected parameters)

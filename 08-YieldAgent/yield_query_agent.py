@@ -9,7 +9,7 @@ import os
 import re
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from langchain_core.messages import convert_to_messages, AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -389,6 +389,21 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         result_msg += "\n\n> ✅ 이상 파라미터 없음 (±10% 기준)"
 
     result_message = AIMessage(content=result_msg, name="yield_agent")
+    # S2: 이상감지 시 WADS 열화검출 리포트 후속을 envelope에 선언한다(트리거 판단을 결과를 만든
+    # 에이전트가 소유 → supervisor가 state를 뒤져 판단하지 않음). confirm=dispatch 직전 yes/no.
+    # 시간창은 어제 하루(start=end=어제) → confirm 1회로 바로 실행(별도 날짜 HITL 불필요).
+    followups = []
+    if anomaly_params:
+        yday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        followups = [{
+            "agent": "wads_agent",
+            "goal": f"{lotcd} WADS 열화 검출 리포트 조회",
+            "default_slots": {"lotcd": lotcd, "wads_start_tm": yday, "wads_end_tm": yday},
+            "confirm": True,
+            "confirm_message": "WADS 열화 검출 리포트를 확인하시겠습니까?",
+            # 직접 요청·이미 제안된 wads가 plan에 있으면 재제안 안 함(중복 차단).
+            "guard_agents": ["wads_agent"],
+        }]
     attach_result_envelope(
         result_message,
         logger=logger,
@@ -406,6 +421,7 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         artifacts=yield_artifacts,
         provenance={"task_id": state.get("current_task_id", ""), "task_goal": state.get("current_task_goal", "")},
         metadata={**_yield_artifact_metadata(yield_artifacts), "row_count": len(weeks_data), "anomaly_count": len(anomaly_params)},
+        followups=followups,
     )
 
     analysis, agent_suggestion = extract_suggestion(analysis)

@@ -585,8 +585,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             "postwads_offered": False,
             # relation_tree main_oper 선택 제안 가드 — 매 새 turn 리셋.
             "mainoper_offered": False,
-            # wt_resp→mining 실행 확인 제안 가드 — 매 새 turn 리셋.
-            "mining_offered": False,
+            # (mining_offered 제거: wt_resp→mining은 confirm followup으로 이관 — guard_agents로 중복 차단)
             # wt_resp가 산출하는 양품/불량 그룹 — 매 새 turn 리셋(이전 turn 그룹 누수 방지).
             "group_good": [],
             "group_bad": [],

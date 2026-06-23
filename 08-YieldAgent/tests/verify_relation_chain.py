@@ -25,18 +25,20 @@ def run(pick_mode):
     tr = s.turn(f"{LOTCD} {FAIL} 연관분석")
     if intr(tr, "lotcd"):
         tr = s.turn("", resume_value={"lotcd": LOTCD})
-    mo = intr(tr, "mainoper_choice")
+    # S2: relation→main_oper는 generic single-choice followup으로 이관 → param=followup_choice.
+    mo = intr(tr, "followup_choice")
     assert mo, f"main_oper interrupt 없음. planned={tr.planned_agents()}"
     opts = [o for o in mo["options"] if o["value"] != "none"]
     expected = opts[1]["label"] if pick_mode == "free" else opts[0]["label"]
     print("main_opers:", [o["label"] for o in opts][:6], "...", f"(택: {expected})")
 
     if pick_mode == "free":
-        t2 = s.turn("두번째 거", resume_value={"mainoper_choice": "두번째 거"})
+        t2 = s.turn("두번째 거", resume_value={"followup_choice": "두번째 거"})
     else:
-        t2 = s.turn("", resume_value={"mainoper_choice": "0"})
+        t2 = s.turn("", resume_value={"followup_choice": "0"})
 
-    mc = intr(t2, "mining_choice")
+    # S2: wt_resp→mining은 generic confirm followup으로 이관 → param=task_confirm(통합 yes/no).
+    mc = intr(t2, "task_confirm")
     assert mc, f"mining 확인 interrupt 없음. interrupts={[e.get('param') for e in t2.sse_interrupts()]}"
     print("mining 확인 HITL 도달:", mc.get("message", "")[:40])
 
@@ -54,7 +56,7 @@ def run(pick_mode):
     assert n_good > 0 and n_bad > 0, f"group_good/bad 비어있음: good={n_good} bad={n_bad}"
 
     # 승인 → mining dispatch (scalar state는 트레이스로, group은 mining이 받아 실행됐는지로 검증)
-    t3 = s.turn("", resume_value={"mining_choice": "yes"})
+    t3 = s.turn("", resume_value={"task_confirm": "예"})
     m_lot = t3.dispatched_param("mining_agent", "lotcd")
     m_ft = t3.dispatched_param("mining_agent", "fail_type")
     m_co = t3.dispatched_param("mining_agent", "cause_oper")

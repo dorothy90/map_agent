@@ -21,6 +21,30 @@ from result_contracts import attach_result_envelope
 
 logger = logging.getLogger("yield_agent.relation_tree_agent")
 
+_MAINOPER_CHOICE_MESSAGE = "어느 main_oper로 WT Resp 분석을 이어갈까요?"
+
+
+def _mainoper_followups(lotcd: str, fail_type: str, main_opers: list[str]) -> list[dict]:
+    """S2: 연관 main_oper 후보를 택1 choice followup으로 선언한다(트리거를 결과 생성 에이전트가 소유).
+    선택 → wt_resp_agent task로 치환(cause_oper=선택 oper, lotcd/fail_type 상속). main_opers 없으면 []."""
+    if not main_opers:
+        return []
+    options = [
+        {"label": m, "value": str(i), "slots": {"cause_oper": m}}
+        for i, m in enumerate(main_opers)
+    ]
+    return [{
+        "agent": "__choice__",
+        "goal": "relation_tree main_oper 선택",
+        "choice_kind": "single",
+        "choice_message": _MAINOPER_CHOICE_MESSAGE,
+        "choice_target_agent": "wt_resp_agent",
+        "choice_options": options,
+        "default_slots": {"lotcd": lotcd, "fail_type": fail_type},
+        "guard_key": "mainoper_offered",
+        "guard_agents": ["wt_resp_agent", "mining_agent"],
+    }]
+
 
 def _query_main_opers(lotcd: str, fail_type: str, category: str = "") -> list[str]:
     """DF_WADS_MAIN_OPER에서 (lotcd, fail_type[, category])로 연관 main_oper 목록 조회.
@@ -111,6 +135,7 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
             title="relation_tree",
             summary=summary,
             extensions={"relation_tree_agent": {"main_opers": main_opers}},
+            followups=_mainoper_followups(lot_code, fail_type, main_opers),
         )
         return {
             "messages": [msg],
@@ -156,6 +181,7 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
         title="relation_tree",
         summary=summary,
         extensions={"relation_tree_agent": {"main_opers": main_opers}},
+        followups=_mainoper_followups(lot_code, fail_type, main_opers),
     )
     return {
         "messages": [msg],

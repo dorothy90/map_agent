@@ -733,6 +733,18 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         key=lambda rep: str(rep.get("end_tm") or ""),
         reverse=True,
     )
+    # S2: 검출(groupkey/lot) 발생 시 후속 선택(map/불량이력/연계분석)을 envelope에 선언한다.
+    # 트리거(검출 여부)를 결과 생성 에이전트가 소유. 실제 2-step 선택(fail_type→분석종류)과 per-report
+    # 빌더는 supervisor _choose_postwads_or_drop가 _latest_wads_reports로 처리(super-step 분리 보존).
+    followups = []
+    if wads_groupkeys or wads_lot_ids:
+        followups = [{
+            "agent": "__choice__",
+            "goal": "WADS 검출 후속 선택",
+            "choice_kind": "postwads",
+            "guard_key": "postwads_offered",
+            "guard_agents": ["map_agent", "fail_history_agent", "relation_tree_agent"],
+        }]
     attach_result_envelope(
         result_message,
         logger=logger,
@@ -768,6 +780,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             "missing_groupkey_rows": active_stats.get("missing_groupkey_rows"),
             "wads_join_missing": join_missing,
         },
+        followups=followups,
     )
     if wads_lot_ids:
         sql_result_msg = AIMessage(

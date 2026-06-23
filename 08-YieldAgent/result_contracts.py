@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import math
 import re
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -612,6 +612,36 @@ class RecentResultIndexEntry(BaseModel):
         return reports
 
 
+class Followup(TypedDict, total=False):
+    """선언적 후속 체이닝 지시 (S2). 에이전트가 자기 결과 envelope에 첨부하면
+    supervisor 측 `_propose_followups`가 읽어 pending/task_plan에 후속을 추가하고,
+    `_resolve_followup_or_drop`가 dispatch 직전 confirm/choice interrupt로 해소한다.
+
+    트리거 판단(이상감지/검출수/main_oper 산출/group 산출)은 더 이상 supervisor가
+    state를 뒤져서 하지 않고, 결과를 만든 에이전트가 선언한다. 코드는 의미 해석을 하지
+    않고 이 선언을 기계적으로 enqueue/resolve 한다.
+
+    필드는 모두 선택(total=False). 두 모드:
+    - confirm: `agent`(구체 타깃)+`default_slots`로 후속 task를 바로 만들고 `confirm`이 True면
+      dispatch 직전 yes/no interrupt. (yield→wads, wt_resp→mining)
+    - choice : `agent="__choice__"`. dispatch 직전 택1 interrupt 후 구체 task로 치환.
+      `choice_kind="single"`은 `choice_target_agent`+`choice_options[*].slots`로 일반 처리,
+      `choice_kind="postwads"`는 2-step super-step 전용 resolver가 처리.
+    """
+
+    agent: str                        # confirm: 구체 타깃 agent / choice: "__choice__"
+    goal: str
+    default_slots: dict[str, Any]     # 상류 결과/ctx에서 채운 기본 슬롯
+    confirm: bool                     # dispatch 직전 확인 interrupt?
+    confirm_message: str
+    choice_kind: str                  # "single" | "postwads"
+    choice_message: str
+    choice_target_agent: str          # single choice: 선택마다 build할 agent
+    choice_options: list[dict[str, Any]]  # [{label, value, slots}] (+ none)
+    guard_key: str                    # 턴당 1회 가드 state 플래그명 ("" = 없음)
+    guard_agents: list[str]           # 이 agent들이 이미 plan에 있으면 제안 안 함(중복 차단)
+
+
 class ResultEnvelopeV1(BaseModel):
     """Versioned machine-readable result payload.
 
@@ -637,6 +667,8 @@ class ResultEnvelopeV1(BaseModel):
     provenance: ResultProvenance = Field(default_factory=ResultProvenance)
     metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
     extensions: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # S2: 선언적 후속 체이닝 지시. 기존 envelope는 빈 list 기본값으로 하위호환.
+    followups: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @field_validator("columns")
@@ -676,6 +708,15 @@ class ResultEnvelopeV1(BaseModel):
     @classmethod
     def metadata_must_be_json_compatible(cls, value: Any) -> Any:
         _ensure_json_compatible(value, "metadata")
+        return value
+
+    @field_validator("followups")
+    @classmethod
+    def followups_must_be_json_objects(cls, value: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for i, item in enumerate(value):
+            if not isinstance(item, dict):
+                raise ValueError(f"followups[{i}] must be an object")
+            _ensure_json_compatible(item, f"followups[{i}]")
         return value
 
     @field_validator("extensions")
@@ -732,6 +773,7 @@ def build_result_envelope(
     provenance: dict[str, Any] | None = None,
     metadata: dict[str, str | int | float | bool | None] | None = None,
     extensions: dict[str, dict[str, Any]] | None = None,
+    followups: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build and validate a ResultEnvelope for agent adapters.
 
@@ -776,6 +818,7 @@ def build_result_envelope(
         "provenance": provenance or {},
         "metadata": metadata or {},
         "extensions": extensions or {},
+        "followups": followups or [],
     }
     return dump_result_envelope(payload)
 

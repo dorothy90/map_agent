@@ -24,6 +24,7 @@ from langchain_core.runnables import RunnableConfig
 from langfuse import observe
 
 from common import timed, html_escape as _h, get_oracle_connection
+from result_contracts import attach_result_envelope
 
 logger = logging.getLogger("yield_agent.wt_resp_agent")
 
@@ -127,8 +128,44 @@ def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         f"{lotcode} WT Resp 분석 (wt_para={wt_para}, main_oper={main_oper}, "
         f"good={len(group_good)}, bad={len(group_bad)}) HTML 리포트 생성 완료"
     )
+    result_message = AIMessage(content=summary, name="wt_resp_agent")
+    # S2: group_good/bad 산출 시 mining 실행 후속을 envelope에 선언한다(트리거를 결과 생성
+    # 에이전트가 소유). default_slots로 5개 슬롯을 명시 운반 → mining이 god-state 대신 task.params로
+    # 받는다(confirm=dispatch 직전 yes/no).
+    followups = []
+    if group_good or group_bad:
+        followups = [{
+            "agent": "mining_agent",
+            "goal": f"{lotcode} mining 분석".strip(),
+            "default_slots": {
+                "lotcd": lotcode,
+                "fail_type": wt_para,
+                "cause_oper": main_oper,
+                "group_good": group_good,
+                "group_bad": group_bad,
+            },
+            "confirm": True,
+            "confirm_message": "선택한 양품/불량 그룹으로 mining 분석을 실행할까요?",
+            "guard_agents": ["mining_agent"],
+        }]
+    attach_result_envelope(
+        result_message,
+        logger=logger,
+        source_agent="wt_resp_agent",
+        kind="report",
+        status="success",
+        title="wt_resp",
+        summary=summary,
+        entities={
+            "products": [lotcode] if lotcode else [],
+            "fail_types": [wt_para] if wt_para else [],
+            "cause_opers": [main_oper] if main_oper else [],
+        },
+        provenance={"task_id": current_task_id, "task_goal": state.get("current_task_goal", "")},
+        followups=followups,
+    )
     return {
-        "messages": [AIMessage(content=summary, name="wt_resp_agent")],
+        "messages": [result_message],
         "wt_resp_artifacts": [
             {
                 "type": "html",
