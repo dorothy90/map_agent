@@ -3,6 +3,7 @@ from __future__ import annotations
 
 
 import logging
+import re
 from typing import Any
 
 from dotenv import load_dotenv
@@ -81,17 +82,9 @@ def _is_placeholder_or_empty(val) -> bool:
     ):
         return True
     lower = v.lower()
-    if any(
-        k in lower
-        for k in (
-            "task_1",
-            "task_2",
-            "task_3",
-            "결과",
-            "from_task",
-            "result of",
-            "from task",
-        )
+    # task_<N> 참조는 plan 크기(_MAX_TASKS)에 무관하게 패턴으로 — task_1~3 열거는 task_4+ 누락 버그.
+    if re.search(r"task[_ ]?\d+", lower) or any(
+        k in lower for k in ("결과", "from_task", "result of", "from task")
     ):
         return True
     return False
