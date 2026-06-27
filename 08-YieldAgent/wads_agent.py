@@ -121,6 +121,108 @@ def _wads_parameters_from_rows(rows: list[dict]) -> list[str]:
     return extract_parameter_values(rows)
 
 
+def _norm_map_oper(raw: str) -> str:
+    """map_oper 포맷 정규화('1h'→'PT1H', 'pt1c'→'PT1C'). 의미 판단 아님 — 형식만."""
+    v = str(raw or "").strip().upper()
+    if v in ("PT1H", "PT1C"):
+        return v
+    if v in ("1H", "1C"):
+        return f"PT{v}"
+    if v.startswith("PT1") and len(v) > 3 and v[3] in ("H", "C"):
+        return v[:4]
+    return ""
+
+
+def _postwads_option_set(reports: list[dict], lotcd: str) -> list[dict]:
+    """검출 후속 분석종류 3옵션(맵/불량이력/연계분석)을 주어진 report들로 스코핑해 만든다.
+    각 옵션 slots에 per-report fan-out 입력(map_groups/fail_groups/rt_groups)을 prebuilt로 싣는다 —
+    supervisor는 선택된 옵션을 그대로 task로 치환만 한다. reports=[]면 그룹 없이(=lot-only fallback,
+    dispatch chained/missing_param가 보완). reports=[단일]이면 그 report 1건으로 스코핑."""
+    map_groups: list[dict] = []
+    for r in reports:
+        gks = [str(g).strip() for g in (r.get("groupkeys") or []) if str(g).strip()]
+        if not gks:
+            continue
+        map_groups.append({
+            "parameter": str(r.get("parameter") or ""),
+            "map_oper": _norm_map_oper(str(r.get("map_oper") or "")),
+            "groupkeys": gks,
+        })
+    map_slots: dict[str, Any] = {"lotcd": lotcd, "map_type": "cummap"}
+    if map_groups:
+        union: list[str] = []
+        for g in map_groups:
+            for gk in g["groupkeys"]:
+                if gk not in union:
+                    union.append(gk)
+        map_slots.update({
+            "map_groups": map_groups,
+            "groupkey": ",".join(union),
+            "map_oper": map_groups[0]["map_oper"],
+        })
+
+    params: list[str] = []
+    groups: list[dict] = []
+    for r in reports:
+        p = str(r.get("parameter") or "").strip()
+        if p and p not in params:
+            params.append(p)
+        if p:
+            groups.append({
+                "lotcd": str(r.get("lotcd") or lotcd).strip(),
+                "parameter": p,
+                "lot_ids": [str(x).strip() for x in (r.get("lot_ids") or []) if str(x).strip()],
+            })
+    fail_type = ",".join(params)
+    fail_slots: dict[str, Any] = {"lotcd": lotcd, "fail_type": fail_type}
+    rt_slots: dict[str, Any] = {"lotcd": lotcd, "fail_type": fail_type}
+    if groups:
+        fail_slots["fail_groups"] = groups
+        rt_slots["rt_groups"] = groups
+
+    return [
+        {"label": "cummap/binmap 맵 조회", "value": "map_agent", "agent": "map_agent",
+         "slots": map_slots, "goal": f"{lotcd} WADS 검출 wafer cummap 조회"},
+        {"label": "불량이력 조회", "value": "fail_history_agent", "agent": "fail_history_agent",
+         "slots": fail_slots, "goal": f"{lotcd} {fail_type or '검출 파라미터'} 불량이력 검색".strip()},
+        {"label": "LOTCD 연계 분석", "value": "relation_tree_agent", "agent": "relation_tree_agent",
+         "slots": rt_slots, "goal": f"{lotcd} {fail_type or '검출 파라미터'} Inline-WT 연관 분석".strip()},
+    ]
+
+
+def _build_postwads_followup(report_rows: list[dict], lotcd: str) -> dict:
+    """WADS 검출 후속 선택을 선언적 followup으로 구성(트리거+데이터+메뉴를 결과 에이전트가 소유).
+    report breakdown 있으면 2-step(report별 fail_type 1차 → 분석종류 2차), 없으면(lot-only) 1-step
+    단일 옵션셋. supervisor의 generic _resolve_single_choice가 옵션 스펙만 보고 해소한다."""
+    if report_rows:
+        prefilter_options: list[dict] = []
+        choice_option_sets: list[list[dict]] = []
+        for idx, r in enumerate(report_rows):
+            param = str(r.get("parameter") or "").strip()
+            oper = _norm_map_oper(str(r.get("map_oper") or "")).strip()
+            label = param or "(unknown)"
+            prefilter_options.append({
+                "label": f"{label} @ {oper}" if oper else label,
+                "value": str(idx),
+                "fail_type": param,
+            })
+            choice_option_sets.append(_postwads_option_set([r], lotcd))
+    else:
+        prefilter_options = []
+        choice_option_sets = [_postwads_option_set([], lotcd)]
+    return {
+        "agent": "__choice__",
+        "goal": "WADS 검출 후속 선택",
+        "choice_kind": "single",
+        "guard_key": "postwads_offered",
+        "guard_agents": ["map_agent", "fail_history_agent", "relation_tree_agent"],
+        "prefilter_message": "어느 fail_type의 후속을 분석할까요?",
+        "prefilter_options": prefilter_options,
+        "choice_message": "WADS 검출 결과로 이어서 무엇을 조회할까요?",
+        "choice_option_sets": choice_option_sets,
+    }
+
+
 def _anomaly_overlap_note(state: dict, detected_params: list[str]) -> str:
     """이번 WADS 조회 기간 검출 파라미터 중 yield 열화감지(anomaly_params)와 겹치는 항목을
     사후 언급한다 — 필터링이 아니라 단순 교차참조. yield→wads 체인에서만 의미가 있어
@@ -734,17 +836,12 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
         reverse=True,
     )
     # S2: 검출(groupkey/lot) 발생 시 후속 선택(map/불량이력/연계분석)을 envelope에 선언한다.
-    # 트리거(검출 여부)를 결과 생성 에이전트가 소유. 실제 2-step 선택(fail_type→분석종류)과 per-report
-    # 빌더는 supervisor _choose_postwads_or_drop가 _latest_wads_reports로 처리(super-step 분리 보존).
+    # 트리거+옵션+per-report 데이터를 결과 생성 에이전트가 소유 — 2-step 선택(fail_type→분석종류)과
+    # per-report 그룹(map_groups/fail_groups/rt_groups)을 followup 스펙에 prebuilt로 싣고,
+    # supervisor의 generic _resolve_single_choice가 옵션 스펙만 보고 기계적으로 해소한다.
     followups = []
     if wads_groupkeys or wads_lot_ids:
-        followups = [{
-            "agent": "__choice__",
-            "goal": "WADS 검출 후속 선택",
-            "choice_kind": "postwads",
-            "guard_key": "postwads_offered",
-            "guard_agents": ["map_agent", "fail_history_agent", "relation_tree_agent"],
-        }]
+        followups = [_build_postwads_followup(report_index_rows, lotcd)]
     attach_result_envelope(
         result_message,
         logger=logger,

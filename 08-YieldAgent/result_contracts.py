@@ -625,8 +625,12 @@ class Followup(TypedDict, total=False):
     - confirm: `agent`(구체 타깃)+`default_slots`로 후속 task를 바로 만들고 `confirm`이 True면
       dispatch 직전 yes/no interrupt. (yield→wads, wt_resp→mining)
     - choice : `agent="__choice__"`. dispatch 직전 택1 interrupt 후 구체 task로 치환.
-      `choice_kind="single"`은 `choice_target_agent`+`choice_options[*].slots`로 일반 처리,
-      `choice_kind="postwads"`는 2-step super-step 전용 resolver가 처리.
+      generic resolver(`_resolve_single_choice`)가 옵션 스펙만 보고 기계적으로 해소한다.
+      옵션·데이터(per-report 그룹 등)는 결과 생성 에이전트가 선언한다(트리거+데이터 소유).
+      · 1-step: `choice_options[{label,value,slots}]` + `choice_target_agent`(택1 → 그 agent build).
+      · 2-step: `prefilter_options`(예: WADS report별 fail_type)로 먼저 한 번 좁힌 뒤,
+        그 선택지(value=인덱스)에 대응하는 `choice_option_sets[idx]`를 택1 메뉴로 제시한다.
+        per-option `agent`로 선택지마다 다른 타깃을 build할 수 있다.
     """
 
     agent: str                        # confirm: 구체 타깃 agent / choice: "__choice__"
@@ -634,10 +638,13 @@ class Followup(TypedDict, total=False):
     default_slots: dict[str, Any]     # 상류 결과/ctx에서 채운 기본 슬롯
     confirm: bool                     # dispatch 직전 확인 interrupt?
     confirm_message: str
-    choice_kind: str                  # "single" | "postwads"
-    choice_message: str
-    choice_target_agent: str          # single choice: 선택마다 build할 agent
-    choice_options: list[dict[str, Any]]  # [{label, value, slots}] (+ none)
+    choice_kind: str                  # "single" (택1 후속 태그; resolver는 옵션 스펙으로 분기)
+    choice_message: str               # 2차(또는 1-step) 택1 메뉴 질문
+    choice_target_agent: str          # 1-step: 선택마다 build할 agent (per-option agent 없을 때 fallback)
+    choice_options: list[dict[str, Any]]  # 1-step: [{label, value, slots}] (+ none)
+    prefilter_message: str            # 2-step 1차(좁히기) 질문
+    prefilter_options: list[dict[str, Any]]  # 2-step 1차: [{label, value=str(idx), fail_type?}] (+ none)
+    choice_option_sets: list[list[dict[str, Any]]]  # 2-step 2차: prefilter value(idx)별 옵션 [{label,value,agent,slots,goal}]
     guard_key: str                    # 턴당 1회 가드 state 플래그명 ("" = 없음)
     guard_agents: list[str]           # 이 agent들이 이미 plan에 있으면 제안 안 함(중복 차단)
 

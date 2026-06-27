@@ -1931,13 +1931,11 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     # ── 선언적 후속 제안 (S2): 결과 envelope.followups를 읽어 후속을 큐에 추가 ──
     # 완료판정보다 먼저 실행 — pending이 비어도 후속을 넣어 턴이 조기 종료되지 않게 한다.
     # task_plan에도 append해 완료판정(아래)·max_steps 정합을 맞춘다.
-    # (yield→wads 마이그레이션됨. postwads/mainoper/mining은 아래 _maybe_propose_*가 병존 처리.)
+    # 모든 후속(yield→wads / postwads / relation→main_oper / wt_resp→mining)이 선언적으로
+    # 통합됨 — 각각 wads/relation_tree/wt_resp envelope이 followups로 선언한다.
     declared = _propose_followups(state)
     if declared:
         return {**scratchpad_update, **declared}
-
-    # (postwads/relation→main_oper/wt_resp→mining 후속은 S2 _propose_followups로 마이그레이션됨
-    #  — 각각 wads/relation_tree/wt_resp envelope이 선언.)
 
     # ── canonical plan-and-execute 종료 판정 ──
     # 모든 planned task가 실행되었고 남은 pending이 없으면 plan 완료.
@@ -2601,7 +2599,7 @@ def supervisor_node(
         current_task = pending[0]
         remaining = pending[1:]
         # ── S2: 선언적 __choice__ sentinel → dispatch 직전 택1 interrupt로 해소(택1 후속의 일반 경로) ──
-        # postwads(2-step)/single 모두 _resolve_followup_or_drop가 followup.choice_kind로 분기.
+        # 1-step/2-step(postwads 등) 모두 generic _resolve_followup_or_drop가 옵션 스펙으로 해소.
         if current_task.get("agent") == "__choice__":
             return _resolve_followup_or_drop(current_task, remaining, state, step_count)
         # ── 실행 확인 (B안): missing_param과 같은 dispatch 직전 멱등 구간에서 interrupt ──
@@ -2935,380 +2933,11 @@ def _confirm_or_drop(
     )
 
 
-# ── Step 5: WADS 검출 후속 선택(map/fail_history/relation_tree) ──────────────
-# yield→wads와 동일한 결정론 제안 패턴의 확장. wads가 파라미터를 검출하면 후속 선택 sentinel
-# task를 큐에 넣고(replanner), supervisor dispatch 멱등 구간에서 3택1 interrupt로 확정한다.
-# 신규 그래프 노드 0개 — sentinel은 dispatch 직전에 구체 task로 치환된다.
-_POSTWADS_CHOICE_MESSAGE = "WADS 검출 결과로 이어서 무엇을 조회할까요?"
-
-
-def _build_postwads_map_task(state: Dict[str, Any], task_plan: list, reports=None) -> dict:
-    """WADS 검출 wafer의 cummap을 report(parameter+map_oper)별로 그리는 단일 map task.
-    per-report 데이터는 wads 결과 envelope(_latest_wads_reports)에서 가져와 map_groups로 운반하고,
-    map_agent가 group별로 cummap을 루프 렌더한다(report별로 따로 → binmap 1장 뭉침 방지).
-    reports=선택된 1개 report 리스트면 그것만, None이면 전체(기존 동작=회귀안전).
-    reports가 없으면 빈 chained 슬롯으로 두고 _resolve_chained_params가 단일 cummap을 채운다(fallback)."""
-    lotcd = state.get("lotcd", "")
-    task_id = f"task_{len(task_plan) + 1}_map"
-    map_groups: list[dict] = []
-    for r in (reports if reports is not None else _latest_wads_reports(state)):
-        gks = [str(g).strip() for g in (r.get("groupkeys") or []) if str(g).strip()]
-        if not gks:
-            continue
-        map_groups.append({
-            "parameter": str(r.get("parameter") or ""),
-            "map_oper": _normalize_map_oper(str(r.get("map_oper") or "")),
-            "groupkeys": gks,
-        })
-    slots: dict[str, Any] = {"lotcd": lotcd, "map_type": "cummap"}
-    if map_groups:
-        # required(map_oper + lot_ids|groupkey) 충족용 top-level 값 + 렌더 주도용 map_groups.
-        union: list[str] = []
-        for g in map_groups:
-            for gk in g["groupkeys"]:
-                if gk not in union:
-                    union.append(gk)
-        slots.update({
-            "map_groups": map_groups,
-            "groupkey": ",".join(union),
-            "map_oper": map_groups[0]["map_oper"],
-        })
-    return build_task_from_canonical_request(
-        {
-            "intent": "map",
-            "agent": "map_agent",
-            "slots": slots,
-            "goal": f"{lotcd} WADS 검출 wafer cummap 조회",
-        },
-        task_id=task_id,
-    )
-
-
-def _postwads_detected_params(state: Dict[str, Any], reports=None) -> str:
-    """WADS 검출 report들의 parameter를 distinct join → fail_type 슬롯 값.
-    reports=선택된 1개 report 리스트면 그것만, None이면 전체(기존 동작=회귀안전).
-    fail_history/relation_tree 체이닝의 검출 파라미터 입력. 없으면 ""(빈 값이면 dispatch
-    missing_param HITL이 보완)."""
-    params: list[str] = []
-    for r in (reports if reports is not None else _latest_wads_reports(state)):
-        p = str(r.get("parameter") or "").strip()
-        if p and p not in params:
-            params.append(p)
-    return ",".join(params)
-
-
-def _postwads_report_groups(state: Dict[str, Any], reports=None) -> list[dict]:
-    """WADS report별 후속(fail_history/relation_tree) fan-out 입력.
-    각 group = {lotcd, parameter, lot_ids}. cummap의 map_groups와 대칭 — 에이전트가
-    group마다 따로 분석/검색한다(파라미터 뭉치기 금지). parameter 없는 report는 제외.
-    reports=선택된 1개 report 리스트면 그것만, None이면 전체(기존 동작=회귀안전)."""
-    groups: list[dict] = []
-    for r in (reports if reports is not None else _latest_wads_reports(state)):
-        param = str(r.get("parameter") or "").strip()
-        if not param:
-            continue
-        groups.append({
-            "lotcd": str(r.get("lotcd") or state.get("lotcd", "")).strip(),
-            "parameter": param,
-            "lot_ids": [str(x).strip() for x in (r.get("lot_ids") or []) if str(x).strip()],
-        })
-    return groups
-
-
-def _build_postwads_fail_history_task(state: Dict[str, Any], task_plan: list, reports=None) -> dict:
-    """WADS 검출을 report별로 불량이력 검색하는 단일 task (_build_postwads_map_task 대칭).
-    report별 데이터는 fail_groups로 운반하고 fail_history_agent가 group마다 검색한다.
-    reports=선택된 1개 report 리스트면 그것만, None이면 전체(기존 동작=회귀안전).
-    top-level lotcd/fail_type은 dispatch 가드/요약용·fallback(groups 없으면 단일 검색)."""
-    lotcd = state.get("lotcd", "")
-    fail_type = _postwads_detected_params(state, reports)
-    groups = _postwads_report_groups(state, reports)
-    slots: dict[str, Any] = {"lotcd": lotcd, "fail_type": fail_type}
-    if groups:
-        slots["fail_groups"] = groups
-    return build_task_from_canonical_request(
-        {
-            "intent": "fail_history_search",
-            "agent": "fail_history_agent",
-            "slots": slots,
-            "goal": f"{lotcd} {fail_type or '검출 파라미터'} 불량이력 검색".strip(),
-        },
-        task_id=f"task_{len(task_plan) + 1}_fail_history",
-    )
-
-
-def _build_postwads_relation_tree_task(state: Dict[str, Any], task_plan: list, reports=None) -> dict:
-    """WADS 검출을 report별로 Inline-WT 연관 분석하는 단일 task (_build_postwads_map_task 대칭).
-    report별 데이터는 rt_groups로 운반하고 relation_tree_agent가 group마다 분석한다.
-    reports=선택된 1개 report 리스트면 그것만, None이면 전체(기존 동작=회귀안전).
-    top-level lotcd/fail_type은 dispatch required(map_oper 외 lotcd+fail_type) 가드 충족용."""
-    lotcd = state.get("lotcd", "")
-    fail_type = _postwads_detected_params(state, reports)
-    groups = _postwads_report_groups(state, reports)
-    slots: dict[str, Any] = {"lotcd": lotcd, "fail_type": fail_type}
-    if groups:
-        slots["rt_groups"] = groups
-    return build_task_from_canonical_request(
-        {
-            "intent": "relation_tree",
-            "agent": "relation_tree_agent",
-            "slots": slots,
-            "goal": f"{lotcd} {fail_type or '검출 파라미터'} Inline-WT 연관 분석".strip(),
-        },
-        task_id=f"task_{len(task_plan) + 1}_relation_tree",
-    )
-
-
-# 후속 라우팅 테이블 — value(선택지)→구체 task 빌더. 검출 파라미터(fail_type)/lotcd는
-# state에서 빌더가 채우고, 부족분은 dispatch missing_param HITL이 보완한다.
-_POSTWADS_ROUTES = {
-    "map_agent": _build_postwads_map_task,
-    "fail_history_agent": _build_postwads_fail_history_task,
-    "relation_tree_agent": _build_postwads_relation_tree_task,
-}
-
-# interrupt 선택지. value는 _POSTWADS_ROUTES 키 또는 'none'(안 함).
-_POSTWADS_OPTIONS = [
-    {"label": "cummap/binmap 맵 조회", "value": "map_agent"},
-    {"label": "불량이력 조회", "value": "fail_history_agent"},
-    {"label": "LOTCD 연계 분석", "value": "relation_tree_agent"},
-    {"label": "안 함", "value": "none"},
-]
-
-_POSTWADS_CHOICE_SYSTEM = (
-    "WADS 검출 결과로 이어서 실행할 후속 작업 선택지를 사용자에게 제시했다. 아래 JSON은 제시된 "
-    "선택지(options)와 사용자의 자유 응답(answer)이다. 사용자가 고른 선택지의 value를 정확히 하나만 "
-    "출력해라. 아무것도 고르지 않거나 거절(안 함/취소/그만)이면 'none'을 출력해라. value 문자열 하나만 출력."
-)
-
-
-def _interpret_postwads_choice(answer: Any) -> str:
-    """사용자 응답 → 선택된 route 키('map_agent' 등) 또는 ''(미선택/거절). 키워드 매칭 금지.
-    UI 버튼 클릭(정확히 일치하는 value/label)은 LLM 없이 즉시 매핑하고, 자유응답만 LLM이 해석한다."""
-    if isinstance(answer, dict):
-        text = answer.get("postwads_choice") or next(iter(answer.values()), "")
-    else:
-        text = answer
-    text = str(text or "").strip()
-    if not text:
-        return ""
-    for opt in _POSTWADS_OPTIONS:  # UI 클릭 경로 — LLM 불필요
-        if text == opt.get("value") or text == opt.get("label"):
-            v = str(opt.get("value") or "")
-            return v if v in _POSTWADS_ROUTES else ""
-    try:  # 자유응답 → LLM 분류 (_interpret_confirmation과 동일 패턴, 키워드 금지)
-        verdict = (
-            _model.invoke(
-                [
-                    {"role": "system", "content": _POSTWADS_CHOICE_SYSTEM},
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {"options": _POSTWADS_OPTIONS, "answer": text},
-                            ensure_ascii=False,
-                        ),
-                    },
-                ],
-                config={"callbacks": _lf_callbacks()},
-            ).content
-            or ""
-        ).strip()
-    except Exception as e:
-        logger.warning("[PostWADS] 선택 해석 LLM 실패 (%s) — 미선택 처리", e)
-        return ""
-    return verdict if verdict in _POSTWADS_ROUTES else ""
-
-
-# ── fail_type 1차 선택 (2-step HITL의 첫 단계) ───────────────────────────────
-# wads 검출 후 어떤 fail_type(=report)을 후속 분석할지 먼저 고른다. 선택값은 report 인덱스
-# 문자열만 sentinel params(selected_idx)에 실어 운반하고, 재진입 시 _latest_wads_reports로 복원
-# 한다 (messages가 single source of truth — probe로 두 interrupt 사이 인덱스 안정성 입증).
-_POSTWADS_FAILTYPE_MESSAGE = "어느 fail_type의 후속을 분석할까요?"
-
-_POSTWADS_FAILTYPE_SYSTEM = (
-    "WADS 검출 결과의 fail_type 후속 선택지를 사용자에게 제시했다. 아래 JSON은 제시된 "
-    "선택지(options: label/value)와 사용자의 자유 응답(answer)이다. 사용자가 고른 선택지의 "
-    "value를 정확히 하나만 출력해라. 아무것도 고르지 않거나 거절(안 함/취소/그만)이면 'none'을 "
-    "출력해라. value 문자열 하나만 출력."
-)
-
-
-def _postwads_failtype_options(state: Dict[str, Any]) -> list[dict]:
-    """WADS report별 fail_type 선택지. label=`parameter @ map_oper`, value=report 인덱스 문자열.
-    + 마지막에 '안 함'(value='none'). report 1개여도 항상 제시한다."""
-    options: list[dict] = []
-    for idx, r in enumerate(_latest_wads_reports(state)):
-        param = str(r.get("parameter") or "").strip() or "(unknown)"
-        oper = _normalize_map_oper(str(r.get("map_oper") or "")).strip()
-        options.append({"label": f"{param} @ {oper}" if oper else param, "value": str(idx)})
-    options.append({"label": "안 함", "value": "none"})
-    return options
-
-
-def _interpret_postwads_failtype(answer: Any, state: Dict[str, Any]) -> str:
-    """사용자 응답 → 선택된 report 인덱스 문자열, 미선택/거절이면 ''. 키워드 매칭 금지.
-    UI 클릭(value/label 정확일치)은 LLM 없이 즉시, 자유응답만 LLM이 인덱스 분류한다
-    (_interpret_postwads_choice와 동일 패턴)."""
-    options = _postwads_failtype_options(state)
-    n_reports = len(_latest_wads_reports(state))
-    if isinstance(answer, dict):
-        text = answer.get("postwads_failtype") or next(iter(answer.values()), "")
-    else:
-        text = answer
-    text = str(text or "").strip()
-    if not text:
-        return ""
-    chosen = ""
-    for opt in options:  # UI 클릭 경로 — LLM 불필요
-        if text == opt.get("value") or text == opt.get("label"):
-            chosen = str(opt.get("value") or "")
-            break
-    if not chosen:  # 자유응답 → LLM 분류
-        try:
-            chosen = (
-                _model.invoke(
-                    [
-                        {"role": "system", "content": _POSTWADS_FAILTYPE_SYSTEM},
-                        {
-                            "role": "user",
-                            "content": json.dumps(
-                                {"options": options, "answer": text},
-                                ensure_ascii=False,
-                            ),
-                        },
-                    ],
-                    config={"callbacks": _lf_callbacks()},
-                ).content
-                or ""
-            ).strip()
-        except Exception as e:
-            logger.warning("[PostWADS] fail_type 해석 LLM 실패 (%s) — 미선택 처리", e)
-            return ""
-    if chosen == "none":
-        return ""
-    try:
-        idx = int(chosen)
-    except (TypeError, ValueError):
-        return ""
-    return chosen if 0 <= idx < n_reports else ""
-
-
-def _drop_postwads_sentinel(
-    remaining: list[dict], state: Dict[str, Any], step_count: int
-) -> Command:
-    """후속 미선택/거절 → sentinel 드롭. remaining 있으면 supervisor 재진입, 없으면 직전 결과로 턴 종료.
-    sentinel(+selected_idx)은 remaining에 없으므로 pending에서 빠지며 selected_idx도 함께 소멸한다."""
-    logger.info("[PostWADS] 후속 미선택 → sentinel 드롭 (remaining=%d)", len(remaining))
-    if remaining:
-        return Command(
-            update={
-                "step_count": step_count,
-                "pending_tasks": remaining,
-                "postwads_offered": True,
-            },
-            goto="supervisor",
-        )
-    last_agent_msg = next(
-        (
-            m.content
-            for m in reversed(state.get("messages", []))
-            if isinstance(m, AIMessage)
-            and getattr(m, "name", "") in _AGENT_NAMES
-            and isinstance(m.content, str)
-            and m.content.strip()
-        ),
-        "분석을 완료했습니다.",
-    )
-    return Command(
-        update={
-            "step_count": step_count,
-            "pending_tasks": [],
-            "postwads_offered": True,
-            "response": last_agent_msg,
-        },
-        goto=END,
-    )
-
-
-def _choose_postwads_or_drop(
-    current_task: dict, remaining: list[dict], state: Dict[str, Any], step_count: int
-) -> Command:
-    """dispatch 직전 후속 선택 처리 (_confirm_or_drop과 같은 멱등 구간 — 무거운 부수효과 이전).
-    2-step HITL을 super-step 분리로 처리한다 (한 노드 1 interrupt + 1 LLM = replay-safe):
-      - 1차: fail_type 선택. 선택 시 인덱스만 sentinel params(selected_idx)에 실어 commit 후 재진입.
-      - 2차: selected_idx가 있으면 분석종류 선택 → 그 1개 report로만 구체 task 빌드(치환).
-      - 어느 단계든 미선택/거절 → sentinel 드롭."""
-    task_plan = state.get("task_plan") or []
-    params = current_task.get("params") or {}
-    selected_idx = params.get("selected_idx")
-    reports_all = _latest_wads_reports(state)
-
-    # ── super-step 1: fail_type 선택 (selected_idx 미확정 & 고를 report가 있을 때만) ──
-    # report breakdown이 없으면(detected는 lot_ids/groupkeys로만) 고를 게 없으므로 건너뛰고
-    # 바로 분석종류 선택으로 간다(reports=None fallback = 기존 동작, 회귀안전).
-    if selected_idx is None and reports_all:
-        ft_answer = interrupt({
-            "type": "confirm",
-            "interrupt_type": "postwads_choice",  # 기존 타입 재사용 → agent_server 가드/resume 그대로
-            "param": "postwads_failtype",
-            "message": _POSTWADS_FAILTYPE_MESSAGE,
-            "options": _postwads_failtype_options(state),
-            "route": "",
-        })
-        chosen_idx = _interpret_postwads_failtype(ft_answer, state)
-        if not chosen_idx:
-            return _drop_postwads_sentinel(remaining, state, step_count)
-        # commit 후 재진입 (super-step 분리). sentinel엔 인덱스만 운반, task_plan은 안 건드림.
-        requeued = {**current_task, "params": {**params, "selected_idx": chosen_idx}}
-        update = {"step_count": step_count, "pending_tasks": [requeued] + remaining}
-        # 사용자가 고른 단일 파라미터를 dispatch와 무관한 전용 필드에 기록(사실만) →
-        # 다음 turn planner가 문맥 상속 판단에 사용. 상속 여부는 planner가 결정(코드 자동상속 X).
-        try:
-            sel_param = str(reports_all[int(chosen_idx)].get("parameter") or "").strip()
-            if sel_param:
-                update["selected_fail_type"] = sel_param
-        except (TypeError, ValueError, IndexError):
-            pass
-        logger.info("[PostWADS] fail_type 선택 idx=%s → 재진입", chosen_idx)
-        return Command(update=update, goto="supervisor")
-
-    # ── super-step 2: 분석종류 선택 (selected_idx 확정, 또는 report 없어 1차 생략) ──
-    # selected_idx로 report 복원. None(생략)/복원 실패 → reports=None 전체 fallback(회귀안전).
-    selected = None
-    if selected_idx is not None:
-        try:
-            selected = [reports_all[int(selected_idx)]]
-        except (TypeError, ValueError, IndexError):
-            selected = None
-    answer = interrupt({
-        "type": "confirm",
-        "interrupt_type": "postwads_choice",
-        "param": "postwads_choice",
-        "message": _POSTWADS_CHOICE_MESSAGE,
-        "options": _POSTWADS_OPTIONS,
-        "route": "",
-    })
-    chosen = _interpret_postwads_choice(answer)
-    if chosen in _POSTWADS_ROUTES:
-        concrete = _POSTWADS_ROUTES[chosen](state, task_plan, selected)
-        logger.info("[PostWADS] 선택=%s(idx=%s) → %s 큐 추가(치환)", chosen, selected_idx, concrete.get("task_id"))
-        return Command(
-            update={
-                "step_count": step_count,
-                "pending_tasks": [concrete] + remaining,
-                "task_plan": task_plan + [concrete],
-                "postwads_offered": True,
-            },
-            goto="supervisor",
-        )
-    return _drop_postwads_sentinel(remaining, state, step_count)
-
-
 def _drop_choice_sentinel(
     remaining: list[dict], state: Dict[str, Any], step_count: int
 ) -> Command:
     """선택 미진행 → sentinel 드롭(remaining 재진입 / 없으면 직전 결과로 END). offer 플래그는
-    제안 시 이미 set돼 있어 여기서 다시 set하지 않는다 (_drop_postwads_sentinel의 일반화 버전)."""
+    제안 시 guard_key로 이미 set돼 있어 여기서 다시 set하지 않는다."""
     logger.info("[Choice] 미선택 → sentinel 드롭 (remaining=%d)", len(remaining))
     if remaining:
         return Command(
@@ -3335,9 +2964,9 @@ def _drop_choice_sentinel(
 # 후속 트리거 판단을 supervisor에서 결과 생성 에이전트로 옮긴다. 에이전트가 자기 결과
 # envelope.followups에 후속을 선언하면(이상감지/검출수/main_oper/group 산출 여부는 에이전트가
 # 안다), replanner가 _propose_followups로 enqueue, supervisor가 dispatch 직전
-# _resolve_followup_or_drop로 confirm/choice interrupt를 해소한다. 4개 _maybe_propose_* +
-# 3개 choice 핸들러를 대체한다(confirm 해소는 기존 _confirm_or_drop 재사용). 마이그레이션
-# 중에는 기존 함수와 병존하며 한 체인씩 신규 경로로 옮긴다.
+# _resolve_followup_or_drop로 confirm/choice interrupt를 해소한다. 모든 후속(yield→wads /
+# postwads 2-step / relation→main_oper / wt_resp→mining)이 이 선언적 경로로 통합됐다
+# (confirm 해소는 _confirm_or_drop, 1-step/2-step 택1은 _resolve_single_choice 재사용).
 def _latest_result_followups(state: Dict[str, Any]) -> list[dict]:
     """가장 최근 에이전트 결과 envelope의 followups를 읽는다(없으면 []).
     replanner는 직전 에이전트 완료 직후 돌므로 latest agent message가 방금 끝난 에이전트다."""
@@ -3351,7 +2980,7 @@ def _latest_result_followups(state: Dict[str, Any]) -> list[dict]:
 
 
 def _propose_followups(state: Dict[str, Any]) -> dict:
-    """선언적 후속 제안(4개 _maybe_propose_*의 일반화). 최신 결과 envelope의 followups를 읽어
+    """선언적 후속 제안(모든 후속 체인 공통). 최신 결과 envelope의 followups를 읽어
     guard로 중복 차단 후 pending/task_plan에 추가한다:
       - confirm: agent+default_slots로 구체 task를 만들고 confirm_tasks 등록(_confirm_or_drop이 해소).
       - choice : __choice__ sentinel(followup 스펙을 params로 운반)로 추가(_resolve_followup_or_drop이 해소).
@@ -3475,29 +3104,67 @@ def _resolve_single_choice(
     step_count: int,
     fu: dict,
 ) -> Command:
-    """generic 단일 택1 choice 해소 (단일 interrupt=replay-safe).
-    선택 → choice_target_agent task로 치환(default_slots + 선택 option.slots). 미선택/거절 → 드롭."""
+    """generic 택1 choice 해소 (한 노드 1 interrupt = replay-safe). 옵션 스펙만 보고 분기:
+    - 1-step: `choice_options` + `choice_target_agent`로 한 번에 택1 → 그 agent task 치환.
+    - 2-step: `prefilter_options`로 먼저 좁힌 뒤(선택 idx를 sentinel params에 실어 재진입=super-step
+      분리), 그 idx의 `choice_option_sets[idx]`를 2차 택1로 제시. 선택지마다 per-option `agent` 허용.
+    옵션·데이터(per-report 그룹 등)는 결과 생성 에이전트가 followup에 선언한다. 미선택/거절 → 드롭."""
     task_plan = state.get("task_plan") or []
-    # 선언된 선택지 + '안 함'(none) — 거절 경로를 항상 제공.
-    options = [o for o in (fu.get("choice_options") or []) if isinstance(o, dict)]
-    options = options + [{"label": "안 함", "value": "none"}]
-    target_agent = str(fu.get("choice_target_agent") or "")
+    params = current_task.get("params") or {}
+    selected_idx = params.get("selected_idx")
+
+    # ── Step 1 (2-step 전용): prefilter로 먼저 한 번 좁힌다 (예: WADS report별 fail_type) ──
+    prefilter = [o for o in (fu.get("prefilter_options") or []) if isinstance(o, dict)]
+    if prefilter and selected_idx is None:
+        options = prefilter + [{"label": "안 함", "value": "none"}]
+        answer = interrupt({
+            "type": "confirm",
+            "interrupt_type": "postwads_choice",  # agent_server 가드/resume 호환 타입 재사용
+            "param": "followup_choice",
+            "message": str(fu.get("prefilter_message") or "어느 항목의 후속을 분석할까요?"),
+            "options": options,
+            "route": "",
+        })
+        chosen = _interpret_single_choice(answer, options)
+        if chosen is None:
+            return _drop_choice_sentinel(remaining, state, step_count)
+        # 선택 idx만 sentinel params에 실어 재진입(super-step 분리). task_plan은 안 건드림.
+        requeued = {**current_task, "params": {**params, "selected_idx": str(chosen.get("value"))}}
+        update: dict = {"step_count": step_count, "pending_tasks": [requeued] + remaining}
+        # 사용자가 고른 fail_type을 dispatch 무관 전용 필드에 기록(사실만) → 다음 턴 planner 문맥 상속 판단용.
+        ft = str(chosen.get("fail_type") or "").strip()
+        if ft:
+            update["selected_fail_type"] = ft
+        logger.info("[Followup] prefilter 선택 idx=%s → 재진입", chosen.get("value"))
+        return Command(update=update, goto="supervisor")
+
+    # ── Step 2: 택1 메뉴 (1-step이면 곧장, 2-step이면 선택된 idx의 옵션셋) ──
+    option_sets = fu.get("choice_option_sets")
+    if isinstance(option_sets, list) and option_sets:
+        try:
+            base_options = option_sets[int(selected_idx)] if selected_idx is not None else option_sets[0]
+        except (TypeError, ValueError, IndexError):
+            base_options = option_sets[0]
+    else:
+        base_options = fu.get("choice_options") or []  # 1-step flat
+    options = [o for o in base_options if isinstance(o, dict)] + [{"label": "안 함", "value": "none"}]
     answer = interrupt({
         "type": "confirm",
-        "interrupt_type": "postwads_choice",  # 기존 타입 재사용 → agent_server 가드/resume 무변경
+        "interrupt_type": "postwads_choice",
         "param": "followup_choice",
         "message": str(fu.get("choice_message") or "이어서 무엇을 할까요?"),
         "options": options,
         "route": "",
     })
     chosen = _interpret_single_choice(answer, options)
+    target_agent = str((chosen or {}).get("agent") or fu.get("choice_target_agent") or "")
     if chosen is not None and target_agent:
         slots = {**(fu.get("default_slots") or {}), **(chosen.get("slots") or {})}
         concrete = build_task_from_canonical_request(
             {"agent": target_agent, "slots": slots, "goal": str(chosen.get("goal") or "")},
             task_id=f"task_{len(task_plan) + 1}_{target_agent}",
         )
-        update: dict = {
+        update = {
             "step_count": step_count,
             "pending_tasks": [concrete] + remaining,
             "task_plan": task_plan + [concrete],
@@ -3515,12 +3182,9 @@ def _resolve_single_choice(
 def _resolve_followup_or_drop(
     current_task: dict, remaining: list[dict], state: Dict[str, Any], step_count: int
 ) -> Command:
-    """dispatch 직전 __choice__ sentinel 해소(3개 choice 핸들러의 일반화). followup.choice_kind 분기:
-    - single  : _resolve_single_choice (택1 → 타깃 agent task 치환).
-    - postwads : 2-step super-step 전용 처리(per-report 빌더 보존)."""
+    """dispatch 직전 __choice__ sentinel 해소. 옵션 스펙만 보는 generic 택1 해소기로 위임
+    (1-step/2-step 모두 _resolve_single_choice가 처리)."""
     fu = (current_task.get("params") or {}).get("followup") or {}
-    if str(fu.get("choice_kind") or "single") == "postwads":
-        return _choose_postwads_or_drop(current_task, remaining, state, step_count)
     return _resolve_single_choice(current_task, remaining, state, step_count, fu)
 
 
