@@ -130,7 +130,7 @@ def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     )
     result_message = AIMessage(content=summary, name="wt_resp_agent")
     # S2: group_good/bad 산출 시 mining 실행 후속을 envelope에 선언한다(트리거를 결과 생성
-    # 에이전트가 소유). default_slots로 5개 슬롯을 명시 운반 → mining이 god-state 대신 task.params로
+    # 에이전트가 소유). default_slots로 슬롯을 명시 운반 → mining이 god-state 대신 task.params로
     # 받는다(confirm=dispatch 직전 yes/no).
     followups = []
     if group_good or group_bad:
@@ -141,6 +141,7 @@ def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                 "lotcd": lotcode,
                 "fail_type": wt_para,
                 "cause_oper": main_oper,
+                "wads_category": category,
                 "group_good": group_good,
                 "group_bad": group_bad,
             },

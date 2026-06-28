@@ -589,6 +589,28 @@ async def chat_stream(request: ChatRequest, req: Request):
             # wt_resp가 산출하는 양품/불량 그룹 — 매 새 turn 리셋(이전 turn 그룹 누수 방지).
             "group_good": [],
             "group_bad": [],
+            # god-state 폐기: 의미 쿼리 슬롯은 턴 경계를 넘지 않는다 — 매 새 turn 리셋.
+            # 이전 턴 fail_type가 다음 턴 워커에 stale하게 주입되던 멀티턴 버그 차단(예: IGATE(P) 잔존).
+            # in-turn 상속은 followup default_slots, cross-turn은 planner 재도출. lotcd/ref_date는 세션 앵커라 제외.
+            # (resume 경로엔 적용 안 됨 → interrupt 체인은 task.params로 컨텍스트 유지.)
+            "fail_type": "",
+            "cause_oper": "",
+            "wads_category": "",
+            # map_oper(PT1H/PT1C)도 동일 클래스 leak: map_agent가 결과로 state에 되돌려써(map_agent.py)
+            # 다음 턴 무공정 맵 요청이 stale 공정을 묻지 않고 써버린다 → 매 턴 리셋. in-turn은
+            # wads→map chaining(ResolveChained)·postwads map_slots가 task.params로 운반.
+            "map_oper": "",
+            # mining tech/rank_limit도 동일 클래스: mining이 결과로 되돌려써(mining_agent.py) 잔존 →
+            # 매 턴 디폴트로 리셋(미지정="" / top-10). user_id는 멀티턴 '기억'이 아니라 신원이라
+            # 매 요청에 프론트가 주입(request.user_id) — 기억이 아니라 재공급이라 stale 클래스 아님.
+            "tech": "",
+            "rank_limit": 10,
+            "user_id": request.user_id,
+            # lotcd/ref_date: 끈적한 god-state 앵커였음 → 매 턴 리셋(제품=재도출, 날짜=today 디폴트)로
+            # cross-turn stale 차단. 같은 턴 내 god-state 공유(yield→ppt 라벨 등)는 dispatch persist가
+            # 다시 채우므로 유지. cross-turn 제품 참조는 planner가 recent_results에서 재도출.
+            "lotcd": "",
+            "ref_date": datetime.now().strftime("%Y%m%d"),
             # 확인 대기 게이트 — 매 새 turn 리셋(미리셋 시 stale confirm 게이트가 턴 넘어 잔존).
             "confirm_tasks": {},
             # WADS report별 cummap fan-out 입력 — 매 새 turn 리셋(이전 turn 그룹 잔존 방지).

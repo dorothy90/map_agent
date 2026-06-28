@@ -24,15 +24,21 @@ logger = logging.getLogger("yield_agent.relation_tree_agent")
 _MAINOPER_CHOICE_MESSAGE = "어느 main_oper로 WT Resp 분석을 이어갈까요?"
 
 
-def _mainoper_followups(lotcd: str, fail_type: str, main_opers: list[str]) -> list[dict]:
+def _mainoper_followups(
+    lotcd: str, fail_type: str, main_opers: list[str], wads_category: str = ""
+) -> list[dict]:
     """S2: 연관 main_oper 후보를 택1 choice followup으로 선언한다(트리거를 결과 생성 에이전트가 소유).
-    선택 → wt_resp_agent task로 치환(cause_oper=선택 oper, lotcd/fail_type 상속). main_opers 없으면 []."""
+    선택 → wt_resp_agent task로 치환(cause_oper=선택 oper, lotcd/fail_type/wads_category 상속). main_opers 없으면 []."""
     if not main_opers:
         return []
     options = [
         {"label": m, "value": str(i), "slots": {"cause_oper": m}}
         for i, m in enumerate(main_opers)
     ]
+    # god-state 폐기: 공정(wads_category)을 wt_resp(→mining) task.params로 명시 운반.
+    default_slots = {"lotcd": lotcd, "fail_type": fail_type}
+    if wads_category:
+        default_slots["wads_category"] = wads_category
     return [{
         "agent": "__choice__",
         "goal": "relation_tree main_oper 선택",
@@ -40,7 +46,7 @@ def _mainoper_followups(lotcd: str, fail_type: str, main_opers: list[str]) -> li
         "choice_message": _MAINOPER_CHOICE_MESSAGE,
         "choice_target_agent": "wt_resp_agent",
         "choice_options": options,
-        "default_slots": {"lotcd": lotcd, "fail_type": fail_type},
+        "default_slots": default_slots,
         "guard_key": "mainoper_offered",
         "guard_agents": ["wt_resp_agent", "mining_agent"],
     }]
@@ -135,7 +141,7 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
             title="relation_tree",
             summary=summary,
             extensions={"relation_tree_agent": {"main_opers": main_opers}},
-            followups=_mainoper_followups(lot_code, fail_type, main_opers),
+            followups=_mainoper_followups(lot_code, fail_type, main_opers, category),
         )
         return {
             "messages": [msg],
@@ -157,7 +163,8 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
         }
 
     # lotcd+fail_type로 연관 main_oper 후보 조회 → 후속 main_oper 선택 HITL의 선택지가 된다.
-    main_opers = _query_main_opers(lot_code, fail_type, (state.get("wads_category") or "").strip())
+    category = (state.get("wads_category") or "").strip()
+    main_opers = _query_main_opers(lot_code, fail_type, category)
     logger.info("[Relation Tree Agent] main_opers=%d", len(main_opers))
     opers_html = "".join(f"<li>{_h(m)}</li>" for m in main_opers) or "<li>-</li>"
     html_content = (
@@ -181,7 +188,7 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
         title="relation_tree",
         summary=summary,
         extensions={"relation_tree_agent": {"main_opers": main_opers}},
-        followups=_mainoper_followups(lot_code, fail_type, main_opers),
+        followups=_mainoper_followups(lot_code, fail_type, main_opers, category),
     )
     return {
         "messages": [msg],

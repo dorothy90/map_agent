@@ -588,6 +588,8 @@ class RecentResultIndexEntry(BaseModel):
     # carry-both (i): per-report rows (html-stripped) for report-ordinal (#RN) resolution,
     # carried separately from `rows` (which stays per-wafer for #N and planner context).
     reports: list[dict[str, Any]] = Field(default_factory=list)
+    # 제품(lotcd): planner가 god-state 대신 여기서 '현재 제품'을 재도출(cross-turn 참조용).
+    products: list[str] = Field(default_factory=list)
 
     @field_validator("rows")
     @classmethod
@@ -920,6 +922,9 @@ def build_recent_result_index_entry(payload: ResultEnvelopeV1 | dict[str, Any]) 
         rows=rows,
         artifact_refs=artifact_refs,
         reports=reports,
+        products=[
+            p for p in ((dumped.get("entities") or {}).get("products") or []) if p
+        ],
     )
     return entry.model_dump(mode="json")
 

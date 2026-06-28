@@ -133,11 +133,12 @@ def _norm_map_oper(raw: str) -> str:
     return ""
 
 
-def _postwads_option_set(reports: list[dict], lotcd: str) -> list[dict]:
+def _postwads_option_set(reports: list[dict], lotcd: str, wads_category: str = "") -> list[dict]:
     """검출 후속 분석종류 3옵션(맵/불량이력/연계분석)을 주어진 report들로 스코핑해 만든다.
     각 옵션 slots에 per-report fan-out 입력(map_groups/fail_groups/rt_groups)을 prebuilt로 싣는다 —
     supervisor는 선택된 옵션을 그대로 task로 치환만 한다. reports=[]면 그룹 없이(=lot-only fallback,
-    dispatch chained/missing_param가 보완). reports=[단일]이면 그 report 1건으로 스코핑."""
+    dispatch chained/missing_param가 보완). reports=[단일]이면 그 report 1건으로 스코핑.
+    wads_category(공정)는 god-state 대신 연계분석 task.params로 명시 운반(relation→wt_resp→mining)."""
     map_groups: list[dict] = []
     for r in reports:
         gks = [str(g).strip() for g in (r.get("groupkeys") or []) if str(g).strip()]
@@ -176,6 +177,8 @@ def _postwads_option_set(reports: list[dict], lotcd: str) -> list[dict]:
     fail_type = ",".join(params)
     fail_slots: dict[str, Any] = {"lotcd": lotcd, "fail_type": fail_type}
     rt_slots: dict[str, Any] = {"lotcd": lotcd, "fail_type": fail_type}
+    if wads_category:  # 공정 narrowing을 연계분석으로 운반(god-state 폐기)
+        rt_slots["wads_category"] = wads_category
     if groups:
         fail_slots["fail_groups"] = groups
         rt_slots["rt_groups"] = groups
@@ -190,7 +193,7 @@ def _postwads_option_set(reports: list[dict], lotcd: str) -> list[dict]:
     ]
 
 
-def _build_postwads_followup(report_rows: list[dict], lotcd: str) -> dict:
+def _build_postwads_followup(report_rows: list[dict], lotcd: str, wads_category: str = "") -> dict:
     """WADS 검출 후속 선택을 선언적 followup으로 구성(트리거+데이터+메뉴를 결과 에이전트가 소유).
     report breakdown 있으면 2-step(report별 fail_type 1차 → 분석종류 2차), 없으면(lot-only) 1-step
     단일 옵션셋. supervisor의 generic _resolve_single_choice가 옵션 스펙만 보고 해소한다."""
@@ -206,10 +209,10 @@ def _build_postwads_followup(report_rows: list[dict], lotcd: str) -> dict:
                 "value": str(idx),
                 "fail_type": param,
             })
-            choice_option_sets.append(_postwads_option_set([r], lotcd))
+            choice_option_sets.append(_postwads_option_set([r], lotcd, wads_category))
     else:
         prefilter_options = []
-        choice_option_sets = [_postwads_option_set([], lotcd)]
+        choice_option_sets = [_postwads_option_set([], lotcd, wads_category)]
     return {
         "agent": "__choice__",
         "goal": "WADS 검출 후속 선택",
@@ -483,7 +486,7 @@ def _render_wads_report_html(payload: Any) -> str:
 def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     """WADS Agent 노드: 열화 검출 리포트를 Oracle DB에서 조회"""
     state = {**state, **((state.get("current_task") or {}).get("params") or {})}  # S1-a: task params 우선, scalar fallback
-    lotcd = state.get("lotcd", "4SS")
+    lotcd = state.get("lotcd", "")
     end_tm = state.get("wads_end_tm", "")
     start_tm = state.get("wads_start_tm", "")
     parameter = state.get("fail_type", "")
@@ -841,7 +844,7 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     # supervisor의 generic _resolve_single_choice가 옵션 스펙만 보고 기계적으로 해소한다.
     followups = []
     if wads_groupkeys or wads_lot_ids:
-        followups = [_build_postwads_followup(report_index_rows, lotcd)]
+        followups = [_build_postwads_followup(report_index_rows, lotcd, category)]
     attach_result_envelope(
         result_message,
         logger=logger,

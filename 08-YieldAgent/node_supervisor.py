@@ -265,7 +265,8 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
         proj.update(
             {
                 "map_type": task_params.get("map_type", "binmap"),
-                "map_oper": task_params.get("map_oper") or state.get("map_oper", ""),
+                # god-state 폐기: 공정은 task.params(planner/chaining/postwads)에서만. stale 상속 금지.
+                "map_oper": task_params.get("map_oper", ""),
                 # wafer-number pattern filter (LLM fills wf_mod/wf_rem; SQL applies MOD).
                 "wf_mod": task_params.get("wf_mod") or 0,
                 "wf_rem": task_params.get("wf_rem") or 0,
@@ -293,18 +294,20 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
         proj["rt_groups"] = task_params.get("rt_groups") or []
 
     elif agent == "mining_agent":
-        # 상류(wads→wt_resp) 공유키 상속: lotcd, fail_type, wads_category(=mode), cause_oper(main_oper).
+        # 상류(wads→wt_resp) 공유키는 wt_resp followup의 default_slots가 task.params로 운반한다
+        # (god-state 상속 폐기). lotcd만 세션 앵커로 state fallback 유지.
         proj["lotcd"] = task_params.get("lotcd") or state.get("lotcd", "")
-        proj["fail_type"] = _parse_fail_type(task_params) or state.get("fail_type", "")
-        proj["cause_oper"] = _parse_cause_oper(task_params) or state.get("cause_oper", "")
-        proj["wads_category"] = task_params.get("wads_category") or state.get("wads_category", "")
+        proj["fail_type"] = _parse_fail_type(task_params)
+        proj["cause_oper"] = _parse_cause_oper(task_params)
+        proj["wads_category"] = task_params.get("wads_category")
         # group_good/group_bad: 사용자 직접 입력 또는 상류 결과 상속 (chained-input).
         proj["group_good"] = task_params.get("group_good") or state.get("group_good") or []
         proj["group_bad"] = task_params.get("group_bad") or state.get("group_bad") or []
-        # mining 고유 슬롯
-        proj["tech"] = task_params.get("tech") or state.get("tech", "")
+        # mining 고유 슬롯. tech/rank_limit: god-state 상속 폐기(매 턴 디폴트로 리셋됨) → task.params만.
+        # user_id: 멀티턴 기억이 아니라 매 요청 주입된 신원 → state(요청값) fallback 유지(stale 아님).
+        proj["tech"] = task_params.get("tech", "")
         proj["user_id"] = task_params.get("user_id") or state.get("user_id", "")
-        proj["rank_limit"] = task_params.get("rank_limit") or state.get("rank_limit") or 10
+        proj["rank_limit"] = task_params.get("rank_limit") or 10
 
     return proj
 
@@ -766,11 +769,12 @@ def supervisor_node(
             **current_task,
             "params": current_params,
         }
-        # S1-b: god-state로는 cross-agent '턴 컨텍스트'(doc §3.1 ctx)만 영속화한다. per-task scalar
-        # (lot_ids/groupkey/map_*/wads_*/dh_query 등)는 더 이상 smear하지 않는다 — 각 워커는 자기
-        # task.params에서 읽고(S1-a), 결과 파생은 envelope로 체이닝된다. ctx 5종은 자기 schema/params에
-        # 없이 god-state로만 읽는 다운스트림(wt_resp/relation의 wads_category 등)을 위해 유지.
-        for _ck in ("lotcd", "fail_type", "cause_oper", "wads_category", "ref_date"):
+        # god-state 폐기: 의미 쿼리 슬롯(fail_type/cause_oper/wads_category)은 더 이상 영속화하지
+        # 않는다 — 끈적한 글로벌이 옛 턴 값을 다음 턴에 stale하게 주입하던 leak의 원천이었다.
+        # 각 워커는 자기 task.params에서만 읽고(S1-a), in-turn 상속은 followup default_slots(S2),
+        # cross-turn 상속은 planner 재도출(recent_results)로 일어난다. lotcd/ref_date만 PPT 라벨·
+        # planner 제품 힌트가 읽는 세션 표시 앵커로 유지.
+        for _ck in ("lotcd", "ref_date"):
             if proj.get(_ck) not in (None, "", [], {}):
                 update_dict[_ck] = proj[_ck]
 

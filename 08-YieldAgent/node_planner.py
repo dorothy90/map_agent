@@ -220,8 +220,14 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     recent_context = _recent_results_prompt_context(recent_results)
     if recent_context:
         meta_parts.append(recent_context)
-    if state.get("lotcd"):
-        meta_parts.append(f"현재 제품: {state['lotcd']}")
+    # god-state 폐기: '현재 제품' 힌트를 god-state lotcd가 아니라 최근 결과(recent_results)에서
+    # 도출한다(가장 최근 결과의 products). 대화/결과 기록이 단일 기억 — 끈적한 변수 없음.
+    _cur_product = next(
+        (p for r in reversed(recent_results) for p in (r.get("products") or []) if p),
+        "",
+    )
+    if _cur_product:
+        meta_parts.append(f"현재 제품: {_cur_product}")
     # S1-b: god-state lot_ids 제거. reference 해소는 위 recent_results(K=10 윈도우)가 단일 경로이며,
     # 별도 "이전 lot" 힌트(무윈도우 envelope)는 window 경계를 깨므로(beyond-window가 해소돼버림) 두지 않는다.
     # ("그 lot들" 결과-파생 체이닝은 _resolve_chained_params가 envelope에서 따로 처리한다.)

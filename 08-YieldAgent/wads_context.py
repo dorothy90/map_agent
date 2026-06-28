@@ -195,11 +195,16 @@ def _apply_recent_wads_to_map_tasks(
     if not groups:
         return tasks, trace
 
-    # 활성 fail_type(사용자가 postwads에서 고른 단일 파라미터)이 있으면 그 parameter가 속한
+    # 활성 fail_type(이번 턴 map task에 실린 단일 파라미터)이 있으면 그 parameter가 속한
     # map_oper로 fan-out을 스코핑한다. 예) FMAX(X)는 PT1C_TEST 전용 → cummap을 PT1C 1개로 한정
     # (선택 안 했거나 매칭 report 없으면 기존 전체 fan-out 유지). reports의 parameter→map_oper
-    # 데이터 매핑만 사용(키워드 매핑 아님).
-    fail_type = (state.get("fail_type") or "").strip()
+    # 데이터 매핑만 사용(키워드 매핑 아님). god-state 폐기: 글로벌이 아닌 task.params에서 읽는다.
+    fail_type = ""
+    for _t in tasks:
+        _fp = str((_t.get("params") or {}).get("fail_type") or "").strip()
+        if _fp:
+            fail_type = _fp
+            break
     if fail_type and "," not in fail_type:
         allowed_opers = {
             _normalize_map_oper(str(r.get("map_oper") or "")) or _map_oper_from_wads_row(r)

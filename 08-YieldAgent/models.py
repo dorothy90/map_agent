@@ -21,6 +21,8 @@ class ChatRequest(BaseModel):
     # interrupt resume — structured HITL contract: a {slot: value} dict (React form /
     # e2e). A bare str is the degraded Streamlit fallback (fills only the first slot).
     resume_value: str | dict[str, Any] | None = None
+    # 로그인 신원: 멀티턴 '기억'이 아니라 매 요청에 프론트가 주입(없으면 ""). mining이 읽음.
+    user_id: str = ""
 
 
 # ── SSE Event Types ──────────────────────────────────────
