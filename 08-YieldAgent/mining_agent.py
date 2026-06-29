@@ -453,12 +453,24 @@ _mining_graph = create_react_agent(
 def mining_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     """ReAct 노드: state 슬롯으로 mining 실행/질의응답. df_GINI는 동적 HTML artifact +
     result envelope로 내보내고, gini rows는 state(mining_rows)에 머금어 다음 turn Q&A에 재사용."""
+    # [DEBUG flow E] 병합 전: task.params(우선) vs state(fallback) 각각의 그룹값을 분리 확인.
+    # 둘 다 비어 있으면 상류(wt_resp followup) 또는 _clean_slots에서 유실된 것.
+    _task_params = (state.get("current_task") or {}).get("params") or {}
+    logger.debug(
+        "[DEBUG flow E] 병합 전 task.params good=%r bad=%r / state good=%r bad=%r",
+        _task_params.get("group_good"), _task_params.get("group_bad"),
+        state.get("group_good"), state.get("group_bad"),
+    )
     state = {**state, **((state.get("current_task") or {}).get("params") or {})}  # S1-a: task params 우선, scalar fallback
     lot_cd = (state.get("lotcd") or "").strip()
     fail_name = (state.get("fail_type") or "").strip()
     mode = (state.get("wads_category") or "").strip()
     group_good = _as_list(state.get("group_good"))
     group_bad = _as_list(state.get("group_bad"))
+    # [DEBUG flow E] 병합·정규화 후 mining이 실제 사용하는 최종 그룹값.
+    logger.debug(
+        "[DEBUG flow E] 병합 후 최종 group_good=%r group_bad=%r", group_good, group_bad
+    )
     tech = (state.get("tech") or "").strip()
     user_id = (state.get("user_id") or "").strip()
     rank_limit = state.get("rank_limit") or 10

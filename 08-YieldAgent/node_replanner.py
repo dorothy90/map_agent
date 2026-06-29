@@ -478,6 +478,21 @@ def _propose_followups(state: Dict[str, Any]) -> dict:
                 task_id=f"task_{len(task_plan) + 1}_{agent}",
             )
             task_id = task["task_id"]
+            # [DEBUG flow C/D] build_task_from_canonical_request → _clean_slots 통과 후 결과.
+            # default_slots와 비교: 여기서 group_good/bad가 사라졌다면 _clean_slots가 빈값([]/"")
+            # 또는 allowed 밖이라 버린 것. (mining_agent allowed는 canonical_request.AGENT_SLOT_RULES)
+            if agent == "mining_agent":
+                _ds = dict(fu.get("default_slots") or {})
+                logger.debug(
+                    "[DEBUG flow C] mining default_slots good=%r bad=%r",
+                    _ds.get("group_good"), _ds.get("group_bad"),
+                )
+                logger.debug(
+                    "[DEBUG flow D] mining task.params(_clean_slots 후) good=%r bad=%r 전체키=%s",
+                    task.get("params", {}).get("group_good"),
+                    task.get("params", {}).get("group_bad"),
+                    list(task.get("params", {}).keys()),
+                )
             if fu.get("confirm"):
                 confirm_tasks[task_id] = str(
                     fu.get("confirm_message") or "후속 작업을 실행하시겠습니까?"

@@ -115,6 +115,10 @@ def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         len(group_good),
         len(group_bad),
     )
+    # [DEBUG group_good/bad flow — seam A] 산출 직후 실제 값. 빈 리스트면 이후 _clean_slots에서 탈락.
+    logger.debug(
+        "[DEBUG flow A] wt_resp 산출 group_good=%r group_bad=%r", group_good, group_bad
+    )
 
     html_content = (
         f"<h1>WT Resp 분석: {_h(lotcode)} / {_h(wt_para)}</h1>"
@@ -149,6 +153,12 @@ def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "confirm_message": "선택한 양품/불량 그룹으로 mining 분석을 실행할까요?",
             "guard_agents": ["mining_agent"],
         }]
+        # [DEBUG flow B] followup default_slots에 실린 그룹(= 이후 mining task.params 후보).
+        logger.debug(
+            "[DEBUG flow B] followup default_slots group_good=%r group_bad=%r",
+            followups[0]["default_slots"].get("group_good"),
+            followups[0]["default_slots"].get("group_bad"),
+        )
     attach_result_envelope(
         result_message,
         logger=logger,
