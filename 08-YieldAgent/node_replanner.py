@@ -481,16 +481,20 @@ def _propose_followups(state: Dict[str, Any]) -> dict:
             # [DEBUG flow C/D] build_task_from_canonical_request → _clean_slots 통과 후 결과.
             # default_slots와 비교: 여기서 group_good/bad가 사라졌다면 _clean_slots가 빈값([]/"")
             # 또는 allowed 밖이라 버린 것. (mining_agent allowed는 canonical_request.AGENT_SLOT_RULES)
+            # ※ 형태 주의: _clean_slots(canonical_request.py)는 value not in (None,"",[]) 만 버린다.
+            #   → 빈 list []는 탈락하지만 빈 dict {}는 통과. dict면 키 누락 없이 그대로 params로 간다.
             if agent == "mining_agent":
                 _ds = dict(fu.get("default_slots") or {})
+                _dg, _db = _ds.get("group_good"), _ds.get("group_bad")
+                _pg = task.get("params", {}).get("group_good")
+                _pb = task.get("params", {}).get("group_bad")
                 logger.debug(
-                    "[DEBUG flow C] mining default_slots good=%r bad=%r",
-                    _ds.get("group_good"), _ds.get("group_bad"),
+                    "[DEBUG flow C] mining default_slots good=(%s)%r bad=(%s)%r",
+                    type(_dg).__name__, _dg, type(_db).__name__, _db,
                 )
                 logger.debug(
-                    "[DEBUG flow D] mining task.params(_clean_slots 후) good=%r bad=%r 전체키=%s",
-                    task.get("params", {}).get("group_good"),
-                    task.get("params", {}).get("group_bad"),
+                    "[DEBUG flow D] mining task.params(_clean_slots 후) good=(%s)%r bad=(%s)%r 전체키=%s",
+                    type(_pg).__name__, _pg, type(_pb).__name__, _pb,
                     list(task.get("params", {}).keys()),
                 )
             if fu.get("confirm"):

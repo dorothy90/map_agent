@@ -115,9 +115,11 @@ def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         len(group_good),
         len(group_bad),
     )
-    # [DEBUG group_good/bad flow — seam A] 산출 직후 실제 값. 빈 리스트면 이후 _clean_slots에서 탈락.
+    # [DEBUG group_good/bad flow — seam A] 산출 직후 실제 값과 형태(type).
+    # ※ list면 빈 []는 이후 _clean_slots에서 탈락하지만, dict면 빈 {}도 통과한다(형태별 동작 차이).
     logger.debug(
-        "[DEBUG flow A] wt_resp 산출 group_good=%r group_bad=%r", group_good, group_bad
+        "[DEBUG flow A] wt_resp 산출 group_good=(%s)%r group_bad=(%s)%r",
+        type(group_good).__name__, group_good, type(group_bad).__name__, group_bad,
     )
 
     html_content = (
@@ -154,10 +156,11 @@ def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "guard_agents": ["mining_agent"],
         }]
         # [DEBUG flow B] followup default_slots에 실린 그룹(= 이후 mining task.params 후보).
+        _bg = followups[0]["default_slots"].get("group_good")
+        _bb = followups[0]["default_slots"].get("group_bad")
         logger.debug(
-            "[DEBUG flow B] followup default_slots group_good=%r group_bad=%r",
-            followups[0]["default_slots"].get("group_good"),
-            followups[0]["default_slots"].get("group_bad"),
+            "[DEBUG flow B] followup default_slots group_good=(%s)%r group_bad=(%s)%r",
+            type(_bg).__name__, _bg, type(_bb).__name__, _bb,
         )
     attach_result_envelope(
         result_message,
