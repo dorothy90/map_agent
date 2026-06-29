@@ -53,19 +53,39 @@ def _get_mining_storage() -> Dict[str, Any] | None:
         return None
 
 
-def _as_list(value: Any) -> List[str]:
-    """그룹값을 문자열 리스트로 정규화 (타입 가드 수준만)."""
+def _format_group_str(value: Any) -> str:
+    """그룹값을 'alias_lot_id.wf_id' 토큰을 콤마로 결합한 단일 문자열로 정규화.
+
+    mining API는 group_good/group_bad를 콤마 구분 문자열(Optional[str])로 받는다.
+    상류(wt_resp)가 넘기는 형태가 dict/리스트라도 여기서 문자열로 변환한다.
+      - dict({"alias_lot_id":"TASJE68","wf_id":"04"}) → "TASJE68.04"
+      - list([dict, ...] 또는 ["TASJE68.04", ...])      → 각 원소 변환 후 ","로 결합
+      - str("TASJE68.04,TASJE69.20")                     → 그대로(재진입 안전)
+      - None/빈값                                          → ""
+    """
     if not value:
-        return []
+        return ""
     if isinstance(value, str):
-        return [value.strip()] if value.strip() else []
-    return [str(v).strip() for v in value if str(v).strip()]
+        return value.strip()
+    if isinstance(value, dict):
+        lot = str(value.get("alias_lot_id") or value.get("lot_id") or "").strip()
+        wf = str(value.get("wf_id") or "").strip()
+        return f"{lot}.{wf}" if lot and wf else (lot or wf)
+    if isinstance(value, (list, tuple)):
+        return ",".join(tok for tok in (_format_group_str(v) for v in value) if tok)
+    return str(value).strip()
+
+
+def _sig_part(group_str: str) -> str:
+    """콤마 결합 그룹 문자열을 토큰 정렬해 순서 무관 서명 조각으로 만든다."""
+    toks = [t for t in (group_str or "").split(",") if t]
+    return ",".join(sorted(toks))
 
 
 def _mining_sig(
     lot_cd: str,
-    group_good: List[str],
-    group_bad: List[str],
+    group_good: str,
+    group_bad: str,
     fail_name: str,
     mode: str,
     tech: str,
@@ -76,8 +96,8 @@ def _mining_sig(
     return "|".join(
         [
             lot_cd,
-            ",".join(sorted(group_good or [])),
-            ",".join(sorted(group_bad or [])),
+            _sig_part(group_good),
+            _sig_part(group_bad),
             fail_name,
             mode,
             tech,
@@ -90,13 +110,13 @@ class MiningParsingResult(BaseModel):
     """mining_analysis 호출에 필요한 슬롯. 의미·예시를 명시해 LLM이 올바른 슬롯에 값을 넣게 한다."""
 
     lot_cd: str = Field(..., description='3자 제품코드, 예: "4SS"')
-    group_good: List[str] = Field(
-        default_factory=list,
-        description='양품 그룹 LOT ID/GROUPKEY 목록 (LOT ID는 7자 영숫자), 예: ["TSAH083", "TSAH085"]',
+    group_good: str = Field(
+        default="",
+        description='양품 그룹 "alias_lot_id.wf_id" 토큰의 콤마 결합 문자열, 예: "TASJE68.04,TASJE69.20"',
     )
-    group_bad: List[str] = Field(
-        default_factory=list,
-        description='불량 그룹 LOT ID/GROUPKEY 목록 (LOT ID는 7자 영숫자), 예: ["TSAH090", "TSAH092"]',
+    group_bad: str = Field(
+        default="",
+        description='불량 그룹 "alias_lot_id.wf_id" 토큰의 콤마 결합 문자열, 예: "TASJF12.01,TASJF13.07"',
     )
     fail_name: str = Field(
         ...,
@@ -111,8 +131,8 @@ class MiningParsingResult(BaseModel):
 
 def _call_minig_api(
     lot_cd: str,
-    group_good: List[str],
-    group_bad: List[str],
+    group_good: str,
+    group_bad: str,
     fail_name: str,
     mode: str,
     tech: str,
@@ -121,19 +141,20 @@ def _call_minig_api(
 ) -> Dict[str, pd.DataFrame]:
     """mining API 호출 → DataFrame 묶음(dict[str, pd.DataFrame]) 반환.
 
+    group_good/group_bad는 콤마 결합 문자열("alias_lot_id.wf_id,...").
     현재는 더미(`fetch_mining_dataframes`)로 위임. 추후 실제 호출로 교체.
     """
     logger.info(
         "[_call_minig_api] lot_cd=%s fail_name=%s mode=%s tech=%s user_id=%s rank_limit=%s "
-        "good=%d bad=%d",
+        "good=%s bad=%s",
         lot_cd,
         fail_name,
         mode,
         tech,
         user_id,
         rank_limit,
-        len(group_good),
-        len(group_bad),
+        group_good,
+        group_bad,
     )
     dataframes = fetch_mining_dataframes(
         lot_cd=lot_cd,
@@ -199,8 +220,8 @@ def _analyze_gini(df_GINI: pd.DataFrame) -> Dict[str, Any]:
 @tool
 def mining_analysis(
     lot_cd: str = "",
-    group_good: List[str] | None = None,
-    group_bad: List[str] | None = None,
+    group_good: str = "",
+    group_bad: str = "",
     fail_name: str = "",
     mode: str = "",
     tech: str = "",
@@ -214,8 +235,8 @@ def mining_analysis(
 
     Args:
         lot_cd: 3자 제품코드, 예: "4SS". 생략 시 확정 슬롯 사용.
-        group_good: 양품 그룹 LOT ID/GROUPKEY 목록, 예: ["TSAH083"]. 생략 시 확정 슬롯 사용.
-        group_bad: 불량 그룹 LOT ID/GROUPKEY 목록, 예: ["TSAH090"]. 생략 시 확정 슬롯 사용.
+        group_good: 양품 그룹 "alias_lot_id.wf_id" 콤마 결합 문자열, 예: "TASJE68.04,TASJE69.20". 생략 시 확정 슬롯 사용.
+        group_bad: 불량 그룹 "alias_lot_id.wf_id" 콤마 결합 문자열, 예: "TASJF12.01,TASJF13.07". 생략 시 확정 슬롯 사용.
         fail_name: 파라미터(불량명), 예: "DIBL(D)". 생략 시 확정 슬롯 사용.
         mode: 분석 모드(공정), 예: "PT1H", "PT1C". 생략 시 확정 슬롯 사용.
         tech: 기술/공정 세대 코드. 생략 시 확정 슬롯 사용.
@@ -229,8 +250,9 @@ def mining_analysis(
     storage = _get_mining_storage()
     d = (storage or {}).get("_defaults", {}) if storage else {}
     lot_cd = lot_cd or d.get("lot_cd", "")
-    group_good = group_good if group_good else d.get("group_good", [])
-    group_bad = group_bad if group_bad else d.get("group_bad", [])
+    # group_good/bad는 콤마 문자열. LLM이 dict/리스트를 넘겨도 _format_group_str로 정규화.
+    group_good = _format_group_str(group_good) or d.get("group_good", "")
+    group_bad = _format_group_str(group_bad) or d.get("group_bad", "")
     fail_name = fail_name or d.get("fail_name", "")
     mode = mode or d.get("mode", "")
     tech = tech or d.get("tech", "")
@@ -422,11 +444,11 @@ def _mining_prompt(state: dict) -> list:
     lotcd = state.get("_lotcd", "")
     fail_name = state.get("_fail_name", "")
     mode = state.get("_mode", "")
-    gg = state.get("_group_good", []) or []
-    gb = state.get("_group_bad", []) or []
+    gg = state.get("_group_good", "") or ""
+    gb = state.get("_group_bad", "") or ""
     ctx = (
         f"\n\n[실행 컨텍스트] lotcd={lotcd}, fail_name={fail_name}, mode={mode}, "
-        f"good={len(gg)}개, bad={len(gb)}개"
+        f"good=[{gg}], bad=[{gb}]"
     )
     sp += ctx
     prior = state.get("_prior_gini", "")
@@ -457,8 +479,9 @@ def mining_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     lot_cd = (state.get("lotcd") or "").strip()
     fail_name = (state.get("fail_type") or "").strip()
     mode = (state.get("wads_category") or "").strip()
-    group_good = _as_list(state.get("group_good"))
-    group_bad = _as_list(state.get("group_bad"))
+    # 상류(wt_resp)가 dict/리스트로 넘긴 그룹을 mining API 계약(콤마 결합 문자열)으로 변환.
+    group_good = _format_group_str(state.get("group_good"))
+    group_bad = _format_group_str(state.get("group_bad"))
     tech = (state.get("tech") or "").strip()
     user_id = (state.get("user_id") or "").strip()
     rank_limit = state.get("rank_limit") or 10
@@ -467,13 +490,13 @@ def mining_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     prior_rows = state.get("mining_rows") or []
 
     logger.info(
-        "[Mining Agent] lot_cd=%s fail_name=%s mode=%s tech=%s good=%d bad=%d rank_limit=%s prior_rows=%d",
+        "[Mining Agent] lot_cd=%s fail_name=%s mode=%s tech=%s good=%s bad=%s rank_limit=%s prior_rows=%d",
         lot_cd,
         fail_name,
         mode,
         tech,
-        len(group_good),
-        len(group_bad),
+        group_good,
+        group_bad,
         rank_limit,
         len(prior_rows),
     )
@@ -612,12 +635,20 @@ if __name__ == "__main__":
     # 커널 테스트
     import json
 
-    # 1) tool 직접 호출 (LLM이 부르는 경로와 동일)
+    # 0) dict/리스트 → 콤마 문자열 변환 확인
+    assert _format_group_str(
+        [{"alias_lot_id": "TASJE68", "wf_id": "04"}, {"alias_lot_id": "TASJE69", "wf_id": "20"}]
+    ) == "TASJE68.04,TASJE69.20"
+    assert _format_group_str("TASJE68.04,TASJE69.20") == "TASJE68.04,TASJE69.20"
+    assert _format_group_str(None) == ""
+    print("0) ✅ _format_group_str dict-list/str/None 변환 OK")
+
+    # 1) tool 직접 호출 (LLM이 부르는 경로와 동일; group은 콤마 결합 문자열)
     out = mining_analysis.invoke(
         {
             "lot_cd": "4SS",
-            "group_good": ["TSAH083", "TSAH085"],
-            "group_bad": ["TSAH090"],
+            "group_good": "TSAH083.04,TSAH085.07",
+            "group_bad": "TSAH090.11",
             "fail_name": "DIBL(D)",
             "mode": "PT1H",
             "tech": "T1",
@@ -631,13 +662,16 @@ if __name__ == "__main__":
     rows = out["gini_analysis"]["items"]
     print(_render_mining_gini_html(rows, "4SS", "DIBL(D)", "PT1H")[:600])
 
-    # 3) 함수형 노드: 상류 공유키(state) 경로 테스트 (LLM 필요)
+    # 3) 함수형 노드: 상류(wt_resp)가 dict 리스트로 넘긴 그룹 → 콤마 문자열 변환 경로 (LLM 필요)
     state = {
         "lotcd": "4SS",
         "fail_type": "DIBL(D)",
         "wads_category": "PT1H",
-        "group_good": ["TSAH083", "TSAH085"],
-        "group_bad": ["TSAH090"],
+        "group_good": [
+            {"alias_lot_id": "TASJE68", "wf_id": "04"},
+            {"alias_lot_id": "TASJE69", "wf_id": "20"},
+        ],
+        "group_bad": [{"alias_lot_id": "TASJF12", "wf_id": "01"}],
         "tech": "T1",
         "user_id": "dorothy90",
         "rank_limit": 5,

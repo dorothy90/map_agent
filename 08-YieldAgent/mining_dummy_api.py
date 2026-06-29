@@ -10,15 +10,20 @@ Mining API 더미 데이터 소스
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict
 
 import pandas as pd
 
 
+def _count_lots(group_str: str) -> int:
+    """콤마 결합 그룹 문자열("alias.wf,alias.wf")의 LOT 개수."""
+    return len([t for t in (group_str or "").split(",") if t.strip()])
+
+
 def fetch_mining_dataframes(
     lot_cd: str,
-    group_good: List[str],
-    group_bad: List[str],
+    group_good: str,
+    group_bad: str,
     fail_name: str,
     mode: str,
     tech: str,
@@ -68,7 +73,7 @@ def fetch_mining_dataframes(
     df_summary = pd.DataFrame(
         {
             "group": ["good", "bad"],
-            "n_lots": [len(group_good), len(group_bad)],
+            "n_lots": [_count_lots(group_good), _count_lots(group_bad)],
             "mode": [mode, mode],
             "user_id": [user_id, user_id],
         }
