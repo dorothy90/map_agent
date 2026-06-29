@@ -453,31 +453,12 @@ _mining_graph = create_react_agent(
 def mining_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     """ReAct 노드: state 슬롯으로 mining 실행/질의응답. df_GINI는 동적 HTML artifact +
     result envelope로 내보내고, gini rows는 state(mining_rows)에 머금어 다음 turn Q&A에 재사용."""
-    # [DEBUG flow E] 병합 전: task.params(우선) vs state(fallback)의 그룹값을 type과 함께 분리 확인.
-    # 둘 다 비어 있으면 상류(wt_resp followup) 또는 _clean_slots에서 유실된 것.
-    # ※ 형태 주의: 값이 dict면 _clean_slots는 빈 dict {}도 통과시키고(빈 list []와 반대),
-    #   아래 _as_list는 dict를 돌며 '키'만 추출한다 → 카테고리 키만 남고 실제 LOT ID 유실 가능.
-    _task_params = (state.get("current_task") or {}).get("params") or {}
-    _tg, _tb = _task_params.get("group_good"), _task_params.get("group_bad")
-    _sg, _sb = state.get("group_good"), state.get("group_bad")
-    logger.debug(
-        "[DEBUG flow E] 병합 전 task.params good=(%s)%r bad=(%s)%r / state good=(%s)%r bad=(%s)%r",
-        type(_tg).__name__, _tg, type(_tb).__name__, _tb,
-        type(_sg).__name__, _sg, type(_sb).__name__, _sb,
-    )
     state = {**state, **((state.get("current_task") or {}).get("params") or {})}  # S1-a: task params 우선, scalar fallback
     lot_cd = (state.get("lotcd") or "").strip()
     fail_name = (state.get("fail_type") or "").strip()
     mode = (state.get("wads_category") or "").strip()
-    _raw_good, _raw_bad = state.get("group_good"), state.get("group_bad")  # _as_list 변환 전 원본
-    group_good = _as_list(_raw_good)
-    group_bad = _as_list(_raw_bad)
-    # [DEBUG flow E] _as_list 변환 전(raw, 형태 포함) → 후(list). dict였다면 키만 남았는지 여기서 확인.
-    logger.debug(
-        "[DEBUG flow E] _as_list good: (%s)%r → %r | bad: (%s)%r → %r",
-        type(_raw_good).__name__, _raw_good, group_good,
-        type(_raw_bad).__name__, _raw_bad, group_bad,
-    )
+    group_good = _as_list(state.get("group_good"))
+    group_bad = _as_list(state.get("group_bad"))
     tech = (state.get("tech") or "").strip()
     user_id = (state.get("user_id") or "").strip()
     rank_limit = state.get("rank_limit") or 10
