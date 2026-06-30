@@ -134,6 +134,21 @@ present there, leave that slot empty or omit it.
        없으면 비워두면 backend가 채운다.
      - tech: 기술/공정 세대 코드. user_id: 요청 사용자 ID. rank_limit: 상위 N개(미지정 10).
 
+9. wt_resp_agent
+   capability: WT 계측 파라미터(wt_para) 응답을 main_oper 기준으로 양품/불량 그룹과 비교 분석.
+     group_good/group_bad는 wt_resp가 DF_WADS_GOOD_BAD_LOT에서 직접 산출하므로 입력 슬롯이 아니다.
+     보통 mining(gini) 분석의 직전 단계 — 산출한 그룹으로 mining 후속을 트리거한다.
+   intents: wt_resp
+   slots: lotcd, fail_type, cause_oper, wads_category
+   Required: lotcd + fail_type + cause_oper.
+     - lotcd: 3-char product code, e.g. "4SS".
+     - fail_type: WT 계측 파라미터/불량명. e.g. "DIBL(D)", "TWT(T)".
+     - cause_oper: 기준 공정(main_oper). 사용자가 지정한 분석 기준 공정.
+     - wads_category: "PT1H"|"PT1C" — 분석 mode(공정). optional. 사용자가 "...(PT1H)" 또는
+       "PT1C 공정"처럼 param에 공정을 붙여 주면 param은 fail_type, 공정은 wads_category로 분리하라
+       (예: "VTH(PT1H)" → fail_type="VTH", wads_category="PT1H"). wt_resp가 mining 후속의
+       mode로 운반하므로 직접 쿼리에서도 채워두면 mining까지 전달된다.
+
 === DECISION PRINCIPLES ===
 - Output zero requests for greetings, help, out-of-scope questions, or meaningless input.
 - If the latest request can be answered entirely from Structured context or the immediately
@@ -301,6 +316,7 @@ TODAY's DATE: {today}
 - fail_history_agent: dh_query, fail_type, cause_oper, lotcd
 - lot_history_agent : lot_ids
 - relation_tree_agent : lotcd, cause_oper
+- wt_resp_agent     : lotcd, fail_type, cause_oper, wads_category
 - mining_agent      : lotcd, fail_type, wads_category, group_good, group_bad, tech, user_id, rank_limit
 - ppt_export        : (no params)
 
