@@ -317,6 +317,28 @@ def _format_count(value: Any) -> str:
     return str(value)
 
 
+def format_wads_report_breakdown(reports: list[dict[str, Any]], *, header: str = "") -> str:
+    """조회된 WADS 리포트들을 리포트별 1줄(날짜/lotcd/fail/map_oper/검출wafer 전체)로 풀어쓴다."""
+    lines = [header] if header else []
+    for i, r in enumerate(reports or [], start=1):
+        if not isinstance(r, dict):
+            continue
+        gks = [str(g).strip() for g in (r.get("groupkeys") or []) if str(g).strip()]
+        wafer = f"검출 wafer({len(gks)}): {', '.join(gks)}" if gks else "검출 wafer 0건"
+        lines.append(
+            f"{i}. 날짜 {r.get('end_tm', '')}, lotcd {r.get('lotcd', '')}, "
+            f"fail {r.get('parameter', '')}, map_oper {r.get('map_oper', '')}, {wafer}"
+        )
+    return "\n".join(lines)
+
+
+def _rows_are_wads_reports(rows: list[dict[str, Any]]) -> bool:
+    """report-shape(검출 wafer 묶음을 가진 리포트 행) 여부 — wafer-list/집계 행과 구분."""
+    return any(
+        isinstance(r, dict) and ("report_index" in r or "groupkeys" in r) for r in rows
+    )
+
+
 def derive_summary_from_rows(
     *,
     source_agent: str,
@@ -338,6 +360,10 @@ def derive_summary_from_rows(
     source = source_agent.lower()
 
     if source == "wads_agent" and rows:
+        if _rows_are_wads_reports(rows):
+            return format_wads_report_breakdown(
+                rows, header=f"현재 조회된 열화리포트 {len(rows)}건:"
+            )
         param_key = _first_existing_key(rows, {"parameter", "param", "fail_type", "dh_fail_type"})
         count_key = _first_existing_key(rows, {"detection_count", "detected_count", "count", "cnt"})
         if param_key and count_key:

@@ -21,6 +21,7 @@ from langfuse import observe
 
 from common import get_oracle_connection as _get_oracle_connection, get_llm
 from local_trace import emit_runtime_detail
+from result_contracts import format_wads_report_breakdown
 
 import os
 from dotenv import load_dotenv
@@ -718,11 +719,11 @@ def wads_get_html_report(
         },
         task_id=_tool_task_id(),
     )
-    summary = ", ".join(
-        f"lotcd={r['lotcd']} category={r.get('category', '')} parameter={r['parameter']}"
-        for r in storage["reports"][-count:]
+    breakdown = format_wads_report_breakdown(
+        storage["reports"][-count:],
+        header=f"현재 조회된 열화리포트 {count}건:",
     )
-    return f"WADS HTML 리포트 조회 완료: {count}건 — {summary} (리포트는 화면에 별도 표시됩니다)"
+    return f"{breakdown}\n(리포트는 화면에 별도 표시됩니다)"
 
 
 # ── SQL 검증 (I-3: sqlparse 없이 4계층) ──────────────────────
