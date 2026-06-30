@@ -45,7 +45,10 @@ AGENT_SLOT_RULES: dict[str, dict[str, Any]] = {
     "wt_resp_agent": {
         # relation_tree main_oper 선택 후속: lotcd + fail_type + cause_oper(=선택 main_oper).
         # group_good/group_bad는 wt_resp가 DF_WADS_GOOD_BAD_LOT에서 산출(입력 슬롯 아님).
-        "allowed": {"lotcd", "fail_type", "cause_oper"},
+        # wads_category(=mode, PT1H/PT1C): wads 경유 시 상속되지만, wads 없이 wt_resp→mining
+        # 직접 경로에선 planner가 직접 줘야 하므로 입력 슬롯으로 허용(optional). wt_resp가
+        # followup default_slots로 mining에 운반한다.
+        "allowed": {"lotcd", "fail_type", "cause_oper", "wads_category"},
         "required": ("lotcd", "fail_type", "cause_oper"),
     },
     "ppt_export": {

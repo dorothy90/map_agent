@@ -224,6 +224,9 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
     elif agent == "wt_resp_agent":
         # main_oper 선택 후속: lotcd 상속(없으면 state). fail_type/cause_oper은 공통 블록이 채움.
         proj["lotcd"] = task_params.get("lotcd") or state.get("lotcd", "")
+        # wads_category(=mode, PT1H/PT1C): wads 경유 시 state 상속, 직접 경로 시 task.params.
+        # wt_resp가 followup default_slots로 mining에 운반(=mining의 mode) → 양 경로 모두 보존.
+        proj["wads_category"] = task_params.get("wads_category") or state.get("wads_category", "")
 
     # 통합 필드: 모든 agent에 공통 적용
     proj["lot_ids"] = _parse_lot_ids(task_params)
