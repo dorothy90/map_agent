@@ -293,6 +293,10 @@ def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
                 or task_params.get("rt_lot_code")
                 or state.get("lotcd", "")
             )
+        # wads_category(=mode, PT1H/PT1C): wads가 rt_slots로 운반 → relation_tree가 main_oper
+        # 조회에 쓰고 wt_resp→mining 후속의 mode로 이어 운반. 체인 출발점에서 보존(task.params
+        # 우선, wads-chained state fallback).
+        proj["wads_category"] = task_params.get("wads_category") or state.get("wads_category", "")
         # WADS report별 연관분석 fan-out 입력 [{lotcd, parameter, lot_ids}, …].
         proj["rt_groups"] = task_params.get("rt_groups") or []
 

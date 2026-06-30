@@ -33,7 +33,10 @@ AGENT_SLOT_RULES: dict[str, dict[str, Any]] = {
         # with lotcd). Without it in `allowed`, _clean_slots dropped a "#N" ordinal token
         # before apply_ordinal_ref could resolve it -> silent interrupt. cause_oper stays optional.
         # rt_groups: WADS report별 fan-out 입력 [{lotcd, parameter, lot_ids}, …] (postwads 체이닝)
-        "allowed": {"lotcd", "fail_type", "cause_oper", "rt_groups"},
+        # wads_category(=mode, PT1H/PT1C): wads가 rt_slots로 운반(공정 narrowing) + relation_tree가
+        # main_oper 조회에 사용하고 wt_resp→mining 후속의 mode로 이어 운반. allowed 없으면
+        # _clean_slots가 잘라 체인 출발점에서 mode가 유실되므로 입력 슬롯으로 허용(optional).
+        "allowed": {"lotcd", "fail_type", "cause_oper", "wads_category", "rt_groups"},
         "required": ("lotcd", "fail_type"),
     },
     "mining_agent": {
