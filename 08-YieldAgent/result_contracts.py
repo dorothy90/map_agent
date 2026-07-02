@@ -318,16 +318,18 @@ def _format_count(value: Any) -> str:
 
 
 def format_wads_report_breakdown(reports: list[dict[str, Any]], *, header: str = "") -> str:
-    """조회된 WADS 리포트들을 리포트별 1줄(날짜/lotcd/fail/map_oper/검출wafer 전체)로 풀어쓴다."""
+    """조회된 WADS 리포트들을 리포트별 1줄(날짜/lotcd/fail/map_oper/검출wafer/good자재 전체)로 풀어쓴다."""
     lines = [header] if header else []
     for i, r in enumerate(reports or [], start=1):
         if not isinstance(r, dict):
             continue
         gks = [str(g).strip() for g in (r.get("groupkeys") or []) if str(g).strip()]
         wafer = f"검출 wafer({len(gks)}): {', '.join(gks)}" if gks else "검출 wafer 0건"
+        goods = [str(g).strip() for g in (r.get("good_lots") or []) if str(g).strip()]
+        good = f"good 자재({len(goods)}): {', '.join(goods)}" if goods else "good 자재 0건"
         lines.append(
             f"{i}. 날짜 {r.get('end_tm', '')}, lotcd {r.get('lotcd', '')}, "
-            f"fail {r.get('parameter', '')}, map_oper {r.get('map_oper', '')}, {wafer}"
+            f"fail {r.get('parameter', '')}, map_oper {r.get('map_oper', '')}, {wafer}, {good}"
         )
     return "\n".join(lines)
 

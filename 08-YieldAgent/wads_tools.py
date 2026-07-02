@@ -306,6 +306,46 @@ def _wafer_groups_for_reports(
     return grouped
 
 
+def _query_good_lots(lotcd: Any, parameter: Any, category: Any = "") -> list[str]:
+    """DF_WADS_GOOD_BAD_LOT에서 (lotcd, parameter[, category])의 GOOD_LOT_ID 목록 조회.
+    검출 리포트 옆에 대조군 양품(good) LOT을 함께 LLM에 실어 주기 위한 조회.
+    키=(LOTCD,CATEGORY,PARAMETER). lotcd는 제품코드 부분일치(_query_good_bad/wt_resp 패턴 미러).
+    조회 실패는 치명적이지 않으므로(good은 부가정보) 빈 목록으로 degrade한다."""
+    lotcd = _clean_text(lotcd)
+    parameter = _clean_text(parameter)
+    category = _clean_text(category)
+    if not lotcd or not parameter:
+        return []
+    sql = (
+        "SELECT GOOD_LOT_ID FROM DF_WADS_GOOD_BAD_LOT "
+        "WHERE LOTCD IS NOT NULL AND UPPER(:lotcd) LIKE '%' || UPPER(LOTCD) || '%' "
+        "AND UPPER(PARAMETER) LIKE UPPER(:parameter)"
+    )
+    binds: dict[str, Any] = {"lotcd": lotcd, "parameter": f"%{parameter}%"}
+    if category:
+        sql += " AND UPPER(CATEGORY) LIKE UPPER(:category)"
+        binds["category"] = f"%{category}%"
+    try:
+        conn = _get_oracle_connection()
+    except Exception as exc:
+        logger.warning("[wads good_lot] Oracle 연결 실패, good 생략: %s", exc)
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, binds)
+        rows = cur.fetchall()
+        cur.close()
+    except Exception as exc:
+        logger.warning("[wads good_lot] 조회 실패, good 생략: %s", exc)
+        return []
+    finally:
+        conn.close()
+    good: list[str] = []
+    for r in rows:
+        _append_unique(good, r[0] if r else "")
+    return good
+
+
 # ── Oracle 조회 ───────────────────────────────────────────────
 @observe(name="wads_query_oracle")
 def _query_wads_data(
@@ -664,8 +704,18 @@ def wads_get_html_report(
         category=category,
     )
     report_start_index = len(storage["reports"]) + 1
+    good_cache: dict[tuple[str, str, str], list[str]] = {}
     for offset, (_, row) in enumerate(filtered_df.iterrows()):
         group_info = wafer_groups.get(_report_key(row), {})
+        good_key = (
+            _clean_text(row["lotcd"]),
+            _clean_text(row["category"]),
+            _clean_text(row["parameter"]),
+        )
+        if good_key not in good_cache:
+            good_cache[good_key] = _query_good_lots(
+                row["lotcd"], row["parameter"], row["category"]
+            )
         storage["reports"].append(
             {
                 "report_index": report_start_index + offset,
@@ -677,6 +727,7 @@ def wads_get_html_report(
                 "groupkeys": group_info.get("groupkeys", []),
                 "lot_ids": group_info.get("lot_ids", []),
                 "wf_ids": group_info.get("wf_ids", []),
+                "good_lots": good_cache[good_key],
                 "html": row["html"],
             }
         )
@@ -1095,13 +1146,25 @@ def wads_query_sql(query_description: str) -> str:
 
     # HTML 컬럼 포함 여부에 따라 reports 또는 sql_result에 저장
     if "html" in col_names:
+        good_cache: dict[tuple[str, str, str], list[str]] = {}
         for r in result:
+            good_key = (
+                _clean_text(r.get("lotcd", "")),
+                _clean_text(r.get("category", "")),
+                _clean_text(r.get("parameter", "")),
+            )
+            if good_key not in good_cache:
+                good_cache[good_key] = _query_good_lots(
+                    r.get("lotcd", ""), r.get("parameter", ""), r.get("category", "")
+                )
             storage.setdefault("reports", []).append(
                 {
                     "lotcd": r.get("lotcd", ""),
                     "category": r.get("category", ""),
                     "end_tm": r.get("end_tm", ""),
                     "parameter": r.get("parameter", ""),
+                    "map_oper": _category_to_map_oper(r.get("category", "")),
+                    "good_lots": good_cache[good_key],
                     "html": r.get("html", ""),
                 }
             )
