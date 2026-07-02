@@ -29,6 +29,8 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 _ORACLE_REPORT_TABLE = "DF_WADS_REPORT"
 _ORACLE_WF_TABLE = os.getenv("WADS_WF_LIST_TABLE", "DF_WADS_WF_LIST")
+# 양품(good) wafer 목록 테이블 — 검출(bad) wafer와 동일 조인조건으로 붙인다(mining good 그룹).
+_ORACLE_WF_GOOD_TABLE = os.getenv("WADS_WF_GOOD_LIST_TABLE", "DF_WADS_WF_GOOD_LIST")
 _ORACLE_WF_GROUPKEY_COLUMN = os.getenv("WADS_WF_GROUPKEY_COLUMN", "GROUP_KEY")
 _ORACLE_TABLE = _ORACLE_REPORT_TABLE
 _SQL_GEN_MODEL = os.getenv("WADS_SQL_GEN_MODEL", os.getenv("RETRIEVE_CHAIN_MODEL"))
@@ -277,7 +279,10 @@ def _wafer_groups_for_reports(
     start_tm: Optional[str],
     parameter: Optional[str],
     category: Optional[str] = None,
+    wf_table: str = _ORACLE_WF_TABLE,
 ) -> dict[tuple[str, str, str, str], dict[str, list[str]]]:
+    """report별 wafer groupkey를 모은다. wf_table로 검출(bad, 기본 DF_WADS_WF_LIST)과
+    양품(good, DF_WADS_WF_GOOD_LIST)을 동일 조인조건으로 조회한다."""
     try:
         wafer_df = _query_wads_data(
             lotcd=lotcd,
@@ -289,6 +294,7 @@ def _wafer_groups_for_reports(
                 f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, {_wf_groupkey_expr()}"
             ),
             join_wafers=True,
+            wf_table=wf_table,
         )
     except Exception as exc:
         logger.warning("[wads_get_html_report] wafer groupkey 조회 실패: %s", exc)
@@ -316,8 +322,10 @@ def _query_wads_data(
     category: Optional[str] = None,
     columns: str = "*",
     join_wafers: bool = False,
+    wf_table: str = _ORACLE_WF_TABLE,
 ) -> pd.DataFrame:
-    """Oracle에서 WADS 데이터 조회 (report 기준 필터 + 필요 시 wafer list 조인)"""
+    """Oracle에서 WADS 데이터 조회 (report 기준 필터 + 필요 시 wafer list 조인).
+    wf_table: 조인할 wafer 목록 테이블 (검출=DF_WADS_WF_LIST 기본, 양품=DF_WADS_WF_GOOD_LIST)."""
     logger.debug(
         "[_query_wads_data] start filters lotcd=%s start=%s end=%s parameter=%s join_wafers=%s columns=%s",
         bool(lotcd),
@@ -362,8 +370,9 @@ def _query_wads_data(
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     from_clause = f"FROM {_ORACLE_REPORT_TABLE} r"
     if join_wafers:
+        wf_from = _oracle_identifier(wf_table, fallback=_ORACLE_WF_TABLE)
         from_clause += (
-            f" LEFT JOIN {_ORACLE_WF_TABLE} w"
+            f" LEFT JOIN {wf_from} w"
             " ON w.LOT_CD = r.LOTCD"
             " AND w.OPER_PARA = r.CATEGORY || '_' || r.PARAMETER"
             f" AND {_END_TM_DATE_JOIN_EXPR}"
@@ -381,7 +390,7 @@ def _query_wads_data(
         join_wafers=join_wafers,
         columns=columns,
         report_table=_ORACLE_REPORT_TABLE,
-        wafer_table=_ORACLE_WF_TABLE if join_wafers else "",
+        wafer_table=(_oracle_identifier(wf_table, fallback=_ORACLE_WF_TABLE) if join_wafers else ""),
     )
 
     conn = _get_oracle_connection()
@@ -663,9 +672,20 @@ def wads_get_html_report(
         parameter=parameter,
         category=category,
     )
+    # 양품(good) wafer: 검출(bad) wafer와 동일 조인조건, 테이블만 DF_WADS_WF_GOOD_LIST.
+    # mining 후속의 good 그룹으로 report별로 실어준다(bad = 검출 groupkeys).
+    good_wafer_groups = _wafer_groups_for_reports(
+        lotcd=lotcd,
+        end_tm=end_tm,
+        start_tm=start_tm,
+        parameter=parameter,
+        category=category,
+        wf_table=_ORACLE_WF_GOOD_TABLE,
+    )
     report_start_index = len(storage["reports"]) + 1
     for offset, (_, row) in enumerate(filtered_df.iterrows()):
         group_info = wafer_groups.get(_report_key(row), {})
+        good_info = good_wafer_groups.get(_report_key(row), {})
         storage["reports"].append(
             {
                 "report_index": report_start_index + offset,
@@ -677,6 +697,8 @@ def wads_get_html_report(
                 "groupkeys": group_info.get("groupkeys", []),
                 "lot_ids": group_info.get("lot_ids", []),
                 "wf_ids": group_info.get("wf_ids", []),
+                "good_groupkeys": good_info.get("groupkeys", []),
+                "good_lot_ids": good_info.get("lot_ids", []),
                 "html": row["html"],
             }
         )

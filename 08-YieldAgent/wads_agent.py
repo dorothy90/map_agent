@@ -183,6 +183,27 @@ def _postwads_option_set(reports: list[dict], lotcd: str, wads_category: str = "
         fail_slots["fail_groups"] = groups
         rt_slots["rt_groups"] = groups
 
+    # mining 후속: bad = 검출 wafer(groupkeys), good = DF_WADS_WF_GOOD_LIST(good_groupkeys).
+    # report 단위 union으로 실어 보낸다(그룹은 fail_type별로 스코핑됨). god-state 대신 task.params 운반.
+    group_bad: list[str] = []
+    group_good: list[str] = []
+    for r in reports:
+        for gk in (r.get("groupkeys") or []):
+            gk = str(gk).strip()
+            if gk and gk not in group_bad:
+                group_bad.append(gk)
+        for gk in (r.get("good_groupkeys") or []):
+            gk = str(gk).strip()
+            if gk and gk not in group_good:
+                group_good.append(gk)
+    mining_slots: dict[str, Any] = {"lotcd": lotcd, "fail_type": fail_type}
+    if wads_category:
+        mining_slots["wads_category"] = wads_category
+    if group_good:
+        mining_slots["group_good"] = group_good
+    if group_bad:
+        mining_slots["group_bad"] = group_bad
+
     return [
         {"label": "cummap/binmap 맵 조회", "value": "map_agent", "agent": "map_agent",
          "slots": map_slots, "goal": f"{lotcd} WADS 검출 wafer cummap 조회"},
@@ -190,6 +211,8 @@ def _postwads_option_set(reports: list[dict], lotcd: str, wads_category: str = "
          "slots": fail_slots, "goal": f"{lotcd} {fail_type or '검출 파라미터'} 불량이력 검색".strip()},
         {"label": "LOTCD 연계 분석", "value": "relation_tree_agent", "agent": "relation_tree_agent",
          "slots": rt_slots, "goal": f"{lotcd} {fail_type or '검출 파라미터'} Inline-WT 연관 분석".strip()},
+        {"label": "mining 기여 파라미터 분석", "value": "mining_agent", "agent": "mining_agent",
+         "slots": mining_slots, "goal": f"{lotcd} {fail_type or '검출 파라미터'} mining 분석".strip()},
     ]
 
 
@@ -218,7 +241,7 @@ def _build_postwads_followup(report_rows: list[dict], lotcd: str, wads_category:
         "goal": "WADS 검출 후속 선택",
         "choice_kind": "single",
         "guard_key": "postwads_offered",
-        "guard_agents": ["map_agent", "fail_history_agent", "relation_tree_agent"],
+        "guard_agents": ["map_agent", "fail_history_agent", "relation_tree_agent", "mining_agent"],
         "prefilter_message": "어느 fail_type의 후속을 분석할까요?",
         "prefilter_options": prefilter_options,
         "choice_message": "WADS 검출 결과로 이어서 무엇을 조회할까요?",
