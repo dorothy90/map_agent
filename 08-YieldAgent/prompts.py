@@ -74,10 +74,14 @@ present there, leave that slot empty or omit it.
 2. wads_agent
    capability: WADS degradation detection list/report
    intents: wads_list, wads_report
-   slots: lotcd, wads_start_tm, wads_end_tm, fail_type, wads_category
-   wads_category: "PT1H"|"PT1C" — 검출 공정 필터(CATEGORY=PT1H_TEST/PT1C_TEST). optional.
-     yield 열화 fan-out 시 anomaly의 공정을 넣어 같은 이름 param의 공정을 구분한다.
-   lotcd is optional. Date-only WADS requests are executable with lotcd="".
+   slots:
+     - lotcd: 3-char product code (예: "4SS"). optional — date-only WADS requests are
+       executable with lotcd="".
+     - wads_start_tm / wads_end_tm: 조회 기간 "YYYY-MM-DD". 단일 날짜 조회는 wads_end_tm만.
+     - fail_type: 검출 파라미터명 (예: "EASY", "TWT", "FMAX"). 사용자가 bin suffix 포함형
+       ("EASY(W)")으로 말하면 그대로 보존. 부분 일치 검색이라 param명만으로도 동작. optional.
+     - wads_category: "PT1H"|"PT1C" — 검출 공정 필터(CATEGORY=PT1H_TEST/PT1C_TEST). optional.
+       yield 열화 fan-out 시 anomaly의 공정을 넣어 같은 이름 param의 공정을 구분한다.
    wads_list means aggregate/list/rank degradation-detected parameters or detection counts.
    wads_report means detailed degradation evidence/report for specific parameter(s) or detections.
 
@@ -98,9 +102,14 @@ present there, leave that slot empty or omit it.
      "N배수"->wf_mod=N,wf_rem=0. 번호 패턴 언급이 없으면 둘 다 생략한다.
 
 4. fail_history_agent
-   capability: defect/fail history RAG search
+   capability: fail history RAG search
    intents: fail_history_search
-   slots: dh_query, fail_type, cause_oper, lotcd
+   slots:
+     - dh_query: 자연어 검색 질의 — 사용자가 찾는 불량 사례를 서술하는 자유 텍스트
+       (예: "BG CMP 공정 스크래치 불량 사례"). 사용자 표현을 최대한 보존. optional.
+     - fail_type: 불량/파라미터명 (예: "VTH", "DIBL"). optional.
+     - cause_oper: 원인 공정명 (예: "BG CMP"). optional.
+     - lotcd: 3-char product code (예: "4SS"). optional.
 
 5. lot_history_agent
    capability: LOT history lookup
@@ -262,6 +271,10 @@ Apply ONLY when this request names no parameter of its own.
   -> {{"requests":[{{"intent":"yield_query","agent":"yield_agent","slots":{{"lotcd":"4SS","time_range":{{"unit":"daily","start":"{today_yyyy_mm_dd}","end":"{today_yyyy_mm_dd}"}}}},"goal":"4SS 오늘 수율 조회"}}],"answer":""}}
 - "5NA 최근 6개월 수율 추세"
   -> {{"requests":[{{"intent":"yield_analysis","agent":"yield_agent","slots":{{"lotcd":"5NA","time_range":{{"unit":"monthly","start":"<이번 달 -5>","end":"{today_year_month}"}}}},"goal":"5NA 최근 6개월 수율 추세"}}],"answer":""}}
+- "최근 1주일 4SS 검출 lot 알려줘"  (검출 목록 = wads_list, 날짜는 YYYY-MM-DD)
+  -> {{"requests":[{{"intent":"wads_list","agent":"wads_agent","slots":{{"lotcd":"4SS","wads_start_tm":"{week_ago_yyyy_mm_dd}","wads_end_tm":"{today_yyyy_mm_dd}"}},"goal":"최근 1주일 4SS 검출 lot 목록"}}],"answer":""}}
+- "4SS EASY 열화 리포트 보여줘"  (특정 파라미터 상세 리포트 = wads_report)
+  -> {{"requests":[{{"intent":"wads_report","agent":"wads_agent","slots":{{"lotcd":"4SS","fail_type":"EASY"}},"goal":"4SS EASY 검출 리포트"}}],"answer":""}}
 - (follow-up) "두번째 lot 이력 보여줘"  (ordinal reference to a prior result)
   -> {{"requests":[{{"intent":"lot_history","agent":"lot_history_agent","slots":{{"lot_ids":"#2"}},"goal":"두번째 lot 이력"}}],"answer":""}}
 - "TSSHNCV TSSH20Y TSSH02N TSSHH0Y 랏이력 알려줘"  (다중 LOT — 공백 구분, 각각 분리해 LIST로)
@@ -300,7 +313,7 @@ TODAY's DATE: {today}
 - map_agent         : lot_ids, wf_ids, groupkey, map_type, map_oper
 - fail_history_agent: dh_query, fail_type, cause_oper, lotcd
 - lot_history_agent : lot_ids
-- relation_tree_agent : lotcd, cause_oper
+- relation_tree_agent : lotcd, fail_type(분석 대상 파라미터, required), cause_oper
 - mining_agent      : lotcd, fail_type, wads_category, group_good, group_bad, tech, user_id, rank_limit
 - ppt_export        : (no params)
 
@@ -341,9 +354,9 @@ Example 2 (fan-out: 열화 파라미터 3개 → fail_history. process는 fail_t
 - output: {{"requests":[{{"intent":"fail_history_search","agent":"fail_history_agent","slots":{{"fail_type":"VTH","lotcd":"4SS"}},"goal":"[VTH] 열화 파라미터 불량이력"}},{{"intent":"fail_history_search","agent":"fail_history_agent","slots":{{"fail_type":"IDSAT","lotcd":"4SS"}},"goal":"[IDSAT] 열화 파라미터 불량이력"}},{{"intent":"fail_history_search","agent":"fail_history_agent","slots":{{"fail_type":"IOFF","lotcd":"4SS"}},"goal":"[IOFF] 열화 파라미터 불량이력"}}]}}
 
 Example 3 (fan-out: 열화 파라미터 → wads_agent, 공정→wads_category):
-- past_steps: [("task_1", "4SS 수율 조회 완료. ... | anomaly_params: 열화=['VTH(PT1H)','PT1C(PT1C)'], 개선=[]")]
+- past_steps: [("task_1", "4SS 수율 조회 완료. ... | anomaly_params: 열화=['VTH(PT1H)','VMIN(PT1C)'], 개선=[]")]
 - pending requests: [{{"intent":"wads_report","agent":"wads_agent","slots":{{"fail_type":"","wads_category":"","lotcd":"4SS"}},"goal":"열화 파라미터 WADS 검출 리포트"}}]
-- output: {{"requests":[{{"intent":"wads_report","agent":"wads_agent","slots":{{"fail_type":"VTH","wads_category":"PT1H","lotcd":"4SS"}},"goal":"[VTH/PT1H] WADS 검출 리포트"}},{{"intent":"wads_report","agent":"wads_agent","slots":{{"fail_type":"PT1C","wads_category":"PT1C","lotcd":"4SS"}},"goal":"[PT1C/PT1C] WADS 검출 리포트"}}]}}
+- output: {{"requests":[{{"intent":"wads_report","agent":"wads_agent","slots":{{"fail_type":"VTH","wads_category":"PT1H","lotcd":"4SS"}},"goal":"[VTH/PT1H] WADS 검출 리포트"}},{{"intent":"wads_report","agent":"wads_agent","slots":{{"fail_type":"VMIN","wads_category":"PT1C","lotcd":"4SS"}},"goal":"[VMIN/PT1C] WADS 검출 리포트"}}]}}
 """
 
 # ── WADS 시스템 프롬프트 ────────────────────────────────────────
@@ -365,26 +378,34 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 사용자가 주간 집계 데이터, 변곡점 분석, Layer1 리포트에 대해 질문하면 적절한 도구를 사용하여 정보를 조회하고 답변합니다.
 
 ## 사용 가능한 도구:
-1. **wads_query_data**: WADS 데이터 메타정보 조회
-   - lotcd, end_tm, start_tm, parameter로 필터링하여 매칭되는 데이터 목록 반환
-   - HTML 콘텐츠는 제외하고 report 메타정보와 wafer GROUPKEY 목록을 반환
-   - 날짜 범위 조회: start_tm과 end_tm을 함께 지정 (예: start_tm="2026-03-19", end_tm="2026-03-25")
-   - 단일 날짜 조회: end_tm만 지정 (기존 방식)
+1. **wads_query_data**: WADS 데이터 메타정보 조회 (HTML 제외, report 메타정보 + wafer GROUPKEY 목록)
+   - 필터: lotcd, end_tm, start_tm, parameter
+   - 날짜 범위 조회: start_tm과 end_tm을 함께 지정 / 단일 날짜 조회: end_tm만 지정
+   - "모든 날짜" 요청 → 날짜 필터 없이 호출
+   - 예: wads_query_data() · wads_query_data(lotcd="4SS") · wads_query_data(end_tm="2026-01-01")
+     · wads_query_data(lotcd="4SS", start_tm="2026-03-19", end_tm="2026-03-25")
 
 2. **wads_get_html_report**: WADS HTML 리포트 조회
-   - lotcd, end_tm, start_tm, parameter로 필터링하여 HTML 리포트 반환
-   - 날짜 범위 조회: start_tm과 end_tm을 함께 지정
+   - 필터: lotcd, end_tm, start_tm, parameter (날짜 규칙은 위와 동일)
    - **여러 리포트 요청 시**: 각 조건별로 도구를 여러 번 호출하세요. 모든 리포트가 누적되어 표시됩니다.
-   - 예: EASY, TWT 리포트 요청 시 → wads_get_html_report(parameter="EASY") + wads_get_html_report(parameter="TWT")
+     예: EASY, TWT 리포트 → wads_get_html_report(parameter="EASY") + wads_get_html_report(parameter="TWT")
+   - 예: wads_get_html_report(lotcd="4SS", parameter="EASY")
+     · wads_get_html_report(lotcd="4SS", start_tm="2026-03-19", end_tm="2026-03-25")
 
 3. **wads_query_sql**: 복잡한 조건의 WADS SQL 쿼리 실행
-   - wads_query_data/wads_get_html_report로 표현할 수 없는 복잡한 조건에만 사용
-   - GROUP BY 집계, COUNT, 여러 parameter 동시 필터, CATEGORY 조건, GROUPKEY 조회 등
-   - "건수", "집계", "COUNT", "몇 건", "파라미터별로 정리" 요청은 이 도구를 우선 사용
    - query_description에 자연어로 조회 내용을 설명
-   - 예: wads_query_sql(query_description="4SS의 3월 EASY(W), TWT(T) 건수를 parameter별 집계")
-   - **주의**: 내부 LLM 호출이 추가되어 다른 도구보다 느립니다. 단순 조건은 wads_query_data를 먼저 사용하세요.
-   - wads_query_sql 실패 시 1회만 query_description을 수정하여 재시도하세요. 그래도 실패하면 wads_query_data로 전환하세요.
+   - GROUP BY 집계, COUNT, 여러 parameter 동시 필터, CATEGORY 조건, GROUPKEY 조회, 서브쿼리 등
+   - 예: wads_query_sql(query_description="4SS의 3월 parameter별 건수 집계")
+     · wads_query_sql(query_description="4SS의 CATEGORY별 리포트 건수 집계")
+   - **주의**: 내부 LLM 호출이 추가되어 다른 도구보다 느립니다. 단순 조건에는 쓰지 마세요.
+   - 실패 시 1회만 query_description을 수정하여 재시도하세요. 그래도 실패하면 wads_query_data로 전환하세요.
+
+## 도구 선택 가이드:
+- 건수/집계/COUNT/몇 건/파라미터별 정리 → wads_query_sql 우선
+- 복잡한 조건(여러 parameter OR/AND, CATEGORY별 GROUP BY, GROUPKEY 조회) → wads_query_sql
+- HTML 리포트 필요 → wads_get_html_report
+- 단순 필터(lotcd + 날짜 + parameter 1개)의 데이터 목록/메타정보 → wads_query_data
+- 사용자가 특정 조건을 언급하면 해당 필터를 적용하고, 조건이 없으면 전체 데이터를 조회하세요.
 
 ## 데이터 구조:
 - DF_WADS_REPORT: LOTCD, CATEGORY(PT1H_TEST/PT1C_TEST), PARAMETER(fail_type), END_TM, HTML
@@ -396,48 +417,15 @@ WADS_SYSTEM_PROMPT_TEMPLATE = (
 - html: Layer1 전수 집계 테이블 HTML
 
 ## 응답 규칙:
-- 사용자가 특정 조건을 언급하면 해당 필터를 적용하세요.
-- 조건을 언급하지 않으면 전체 데이터를 조회합니다.
-- HTML 리포트를 요청하면 wads_get_html_report를 사용하세요.
-- 데이터 목록만 필요하면 wads_query_data를 사용하세요.
-- 조회 결과가 없으면 명확하게 안내합니다.
+- 도구 호출 결과(데이터/리포트)는 별도의 HTML 카드로 자동 표시됩니다 — **테이블이나 표를 직접 만들지 마세요**.
+- 조회 결과를 자연스러운 대화체로 2-3문장 요약하고, 핵심 발견이 있으면 먼저 언급하세요.
 - 응답은 한국어로 친절하게 제공합니다.
-
-## 도구 선택 가이드:
-- 단순 필터(lotcd + 날짜 + parameter 1개) → wads_query_data 또는 wads_get_html_report
-- HTML 리포트 필요 → wads_get_html_report
-- 건수/집계/COUNT/몇 건/파라미터별 정리 → wads_query_sql
-- 복잡한 조건(여러 parameter OR/AND, CATEGORY별 GROUP BY, COUNT, GROUPKEY 조회, 서브쿼리) → wads_query_sql
-- "모든 날짜" 요청 → 날짜 필터 없이 wads_query_data(lotcd="...")
-- 우선순위: 집계/COUNT 의도는 wads_query_sql 우선. 단순 목록/HTML 리포트만 wads_query_data/wads_get_html_report 우선.
-
-## 사용 예시:
-- 전체 데이터 조회: wads_query_data()
-- 특정 로트 조회: wads_query_data(lotcd="4SS")
-- 특정 날짜 조회: wads_query_data(end_tm="2026-01-01")
-- 날짜 범위 조회: wads_query_data(lotcd="4SS", start_tm="2026-03-19", end_tm="2026-03-25")
-- 날짜 범위 리포트: wads_get_html_report(lotcd="4SS", start_tm="2026-03-19", end_tm="2026-03-25")
-- 특정 parameter 리포트: wads_get_html_report(parameter="EASY")
-- 복합 조건: wads_get_html_report(lotcd="4SS", parameter="EASY")
-- parameter별 건수 집계: wads_query_sql(query_description="4SS의 3월 parameter별 건수 집계")
-- CATEGORY별 건수 집계: wads_query_sql(query_description="4SS의 CATEGORY별 리포트 건수 집계")
-
-## 중요: 응답 형식
-- 도구 호출 결과(데이터/리포트)는 별도의 HTML 카드로 자동 표시됩니다.
-- 따라서 **테이블이나 표를 직접 만들지 마세요**.
-
-## 응답 스타일:
-- 조회 결과에 대해 자연스러운 대화체로 2-3문장 요약하세요
-- 핵심 발견이 있으면 먼저 언급하세요
-- 마지막에 [SUGGESTION: 후속 제안] 형식으로 다음 행동 1개를 제안하세요
-  예시: [SUGGESTION: 다른 parameter도 확인해볼까요?]
-  제안할 내용이 없으면: [SUGGESTION: ]
-
-예시:
-❌ "4SS 로트의 step01 리포트를 조회했습니다."
-✅ "4SS EASY 리포트를 확인했습니다. 해당 parameter에서 열화 징후가 보이네요. [SUGGESTION: TWT도 같이 확인해볼까요?]"
+- 마지막에 [SUGGESTION: 후속 제안] 형식으로 다음 행동 1개를 제안하세요. 제안할 내용이 없으면: [SUGGESTION: ]
+  ❌ "4SS 로트의 step01 리포트를 조회했습니다."
+  ✅ "4SS EASY 리포트를 확인했습니다. 해당 parameter에서 열화 징후가 보이네요. [SUGGESTION: TWT도 같이 확인해볼까요?]"
 
 ## 중요: 데이터 없음 vs 연결 오류 구분
+- 조회 결과가 없으면 명확하게 안내합니다.
 - 도구가 "조건에 맞는 WADS 데이터가 없습니다"를 반환하면 → 연결 오류가 아님. "해당 조건의 WADS 데이터가 없습니다"로 안내.
 - 도구가 "Oracle 연결/조회에 실패했습니다"를 반환한 경우에만 → 연결 오류로 안내.
 - 데이터가 없는 것을 절대 "연결 오류", "시스템 오류"로 표현하지 마세요.
@@ -485,6 +473,8 @@ ANALYSIS_USER_PROMPT = """아래는 [{lotcd}] 제품의 최근 {n}기간 pt1h+pt
 
 # ── Fail History 합성 시스템 프롬프트 (B2: ReAct 제거 후 단일 합성용) ───
 
+# 합성 전용(도구 호출 없음, LLM 1회) — 도구용 _RETRY_RULES/_SAFETY_RULES는 붙이지 않는다.
+# 할루시네이션 금지·데이터 0건 안내는 아래 응답 규칙에 이미 포함.
 FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE = (
     """당신은 반도체 불량이력(Fail History) 검색 결과를 사용자에게 자연어로 정리해주는 어시스턴트입니다.
 
@@ -507,8 +497,6 @@ FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE = (
 - 검색 결과가 1건 이상이면 SUGGESTION에 반드시 포함: "Inline-WT 연계 분석을 원하시면 결과 번호나 공정명을 입력해주세요. (예: 1 또는 BG CMP)"
 - 한국어로 응답
 """
-    + _RETRY_RULES
-    + _SAFETY_RULES
 )
 
 
