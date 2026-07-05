@@ -200,6 +200,9 @@ class YieldQueryState(TypedDict):
     # 에이전트 제안 (UI 렌더링용)
     agent_suggestion: str
 
+    # 사용자 선호 학습: HITL 접점 피드백 이벤트 (턴 종료 시 1회 flush, fresh 턴마다 Overwrite 리셋)
+    memory_feedback: Annotated[list, operator.add]
+
     # Resolver scratchpad index (overwrite)
     # Full ResultEnvelope source remains in message.additional_kwargs["result"].
     # recent_results stores at most 3 pruned entries with at most 50 rows each.

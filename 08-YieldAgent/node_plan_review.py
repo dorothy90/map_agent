@@ -18,6 +18,7 @@ load_dotenv(override=True)
 from orch_utils import _model, logger
 from query_state import PlanReviewResult
 from recent_results import _recent_results_prompt_context
+from user_memory import make_feedback_event
 
 
 
@@ -138,6 +139,9 @@ def plan_review_node(
         [(r.get("intent"), r.get("agent")) for r in result_requests],
     )
 
+    # 사용자 선호 학습: 계획 형태에 대한 피드백(취소/수정) 이벤트 (approve는 신호 없음).
+    _plan_summary = [(t.get("agent", ""), t.get("goal", "")) for t in task_plan]
+
     if result.action == "cancel":
         return Command(
             goto="supervisor",
@@ -147,6 +151,11 @@ def plan_review_node(
                 "canonical_requests": [],
                 "task_plan": [],
                 "pending_tasks": [],
+                "memory_feedback": [make_feedback_event(
+                    touchpoint="plan_review", decision="cancelled",
+                    message=json.dumps(_plan_summary, ensure_ascii=False),
+                    user_answer=resp,
+                )],
             },
         )
     if result.action == "approve":
@@ -159,5 +168,12 @@ def plan_review_node(
     new_task_plan = build_tasks_from_canonical_requests(result_requests)
     return Command(
         goto="plan_review",
-        update=_plan_review_commit(result_requests, new_task_plan),
+        update={
+            **_plan_review_commit(result_requests, new_task_plan),
+            "memory_feedback": [make_feedback_event(
+                touchpoint="plan_review", decision="modified",
+                message=json.dumps(_plan_summary, ensure_ascii=False),
+                user_answer=resp,
+            )],
+        },
     )

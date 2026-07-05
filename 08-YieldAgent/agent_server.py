@@ -64,6 +64,10 @@ from local_trace import (  # noqa: E402
     set_trace_context,
 )
 from supervisor import workflow, _resume_is_interrupt_answer  # noqa: E402
+from user_memory import update_profile_from_feedback  # noqa: E402
+
+# 사용자 선호 메모리 백그라운드 flush 태스크 보관 (GC로 조기 소멸 방지)
+_memory_tasks: set = set()
 from repl_agent.router import router as repl_router  # noqa: E402
 
 configure_runtime_terminal_logger()
@@ -563,6 +567,8 @@ async def chat_stream(request: ChatRequest, req: Request):
             # HITL Gate scratchpad (turn별 overwrite)
             "hitl_issues": [],
             "hitl_responses": [],
+            # 사용자 선호 학습 피드백 (operator.add reducer → Overwrite로 퍼-턴 리셋)
+            "memory_feedback": Overwrite([]),
             # canonical plan-and-execute: 이전 턴의 종료 신호가 다음 턴으로 새지 않도록 리셋
             "response": "",
             # Day 4: wiki state는 turn별 overwrite (reducer 없음). 명시적 reset.
@@ -663,6 +669,7 @@ async def chat_stream(request: ChatRequest, req: Request):
                 "task_validation_issues": [],
                 "hitl_issues": [],
                 "hitl_responses": [],
+                "memory_feedback": [],
                 "task_plan": [],
                 "pending_tasks": [],
                 "current_task": {},
@@ -1019,6 +1026,23 @@ async def chat_stream(request: ChatRequest, req: Request):
                 await db.chat_turns.insert_one(turn_doc)
             except Exception as e:
                 logger.warning("대화 이력 저장 실패: %s", e)
+
+            # 사용자 선호 메모리: 턴이 END 도달(게이트 미대기) & 피드백 존재 시 백그라운드 1회 갱신.
+            # stream_end 이후 + create_task(to_thread)라 SSE 지연 없음. 실패는 전부 무시.
+            if not interrupt_emitted:
+                try:
+                    _fs = await graph.aget_state(config)
+                    _vals = _fs.values or {}
+                    _uid = _vals.get("user_id") or request.user_id
+                    _events = _vals.get("memory_feedback") or []
+                    if _uid and _events:
+                        _t = asyncio.create_task(
+                            asyncio.to_thread(update_profile_from_feedback, _uid, list(_events))
+                        )
+                        _memory_tasks.add(_t)
+                        _t.add_done_callback(_memory_tasks.discard)
+                except Exception as e:
+                    logger.warning("[UserMemory] 피드백 flush 실패 (무시): %s", e)
 
             try:
                 get_client().flush()

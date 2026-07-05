@@ -40,6 +40,7 @@ TRACE_EVENT_TYPES = frozenset({
     "result_pruned",
     "task_completed",
     "task_failed",
+    "memory_profile_injected",
 })
 
 _MAX_SAFE_STRING_CHARS = 160

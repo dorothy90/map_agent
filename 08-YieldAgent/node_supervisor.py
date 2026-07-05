@@ -9,12 +9,13 @@ from typing import Any, Dict, Literal
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage
+from pydantic import BaseModel
 from langchain_core.runnables import RunnableConfig
 from langfuse import observe
 from langgraph.graph import END
 from langgraph.types import Command, interrupt
 
-from common import stream_event
+from common import extract_json_from_llm, stream_event
 from canonical_request import AGENT_SLOT_SCHEMAS, build_task_from_canonical_request
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import StatusEvent
@@ -24,6 +25,7 @@ load_dotenv(override=True)
 
 from orch_utils import _AGENT_NAMES, _model, _normalize_map_oper, logger
 from query_state import TimeRange
+from user_memory import make_feedback_event
 from wads_context import _resolve_chained_params
 
 
@@ -702,6 +704,14 @@ def supervisor_node(
         confirm_cleanup = _confirm_or_drop(current_task, remaining, state, step_count)
         if isinstance(confirm_cleanup, Command):
             return confirm_cleanup
+        # 수정 승인(approve_with_changes) 슬롯을 dispatch 전에 merge — 이후 기존 검증·투영·
+        # time_range 변환 경로를 그대로 탄다 (신규 가드 없음).
+        edited = confirm_cleanup.pop("edited_params", None)
+        if edited:
+            current_task = {
+                **current_task,
+                "params": {**(current_task.get("params") or {}), **edited},
+            }
         # C1: 코드 기반 chained input 해소 — wads_sql_result 메시지에서 lot_ids 자동 주입 (LLM 불필요)
         task_params = _resolve_chained_params(current_task, state)
         # planner가 yield 기간을 라벨 time_range로 넘긴 경우 → ref_date/periods/unit으로 변환(in-place).
@@ -888,40 +898,106 @@ def supervisor_node(
 # "확인 후 실행"은 그래프 노드가 아니라 task 속성으로 처리한다: replanner가 confirm이 필요한
 # 후속 task를 pending에 넣으며 state["confirm_tasks"]에 메시지를 달면, supervisor가 dispatch
 # 직전(무거운 부수효과 이전, missing_param과 같은 멱등 구간)에 interrupt로 확인한다. 체이닝이
-# 늘어도 신규 노드 0개. yes/no 해석만 LLM이 하고(키워드 금지), 후속 task 생성은 결정론으로 둔다.
-_CONFIRM_SYSTEM = (
-    "사용자에게 후속 작업을 실행할지 물었고, 아래는 사용자의 자유 응답이다. "
-    "응답이 긍정(예/진행/확인/보겠다)인지 부정(아니오/취소/거절/안 본다)인지 판단해라. "
-    "오직 'yes' 또는 'no' 한 단어만 출력해라."
+# 늘어도 신규 노드 0개. 응답 해석은 전부 LLM이 하고(키워드 금지), 후속 task 생성은 결정론으로 둔다.
+# 응답 3분류: approve(그대로 실행) / approve_with_changes(슬롯 수정 승인 — "응 근데 PT1C로"의
+# 수정 조건이 조용히 버려지지 않게) / reject(드롭). 수정 값은 기존 검증·투영 경로를 그대로 탄다.
+
+# 슬롯 사전(의미·형식) — 문구는 CANONICAL_PLANNER_SYSTEM_PROMPT(prompts.py)와 일치시킨다
+# (프롬프트↔AGENT_SLOT_RULES↔supervisor 투영 3자 대조 계약). 여기 없는 슬롯(상류 chained-input
+# 그룹 등)은 confirm 편집 대상으로 노출하지 않는다.
+_CONFIRM_SLOT_SEMANTICS: dict[str, str] = {
+    "lotcd": '3자 제품코드 (예: "4SS")',
+    "time_range": '조회 기간 라벨 객체 {"unit":"weekly"|"monthly"|"daily","start":<라벨>,"end":<라벨>} '
+                  '(라벨: weekly="YYYY-Www", monthly="YYYY-MM", daily="YYYY-MM-DD")',
+    "unit": '"weekly"|"monthly"|"daily" 조회 단위',
+    "periods": "조회 기간 수 (정수)",
+    "ref_date": '기준일 "YYYYMMDD"',
+    "wads_start_tm": '검출 조회 시작일 "YYYY-MM-DD"',
+    "wads_end_tm": '검출 조회 종료일 "YYYY-MM-DD" (단일 날짜면 이것만)',
+    "fail_type": '검출 파라미터/불량명 (예: "VTH", "TWT(T)")',
+    "wads_category": '"PT1H"|"PT1C" — 검출/분석 공정 필터',
+    "lot_ids": '7자 LOT ID 목록 (예: ["4SS2DPD","4SSXCEW"])',
+    "wf_ids": '단일 lot 안의 wafer 번호(정수) 목록 (예: ["7","15"])',
+    "groupkey": '"LOTID.WW" 점 구분 wafer 토큰, 여러 개면 콤마로 연결 (예: "4SAX9QA.07,4SSRUR0.01")',
+    "map_type": '"binmap"|"cummap"|"all"',
+    "map_oper": '"PT1H"|"PT1C" — 맵 조회 공정',
+    "wf_mod": "wafer 번호 패턴 필터 N배수의 N (정수, 짝수=2)",
+    "wf_rem": "wafer 번호 패턴 나머지 (정수, 홀수=1)",
+    "cause_oper": '원인/기준 공정명 (예: "BG CMP")',
+    "dh_query": "자연어 검색 질의 (불량 사례 서술 자유 텍스트)",
+    "group_good": "양품 그룹 LOT ID/GROUPKEY 목록",
+    "group_bad": "불량 그룹 LOT ID/GROUPKEY 목록",
+    "tech": "기술/공정 세대 코드",
+    "rank_limit": "상위 N개 제한 (정수, 기본 10)",
+}
+
+_CONFIRM_EDIT_RULES = (
+    "사용자에게 아래 후속 작업을 실행할지 물었고, 사용자가 자유 응답을 보냈다.\n"
+    "응답을 해석해 아래 JSON 하나만 출력해라:\n"
+    '{"reasoning": "<판단 근거>", "decision": "approve"|"approve_with_changes"|"reject", '
+    '"slot_updates": {}}\n'
+    "규칙:\n"
+    "- 순수 긍정(예/진행/확인/좋아) → decision=approve, slot_updates는 빈 객체.\n"
+    "- 조건이나 수정을 달아 긍정 → decision=approve_with_changes, 사용자가 바꾼 슬롯만 "
+    "slot_updates에 넣어라. 키는 아래 슬롯 사전에 있는 이름만 쓰고 값 형식은 사전을 따른다. "
+    "응답에 없는 슬롯은 절대 지어내지 마라.\n"
+    "- 부정/거절/무관심(아니오/취소/그만/됐어) → decision=reject, slot_updates는 빈 객체.\n"
+    "예시:\n"
+    '  "네 진행해주세요" → {"reasoning":"순수 긍정","decision":"approve","slot_updates":{}}\n'
+    '  "응 근데 PT1C 검출만 봐줘" → {"reasoning":"승인하되 공정 필터를 PT1C로 변경",'
+    '"decision":"approve_with_changes","slot_updates":{"wads_category":"PT1C"}}\n'
+    '  "아니 됐어" → {"reasoning":"거절","decision":"reject","slot_updates":{}}\n'
 )
 
 
-def _interpret_confirmation(answer: Any) -> bool:
-    """사용자 자유응답의 yes/no를 LLM으로 해석 (키워드 매칭 금지, plan_review 패턴 재사용).
+class ConfirmDecision(BaseModel):
+    reasoning: str = ""
+    decision: Literal["approve", "approve_with_changes", "reject"] = "reject"
+    slot_updates: dict = {}
 
-    빈 응답은 거절로 처리한다. LLM 실패 시에도 안전하게 거절(후속 미실행)한다."""
-    if isinstance(answer, dict):
-        text = answer.get("task_confirm") or next(iter(answer.values()), "")
-    else:
-        text = answer
-    text = str(text or "").strip()
+
+def _interpret_confirm_response(answer: Any, current_task: dict) -> ConfirmDecision:
+    """confirm 자유응답을 LLM으로 3분류 해석 + 수정 슬롯 추출 (키워드 매칭 금지).
+
+    빈 응답(드레인 resume="")·LLM 실패·파싱 실패는 전부 안전하게 reject(후속 미실행)."""
+    text = _answer_text(answer, "task_confirm")
     if not text:
-        return False
+        return ConfirmDecision(decision="reject")
+    agent = str(current_task.get("agent") or "")
+    allowed = AGENT_SLOT_SCHEMAS.get(agent) or set()
+    slot_lines = "\n".join(
+        f"- {s}: {_CONFIRM_SLOT_SEMANTICS[s]}"
+        for s in sorted(allowed)
+        if s in _CONFIRM_SLOT_SEMANTICS
+    )
+    system = (
+        f"{_CONFIRM_EDIT_RULES}\n"
+        f"제안한 작업: agent={agent}, 목표={current_task.get('goal', '')}\n"
+        f"현재 파라미터: {json.dumps(current_task.get('params') or {}, ensure_ascii=False)}\n"
+        f"이 작업에서 조정 가능한 슬롯 사전:\n{slot_lines or '(조정 가능한 슬롯 없음)'}"
+    )
     try:
-        verdict = (
+        raw = (
             _model.invoke(
                 [
-                    {"role": "system", "content": _CONFIRM_SYSTEM},
+                    {"role": "system", "content": system},
                     {"role": "user", "content": text},
                 ],
                 config={"callbacks": _lf_callbacks()},
             ).content
             or ""
-        ).strip().lower()
+        )
+        return extract_json_from_llm(raw, ConfirmDecision)
     except Exception as e:
         logger.warning("[Confirm] 응답 해석 LLM 실패 (%s) — 거절 처리", e)
-        return False
-    return verdict.startswith("y")
+        return ConfirmDecision(decision="reject")
+
+
+def _answer_text(answer: Any, key: str) -> str:
+    """interrupt resume 원문 추출 (dict resume은 key 우선 — _interpret_* 상단 로직과 동일)."""
+    if isinstance(answer, dict):
+        return str(answer.get(key) or next(iter(answer.values()), "") or "").strip()
+    return str(answer or "").strip()
 
 
 def _confirm_or_drop(
@@ -947,9 +1023,42 @@ def _confirm_or_drop(
         "route": current_task.get("agent", ""),
     })
     new_confirm = {k: v for k, v in confirm_tasks.items() if k != task_id}
-    if _interpret_confirmation(answer):
-        return {"confirm_tasks": new_confirm}  # 승인 → dispatch 계속
+    decision = _interpret_confirm_response(answer, current_task)
+    _ans = _answer_text(answer, "task_confirm")
+    if decision.decision in ("approve", "approve_with_changes"):
+        cleanup: dict = {"confirm_tasks": new_confirm}  # 승인 → dispatch 계속
+        if decision.decision == "approve_with_changes" and decision.slot_updates:
+            # 수정 승인: caller가 pop해서 current_task.params에 merge (state 필드 아님).
+            cleanup["edited_params"] = dict(decision.slot_updates)
+            emit_runtime_detail(
+                "confirm.decision",
+                {"decision": decision.decision, "slot_updates": decision.slot_updates},
+                task_id=task_id,
+            )
+            if _ans:  # P1 연동: 수정 승인도 선호 학습 이벤트로 기록
+                cleanup["memory_feedback"] = [make_feedback_event(
+                    touchpoint="task_confirm",
+                    decision="modified",
+                    message=str(message),
+                    user_answer=_ans,
+                    agent=current_task.get("agent", ""),
+                    goal=current_task.get("goal", ""),
+                )]
+        return cleanup
     logger.info("[Confirm] task %s 거절 → 드롭 (remaining=%d)", task_id, len(remaining))
+    # 사용자 선호 학습: 거절 원문을 이벤트로 기록 (빈 응답=드레인은 오염 방지 위해 스킵).
+    feedback = (
+        [make_feedback_event(
+            touchpoint="task_confirm",
+            decision="rejected",
+            message=str(message),
+            user_answer=_ans,
+            agent=current_task.get("agent", ""),
+            goal=current_task.get("goal", ""),
+        )]
+        if _ans
+        else []
+    )
     if remaining:
         # 남은 task가 있으면 supervisor 재진입해 그걸 dispatch.
         return Command(
@@ -957,6 +1066,7 @@ def _confirm_or_drop(
                 "step_count": step_count,
                 "pending_tasks": remaining,
                 "confirm_tasks": new_confirm,
+                "memory_feedback": feedback,
             },
             goto="supervisor",
         )
@@ -978,20 +1088,30 @@ def _confirm_or_drop(
             "pending_tasks": [],
             "confirm_tasks": new_confirm,
             "response": last_agent_msg,
+            "memory_feedback": feedback,
         },
         goto=END,
     )
 
 
 def _drop_choice_sentinel(
-    remaining: list[dict], state: Dict[str, Any], step_count: int
+    remaining: list[dict],
+    state: Dict[str, Any],
+    step_count: int,
+    feedback_event: dict | None = None,
 ) -> Command:
     """선택 미진행 → sentinel 드롭(remaining 재진입 / 없으면 직전 결과로 END). offer 플래그는
     제안 시 guard_key로 이미 set돼 있어 여기서 다시 set하지 않는다."""
     logger.info("[Choice] 미선택 → sentinel 드롭 (remaining=%d)", len(remaining))
+    feedback = [feedback_event] if feedback_event else []
     if remaining:
         return Command(
-            update={"step_count": step_count, "pending_tasks": remaining}, goto="supervisor"
+            update={
+                "step_count": step_count,
+                "pending_tasks": remaining,
+                "memory_feedback": feedback,
+            },
+            goto="supervisor",
         )
     last_agent_msg = next(
         (
@@ -1005,7 +1125,12 @@ def _drop_choice_sentinel(
         "분석을 완료했습니다.",
     )
     return Command(
-        update={"step_count": step_count, "pending_tasks": [], "response": last_agent_msg},
+        update={
+            "step_count": step_count,
+            "pending_tasks": [],
+            "response": last_agent_msg,
+            "memory_feedback": feedback,
+        },
         goto=END,
     )
 
@@ -1090,11 +1215,27 @@ def _resolve_single_choice(
             "route": "",
         })
         chosen = _interpret_single_choice(answer, options)
+        _ans = _answer_text(answer, "followup_choice")
+        _opts = [{"label": o.get("label"), "value": o.get("value")} for o in options]
+        _msg = str(fu.get("prefilter_message") or "어느 항목의 후속을 분석할까요?")
         if chosen is None:
-            return _drop_choice_sentinel(remaining, state, step_count)
+            ev = (
+                make_feedback_event(
+                    touchpoint="postwads_choice", decision="declined",
+                    message=_msg, user_answer=_ans, options=_opts,
+                )
+                if _ans
+                else None
+            )
+            return _drop_choice_sentinel(remaining, state, step_count, feedback_event=ev)
         # 선택 idx만 sentinel params에 실어 재진입(super-step 분리). task_plan은 안 건드림.
         requeued = {**current_task, "params": {**params, "selected_idx": str(chosen.get("value"))}}
         update: dict = {"step_count": step_count, "pending_tasks": [requeued] + remaining}
+        if _ans:
+            update["memory_feedback"] = [make_feedback_event(
+                touchpoint="postwads_choice", decision="selected",
+                message=_msg, user_answer=_ans, options=_opts,
+            )]
         # 사용자가 고른 fail_type을 dispatch 무관 전용 필드에 기록(사실만) → 다음 턴 planner 문맥 상속 판단용.
         ft = str(chosen.get("fail_type") or "").strip()
         if ft:
@@ -1121,6 +1262,9 @@ def _resolve_single_choice(
         "route": "",
     })
     chosen = _interpret_single_choice(answer, options)
+    _ans = _answer_text(answer, "followup_choice")
+    _opts = [{"label": o.get("label"), "value": o.get("value")} for o in options]
+    _msg = str(fu.get("choice_message") or "이어서 무엇을 할까요?")
     target_agent = str((chosen or {}).get("agent") or fu.get("choice_target_agent") or "")
     if chosen is not None and target_agent:
         slots = {**(fu.get("default_slots") or {}), **(chosen.get("slots") or {})}
@@ -1133,6 +1277,12 @@ def _resolve_single_choice(
             "pending_tasks": [concrete] + remaining,
             "task_plan": task_plan + [concrete],
         }
+        if _ans:
+            update["memory_feedback"] = [make_feedback_event(
+                touchpoint="postwads_choice", decision="selected",
+                message=_msg, user_answer=_ans, options=_opts,
+                agent=target_agent, goal=str(chosen.get("goal") or ""),
+            )]
         for ck in _CTX_KEYS:  # 선택 slots의 ctx를 god-state로 전파(다운스트림 호환)
             if slots.get(ck) not in (None, "", [], {}):
                 update[ck] = slots[ck]
@@ -1140,7 +1290,15 @@ def _resolve_single_choice(
             "[Followup] choice 선택 → %s task 치환: %s", target_agent, concrete.get("task_id")
         )
         return Command(update=update, goto="supervisor")
-    return _drop_choice_sentinel(remaining, state, step_count)
+    ev = (
+        make_feedback_event(
+            touchpoint="postwads_choice", decision="declined",
+            message=_msg, user_answer=_ans, options=_opts,
+        )
+        if _ans
+        else None
+    )
+    return _drop_choice_sentinel(remaining, state, step_count, feedback_event=ev)
 
 
 def _resolve_followup_or_drop(

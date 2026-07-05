@@ -23,6 +23,7 @@ load_dotenv(override=True)
 from orch_utils import _model, logger
 from query_state import CanonicalPlanResponse
 from recent_results import _accumulate_recent_results, _get_recent_turns, _recent_results_prompt_context
+from user_memory import get_profile
 
 
 
@@ -237,6 +238,21 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         meta_parts.append(f"직전 선택 파라미터(fail_type): {state['selected_fail_type']}")
     if state.get("agent_suggestion"):
         meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
+    # 사용자 선호 프로필(정성 참고) — 부재/실패 시 조용히 생략. 메모리 오류가 planner를 죽이면 안 됨.
+    try:
+        _profile = get_profile(state.get("user_id") or "") if state.get("user_id") else ""
+        if _profile:
+            meta_parts.append(
+                "사용자 분석 선호 (과거 피드백에서 학습한 정성적 성향 — 작업 구성·제안 여부 판단에만 "
+                "참고하라. slots의 구체 값(제품, lot, 기간, 파라미터 등)은 절대 여기서 가져오지 말고 "
+                "이번 요청과 위 Structured context에서만 도출하라):\n" + _profile
+            )
+            emit_trace_event(
+                "memory_profile_injected", source="planner",
+                payload={"profile_chars": len(_profile)},
+            )
+    except Exception as _mem_e:
+        logger.warning("[UserMemory] 프로필 주입 실패 (무시): %s", _mem_e)
     meta = "\n".join(meta_parts)
 
     invoke_messages: list[dict] = [{"role": "system", "content": prompt}]
