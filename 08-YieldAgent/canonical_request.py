@@ -11,7 +11,9 @@ AGENT_SLOT_RULES: dict[str, dict[str, Any]] = {
         "required": ("lotcd",),
     },
     "wads_agent": {
-        "allowed": {"lotcd", "wads_start_tm", "wads_end_tm", "fail_type"},
+        # wads_category: 공정 필터("PT1H"/"PT1C") — planner/replanner가 yield 열화 fan-out 시
+        # emit하고 supervisor 투영이 task_params에서 읽는다. allow-list 누락 시 조용히 drop됨.
+        "allowed": {"lotcd", "wads_start_tm", "wads_end_tm", "fail_type", "wads_category"},
         "required": (),
     },
     "map_agent": {
