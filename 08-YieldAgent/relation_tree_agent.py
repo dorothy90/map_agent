@@ -52,6 +52,17 @@ def _mainoper_followups(
     }]
 
 
+def _mainoper_rows(lotcd: str, fail_type: str, main_opers: list[str]) -> list[dict]:
+    """연관 main_oper 후보를 envelope rows로 — supervisor 구조화 메모리에 후보 목록 노출."""
+    return [{"main_oper": m, "lotcd": lotcd, "fail_type": fail_type} for m in main_opers]
+
+
+def _mainoper_summary_suffix(main_opers: list[str]) -> str:
+    """summary 산문에 후보 목록을 실어 supervisor 산문 메모리에 노출 (개수만 → 목록)."""
+    tail = f": {', '.join(main_opers)}" if main_opers else ""
+    return f" — 연관 main_oper 후보 {len(main_opers)}개{tail}"
+
+
 def _query_main_opers(lotcd: str, fail_type: str, category: str = "") -> list[str]:
     """DF_WADS_MAIN_OPER에서 (lotcd, fail_type[, category])로 연관 main_oper 목록 조회.
     키=(LOTCD,CATEGORY,PARAMETER). PARAMETER=fail_type. category(wads_category) 있으면 narrowing.
@@ -114,6 +125,8 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
                 if m not in main_opers:
                     main_opers.append(m)
             opers_html = "".join(f"<li>{_h(m)}</li>" for m in main_opers) or "<li>-</li>"
+            # TODO(relation-real-data): 아래 artifact HTML은 placeholder. 실제 Inline-WT 상관분석/trend
+            # 데이터(예: _query_wt_relation)로 교체 — 화면 전용이므로 LLM 컨텍스트엔 안 들어감.
             artifacts.append({
                 "type": "html",
                 "mime": "text/html",
@@ -126,9 +139,12 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
                 "title": f"relation_tree_{g_param or g_lotcd}",
             })
             labels.append(g_param or g_lotcd)
+        # TODO(relation-real-data): LLM 먹이기 = summary(산문 채널) + 아래 attach_result_envelope의
+        # rows=(구조화 채널) 두 곳만. 실제 분석 붙이면: summary를 실제 발견 문구로, rows를 분석결과
+        # rows로 교체(_mainoper_rows → _relation_rows). 새 필드는 recent_results._RECENT_CONTEXT_PREFERRED_KEYS에 등록 필수.
         summary = (
             f"WADS 검출 {len(artifacts)}개 리포트 연관 분석(파라미터별): {', '.join(labels)}"
-            f" — 연관 main_oper 후보 {len(main_opers)}개"
+            + _mainoper_summary_suffix(main_opers)
         )
         msg = AIMessage(content=summary, name="relation_tree_agent")
         # main_opers를 envelope에 첨부 → main_oper 선택 HITL 발동(standalone 경로와 동일).
@@ -140,6 +156,7 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
             status="success",
             title="relation_tree",
             summary=summary,
+            rows=_mainoper_rows(lot_code, fail_type, main_opers),
             extensions={"relation_tree_agent": {"main_opers": main_opers}},
             followups=_mainoper_followups(lot_code, fail_type, main_opers, category),
         )
@@ -167,6 +184,8 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
     main_opers = _query_main_opers(lot_code, fail_type, category)
     logger.info("[Relation Tree Agent] main_opers=%d", len(main_opers))
     opers_html = "".join(f"<li>{_h(m)}</li>" for m in main_opers) or "<li>-</li>"
+    # TODO(relation-real-data): 아래 html_content는 placeholder. 실제 Inline-WT 상관분석/trend로 교체
+    # (화면 전용 — LLM 컨텍스트엔 안 들어감).
     html_content = (
         f"<h1>Inline-WT 연관 분석: {_h(lot_code)}</h1>"
         f"<p>fail_type: {_h(fail_type) or '-'}</p>"
@@ -174,8 +193,12 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
         f"<p>(상관분석·trend 본구현 예정)</p>"
     )
 
+    # TODO(relation-real-data): LLM 먹이기 = summary(산문 채널) + 아래 attach_result_envelope의
+    # rows=(구조화 채널) 두 곳만. 실제 분석 붙이면 summary/rows를 실제 결과로 교체
+    # (_mainoper_rows → _relation_rows). 새 필드는 recent_results._RECENT_CONTEXT_PREFERRED_KEYS에 등록 필수.
     summary = (
-        f"{lot_code} 연관 분석 (fail_type={fail_type or '-'}) — 연관 main_oper 후보 {len(main_opers)}개"
+        f"{lot_code} 연관 분석 (fail_type={fail_type or '-'})"
+        + _mainoper_summary_suffix(main_opers)
     )
     msg = AIMessage(content=summary, name="relation_tree_agent")
     # main_opers를 envelope extensions에 첨부 → supervisor가 읽어 main_oper 선택 HITL 선택지로 사용.
@@ -187,6 +210,7 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
         status="success",
         title="relation_tree",
         summary=summary,
+        rows=_mainoper_rows(lot_code, fail_type, main_opers),
         extensions={"relation_tree_agent": {"main_opers": main_opers}},
         followups=_mainoper_followups(lot_code, fail_type, main_opers, category),
     )

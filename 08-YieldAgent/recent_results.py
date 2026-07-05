@@ -103,10 +103,12 @@ def _get_recent_turns(
 # blind to older referenceable results even though resolution covered all K).
 _RECENT_CONTEXT_FULL_BUDGET_CHARS = 6000
 
+# TODO(relation-real-data): agent가 envelope rows에 새 필드를 실으면(예: inline_step/corr/trend)
+# 여기 등록해야 구조화 채널(_recent_result_full_block)이 그 값을 planner LLM에 노출한다. 안 하면 버려짐.
 _RECENT_CONTEXT_PREFERRED_KEYS = (
     "parameter", "param", "fail_type", "cnt", "count", "detection_count",
     "lot_id", "lot_ids", "wf_ids", "lotcd", "groupkey", "groupkeys",
-    "map_oper", "category", "end_tm",
+    "map_oper", "main_oper", "category", "end_tm",
 )
 
 
