@@ -616,6 +616,10 @@ class RecentResultIndexEntry(BaseModel):
     reports: list[dict[str, Any]] = Field(default_factory=list)
     # 제품(lotcd): planner가 god-state 대신 여기서 '현재 제품'을 재도출(cross-turn 참조용).
     products: list[str] = Field(default_factory=list)
+    # 조회 기간(time window): 이 결과를 만든 실행 window. planner가 report 후속에서 같은
+    # 기간을 structured context로 재사용(cross-turn 인계). 미지정이면 빈 문자열.
+    wads_start_tm: str = ""
+    wads_end_tm: str = ""
 
     @field_validator("rows")
     @classmethod
@@ -938,6 +942,7 @@ def build_recent_result_index_entry(payload: ResultEnvelopeV1 | dict[str, Any]) 
     # report-ordinal (#RN) resolution can index the Nth report independently of `rows`.
     report_index = (dumped.get("extensions") or {}).get(dumped["source_agent"], {}).get("reports", [])
     reports = [r for r in report_index if isinstance(r, dict)][:MAX_RECENT_RESULT_ROWS]
+    metadata = dumped.get("metadata") or {}
     entry = RecentResultIndexEntry(
         result_id=dumped["result_id"],
         source_agent=dumped["source_agent"],
@@ -951,6 +956,8 @@ def build_recent_result_index_entry(payload: ResultEnvelopeV1 | dict[str, Any]) 
         products=[
             p for p in ((dumped.get("entities") or {}).get("products") or []) if p
         ],
+        wads_start_tm=str(metadata.get("wads_start_tm") or ""),
+        wads_end_tm=str(metadata.get("wads_end_tm") or ""),
     )
     return entry.model_dump(mode="json")
 

@@ -1,0 +1,9 @@
+{
+  "yield_drop_root_cause": {
+    "runs_done": 1,
+    "recalls": [
+      1.0
+    ],
+    "mean": 1.0
+  }
+}

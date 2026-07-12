@@ -301,18 +301,14 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                 "raw_preview": preview_text(raw_text),
             },
         )
-        # plain text 거절 메시지이면 state에 보존 (supervisor fallback에서 사용)
-        refusal = (
-            raw_text
-            if (raw_text and "{" not in raw_text and len(raw_text) < 400)
-            else None
-        )
+        # JSON 파싱 실패 = 실행할 task 없음(대화형 설명/거절/해명 등). planner 원문을 참고로
+        # 자연어 답을 생성해 반드시 표출한다 — 원문 길이·중괄호 유무로 버려서 dead turn(빈 응답)이
+        # 되던 문제 수정. supervisor fallback으로 넘겨 pending_tasks_empty로 죽지 않게 한다.
         result: dict = {"canonical_request": {}, "canonical_requests": []}
-        if refusal:
-            content = _llm_empty_plan_response(
-                str(last_human.content), planner_text=refusal
-            )
-            result["messages"] = [AIMessage(content=content, name="planner")]
+        content = _llm_empty_plan_response(
+            str(last_human.content), planner_text=raw_text or ""
+        )
+        result["messages"] = [AIMessage(content=content, name="planner")]
         return result
 
     # canonical request 수 상한 제한 — 초과 시 사용자에게 명시적으로 알림 (#22 fix)

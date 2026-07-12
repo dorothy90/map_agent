@@ -879,6 +879,10 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
             "wafer_groupkey_count": active_stats.get("unique_groupkeys"),
             "missing_groupkey_rows": active_stats.get("missing_groupkey_rows"),
             "wads_join_missing": join_missing,
+            # cross-turn time-window 인계: 이 결과를 만든 실행 조회 기간을 durable하게 실어
+            # recent_results → planner가 report 후속에서 같은 window를 재사용할 수 있게 한다.
+            "wads_start_tm": start_tm or "",
+            "wads_end_tm": end_tm or "",
         },
         followups=followups,
     )

@@ -78,6 +78,9 @@ present there, leave that slot empty or omit it.
      - lotcd: 3-char product code (예: "4SS"). optional — date-only WADS requests are
        executable with lotcd="".
      - wads_start_tm / wads_end_tm: 조회 기간 "YYYY-MM-DD". 단일 날짜 조회는 wads_end_tm만.
+       report 후속이 직전 windowed 결과(집계/목록)를 가리키면("그 파라미터 리포트 다 보여줘",
+       "11개 다 보여줘") 그 결과의 Structured context query_window를 wads_start_tm/wads_end_tm으로
+       재사용하라. 기간을 비우면 하루 단일조회로 축소돼 검출 일부만 나온다.
      - fail_type: 검출 파라미터명 (예: "EASY", "TWT", "FMAX"). 사용자가 bin suffix 포함형
        ("EASY(W)")으로 말하면 그대로 보존. 부분 일치 검색이라 param명만으로도 동작. optional.
      - wads_category: "PT1H"|"PT1C" — 검출 공정 필터(CATEGORY=PT1H_TEST/PT1C_TEST). optional.
@@ -275,6 +278,9 @@ Apply ONLY when this request names no parameter of its own.
   -> {{"requests":[{{"intent":"wads_list","agent":"wads_agent","slots":{{"lotcd":"4SS","wads_start_tm":"{week_ago_yyyy_mm_dd}","wads_end_tm":"{today_yyyy_mm_dd}"}},"goal":"최근 1주일 4SS 검출 lot 목록"}}],"answer":""}}
 - "4SS EASY 열화 리포트 보여줘"  (특정 파라미터 상세 리포트 = wads_report)
   -> {{"requests":[{{"intent":"wads_report","agent":"wads_agent","slots":{{"lotcd":"4SS","fail_type":"EASY"}},"goal":"4SS EASY 검출 리포트"}}],"answer":""}}
+- (WADS list 후, 직전 결과의 query_window=2026-07-01 ~ 2026-07-31) "그 파라미터 리포트 다 보여줘"
+  (windowed 집계의 report 후속 = 같은 기간의 전체 검출을 원함 → 그 결과의 query_window를 재사용)
+  -> {{"requests":[{{"intent":"wads_report","agent":"wads_agent","slots":{{"fail_type":"GATE_OX(G)","wads_start_tm":"2026-07-01","wads_end_tm":"2026-07-31"}},"goal":"7월 GATE_OX(G) 전체 검출 리포트"}}],"answer":""}}
 - (follow-up) "두번째 lot 이력 보여줘"  (ordinal reference to a prior result)
   -> {{"requests":[{{"intent":"lot_history","agent":"lot_history_agent","slots":{{"lot_ids":"#2"}},"goal":"두번째 lot 이력"}}],"answer":""}}
 - "TSSHNCV TSSH20Y TSSH02N TSSHH0Y 랏이력 알려줘"  (다중 LOT — 공백 구분, 각각 분리해 LIST로)

@@ -1,0 +1,89 @@
+<style>
+  .arch-wrap { display: grid; gap: 24px; }
+  .arch-title { margin-bottom: 4px; }
+  .flow { display: grid; gap: 10px; align-items: center; }
+  .flow.current { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .flow.hybrid { grid-template-columns: 1.05fr 1.15fr 1.2fr 1.05fr 1.25fr; }
+  .node { min-height: 82px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); color: var(--card-foreground); display: flex; flex-direction: column; justify-content: center; gap: 5px; position: relative; }
+  .node strong { font-weight: 500; }
+  .node small { color: var(--muted-foreground); }
+  .node.arrow::after { content: "→"; position: absolute; right: -15px; top: 50%; transform: translateY(-50%); color: var(--muted-foreground); z-index: 2; }
+  .decision { border-color: var(--viz-series-1); background: color-mix(in srgb, var(--viz-series-1) 12%, var(--card)); }
+  .agentic { border-color: var(--viz-series-2); background: color-mix(in srgb, var(--viz-series-2) 12%, var(--card)); }
+  .safe { border-color: var(--viz-series-3); background: color-mix(in srgb, var(--viz-series-3) 12%, var(--card)); }
+  .split-lanes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .lane { padding: 12px; border: 1px dashed var(--border); border-radius: 8px; min-height: 116px; }
+  .lane h4 { margin: 0 0 6px; font-weight: 500; }
+  .lane p { margin: 4px 0; color: var(--muted-foreground); }
+  .contract-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .contract { padding: 12px; border-top: 3px solid var(--viz-series-1); background: var(--muted); color: var(--foreground); border-radius: 8px; }
+  .contract:nth-child(2) { border-top-color: var(--viz-series-2); }
+  .contract:nth-child(3) { border-top-color: var(--viz-series-3); }
+  .contract:nth-child(4) { border-top-color: var(--viz-series-4); }
+  .contract strong { display: block; margin-bottom: 5px; font-weight: 500; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; color: var(--muted-foreground); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+  @media (max-width: 760px) {
+    .flow.current, .flow.hybrid, .contract-row { grid-template-columns: 1fr; }
+    .node.arrow::after { content: "↓"; right: 50%; top: auto; bottom: -17px; transform: translateX(50%); }
+    .split-lanes { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="arch-wrap">
+  <section>
+    <h2 class="arch-title">현재 구조: 하나의 순차 파이프라인</h2>
+    <p class="subtitle">모든 요청이 같은 planner → FIFO 실행 경로를 지나며, 열린 원인분석도 시작 시점에 계획이 고정됩니다.</p>
+    <div class="flow current">
+      <div class="node arrow"><strong>User turn</strong><small>새 요청 또는 HITL resume</small></div>
+      <div class="node arrow decision"><strong>Planner</strong><small>전체 task를 앞에서 생성</small></div>
+      <div class="node arrow"><strong>Validator</strong><small>slot 정규화·계획 승인</small></div>
+      <div class="node arrow"><strong>Supervisor</strong><small>FIFO dispatcher</small></div>
+      <div class="node arrow"><strong>Worker</strong><small>전문 조회·분석</small></div>
+      <div class="node"><strong>Replanner</strong><small>빈 slot·followup 보정 후 loop</small></div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="arch-title">추천 구조: 결정론 경로 + 제한된 탐색 경로</h2>
+    <p class="subtitle">한 번의 LLM 분류가 “무슨 값을 넣을지”가 아니라 “어떤 실행 모드가 필요한지”만 결정합니다.</p>
+    <div class="flow hybrid">
+      <div class="node arrow"><strong>Turn Gateway</strong><small>동시 실행·resume·새 의도 처리</small></div>
+      <div class="node arrow decision"><strong>Mode Classifier</strong><small>direct / planned / exploratory</small></div>
+      <div class="node arrow">
+        <div class="split-lanes">
+          <div class="lane safe">
+            <h4>Deterministic lane</h4>
+            <p>명확한 단일 요청</p>
+            <p>고정 task DAG</p>
+            <p>재현 가능한 실행</p>
+          </div>
+          <div class="lane agentic">
+            <h4>Exploration lane</h4>
+            <p>열린 원인분석</p>
+            <p>결과를 보고 다음 단계 선택</p>
+            <p>step·cost·agent budget 제한</p>
+          </div>
+        </div>
+      </div>
+      <div class="node arrow"><strong>Task Executor</strong><small>task-scoped input, 의존성·실패 정책</small></div>
+      <div class="node"><strong>Worker Subgraphs</strong><small>private state + typed result output</small></div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="arch-title">공통 계약: 두 경로가 공유하는 안전장치</h2>
+    <div class="contract-row">
+      <div class="contract"><strong>TaskSpec</strong><span>agent, params, depends_on, input_bindings, on_failure</span></div>
+      <div class="contract"><strong>ResultEnvelope</strong><span>status, facts, entities, artifacts, provenance</span></div>
+      <div class="contract"><strong>TurnContext</strong><span>실제 사용자 턴, 선택된 결과 참조, 제한된 대화 문맥</span></div>
+      <div class="contract"><strong>RunPolicy</strong><span>max_steps, max_cost, allowed_agents, concurrency, cancellation</span></div>
+    </div>
+  </section>
+
+  <div class="legend">
+    <span><i class="dot" style="background:var(--viz-series-1)"></i>모드·라우팅 결정</span>
+    <span><i class="dot" style="background:var(--viz-series-2)"></i>제한된 LLM 자율성</span>
+    <span><i class="dot" style="background:var(--viz-series-3)"></i>결정론·안전 경계</span>
+  </div>
+</div>

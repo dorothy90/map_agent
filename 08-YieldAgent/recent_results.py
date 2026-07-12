@@ -139,6 +139,11 @@ def _recent_result_full_block(result: dict[str, Any]) -> list[str]:
     ]
     if report_tags:
         block.append(f"reports: [{', '.join(report_tags)}]")
+    # 조회 기간(time window)을 planner에 노출 → report 후속이 같은 기간을 재사용할 수 있게.
+    win_start = str(result.get("wads_start_tm") or "")
+    win_end = str(result.get("wads_end_tm") or "")
+    if win_start or win_end:
+        block.append(f"query_window: {win_start or '전체'} ~ {win_end or '전체'}")
     for index, row in enumerate(rows[:5], start=1):
         if not isinstance(row, dict):
             continue

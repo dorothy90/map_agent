@@ -1,0 +1,77 @@
+{
+  "scores": {
+    "yield_drop_root_cause": {
+      "id": "yield_drop_root_cause",
+      "agent_recall": 0.25,
+      "artifact_recall": 0.5,
+      "planned_agents": [
+        "yield_agent"
+      ],
+      "expected_agents": [
+        "yield_agent",
+        "wads_agent",
+        "map_agent",
+        "fail_history_agent"
+      ],
+      "missing_agents": [
+        "wads_agent",
+        "map_agent",
+        "fail_history_agent"
+      ],
+      "missing_artifacts": [
+        "맵",
+        "불량"
+      ]
+    },
+    "detect_lots_deep_dive": {
+      "id": "detect_lots_deep_dive",
+      "agent_recall": 0.25,
+      "artifact_recall": 0.667,
+      "planned_agents": [
+        "wads_agent"
+      ],
+      "expected_agents": [
+        "wads_agent",
+        "map_agent",
+        "mining_agent",
+        "relation_tree_agent"
+      ],
+      "missing_agents": [
+        "map_agent",
+        "mining_agent",
+        "relation_tree_agent"
+      ],
+      "missing_artifacts": [
+        "맵"
+      ]
+    },
+    "followup_why_low": {
+      "id": "followup_why_low",
+      "agent_recall": 0.25,
+      "artifact_recall": 0.667,
+      "planned_agents": [
+        "relation_tree_agent",
+        "yield_agent"
+      ],
+      "expected_agents": [
+        "yield_agent",
+        "wads_agent",
+        "map_agent",
+        "fail_history_agent"
+      ],
+      "missing_agents": [
+        "wads_agent",
+        "map_agent",
+        "fail_history_agent"
+      ],
+      "missing_artifacts": [
+        "불량"
+      ]
+    }
+  },
+  "aggregate": {
+    "mean_agent_recall": 0.25,
+    "mean_artifact_recall": 0.611,
+    "n": 3
+  }
+}
