@@ -19,7 +19,7 @@ HTML 의존 없이 state의 raw 데이터(weeks_data, anomaly_params 등)로
 
 사용법:
     builder = YieldReportPPTBuilder()
-    pptx_bytes, fpath = builder.build(state)
+    pptx_bytes = builder.build(state)
 """
 from __future__ import annotations
 
@@ -28,7 +28,6 @@ import io
 import logging
 import os
 import re
-import uuid
 from datetime import date, datetime
 from typing import Any
 
@@ -91,9 +90,6 @@ FONT_BODY = "맑은 고딕"
 # 수율 테이블에 표시할 핵심 파라미터 (PPT 슬라이드 폭 제한)
 KEY_PT1H_PARAMS = ["VTH", "IDSAT", "IDLIN", "IOFF", "ION", "IGATE", "IDDQ",
                    "VMIN", "FMAX", "GM_MAX", "SS", "DIBL"]
-
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "generated")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ── 템플릿 경로 ──
 TEMPLATE_PATH = os.environ.get(
@@ -177,7 +173,7 @@ class YieldReportPPTBuilder:
             self._using_template = False
 
     # ── Public API ───────────────────────────────────────
-    def build_compact(self, state: dict[str, Any]) -> tuple[bytes, str]:
+    def build_compact(self, state: dict[str, Any]) -> bytes:
         """compact 베이스 + 동적 추가 슬라이드 PPT 생성.
 
         파이프라인:
@@ -228,22 +224,19 @@ class YieldReportPPTBuilder:
                               state)
             state.pop("_current_extra_content", None)
 
-        # 저장
         buf = io.BytesIO()
         self.prs.save(buf)
         pptx_bytes = buf.getvalue()
 
-        fname = f"yield_report_{lotcd}_{ref_date}_{uuid.uuid4().hex[:6]}.pptx"
-        fpath = os.path.join(OUTPUT_DIR, fname)
-        with open(fpath, "wb") as f:
-            f.write(pptx_bytes)
+        logger.info(
+            "[PPT Builder] compact+동적 생성 완료: %d bytes, %d slides",
+            len(pptx_bytes),
+            len(self.prs.slides),
+        )
+        return pptx_bytes
 
-        logger.info("[PPT Builder] compact+동적 생성 완료: %s (%d bytes, %d slides)",
-                     fname, len(pptx_bytes), len(self.prs.slides))
-        return pptx_bytes, fpath
-
-    def build(self, state: dict[str, Any]) -> tuple[bytes, str]:
-        """state 전체를 받아 PPT를 생성하고 (bytes, file_path)를 반환."""
+    def build(self, state: dict[str, Any]) -> bytes:
+        """state 전체를 받아 PPT bytes를 반환."""
         lotcd = state.get("lotcd", "Unknown")
         ref_date = state.get("ref_date", date.today().strftime("%Y%m%d"))
         unit = state.get("unit", "weekly")
@@ -307,19 +300,16 @@ class YieldReportPPTBuilder:
         # 10) 엔딩
         self._add_ending_slide()
 
-        # 저장
         buf = io.BytesIO()
         self.prs.save(buf)
         pptx_bytes = buf.getvalue()
 
-        fname = f"yield_report_{lotcd}_{ref_date}_{uuid.uuid4().hex[:6]}.pptx"
-        fpath = os.path.join(OUTPUT_DIR, fname)
-        with open(fpath, "wb") as f:
-            f.write(pptx_bytes)
-
-        logger.info("[PPT Builder] 생성 완료: %s (%d bytes, %d slides)",
-                     fname, len(pptx_bytes), len(self.prs.slides))
-        return pptx_bytes, fpath
+        logger.info(
+            "[PPT Builder] 생성 완료: %d bytes, %d slides",
+            len(pptx_bytes),
+            len(self.prs.slides),
+        )
+        return pptx_bytes
 
     # ================================================================
     # Compact 슬라이드 1 — 테이블 3개 + scatter plot 3개

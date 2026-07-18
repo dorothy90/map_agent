@@ -68,6 +68,11 @@ def artifact_url(ref: ArtifactRef) -> str:
     return _require_store().artifact_url(ref)
 
 
+def active_artifact_store() -> ArtifactStore:
+    """Return the worker-scoped store for reference consumers such as PPT export."""
+    return _require_store()
+
+
 def _require_store() -> ArtifactStore:
     store = _store.get()
     if store is None:

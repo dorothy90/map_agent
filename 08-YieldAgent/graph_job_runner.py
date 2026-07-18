@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 import traceback
 import uuid
@@ -202,6 +201,7 @@ def _initial_stream_input(
         "lot_history_artifacts": Overwrite([]),
         "relation_tree_artifacts": Overwrite([]),
         "mining_artifacts": Overwrite([]),
+        "wt_resp_artifacts": Overwrite([]),
         "past_steps": Overwrite([]),
         "step_count": 0,
         "task_plan": [],
@@ -450,35 +450,13 @@ async def run_graph(
                     ("lot_history_artifacts", "lot_history_agent"),
                     ("relation_tree_artifacts", "relation_tree_agent"),
                     ("mining_artifacts", "mining_agent"),
+                    ("wt_resp_artifacts", "wt_resp_agent"),
                 ]
                 for key, default_agent in artifact_sources:
                     for artifact in node_state.get(key, []):
                         artifact_data = artifact.get("data", "")
                         if not artifact_data:
                             continue
-                        if artifact.get("type") == "pptx" or artifact.get("mime", "").startswith(
-                            "application/vnd.openxmlformats"
-                        ):
-                            path = artifact_data[7:] if artifact_data.startswith("file://") else artifact_data
-                            event = ArtifactEvent(
-                                artifact_type=ArtifactType.pptx,
-                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                                title=artifact.get("title", "yield_report"),
-                                agent=artifact.get("agent", "ppt_export"),
-                                data=f"/download/pptx/{os.path.basename(path)}",
-                                step=step_count,
-                            )
-                            await emit(_event_dict(event))
-                            turn_artifacts.append(_event_dict(event))
-                            continue
-                        if artifact_data.startswith("file://"):
-                            path = artifact_data[7:]
-                            try:
-                                with open(path, encoding="utf-8") as artifact_file:
-                                    artifact_data = artifact_file.read()
-                                os.remove(path)
-                            except FileNotFoundError:
-                                continue
                         artifact_type = _detect_artifact_type(artifact_data)
                         mime = {
                             ArtifactType.html: "text/html",

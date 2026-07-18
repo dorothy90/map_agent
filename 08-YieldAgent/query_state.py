@@ -178,6 +178,9 @@ class YieldQueryState(TypedDict):
     # Relation Tree 결과
     relation_tree_artifacts: Annotated[list, operator.add]
 
+    # WT Resp 결과
+    wt_resp_artifacts: Annotated[list, operator.add]
+
     # Mining (gini 기반 기여 파라미터 마이닝) — 상류 공유키 재사용:
     # lot_cd=lotcd, fail_name=fail_type, mode=wads_category (별도 키 없음).
     group_good: list  # 양품 그룹 식별자 (사용자 직접/상류 상속, overwrite)

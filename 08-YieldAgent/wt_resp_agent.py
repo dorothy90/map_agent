@@ -23,6 +23,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langfuse import observe
 
+from artifact_context import save_artifact
 from common import timed, html_escape as _h, get_oracle_connection
 from result_contracts import attach_result_envelope
 
@@ -165,14 +166,16 @@ def wt_resp_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         provenance={"task_id": current_task_id, "task_goal": state.get("current_task_goal", "")},
         followups=followups,
     )
+    ref = save_artifact(html_content, "text/html", "wt_resp", "wt_resp_agent", "html")
     return {
         "messages": [result_message],
         "wt_resp_artifacts": [
             {
                 "type": "html",
                 "mime": "text/html",
-                "data": html_content,
+                "artifact_ref": ref.model_dump(),
                 "title": "wt_resp",
+                "agent": "wt_resp_agent",
             }
         ],
         # 산출한 그룹을 state에 기록 → mining_agent가 상속(5번째·4번째 state).

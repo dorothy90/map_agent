@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langfuse import observe
 
+from artifact_context import save_artifact
 from common import timed, html_escape as _h, get_oracle_connection
 from result_contracts import attach_result_envelope
 
@@ -127,16 +128,22 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
             opers_html = "".join(f"<li>{_h(m)}</li>" for m in main_opers) or "<li>-</li>"
             # TODO(relation-real-data): 아래 artifact HTML은 placeholder. 실제 Inline-WT 상관분석/trend
             # 데이터(예: _query_wt_relation)로 교체 — 화면 전용이므로 LLM 컨텍스트엔 안 들어감.
+            title = f"relation_tree_{g_param or g_lotcd}"
+            html_content = (
+                f"<h1>Inline-WT 연관 분석: {_h(g_lotcd)} / {_h(g_param) or '-'}</h1>"
+                f"<p>lots: {_h(g_lots) or '-'}</p>"
+                f"<p>연관 main_oper 후보:</p><ul>{opers_html}</ul>"
+                f"<p>(상관분석·trend 본구현 예정)</p>"
+            )
+            ref = save_artifact(
+                html_content, "text/html", title, "relation_tree_agent", "html"
+            )
             artifacts.append({
                 "type": "html",
                 "mime": "text/html",
-                "data": (
-                    f"<h1>Inline-WT 연관 분석: {_h(g_lotcd)} / {_h(g_param) or '-'}</h1>"
-                    f"<p>lots: {_h(g_lots) or '-'}</p>"
-                    f"<p>연관 main_oper 후보:</p><ul>{opers_html}</ul>"
-                    f"<p>(상관분석·trend 본구현 예정)</p>"
-                ),
-                "title": f"relation_tree_{g_param or g_lotcd}",
+                "artifact_ref": ref.model_dump(),
+                "title": title,
+                "agent": "relation_tree_agent",
             })
             labels.append(g_param or g_lotcd)
         # TODO(relation-real-data): LLM 먹이기 = summary(산문 채널) + 아래 attach_result_envelope의
@@ -214,13 +221,17 @@ def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> d
         extensions={"relation_tree_agent": {"main_opers": main_opers}},
         followups=_mainoper_followups(lot_code, fail_type, main_opers, category),
     )
+    ref = save_artifact(
+        html_content, "text/html", "relation_tree", "relation_tree_agent", "html"
+    )
     return {
         "messages": [msg],
         "relation_tree_artifacts": [{
             "type": "html",
             "mime": "text/html",
-            "data": html_content,
+            "artifact_ref": ref.model_dump(),
             "title": "relation_tree",
+            "agent": "relation_tree_agent",
         }],
         "agent_suggestion": "",
         "past_steps": [(current_task_id, summary[:300])],

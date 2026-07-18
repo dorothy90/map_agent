@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langfuse import observe
 
+from artifact_context import save_artifact
 from common import timed, html_escape as _h, is_transient_error
 from lot_history_tools import _tool_payload_var, query_lot_history
 from result_contracts import attach_result_envelope, derive_summary_from_rows
@@ -754,11 +755,15 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     artifacts = []
     if isinstance(lot_history_data, dict) and "error" not in lot_history_data and lot_history_data:
         html = _render_lot_history_html(lot_history_data)
+        ref = save_artifact(
+            html, "text/html", "lot_history_report", "lot_history_agent", "html"
+        )
         artifacts.append({
             "type": "html",
             "mime": "text/html",
-            "data": html,
+            "artifact_ref": ref.model_dump(),
             "title": "lot_history_report",
+            "agent": "lot_history_agent",
         })
 
     # C1 패턴 확장: lot_history_sql_result structured AIMessage 발행.

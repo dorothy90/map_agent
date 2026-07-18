@@ -30,6 +30,7 @@ from langgraph.prebuilt import create_react_agent
 from langfuse import observe
 from pydantic import BaseModel, Field
 
+from artifact_context import save_artifact
 from lf_utils import lf_callbacks as _lf_callbacks
 from common import timed, get_llm, html_escape as _h, extract_suggestion, is_transient_error
 from prompts import MINING_SYSTEM_PROMPT
@@ -552,17 +553,22 @@ def mining_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
 
     if new_rows is not None and not cached:
         meta = storage.get("meta") or {}
+        html = _render_mining_gini_html(
+            new_rows,
+            meta.get("lot_cd", lot_cd),
+            meta.get("fail_name", fail_name),
+            meta.get("mode", mode),
+        )
+        ref = save_artifact(
+            html, "text/html", "mining_gini", "mining_agent", "html"
+        )
         artifacts = [
             {
                 "type": "html",
                 "mime": "text/html",
-                "data": _render_mining_gini_html(
-                    new_rows,
-                    meta.get("lot_cd", lot_cd),
-                    meta.get("fail_name", fail_name),
-                    meta.get("mode", mode),
-                ),
+                "artifact_ref": ref.model_dump(),
                 "title": "mining_gini",
+                "agent": "mining_agent",
             }
         ]
         attach_result_envelope(
