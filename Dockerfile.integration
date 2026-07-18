@@ -1,0 +1,8 @@
+FROM langflow-yield-langflow:latest
+
+USER root
+RUN pip install --no-cache-dir "celery>=5.4,<6" "motor>=3.3" \
+    "pydantic-settings>=2.7,<3"
+COPY --chown=user:user 08-YieldAgent /app/08-YieldAgent
+WORKDIR /app/08-YieldAgent
+USER user

@@ -24,6 +24,72 @@ services:
       timeout: 2s
       retries: 30
 
+  api:
+    image: yield-agent-integration:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.integration
+    command: uvicorn agent_server:app --host 0.0.0.0 --port 8000
+    environment: &yield-agent-test-environment
+      ENVIRONMENT: test
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: yield_agent_process_test
+      REDIS_URL: redis://redis:6379/0
+      ARTIFACT_ROOT: /mnt/yield-agent
+      PLATFORM_USER_ID_HEADER: X-Authenticated-User
+      OWNER_HASH_KEY: process-test-owner-key
+      ENABLE_LEGACY_CHAT: "false"
+      ENABLE_REPL: "false"
+      ENABLE_WIKI: "false"
+      ENABLE_LOCAL_TRACE: "false"
+      WORKER_LEASE_SECONDS: "6"
+      RECONCILE_INTERVAL_SECONDS: "2"
+    ports:
+      - "127.0.0.1:18000:8000"
+    volumes:
+      - yield-agent-integration-nas:/mnt/yield-agent
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  worker:
+    image: yield-agent-integration:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.integration
+    command: celery -A celery_app.celery_app worker -Q analysis --concurrency=1 --loglevel=INFO
+    environment: *yield-agent-test-environment
+    volumes:
+      - yield-agent-integration-nas:/mnt/yield-agent
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    image: yield-agent-integration:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.integration
+    command: celery -A celery_app.celery_app beat --loglevel=INFO
+    environment: *yield-agent-test-environment
+    volumes:
+      - yield-agent-integration-nas:/mnt/yield-agent
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   yield-agent-integration-mongo:
   yield-agent-integration-redis:
+  yield-agent-integration-nas:

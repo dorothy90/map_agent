@@ -126,7 +126,12 @@ async def lifespan(app: FastAPI):
         user_limit=settings.user_job_limit,
         global_limit=settings.global_job_limit,
     )
-    dispatcher = CeleryJobDispatcher(celery_app)
+    if settings.environment == "test":
+        from test_runtime import TestJobDispatcher
+
+        dispatcher = TestJobDispatcher(celery_app)
+    else:
+        dispatcher = CeleryJobDispatcher(celery_app)
     event_store = JobEventStore(redis, ttl_seconds=86_400, max_events=2_000)
     service = JobService(repository, admission, dispatcher, event_store)
     app.state.motor_db = motor_client[settings.mongo_db]
@@ -212,6 +217,11 @@ app.add_middleware(
 )
 
 app.include_router(job_router)
+
+if _settings.environment == "test":
+    from test_runtime import router as test_router  # noqa: E402
+
+    app.include_router(test_router)
 
 if _settings.enable_repl:
     from repl_agent.router import router as repl_router  # noqa: E402

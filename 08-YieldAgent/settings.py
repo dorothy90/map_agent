@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=list)
     user_job_limit: int = Field(default=2, ge=1)
     global_job_limit: int = Field(default=100, ge=1)
+    worker_lease_seconds: int = Field(default=60, ge=3)
+    reconcile_interval_seconds: float = Field(default=60.0, ge=1.0)
     enable_legacy_chat: bool = True
     enable_repl: bool = False
     enable_wiki: bool = False

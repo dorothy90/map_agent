@@ -74,6 +74,7 @@ class JobRepository:
         session_id: str,
         query: str,
         idempotency_key: str | None,
+        execution_control: str | None = None,
     ) -> CreateJobResult:
         existing = await self.find_idempotent(owner_id, idempotency_key)
         if existing is not None:
@@ -97,6 +98,8 @@ class JobRepository:
         }
         if idempotency_key is not None:
             job["idempotency_key"] = idempotency_key
+        if execution_control is not None:
+            job["execution_control"] = execution_control
 
         try:
             await self.jobs.insert_one(job)

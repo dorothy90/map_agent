@@ -74,7 +74,13 @@ class JobService:
         self.dispatcher = dispatcher
         self.event_store = event_store
 
-    async def create(self, request: JobCreate, identity) -> dict:
+    async def create(
+        self,
+        request: JobCreate,
+        identity,
+        *,
+        execution_control: str | None = None,
+    ) -> dict:
         if request.idempotency_key is not None:
             existing = await self.repository.find_idempotent(
                 identity.owner_id, request.idempotency_key
@@ -84,15 +90,18 @@ class JobService:
 
         job_id = str(uuid.uuid4())
         await self.admission.acquire(identity.owner_hash, job_id)
+        create_kwargs = {
+            "job_id": job_id,
+            "owner_id": identity.owner_id,
+            "owner_hash": identity.owner_hash,
+            "session_id": request.session_id,
+            "query": request.query,
+            "idempotency_key": request.idempotency_key,
+        }
+        if execution_control is not None:
+            create_kwargs["execution_control"] = execution_control
         try:
-            result = await self.repository.create_job(
-                job_id=job_id,
-                owner_id=identity.owner_id,
-                owner_hash=identity.owner_hash,
-                session_id=request.session_id,
-                query=request.query,
-                idempotency_key=request.idempotency_key,
-            )
+            result = await self.repository.create_job(**create_kwargs)
         except Exception:
             await self.admission.release(identity.owner_hash, job_id)
             raise

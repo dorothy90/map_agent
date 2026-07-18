@@ -22,7 +22,7 @@ celery_app.conf.update(
     beat_schedule={
         "reconcile-jobs-every-minute": {
             "task": "yield_agent.reconcile_jobs",
-            "schedule": 60.0,
+            "schedule": settings.reconcile_interval_seconds,
             "options": {"queue": "analysis"},
         }
     },

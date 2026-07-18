@@ -143,3 +143,24 @@ implementation of this section.
 ├── AGENTS.md             # 에이전트 아키텍처 문서
 └── SKILL.md              # 스킬 레퍼런스
 ```
+
+## Background Job Processes
+
+The API accepts durable jobs but never runs the analysis graph. One shared image is
+started with separate commands:
+
+```text
+API:    uvicorn agent_server:app --host 0.0.0.0 --port 8000
+Worker: celery -A celery_app.celery_app worker -Q analysis --concurrency=1 --loglevel=INFO
+Beat:   celery -A celery_app.celery_app beat --loglevel=INFO
+```
+
+- API owns identity, admission, MongoDB job creation, and SSE delivery.
+- Worker alone claims `QUEUED` jobs, owns the renewable MongoDB lease, runs the graph,
+  publishes Redis Stream events, and writes terminal state.
+- Exactly one beat instance dispatches the periodic lease/stale-job reconciler to the
+  `analysis` queue. The reconciler lock prevents overlapping reconciliation.
+- API, worker, and beat use the same MongoDB, persistent Redis broker, and identically
+  mounted NAS path. Production keeps `ENABLE_LEGACY_CHAT=false`.
+- `Dockerfile.integration` and `/__test/*` are process-gate support only. Test controls
+  are enum-based and are imported/registered only when `ENVIRONMENT=test`.

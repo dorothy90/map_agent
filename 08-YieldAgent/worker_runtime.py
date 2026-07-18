@@ -19,13 +19,16 @@ from job_repository import JobRepository
 from settings import Settings, get_settings
 
 
-LEASE_SECONDS = 60
 LEASE_RENEW_SECONDS = 20
 EVENT_TTL_SECONDS = 86_400
 MAX_EVENTS = 2_000
 CANCEL_KEY_PREFIX = "job:cancel:"
 MAX_TRANSIENT_RETRIES = 2
 RETRY_BACKOFF_SECONDS = (5, 20)
+
+_test_graph_runner = None
+if get_settings().environment == "test":
+    from test_runtime import run_test_graph as _test_graph_runner
 
 GraphRunner = Callable[..., Awaitable[GraphRunResult]]
 
@@ -138,9 +141,15 @@ class WorkerRuntime:
                         raise CooperativeCancellation
 
                 try:
-                    result = await self._graph_runner(
-                        self.graph(), request, emit, cancelled
-                    )
+                    execution_control = claimed.get("execution_control")
+                    if self.settings.environment == "test" and execution_control:
+                        result = await _test_graph_runner(
+                            execution_control, request, emit, cancelled
+                        )
+                    else:
+                        result = await self._graph_runner(
+                            self.graph(), request, emit, cancelled
+                        )
                 except CooperativeCancellation:
                     stored = await repository.complete_claimed(
                         job_id,
@@ -253,7 +262,7 @@ class WorkerRuntime:
                 job_id,
                 task_id,
                 worker_id,
-                LEASE_SECONDS,
+                self.settings.worker_lease_seconds,
                 run_sequence=run_sequence,
             )
         elif status is JobStatus.RUNNING:
@@ -270,7 +279,7 @@ class WorkerRuntime:
                 job_id,
                 task_id,
                 worker_id,
-                LEASE_SECONDS,
+                self.settings.worker_lease_seconds,
                 run_sequence=run_sequence,
             )
         else:
@@ -288,9 +297,11 @@ class WorkerRuntime:
         worker_id: str,
     ) -> None:
         while True:
-            await asyncio.sleep(LEASE_RENEW_SECONDS)
+            await asyncio.sleep(
+                min(LEASE_RENEW_SECONDS, self.settings.worker_lease_seconds / 3)
+            )
             renewed = await repository.renew_lease(
-                job_id, task_id, worker_id, LEASE_SECONDS
+                job_id, task_id, worker_id, self.settings.worker_lease_seconds
             )
             if renewed is None:
                 return
