@@ -45,6 +45,19 @@ START → rewrite → supervisor ⟷ [yield_agent, wads_agent, map_agent] → EN
 - CLOB 컬럼: output type handler로 `DB_TYPE_LONG` 변환 필요 (wads_agent)
 - LOT_ID: 대소문자 변환 (`lot_id_variants`) 필요
 
+## Durable Job Foundation Ownership
+
+- MongoDB (`job_repository.py`) owns durable job state, idempotency, and the
+  unique active owner/session constraint that guarantees same-session correctness.
+- Redis (`admission.py`) owns per-user and global active-job admission counters;
+  terminal paths release capacity, and `job_service.py` reconciles counters from
+  MongoDB at startup.
+- `settings.py` owns service configuration, and `identity.py` owns authenticated
+  platform-user extraction plus owner hashing.
+- `job_service.py` coordinates admission, persistence, and dispatch;
+  `job_dispatcher.py` defines the dispatch boundary; `job_router.py` owns the
+  `/jobs` HTTP contract.
+
 ## HITL Contract (missing_param)
 
 When `supervisor._require_agent_params` finds required slots empty, it asks the user
@@ -109,6 +122,13 @@ implementation of this section.
 08-YieldAgent/
 ├── agent_server.py       # FastAPI SSE backend
 ├── app.py                # Streamlit UI
+├── settings.py           # MongoDB/Redis, identity, admission, route settings
+├── identity.py           # Platform identity extraction and owner hashing
+├── job_repository.py     # MongoDB durable job state and uniqueness constraints
+├── admission.py          # Redis admission counters and reconciliation
+├── job_service.py        # Job creation, dispatch, terminal release coordination
+├── job_dispatcher.py     # Worker dispatch interface
+├── job_router.py         # Durable `/jobs` API routes
 ├── supervisor.py         # LangGraph StateGraph + supervisor/rewrite nodes
 ├── prompts.py            # 모든 시스템/유저 프롬프트 (중앙화)
 ├── yield_query_agent.py  # Yield agent node (축소됨)
