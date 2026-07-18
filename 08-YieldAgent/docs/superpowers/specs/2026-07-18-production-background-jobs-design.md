@@ -1,7 +1,7 @@
 # YieldAgent Production Background Jobs Design
 
-**Date:** 2026-07-18  
-**Status:** Approved architecture; document review pending  
+**Date:** 2026-07-18
+**Status:** Approved
 **Scope:** FastAPI backend, Celery workers, Redis, MongoDB, Oracle access, shared NAS, and the React job client contract
 
 ## 1. Goal
@@ -27,6 +27,7 @@ The API must remain responsive while LangGraph, Oracle, LLM, map, and presentati
 ## 3. Non-goals
 
 - Building login, logout, token issuance, or a new identity provider.
+- Adding a new file-upload or document-ingestion API; the current product exposes no such route. Any future upload must use the same owner/job-scoped NAS rules and size/media validation.
 - Enabling or productionizing `/repl` or `/wiki`.
 - Migrating NAS artifacts to S3-compatible object storage in this change.
 - Redesigning LangGraph routing, prompts, or semantic planner behavior.
@@ -66,9 +67,13 @@ The backend reads the platform header name from `PLATFORM_USER_ID_HEADER`, defau
 
 Every job stores `owner_id` from the trusted header. Every status, event, resume, cancel, and artifact request loads the job and compares its owner before returning data or mutating state. Unknown jobs and jobs owned by another user both return `404` to avoid disclosing job existence.
 
+LangGraph `thread_id` is namespaced as `{owner_hash}:{session_id}`. A client session ID alone is never used as the checkpoint key, so identical session IDs from different users cannot share state.
+
 The database may store the platform's opaque user identifier. Logs and metrics use a keyed hash of that identifier rather than the raw value. NAS directories use the same keyed hash.
 
 Gateway header injection is a deployment prerequisite. If the platform cannot guarantee it, the backend must validate a signed platform token instead; accepting a frontend-supplied `user_id` is not an alternative.
+
+Network policy must prevent clients from bypassing the gateway and reaching FastAPI directly. Otherwise a caller could forge the trusted header even if the gateway strips it correctly.
 
 ## 6. Job API
 
@@ -173,7 +178,7 @@ The job record contains at least:
 - artifact metadata references
 - retention expiry
 
-Indexes cover job ID, owner plus creation time, retention expiry, idempotency key, and unique active session ownership. MongoDB TTL cleanup handles expired job metadata and checkpoints only after the required retention window.
+Indexes cover job ID, owner plus creation time, retention expiry, idempotency key, and unique active session ownership. Artifact and checkpoint cleanup starts after 30 days. Job metadata receives a one-day TTL grace window so cleanup can still find its files and checkpoint before MongoDB removes the record.
 
 Large HTML, image bytes, base64 payloads, PPT files, and raw document bytes must not be stored in the job record or LangGraph checkpoint. This prevents MongoDB's document-size limit and excessive checkpoint growth.
 
@@ -191,7 +196,7 @@ File names are server-generated UUIDs. Writers create files in the job's tempora
 
 The API resolves only validated metadata-relative paths under `ARTIFACT_ROOT`; request paths are never joined directly. Uploads enforce configured size limits, accepted media types, and safe names. Generated files are returned with controlled `Content-Disposition` and MIME headers.
 
-A platform CronJob removes terminal job directories older than 30 days. It uses MongoDB retention metadata and never deletes a directory belonging to an active job. NAS usage and cleanup failures generate alerts.
+A platform CronJob removes terminal job directories and LangGraph checkpoints older than 30 days. It uses MongoDB retention metadata and never deletes a directory belonging to an active job. MongoDB TTL removes the cleaned job record after the grace window. NAS usage and cleanup failures generate alerts.
 
 ## 12. Configuration and Health
 
@@ -283,6 +288,7 @@ Rollback stops new job admission and returns the frontend to the previous API ve
 ## 18. Deployment Prerequisites
 
 - The gateway can inject a trusted `user_id` header and strip client copies.
+- Network policy exposes FastAPI only through that trusted gateway.
 - The ingress preserves the configured identity header; this is verified end to end rather than assumed for an underscore-containing name.
 - API and worker workloads can run the same image with different commands.
 - Both workloads can reach persistent Redis, MongoDB, Oracle, LLM endpoints, and the shared NAS mount.
