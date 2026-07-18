@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from job_dispatcher import JobDispatcher
-from job_models import JobCreate, JobStatus
+from job_events import JobEventStore
+from job_models import JobCreate, JobStatus, is_terminal
 from job_repository import ACTIVE_STATUSES
 
 
@@ -38,11 +42,36 @@ class DispatchUnavailable(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class StreamEvent:
+    id: str | None
+    data: dict[str, Any]
+
+
+def _ends_stream(event: StreamEvent) -> bool:
+    event_type = event.data.get("type")
+    if event_type == "stream_end":
+        return True
+    if event_type != "job_snapshot":
+        return False
+    try:
+        return is_terminal(JobStatus(event.data.get("status")))
+    except ValueError:
+        return False
+
+
 class JobService:
-    def __init__(self, repository, admission, dispatcher: JobDispatcher):
+    def __init__(
+        self,
+        repository,
+        admission,
+        dispatcher: JobDispatcher,
+        event_store: JobEventStore | None = None,
+    ):
         self.repository = repository
         self.admission = admission
         self.dispatcher = dispatcher
+        self.event_store = event_store
 
     async def create(self, request: JobCreate, identity) -> dict:
         if request.idempotency_key is not None:
@@ -104,3 +133,58 @@ class JobService:
 
     async def get(self, job_id: str, identity) -> dict:
         return await self.repository.get_owned(job_id, identity.owner_id)
+
+    async def stream_events(
+        self,
+        job_id: str,
+        identity,
+        last_event_id: str | None,
+        is_disconnected: Callable[[], Awaitable[bool]],
+        job: dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamEvent | None]:
+        if self.event_store is None:
+            raise RuntimeError("job event store is not configured")
+
+        owned_job = job or await self.get(job_id, identity)
+        snapshot = StreamEvent(
+            id=None,
+            data=dict(self.event_store.snapshot_event(owned_job)),
+        )
+        yield snapshot
+        if _ends_stream(snapshot) or await is_disconnected():
+            return
+
+        retained = await self.event_store.read(job_id, after_id="0-0", block_ms=1)
+        retained_ids = [event.id for event in retained]
+        if last_event_id is not None and last_event_id in retained_ids:
+            replay_from = retained_ids.index(last_event_id) + 1
+            initial_events = retained[replay_from:]
+            cursor = last_event_id
+        else:
+            initial_events = []
+            cursor = retained[-1].id if retained else "0-0"
+
+        for stored in initial_events:
+            if await is_disconnected():
+                return
+            event = StreamEvent(id=stored.id, data=dict(stored.data))
+            cursor = stored.id
+            yield event
+            if _ends_stream(event):
+                return
+
+        while not await is_disconnected():
+            events = await self.event_store.read(
+                job_id, after_id=cursor, block_ms=15_000
+            )
+            if await is_disconnected():
+                return
+            if not events:
+                yield None
+                continue
+            for stored in events:
+                event = StreamEvent(id=stored.id, data=dict(stored.data))
+                cursor = stored.id
+                yield event
+                if _ends_stream(event):
+                    return

@@ -1,4 +1,7 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 
 from admission import GlobalLimitExceeded, UserLimitExceeded
 from identity import PlatformIdentity, get_platform_identity
@@ -43,3 +46,51 @@ async def get_job(
         return JobSnapshot(**(await service.get(job_id, identity)))
     except JobNotFound as exc:
         raise HTTPException(404, detail={"code": "JOB_NOT_FOUND"}) from exc
+
+
+def _format_sse(event) -> str:
+    if event is None:
+        return ": heartbeat\n\n"
+    lines = []
+    if event.id is not None:
+        lines.append(f"id: {event.id}")
+    lines.append(f"event: {event.data['type']}")
+    payload = json.dumps(
+        event.data, ensure_ascii=False, separators=(",", ":")
+    )
+    lines.append(f"data: {payload}")
+    return "\n".join(lines) + "\n\n"
+
+
+@router.get("/{job_id}/events")
+async def get_job_events(
+    job_id: str,
+    request: Request,
+    identity: PlatformIdentity = Depends(get_platform_identity),
+    service: JobService = Depends(get_job_service),
+):
+    try:
+        job = await service.get(job_id, identity)
+    except JobNotFound as exc:
+        raise HTTPException(404, detail={"code": "JOB_NOT_FOUND"}) from exc
+
+    last_event_id = request.headers.get("Last-Event-ID")
+
+    async def body():
+        async for event in service.stream_events(
+            job_id,
+            identity,
+            last_event_id,
+            request.is_disconnected,
+            job=job,
+        ):
+            yield _format_sse(event)
+
+    return StreamingResponse(
+        body(),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Content-Type": "text/event-stream",
+        },
+    )
