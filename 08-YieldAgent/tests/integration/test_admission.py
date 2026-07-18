@@ -83,3 +83,24 @@ async def test_reconcile_rebuilds_active_job_sets(redis_client):
     assert await redis_client.smembers("jobs:active:user:u1") == {"j1", "j2"}
     assert await redis_client.smembers("jobs:active:user:u2") == {"j3"}
     assert not await redis_client.exists("jobs:active:user:stale-user")
+
+
+@pytest.mark.asyncio
+async def test_reconcile_has_no_scan_then_exec_race(redis_client, monkeypatch):
+    admission = AdmissionController(redis_client, user_limit=2, global_limit=100)
+    await admission.acquire("stale-user", "stale-job")
+    original_scan_iter = redis_client.scan_iter
+
+    async def scan_then_concurrent_acquire(*args, **kwargs):
+        async for key in original_scan_iter(*args, **kwargs):
+            yield key
+        await admission.acquire("racing-user", "racing-job")
+
+    monkeypatch.setattr(redis_client, "scan_iter", scan_then_concurrent_acquire)
+
+    await admission.reconcile({"u1": {"j1"}})
+
+    assert await redis_client.smembers("jobs:active:global") == {"j1"}
+    assert {
+        key async for key in original_scan_iter(match="jobs:active:user:*")
+    } == {"jobs:active:user:u1"}

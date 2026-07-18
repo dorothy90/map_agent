@@ -39,6 +39,37 @@ redis.call('SREM', KEYS[2], ARGV[1])
 return 'OK'
 """
 
+_RECONCILE_SCRIPT = """
+local user_key_prefix = ARGV[1]
+local user_keys = redis.call('KEYS', user_key_prefix .. '*')
+
+if #user_keys > 0 then
+    redis.call('DEL', unpack(user_keys))
+end
+redis.call('DEL', KEYS[1])
+
+local argument_index = 2
+local owner_count = tonumber(ARGV[argument_index])
+argument_index = argument_index + 1
+
+for _ = 1, owner_count do
+    local owner_hash = ARGV[argument_index]
+    argument_index = argument_index + 1
+    local job_count = tonumber(ARGV[argument_index])
+    argument_index = argument_index + 1
+    local user_key = user_key_prefix .. owner_hash
+
+    for _ = 1, job_count do
+        local job_id = ARGV[argument_index]
+        argument_index = argument_index + 1
+        redis.call('SADD', user_key, job_id)
+        redis.call('SADD', KEYS[1], job_id)
+    end
+end
+
+return 'OK'
+"""
+
 
 class UserLimitExceeded(Exception):
     pass
@@ -79,25 +110,16 @@ class AdmissionController:
         )
 
     async def reconcile(self, job_counts: Mapping[str, Iterable[str]]) -> None:
-        user_keys = [
-            key async for key in self.redis.scan_iter(match=f"{USER_ACTIVE_KEY_PREFIX}*")
-        ]
-        pipeline = self.redis.pipeline(transaction=True)
-        if user_keys:
-            pipeline.delete(*user_keys)
-        pipeline.delete(GLOBAL_ACTIVE_KEY)
-
-        all_job_ids: set[str] = set()
+        arguments: list[str | int] = [USER_ACTIVE_KEY_PREFIX, len(job_counts)]
         for owner_hash, job_ids in job_counts.items():
             owner_job_ids = set(job_ids)
-            if not owner_job_ids:
-                continue
-            pipeline.sadd(self._user_key(owner_hash), *owner_job_ids)
-            all_job_ids.update(owner_job_ids)
-
-        if all_job_ids:
-            pipeline.sadd(GLOBAL_ACTIVE_KEY, *all_job_ids)
-        await pipeline.execute()
+            arguments.extend((owner_hash, len(owner_job_ids), *owner_job_ids))
+        await self.redis.eval(
+            _RECONCILE_SCRIPT,
+            1,
+            GLOBAL_ACTIVE_KEY,
+            *arguments,
+        )
 
     async def global_count(self) -> int:
         return await self.redis.scard(GLOBAL_ACTIVE_KEY)
