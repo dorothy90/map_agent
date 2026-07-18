@@ -8,11 +8,9 @@ yield_query_agent.py에서 분리.
 from __future__ import annotations
 
 import os
-import uuid
 
 from tabulate import tabulate
 
-import base64
 import io
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -35,20 +33,6 @@ from common import (
 from wafer_zones import WAFER_ZONES, compute_zone_deltas, worst_zone
 
 logger = logging.getLogger("yield_agent.yield_viz")
-
-
-# ── HTML 파일 저장 ────────────────────────────────────────────
-GENERATED_DIR = os.path.join(os.path.dirname(__file__), "generated")
-os.makedirs(GENERATED_DIR, exist_ok=True)
-
-
-def _save_html_to_file(html: str, prefix: str) -> str:
-    """HTML 문자열을 파일로 저장하고 file:// 경로를 반환."""
-    fname = f"{prefix}_{uuid.uuid4().hex[:8]}.html"
-    fpath = os.path.join(GENERATED_DIR, fname)
-    with open(fpath, "w", encoding="utf-8") as f:
-        f.write(html)
-    return f"file://{fpath}"
 
 
 # ── 값 포맷터 ─────────────────────────────────────────────────
@@ -1290,8 +1274,8 @@ def _build_cummap_grid_html(
     unit: str,
     periods: int,
     anomaly_params: list[dict],
-) -> str:
-    """기간별 × 파라미터별 누적 wafer map 그리드를 HTML(base64 PNG)로 반환.
+) -> str | tuple[str, bytes]:
+    """기간별 × 파라미터별 누적 wafer map HTML 템플릿과 PNG bytes를 반환.
 
     열: VTH, PT1C, 개선Top3, 열화Top3 (최대 8개)
     행: 기간 수 (주차/일별/월별)
@@ -1574,12 +1558,12 @@ def _build_cummap_grid_html(
     fig.suptitle(f"{lotcd} Cummap Grid", fontsize=13, fontweight="bold")
     plt.tight_layout(rect=[0, 0, 1, 0.95])
 
-    # ── base64 PNG → HTML ──
+    # PNG는 호출자가 NAS에 저장한 뒤 placeholder를 authorized URL로 치환한다.
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
-    b64 = base64.b64encode(buf.read()).decode()
+    png_bytes = buf.read()
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
@@ -1627,7 +1611,7 @@ img {{
 <div class="cummap-card">
   <div class="title">{lotcd} Period × Parameter Cummap Grid</div>
   <div class="img-container">
-    <img src="data:image/png;base64,{b64}"/>
+    <img src="__ARTIFACT_IMAGE_URL__"/>
   </div>
 </div>
 <script>
@@ -1648,4 +1632,4 @@ if (window.ResizeObserver) {{
   new ResizeObserver(sendHeight).observe(document.body);
 }}
 </script>
-</body></html>"""
+</body></html>""", png_bytes

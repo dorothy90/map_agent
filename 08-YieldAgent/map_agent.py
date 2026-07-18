@@ -2,14 +2,13 @@
 Map Agent Node — Wafer Map 시각화
 ==================================
 Oracle DB에서 wafer 데이터를 조회하고 binmap/cummap PNG를 생성하여
-base64 인코딩 HTML로 반환합니다.
+NAS artifact reference로 반환합니다.
 
 supervisor.py를 import하지 않음 (순환 import 방지).
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import os
@@ -42,6 +41,7 @@ from common import (  # noqa: E402
     timed,
 )
 from result_contracts import attach_result_envelope, derive_summary_from_rows  # noqa: E402
+from artifact_context import artifact_url, save_artifact  # noqa: E402
 
 ORACLE_TABLE = os.getenv("ORACLE_TABLE", "LANGGRAPH_DATA")
 
@@ -706,15 +706,17 @@ def show_wafer_map(
 # ============================================================
 # HTML 변환 헬퍼
 # ============================================================
-def _png_to_html(png_path: str, title: str) -> str:
-    """PNG 파일을 base64 인코딩하여 data URL로 반환 후 파일 삭제"""
-    with open(png_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
+def _persist_png(png_path: str, title: str) -> str:
+    """Persist a renderer PNG and return its authorized relative URL."""
     try:
-        os.remove(png_path)
-    except OSError:
-        logger.debug("PNG 임시 파일 삭제 실패: %s", png_path)
-    return f"data:image/png;base64,{b64}"
+        with open(png_path, "rb") as image:
+            ref = save_artifact(image.read(), "image/png", title, "map_agent", "image")
+        return artifact_url(ref)
+    finally:
+        try:
+            os.remove(png_path)
+        except OSError:
+            logger.debug("PNG 임시 파일 삭제 실패: %s", png_path)
 
 
 # ============================================================
@@ -728,10 +730,11 @@ def map_agent_node(state: dict, config: RunnableConfig) -> dict:
     return _handle_standard_map(state)
 
 
-def _result_to_html(result_str: str, label: str, oper: str, render_rows: list, wf_mod: int, wf_rem: int) -> list[str]:
+def _result_to_html(result_str: str, label: str, oper: str, render_rows: list, wf_mod: int, wf_rem: int) -> tuple[list[str], dict[str, str]]:
     """show_wafer_map 결과의 PNG 경로들을 캡션 단 HTML 조각 리스트로 변환.
     cummap엔 렌더된 wafer 목록(collapsible)을 덧붙인다. (단일/그룹 경로 공용)"""
     html_parts: list[str] = []
+    image_urls: dict[str, str] = {}
     
     style_block = """
     <style>
@@ -915,7 +918,8 @@ def _result_to_html(result_str: str, label: str, oper: str, render_rows: list, w
         label_tag = f"{label} " if label else ""
         oper_tag = f"[{oper}] " if oper else ""
         caption = f"{oper_tag}{label_tag}{kind}".strip()
-        img_src = _png_to_html(p, caption)
+        img_src = _persist_png(p, caption)
+        image_urls[p] = img_src
         
         details_html = ""
         if is_cummap:
@@ -937,7 +941,7 @@ def _result_to_html(result_str: str, label: str, oper: str, render_rows: list, w
             f'</div>'
         )
         html_parts.append(card_html)
-    return html_parts
+    return html_parts, image_urls
 
 
 def _handle_standard_map(state: dict) -> dict:
@@ -976,9 +980,9 @@ def _handle_standard_map(state: dict) -> dict:
                 groupkey=g_gks, map_type="cummap", oper=g_oper or None,
                 wf_mod=wf_mod, wf_rem=wf_rem, label=g_label,
             )
-            g_html = _result_to_html(g_res, g_label, g_oper, g_rows, wf_mod, wf_rem)
+            g_html, image_urls = _result_to_html(g_res, g_label, g_oper, g_rows, wf_mod, wf_rem)
             html_parts.extend(g_html)
-            png_count += len(g_html)
+            png_count += len(image_urls)
             map_rows.append({"groupkey": g_gks, "map_type": "cummap", "map_oper": g_oper, "parameter": g_label})
         map_html = "\n".join(html_parts)
         result_str = f"WADS 검출 {len(map_rows)}개 리포트의 cummap을 그렸습니다."
@@ -995,9 +999,11 @@ def _handle_standard_map(state: dict) -> dict:
             wf_rem=wf_rem,
             label=label,
         )
-        html_parts = _result_to_html(result_str, label, oper, render_rows, wf_mod, wf_rem)
+        html_parts, image_urls = _result_to_html(result_str, label, oper, render_rows, wf_mod, wf_rem)
+        for renderer_path, image_url in image_urls.items():
+            result_str = result_str.replace(renderer_path, image_url)
         map_html = "\n".join(html_parts) if html_parts else ""
-        png_count = len(re.findall(r'[\w./\-]+\.png', result_str))
+        png_count = len(image_urls)
         map_rows = [{
             "lot_ids": lot_ids_list,
             "wf_ids": state.get("wf_ids") or [],
@@ -1009,7 +1015,8 @@ def _handle_standard_map(state: dict) -> dict:
 
     artifacts = []
     if map_html:
-        artifacts.append({"type": "html", "mime": "text/html", "data": map_html, "title": "map", "semantic": "map"})
+        ref = save_artifact(map_html, "text/html", "map", "map_agent", "html")
+        artifacts.append({"type": "html", "mime": "text/html", "artifact_ref": ref.model_dump(), "title": "map", "semantic": "map"})
 
     try:
         get_client().update_current_span(output={

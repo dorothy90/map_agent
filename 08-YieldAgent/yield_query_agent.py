@@ -20,6 +20,7 @@ from common import stream_event, timed, get_llm, extract_suggestion
 from models import TokenEvent
 from prompts import ANALYSIS_SYSTEM_PROMPT, ANALYSIS_USER_PROMPT
 from result_contracts import attach_result_envelope
+from artifact_context import artifact_url, save_artifact
 from yield_db import (
     _fetch_periods, _fetch_wafer_scatter, _fetch_lot_sql,
     _merge_lot_data, _parse_lot_specs, DEFAULT_PERIODS,
@@ -27,7 +28,7 @@ from yield_db import (
 from yield_viz import (
     _build_table, _build_html_table, _build_scatter_html,
     _detect_anomalies, _build_lot_table, _build_lot_html_table,
-    _save_html_to_file, _build_cummap_grid_html,
+    _build_cummap_grid_html,
 )
 
 # ── 로깅 설정 ────────────────────────────────────────────
@@ -163,6 +164,16 @@ def _yield_artifact_metadata(artifacts: list[dict]) -> dict[str, str | int | flo
     return {"artifact_count": len(artifacts or [])}
 
 
+def _save_yield_html(content: str, title: str) -> dict:
+    ref = save_artifact(content, "text/html", title, "yield_agent", "html")
+    return {
+        "type": "html",
+        "mime": "text/html",
+        "artifact_ref": ref.model_dump(),
+        "title": title,
+    }
+
+
 # ============================================================
 # Yield Agent 노드 구현
 # ============================================================
@@ -237,12 +248,7 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         lot_label = yield_groupkey or yield_lot_ids
         result_msg = f"[LOT 비교] {lot_label} pt1h+pt1c 수율 비교 테이블입니다."
 
-        yield_artifacts = [{
-            "type": "html",
-            "mime": "text/html",
-            "data": _save_html_to_file(html_table, "lot_table"),
-            "title": "lot_compare_table",
-        }]
+        yield_artifacts = [_save_yield_html(html_table, "lot_compare_table")]
 
         result_message = AIMessage(content=result_msg, name="yield_agent")
         lot_rows = _yield_lot_rows(merged)
@@ -350,29 +356,21 @@ def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
         analysis = f_analysis.result()
         cummap_html = f_cummap.result()
 
-    yield_artifacts = [{
-        "type": "html",
-        "mime": "text/html",
-        "data": _save_html_to_file(html_table, "yield_table"),
-        "title": "yield_table",
-    }]
+    yield_artifacts = [_save_yield_html(html_table, "yield_table")]
 
     scatter_html = _build_scatter_html(wafer_rows, anomaly_params)
     if scatter_html:
-        yield_artifacts.append({
-            "type": "html",
-            "mime": "text/html",
-            "data": _save_html_to_file(scatter_html, "yield_scatter"),
-            "title": "yield_scatter",
-        })
+        yield_artifacts.append(_save_yield_html(scatter_html, "yield_scatter"))
 
     if cummap_html:
-        yield_artifacts.append({
-            "type": "html",
-            "mime": "text/html",
-            "data": _save_html_to_file(cummap_html, "yield_cummap"),
-            "title": "yield_cummap",
-        })
+        cummap_template, cummap_png = cummap_html
+        image_ref = save_artifact(
+            cummap_png, "image/png", "yield_cummap", "yield_agent", "image"
+        )
+        cummap_document = cummap_template.replace(
+            "__ARTIFACT_IMAGE_URL__", artifact_url(image_ref)
+        )
+        yield_artifacts.append(_save_yield_html(cummap_document, "yield_cummap"))
 
     unit_label = {"weekly": f"주간 (최근 {n}주)", "monthly": f"월별 (최근 {n}달)", "daily": f"일별 (최근 {n}일)"}.get(unit, f"최근 {n}개")
     result_msg = f"[{lotcd}] {unit_label} pt1h 수율 데이터입니다.\n"

@@ -28,6 +28,7 @@ from result_contracts import (
     extract_parameter_values,
 )
 from local_trace import emit_runtime_detail, preview_text
+from artifact_context import save_artifact
 from wads_tools import (
     WADS_TOOLS,
     _category_to_map_oper,
@@ -681,31 +682,34 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     artifacts = []
     if reports_payload:
         html = _render_wads_report_html(reports_payload)
+        ref = save_artifact(html, "text/html", "wads_report", "wads_agent", "html")
         artifacts.append(
             {
                 "type": "html",
                 "mime": "text/html",
-                "data": html,
+                "artifact_ref": ref.model_dump(),
                 "title": "wads_report",
             }
         )
     elif sql_result_payload:
         html = _render_wads_sql_html(sql_result_payload)
+        ref = save_artifact(html, "text/html", "wads_sql_result", "wads_agent", "html")
         artifacts.append(
             {
                 "type": "html",
                 "mime": "text/html",
-                "data": html,
+                "artifact_ref": ref.model_dump(),
                 "title": "wads_sql_result",
             }
         )
     elif query_payload:
         html = _render_wads_query_html(query_payload)
+        ref = save_artifact(html, "text/html", "wads_query", "wads_agent", "html")
         artifacts.append(
             {
                 "type": "html",
                 "mime": "text/html",
-                "data": html,
+                "artifact_ref": ref.model_dump(),
                 "title": "wads_query",
             }
         )

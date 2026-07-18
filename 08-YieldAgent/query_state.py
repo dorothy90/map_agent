@@ -100,8 +100,9 @@ class YieldQueryState(TypedDict):
     State ownership:
     - Source of truth: messages, especially AIMessage.additional_kwargs["result"]
       when agents attach a full ResultEnvelope.
-    - UI delivery: *_artifacts fields may contain artifact payloads for the
-      current turn and are not resolver memory.
+    - UI delivery: *_artifacts fields contain metadata plus ArtifactRef dumps
+      only. HTML, image, document bytes, local paths, and base64 never enter
+      graph state or checkpoints.
     - Scratchpad/index: recent_results is a bounded, payload-free projection
       rebuilt from message ResultEnvelopes. It is never canonical storage.
     """

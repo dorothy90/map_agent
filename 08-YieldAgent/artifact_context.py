@@ -63,6 +63,11 @@ def drain_saved_refs() -> list[ArtifactRef]:
     return list(refs[drained_count:])
 
 
+def artifact_url(ref: ArtifactRef) -> str:
+    """Return the authorized relative URL for an artifact in the active scope."""
+    return _require_store().artifact_url(ref)
+
+
 def _require_store() -> ArtifactStore:
     store = _store.get()
     if store is None:
