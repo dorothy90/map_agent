@@ -4,8 +4,12 @@
 **/.env
 **/__pycache__
 **/*.pyc
+**/.pytest_cache
+**/.ruff_cache
 **/node_modules
 **/generated
 **/local_traces
+**/traces
+**/*.log
 **/tests
 .superpowers

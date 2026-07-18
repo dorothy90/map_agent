@@ -151,8 +151,9 @@ started with separate commands:
 
 ```text
 API:    uvicorn agent_server:app --host 0.0.0.0 --port 8000
-Worker: celery -A celery_app.celery_app worker -Q analysis --concurrency=1 --loglevel=INFO
+Worker: celery -A celery_app.celery_app worker -Q analysis --concurrency=4 --loglevel=INFO
 Beat:   celery -A celery_app.celery_app beat --loglevel=INFO
+Cleanup: python artifact_cleanup.py --older-than-days 30
 ```
 
 - API owns identity, admission, MongoDB job creation, and SSE delivery.
@@ -164,3 +165,7 @@ Beat:   celery -A celery_app.celery_app beat --loglevel=INFO
   mounted NAS path. Production keeps `ENABLE_LEGACY_CHAT=false`.
 - `Dockerfile.integration` and `/__test/*` are process-gate support only. Test controls
   are enum-based and are imported/registered only when `ENVIRONMENT=test`.
+- `Dockerfile` is the production image. Run API, worker, beat, and cleanup as separate
+  workloads from that same image; production starts with API 2, worker 3, beat 1.
+- Production deployment, drain, rollback, identity-gateway, NAS, and capacity rules are
+  maintained in `docs/deployment/production-runbook.md`.
