@@ -19,4 +19,11 @@ celery_app.conf.update(
     task_time_limit=1800,
     broker_transport_options={"visibility_timeout": 2100},
     task_default_queue="analysis",
+    beat_schedule={
+        "reconcile-jobs-every-minute": {
+            "task": "yield_agent.reconcile_jobs",
+            "schedule": 60.0,
+            "options": {"queue": "analysis"},
+        }
+    },
 )

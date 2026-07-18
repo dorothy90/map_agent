@@ -65,7 +65,7 @@ def is_transient_error(exc: Exception) -> bool:
     HTTP 5xx를 transient로 표시. ValueError·TypeError 등 코드 버그는 False.
     supervisor RetryPolicy(retry_on=...)와 worker try/except 양쪽에서 공유한다.
     """
-    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+    if isinstance(exc, (ConnectionError, TimeoutError, httpx.TransportError)):
         return True
     if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
         return 500 <= exc.response.status_code < 600

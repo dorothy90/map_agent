@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -97,6 +98,15 @@ class FakeRunner:
         )
 
 
+class TransientRunner:
+    def __init__(self):
+        self.calls = 0
+
+    async def __call__(self, graph, request, emit, cancelled):
+        self.calls += 1
+        raise TimeoutError("private upstream details")
+
+
 def _install_runtime(monkeypatch, settings, runner):
     import job_tasks
 
@@ -142,6 +152,53 @@ def test_worker_failure_is_sanitized_and_releases_admission(
     assert "sensitive backend detail" not in str(stored)
     assert "active_session_key" not in stored
     assert redis.scard(GLOBAL_ACTIVE_KEY) == 0
+
+
+def test_transient_failure_retries_twice_with_bounded_backoff(
+    infrastructure, monkeypatch
+):
+    database, redis, settings = infrastructure
+    job = _insert_job(database, redis)
+    runner = TransientRunner()
+    _install_runtime(monkeypatch, settings, runner)
+
+    with pytest.raises(Retry) as first:
+        run_job.apply(args=[job["job_id"], 0], throw=True)
+    first_job = database.jobs.find_one({"job_id": job["job_id"]})
+    assert first.value.when == 5
+    assert first_job["status"] == "QUEUED"
+    assert first_job["attempt"] == 1
+
+    with pytest.raises(Retry) as second:
+        run_job.apply(args=[job["job_id"], 0], throw=True)
+    second_job = database.jobs.find_one({"job_id": job["job_id"]})
+    assert second.value.when == 20
+    assert second_job["status"] == "QUEUED"
+    assert second_job["attempt"] == 2
+
+    result = run_job.apply(args=[job["job_id"], 0], throw=True).get()
+    stored = database.jobs.find_one({"job_id": job["job_id"]})
+    assert result == {"status": "FAILED"}
+    assert stored["attempt"] == 3
+    assert stored["error"] == {
+        "category": "infrastructure",
+        "message": "job execution failed",
+    }
+    assert "private upstream details" not in str(stored)
+    assert redis.scard(GLOBAL_ACTIVE_KEY) == 0
+
+    events = [
+        json.loads(fields["payload"])
+        for _, fields in redis.xrange(f"job:events:{job['job_id']}")
+    ]
+    retry_delays = [
+        event["retry_after_seconds"]
+        for event in events
+        if event["type"] == "status" and "retry_after_seconds" in event
+    ]
+    assert retry_delays == [5, 20]
+    assert events[-2]["type"] == "job_snapshot"
+    assert events[-1] == {"type": "stream_end"}
 
 
 def test_live_lease_retries_without_graph_call(infrastructure, monkeypatch):

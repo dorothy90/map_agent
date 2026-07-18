@@ -13,6 +13,7 @@ from redis.asyncio import Redis
 from admission import AdmissionController
 from graph_job_runner import GraphRunRequest, GraphRunResult, run_graph
 from job_events import JobEventStore
+from job_failures import classify_failure
 from job_models import JobStatus, is_terminal
 from job_repository import JobRepository
 from settings import Settings, get_settings
@@ -23,6 +24,8 @@ LEASE_RENEW_SECONDS = 20
 EVENT_TTL_SECONDS = 86_400
 MAX_EVENTS = 2_000
 CANCEL_KEY_PREFIX = "job:cancel:"
+MAX_TRANSIENT_RETRIES = 2
+RETRY_BACKOFF_SECONDS = (5, 20)
 
 GraphRunner = Callable[..., Awaitable[GraphRunResult]]
 
@@ -35,6 +38,7 @@ class CooperativeCancellation(Exception):
 class ExecutionResult:
     status: str
     retry_after: int | None = None
+    retry_kind: str | None = None
 
     def as_dict(self) -> dict[str, str]:
         return {"status": self.status}
@@ -145,14 +149,56 @@ class WorkerRuntime:
                         worker_id,
                         JobStatus.CANCELLED,
                     )
-                except Exception:
+                except Exception as exc:
+                    decision = classify_failure(exc)
+                    attempt = int(claimed["attempt"])
+                    if decision.retry and attempt <= MAX_TRANSIENT_RETRIES:
+                        retry_after = RETRY_BACKOFF_SECONDS[attempt - 1]
+                        stored = await repository.retry_claimed(
+                            job_id,
+                            run_sequence,
+                            task_id,
+                            worker_id,
+                            retry_after,
+                        )
+                        await event_store.publish(
+                            job_id,
+                            {
+                                "type": "status",
+                                "status": JobStatus.QUEUED.value,
+                                "message": "temporary failure; retry scheduled",
+                                "attempt": attempt,
+                                "retry_after_seconds": retry_after,
+                            },
+                        )
+                        await event_store.publish(
+                            job_id, event_store.snapshot_event(stored)
+                        )
+                        return ExecutionResult(
+                            status=JobStatus.QUEUED.value,
+                            retry_after=retry_after,
+                            retry_kind="failure",
+                        )
                     stored = await repository.complete_claimed(
                         job_id,
                         run_sequence,
                         task_id,
                         worker_id,
                         JobStatus.FAILED,
-                        {"error": {"category": "worker", "message": "job execution failed"}},
+                        {
+                            "error": {
+                                "category": decision.category,
+                                "message": decision.message,
+                            }
+                        },
+                    )
+                    await event_store.publish(
+                        job_id,
+                        {
+                            "type": "error",
+                            "category": decision.category,
+                            "message": decision.message,
+                        },
                     )
                 else:
                     target = (
@@ -178,6 +224,8 @@ class WorkerRuntime:
                 if is_terminal(status):
                     await admission.release(stored["owner_hash"], job_id)
                 await event_store.publish(job_id, event_store.snapshot_event(stored))
+                if status is JobStatus.FAILED:
+                    await event_store.publish(job_id, {"type": "stream_end"})
                 return ExecutionResult(status=status.value)
             finally:
                 lease_task.cancel()

@@ -53,6 +53,8 @@ class JobRepository:
             partialFilterExpression={"idempotency_key": {"$type": "string"}},
         )
         await self.jobs.create_index([("owner_id", 1), ("created_at", -1)])
+        await self.jobs.create_index([("status", 1), ("lease_expires_at", 1)])
+        await self.jobs.create_index([("status", 1), ("updated_at", 1)])
         await self.jobs.create_index("expires_at", expireAfterSeconds=0)
 
     async def find_idempotent(
@@ -350,6 +352,169 @@ class JobRepository:
             },
             return_document=ReturnDocument.AFTER,
         )
+
+    async def retry_claimed(
+        self,
+        job_id: str,
+        run_sequence: int,
+        task_id: str,
+        worker_id: str,
+        retry_after: int,
+    ) -> dict:
+        now = datetime.now(timezone.utc)
+        job = await self.jobs.find_one_and_update(
+            {
+                "job_id": job_id,
+                "run_sequence": run_sequence,
+                "status": JobStatus.RUNNING.value,
+                "task_id": task_id,
+                "worker_id": worker_id,
+            },
+            {
+                "$set": {
+                    "status": JobStatus.QUEUED.value,
+                    "updated_at": now,
+                    "retry": {
+                        "scheduled_at": now,
+                        "retry_after_seconds": retry_after,
+                    },
+                },
+                "$unset": {
+                    "lease_expires_at": "",
+                    "task_id": "",
+                    "worker_id": "",
+                    "dispatch_requested_at": "",
+                    "dispatched_at": "",
+                },
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if job is None:
+            raise TransitionConflict(f"job {job_id} is no longer owned by this task")
+        return job
+
+    async def reserve_expired_running(
+        self, cutoff: datetime, reserved_at: datetime
+    ) -> list[dict]:
+        candidates = self.jobs.find(
+            {
+                "status": JobStatus.RUNNING.value,
+                "lease_expires_at": {"$lt": cutoff},
+            },
+            {"job_id": 1, "run_sequence": 1},
+        )
+        reserved: list[dict] = []
+        async for candidate in candidates:
+            job_id = candidate["job_id"]
+            run_sequence = candidate["run_sequence"]
+            job = await self.jobs.find_one_and_update(
+                {
+                    "job_id": job_id,
+                    "run_sequence": run_sequence,
+                    "status": JobStatus.RUNNING.value,
+                    "lease_expires_at": {"$lt": cutoff},
+                },
+                {
+                    "$set": {
+                        "status": JobStatus.QUEUED.value,
+                        "task_id": f"{job_id}:{run_sequence}",
+                        "dispatch_requested_at": reserved_at,
+                        "updated_at": reserved_at,
+                    },
+                    "$unset": {
+                        "worker_id": "",
+                        "lease_expires_at": "",
+                        "dispatched_at": "",
+                    },
+                },
+                return_document=ReturnDocument.AFTER,
+            )
+            if job is not None:
+                reserved.append(job)
+        return reserved
+
+    async def reserve_stale_queued(
+        self, cutoff: datetime, reserved_at: datetime
+    ) -> list[dict]:
+        stale_dispatch = {
+            "$or": [
+                {"dispatched_at": {"$lt": cutoff}},
+                {
+                    "dispatched_at": {"$exists": False},
+                    "dispatch_requested_at": {"$lt": cutoff},
+                },
+                {
+                    "dispatched_at": {"$exists": False},
+                    "dispatch_requested_at": {"$exists": False},
+                    "updated_at": {"$lt": cutoff},
+                },
+            ]
+        }
+        candidates = self.jobs.find(
+            {"status": JobStatus.QUEUED.value, **stale_dispatch},
+            {"job_id": 1, "run_sequence": 1},
+        )
+        reserved: list[dict] = []
+        async for candidate in candidates:
+            job_id = candidate["job_id"]
+            run_sequence = candidate["run_sequence"]
+            job = await self.jobs.find_one_and_update(
+                {
+                    "job_id": job_id,
+                    "run_sequence": run_sequence,
+                    "status": JobStatus.QUEUED.value,
+                    **stale_dispatch,
+                },
+                {
+                    "$set": {
+                        "task_id": f"{job_id}:{run_sequence}",
+                        "dispatch_requested_at": reserved_at,
+                        "updated_at": reserved_at,
+                    }
+                },
+                return_document=ReturnDocument.AFTER,
+            )
+            if job is not None:
+                reserved.append(job)
+        return reserved
+
+    async def cancel_stale_waiting(
+        self, cutoff: datetime, cancelled_at: datetime
+    ) -> list[dict]:
+        candidates = self.jobs.find(
+            {
+                "status": JobStatus.WAITING_INPUT.value,
+                "updated_at": {"$lt": cutoff},
+            },
+            {"job_id": 1},
+        )
+        cancelled: list[dict] = []
+        async for candidate in candidates:
+            job = await self.jobs.find_one_and_update(
+                {
+                    "job_id": candidate["job_id"],
+                    "status": JobStatus.WAITING_INPUT.value,
+                    "updated_at": {"$lt": cutoff},
+                },
+                {
+                    "$set": {
+                        "status": JobStatus.CANCELLED.value,
+                        "updated_at": cancelled_at,
+                        "artifact_expires_at": cancelled_at + timedelta(days=30),
+                        "expires_at": cancelled_at + timedelta(days=31),
+                    },
+                    "$unset": {
+                        "active_session_key": "",
+                        "lease_expires_at": "",
+                        "task_id": "",
+                        "worker_id": "",
+                    },
+                },
+                return_document=ReturnDocument.AFTER,
+            )
+            if job is not None:
+                cancelled.append(job)
+        return cancelled
 
     async def transition(
         self,
