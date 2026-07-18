@@ -9,12 +9,13 @@ from typing import Any
 
 from job_dispatcher import JobDispatcher
 from job_events import JobEventStore
-from job_models import JobCreate, JobStatus, is_terminal
+from job_models import JobCreate, JobStatus, ResumeRequest, is_terminal
 from job_repository import ACTIVE_STATUSES
 
 
 RECONCILER_LOCK_KEY = "jobs:reconciler"
 RECONCILER_LOCK_SECONDS = 300
+CANCEL_MIRROR_TTL_SECONDS = 1_800
 
 
 async def reconcile_admission(repository, admission, redis) -> None:
@@ -133,6 +134,39 @@ class JobService:
 
     async def get(self, job_id: str, identity) -> dict:
         return await self.repository.get_owned(job_id, identity.owner_id)
+
+    async def resume(self, job_id: str, request: ResumeRequest, identity) -> dict:
+        job = await self.repository.resume_owned(
+            job_id, identity.owner_id, request.value
+        )
+        run_sequence = job["run_sequence"]
+        task_id = f"{job_id}:{run_sequence}"
+        requested_at = datetime.now(timezone.utc)
+        job = await self.repository.mark_dispatch_requested(
+            job_id, run_sequence, task_id, requested_at
+        )
+        try:
+            await self.dispatcher.dispatch(job_id, run_sequence)
+        except Exception as exc:
+            await self.repository.rollback_resume(
+                job_id, identity.owner_id, run_sequence
+            )
+            raise DispatchUnavailable from exc
+        return await self.repository.mark_dispatched(
+            job_id, run_sequence, task_id, datetime.now(timezone.utc)
+        )
+
+    async def cancel(self, job_id: str, identity) -> dict:
+        job = await self.repository.request_cancel_owned(
+            job_id, identity.owner_id
+        )
+        redis = self.admission.redis
+        await redis.set(
+            f"job:cancel:{job_id}", "1", ex=CANCEL_MIRROR_TTL_SECONDS
+        )
+        if JobStatus(job["status"]) is JobStatus.CANCELLED:
+            await self.admission.release(job["owner_hash"], job_id)
+        return job
 
     async def stream_events(
         self,

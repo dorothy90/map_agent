@@ -117,6 +117,110 @@ class JobRepository:
     async def get(self, job_id: str) -> dict | None:
         return await self.jobs.find_one({"job_id": job_id})
 
+    async def resume_owned(
+        self, job_id: str, owner_id: str, resume_value: str | dict[str, Any]
+    ) -> dict:
+        now = datetime.now(timezone.utc)
+        job = await self.jobs.find_one_and_update(
+            {
+                "job_id": job_id,
+                "owner_id": owner_id,
+                "status": JobStatus.WAITING_INPUT.value,
+            },
+            {
+                "$set": {
+                    "status": JobStatus.QUEUED.value,
+                    "resume_value": resume_value,
+                    "cancel_requested": False,
+                    "updated_at": now,
+                },
+                "$inc": {"run_sequence": 1},
+                "$unset": {
+                    "lease_expires_at": "",
+                    "task_id": "",
+                    "worker_id": "",
+                    "dispatch_requested_at": "",
+                    "dispatched_at": "",
+                },
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if job is not None:
+            return job
+        await self.get_owned(job_id, owner_id)
+        raise TransitionConflict(f"job {job_id} is not waiting for input")
+
+    async def rollback_resume(
+        self, job_id: str, owner_id: str, run_sequence: int
+    ) -> dict | None:
+        now = datetime.now(timezone.utc)
+        return await self.jobs.find_one_and_update(
+            {
+                "job_id": job_id,
+                "owner_id": owner_id,
+                "status": JobStatus.QUEUED.value,
+                "run_sequence": run_sequence,
+            },
+            {
+                "$set": {
+                    "status": JobStatus.WAITING_INPUT.value,
+                    "updated_at": now,
+                },
+                "$unset": {
+                    "resume_value": "",
+                    "lease_expires_at": "",
+                    "task_id": "",
+                    "worker_id": "",
+                    "dispatch_requested_at": "",
+                    "dispatched_at": "",
+                },
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+
+    async def request_cancel_owned(self, job_id: str, owner_id: str) -> dict:
+        while True:
+            current = await self.get_owned(job_id, owner_id)
+            status = JobStatus(current["status"])
+            if is_terminal(status):
+                return current
+
+            now = datetime.now(timezone.utc)
+            set_fields: dict[str, Any] = {
+                "cancel_requested": True,
+                "updated_at": now,
+            }
+            unset_fields: dict[str, str] = {}
+            if status in {JobStatus.QUEUED, JobStatus.WAITING_INPUT}:
+                set_fields.update(
+                    {
+                        "status": JobStatus.CANCELLED.value,
+                        "artifact_expires_at": now + timedelta(days=30),
+                        "expires_at": now + timedelta(days=31),
+                    }
+                )
+                unset_fields = {
+                    "active_session_key": "",
+                    "lease_expires_at": "",
+                    "task_id": "",
+                    "worker_id": "",
+                }
+
+            update: dict[str, dict[str, Any]] = {"$set": set_fields}
+            if unset_fields:
+                update["$unset"] = unset_fields
+            job = await self.jobs.find_one_and_update(
+                {
+                    "job_id": job_id,
+                    "owner_id": owner_id,
+                    "status": status.value,
+                },
+                update,
+                return_document=ReturnDocument.AFTER,
+            )
+            if job is not None:
+                return job
+
     async def mark_dispatch_requested(
         self,
         job_id: str,

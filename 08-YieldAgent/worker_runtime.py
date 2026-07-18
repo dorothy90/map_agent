@@ -22,8 +22,13 @@ LEASE_SECONDS = 60
 LEASE_RENEW_SECONDS = 20
 EVENT_TTL_SECONDS = 86_400
 MAX_EVENTS = 2_000
+CANCEL_KEY_PREFIX = "job:cancel:"
 
 GraphRunner = Callable[..., Awaitable[GraphRunResult]]
+
+
+class CooperativeCancellation(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -111,16 +116,34 @@ class WorkerRuntime:
                     resume_value=claimed.get("resume_value"),
                 )
 
-                async def emit(event: dict[str, Any]) -> None:
-                    await event_store.publish(job_id, event)
-
                 async def cancelled() -> bool:
+                    if await redis.exists(f"{CANCEL_KEY_PREFIX}{job_id}"):
+                        return True
                     current = await repository.get(job_id)
-                    return current is None or bool(current.get("cancel_requested"))
+                    return (
+                        current is None
+                        or bool(current.get("cancel_requested"))
+                        or current.get("status") == JobStatus.CANCELLED.value
+                    )
+
+                async def emit(event: dict[str, Any]) -> None:
+                    if await cancelled():
+                        raise CooperativeCancellation
+                    await event_store.publish(job_id, event)
+                    if await cancelled():
+                        raise CooperativeCancellation
 
                 try:
                     result = await self._graph_runner(
                         self.graph(), request, emit, cancelled
+                    )
+                except CooperativeCancellation:
+                    stored = await repository.complete_claimed(
+                        job_id,
+                        run_sequence,
+                        task_id,
+                        worker_id,
+                        JobStatus.CANCELLED,
                     )
                 except Exception:
                     stored = await repository.complete_claimed(
@@ -132,7 +155,11 @@ class WorkerRuntime:
                         {"error": {"category": "worker", "message": "job execution failed"}},
                     )
                 else:
-                    target = JobStatus(result.outcome)
+                    target = (
+                        JobStatus.CANCELLED
+                        if await cancelled()
+                        else JobStatus(result.outcome)
+                    )
                     updates: dict[str, Any] = {
                         "latest_interrupt": result.latest_interrupt
                     }

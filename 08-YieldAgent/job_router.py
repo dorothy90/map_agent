@@ -5,8 +5,8 @@ from fastapi.responses import StreamingResponse
 
 from admission import GlobalLimitExceeded, UserLimitExceeded
 from identity import PlatformIdentity, get_platform_identity
-from job_models import JobCreate, JobCreated, JobSnapshot
-from job_repository import JobNotFound, SessionBusy
+from job_models import JobCreate, JobCreated, JobSnapshot, ResumeRequest
+from job_repository import JobNotFound, SessionBusy, TransitionConflict
 from job_service import DispatchUnavailable, JobService
 
 
@@ -44,6 +44,39 @@ async def get_job(
 ):
     try:
         return JobSnapshot(**(await service.get(job_id, identity)))
+    except JobNotFound as exc:
+        raise HTTPException(404, detail={"code": "JOB_NOT_FOUND"}) from exc
+
+
+@router.post(
+    "/{job_id}/resume",
+    response_model=JobSnapshot,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def resume_job(
+    job_id: str,
+    body: ResumeRequest,
+    identity: PlatformIdentity = Depends(get_platform_identity),
+    service: JobService = Depends(get_job_service),
+):
+    try:
+        return JobSnapshot(**(await service.resume(job_id, body, identity)))
+    except JobNotFound as exc:
+        raise HTTPException(404, detail={"code": "JOB_NOT_FOUND"}) from exc
+    except TransitionConflict as exc:
+        raise HTTPException(409, detail={"code": "JOB_NOT_WAITING"}) from exc
+    except DispatchUnavailable as exc:
+        raise HTTPException(503, detail={"code": "DISPATCH_UNAVAILABLE"}) from exc
+
+
+@router.post("/{job_id}/cancel", response_model=JobSnapshot)
+async def cancel_job(
+    job_id: str,
+    identity: PlatformIdentity = Depends(get_platform_identity),
+    service: JobService = Depends(get_job_service),
+):
+    try:
+        return JobSnapshot(**(await service.cancel(job_id, identity)))
     except JobNotFound as exc:
         raise HTTPException(404, detail={"code": "JOB_NOT_FOUND"}) from exc
 
