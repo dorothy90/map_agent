@@ -25,7 +25,8 @@ from pydantic import BaseModel
 import oracledb
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+# Local development may use .env, but an explicit process environment always wins.
+load_dotenv(override=False)
 
 logger = logging.getLogger("yield_agent.common")
 
@@ -75,30 +76,63 @@ def is_transient_error(exc: Exception) -> bool:
 # ============================================================
 # Oracle 연결 설정
 # ============================================================
-ORACLE_USER = os.getenv("ORACLE_USER")
-ORACLE_PASSWORD = os.getenv("ORACLE_PASSWORD")
-ORACLE_DSN = os.getenv("ORACLE_DSN")
-
 _pool: oracledb.ConnectionPool | None = None
 _pool_lock = threading.Lock()
 
 
-def _get_oracle_pool() -> oracledb.ConnectionPool:
+def _get_oracle_pool(settings=None) -> oracledb.ConnectionPool:
     """Oracle 커넥션 풀 싱글턴 (lazy init, thin-mode, thread-safe)"""
     global _pool
     if _pool is None:
         with _pool_lock:
             if _pool is None:  # double-checked locking
+                if settings is None:
+                    from settings import get_settings
+
+                    settings = get_settings()
                 _pool = oracledb.create_pool(
-                    user=ORACLE_USER,
-                    password=ORACLE_PASSWORD,
-                    dsn=ORACLE_DSN,
-                    min=2,
-                    max=10,
-                    increment=1,
+                    user=settings.oracle_user,
+                    password=(
+                        settings.oracle_password.get_secret_value()
+                        if settings.oracle_password
+                        else None
+                    ),
+                    dsn=settings.oracle_dsn,
+                    min=settings.oracle_pool_min,
+                    max=settings.oracle_pool_max,
+                    increment=settings.oracle_pool_increment,
                 )
-                logger.info("Oracle 커넥션 풀 생성 (min=2, max=10)")
+                logger.info(
+                    "Oracle 커넥션 풀 생성 (min=%d, max=%d)",
+                    settings.oracle_pool_min,
+                    settings.oracle_pool_max,
+                )
     return _pool
+
+
+def close_oracle_pool() -> None:
+    """Close the process-local pool without creating it."""
+    global _pool
+    with _pool_lock:
+        pool, _pool = _pool, None
+        if pool is not None:
+            pool.close(force=True)
+
+
+def get_oracle_pool_metrics() -> dict[str, int]:
+    """Return safe pool gauges without triggering lazy initialization."""
+    with _pool_lock:
+        pool = _pool
+        if pool is None:
+            return {"busy": 0, "open": 0, "max": 0}
+        try:
+            return {
+                "busy": int(pool.busy),
+                "open": int(pool.opened),
+                "max": int(pool.max),
+            }
+        except Exception:
+            return {"busy": 0, "open": 0, "max": 0}
 
 
 def get_oracle_connection() -> oracledb.Connection:

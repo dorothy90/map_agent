@@ -82,6 +82,9 @@ class WorkerRuntime:
             self._saver_context.__exit__(None, None, None)
             self._saver_context = None
             self._graph = None
+        from common import close_oracle_pool
+
+        close_oracle_pool()
 
     async def execute_job(
         self,

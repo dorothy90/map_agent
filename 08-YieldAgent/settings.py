@@ -25,9 +25,21 @@ class Settings(BaseSettings):
     enable_repl: bool = False
     enable_wiki: bool = False
     enable_local_trace: bool = False
+    oracle_user: str | None = None
+    oracle_password: SecretStr | None = None
+    oracle_dsn: str | None = None
+    oracle_pool_min: int = Field(default=1, ge=0)
+    oracle_pool_max: int = Field(default=4, ge=1)
+    oracle_pool_increment: int = Field(default=1, ge=1)
 
     @model_validator(mode="after")
     def validate_production(self):
+        if self.oracle_pool_min > self.oracle_pool_max:
+            raise ValueError(
+                "ORACLE_POOL_MIN must be less than or equal to ORACLE_POOL_MAX"
+            )
+        if self.oracle_pool_increment > self.oracle_pool_max:
+            raise ValueError("ORACLE_POOL_INCREMENT must not exceed ORACLE_POOL_MAX")
         if self.environment == "production":
             if "localhost" in self.mongo_uri or "localhost" in self.redis_url:
                 raise ValueError("production requires non-local MongoDB and Redis")

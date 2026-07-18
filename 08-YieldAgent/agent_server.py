@@ -46,6 +46,7 @@ from job_router import router as job_router  # noqa: E402
 from job_service import JobService, reconcile_admission  # noqa: E402
 from settings import get_settings  # noqa: E402
 from graph_job_runner import GraphRunRequest, run_graph  # noqa: E402
+from health_router import router as health_router  # noqa: E402
 
 # 사용자 선호 메모리 백그라운드 flush 태스크 보관 (GC로 조기 소멸 방지)
 _memory_tasks: set = set()
@@ -136,6 +137,7 @@ async def lifespan(app: FastAPI):
     service = JobService(repository, admission, dispatcher, event_store)
     app.state.motor_db = motor_client[settings.mongo_db]
     app.state.redis = redis
+    app.state.settings = settings
     app.state.job_repository = repository
     app.state.admission = admission
     app.state.job_dispatcher = dispatcher
@@ -217,6 +219,7 @@ app.add_middleware(
 )
 
 app.include_router(job_router)
+app.include_router(health_router)
 
 if _settings.environment == "test":
     from test_runtime import router as test_router  # noqa: E402
