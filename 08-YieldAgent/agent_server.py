@@ -47,6 +47,7 @@ from job_service import JobService, reconcile_admission  # noqa: E402
 from settings import get_settings  # noqa: E402
 from graph_job_runner import GraphRunRequest, run_graph  # noqa: E402
 from health_router import router as health_router  # noqa: E402
+from observability import metrics, router as metrics_router  # noqa: E402
 
 # 사용자 선호 메모리 백그라운드 flush 태스크 보관 (GC로 조기 소멸 방지)
 _memory_tasks: set = set()
@@ -143,6 +144,7 @@ async def lifespan(app: FastAPI):
     app.state.job_dispatcher = dispatcher
     app.state.job_event_store = event_store
     app.state.job_service = service
+    app.state.metrics = metrics
 
     wiki_queue = None
     lint_task: asyncio.Task | None = None
@@ -220,6 +222,7 @@ app.add_middleware(
 
 app.include_router(job_router)
 app.include_router(health_router)
+app.include_router(metrics_router)
 
 if _settings.environment == "test":
     from test_runtime import router as test_router  # noqa: E402

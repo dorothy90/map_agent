@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import math
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from job_failures import classify_failure
 from job_models import JobStatus, is_terminal
 from job_repository import JobRepository
 from settings import Settings, get_settings
+from observability import log_worker_event, metrics
 
 
 LEASE_RENEW_SECONDS = 20
@@ -115,6 +117,22 @@ class WorkerRuntime:
             )
             if isinstance(claimed, ExecutionResult):
                 return claimed
+
+            started = time.monotonic()
+            created_at = claimed.get("created_at")
+            if isinstance(created_at, datetime):
+                metrics.queue_wait.observe(
+                    max(0.0, (datetime.now(timezone.utc) - created_at).total_seconds())
+                )
+            log_worker_event(
+                "job_started",
+                job_id=job_id,
+                task_id=task_id,
+                run_sequence=run_sequence,
+                attempt=claimed.get("attempt", 0),
+                node="graph",
+                owner_hash=claimed.get("owner_hash", ""),
+            )
 
             lease_task = asyncio.create_task(
                 self._renew_lease(repository, job_id, task_id, worker_id)
@@ -219,6 +237,10 @@ class WorkerRuntime:
                         await event_store.publish(
                             job_id, event_store.snapshot_event(stored)
                         )
+                        metrics.retry("failure")
+                        metrics.observe_duration(
+                            JobStatus.QUEUED.value, time.monotonic() - started
+                        )
                         return ExecutionResult(
                             status=JobStatus.QUEUED.value,
                             retry_after=retry_after,
@@ -271,6 +293,16 @@ class WorkerRuntime:
                 await event_store.publish(job_id, event_store.snapshot_event(stored))
                 if status is JobStatus.FAILED:
                     await event_store.publish(job_id, {"type": "stream_end"})
+                metrics.observe_duration(status.value, time.monotonic() - started)
+                log_worker_event(
+                    "job_finished",
+                    job_id=job_id,
+                    task_id=task_id,
+                    run_sequence=run_sequence,
+                    attempt=claimed.get("attempt", 0),
+                    node="graph",
+                    owner_hash=claimed.get("owner_hash", ""),
+                )
                 return ExecutionResult(status=status.value)
             finally:
                 lease_task.cancel()
@@ -340,4 +372,6 @@ class WorkerRuntime:
                 job_id, task_id, worker_id, self.settings.worker_lease_seconds
             )
             if renewed is None:
+                metrics.lease("lost")
                 return
+            metrics.lease("renewed")

@@ -80,7 +80,10 @@ def _resume_is_interrupt_answer(resume_value: Any, pending_interrupt: dict) -> b
             or ""
         ).strip().lower()
     except Exception as e:
-        logger.warning("[Resume] 의도 판정 LLM 실패 (%s) — 답으로 처리(기존 동작)", e)
+        from observability import record_llm_error
+
+        record_llm_error(e)
+        logger.warning("[Resume] 의도 판정 LLM 실패 — 답으로 처리(기존 동작)")
         return True
     return not verdict.startswith("new")
 

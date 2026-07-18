@@ -14,6 +14,7 @@ from job_models import JobCreate, JobCreated, JobSnapshot, ResumeRequest
 from job_repository import JobNotFound, JobRepository, SessionBusy, TransitionConflict
 from job_service import DispatchUnavailable, JobService
 from settings import get_settings
+from observability import metrics
 
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -36,13 +37,18 @@ async def create_job(
     try:
         job = await service.create(body, identity)
     except SessionBusy as exc:
+        metrics.submission("busy")
         raise HTTPException(409, detail={"code": "SESSION_BUSY"}) from exc
     except UserLimitExceeded as exc:
+        metrics.submission("user_limit")
         raise HTTPException(429, detail={"code": "USER_JOB_LIMIT"}) from exc
     except GlobalLimitExceeded as exc:
+        metrics.submission("global_limit")
         raise HTTPException(503, detail={"code": "QUEUE_FULL"}) from exc
     except DispatchUnavailable as exc:
+        metrics.submission("dispatch_failed")
         raise HTTPException(503, detail={"code": "DISPATCH_UNAVAILABLE"}) from exc
+    metrics.submission("accepted")
     return JobCreated(**job, events_url=f"/jobs/{job['job_id']}/events")
 
 
@@ -162,7 +168,11 @@ async def cancel_job(
     service: JobService = Depends(get_job_service),
 ):
     try:
-        return JobSnapshot(**(await service.cancel(job_id, identity)))
+        job = await service.cancel(job_id, identity)
+        metrics.cancellation(
+            "terminal" if job["status"] == "CANCELLED" else "requested"
+        )
+        return JobSnapshot(**job)
     except JobNotFound as exc:
         raise HTTPException(404, detail={"code": "JOB_NOT_FOUND"}) from exc
 
@@ -194,6 +204,8 @@ async def get_job_events(
         raise HTTPException(404, detail={"code": "JOB_NOT_FOUND"}) from exc
 
     last_event_id = request.headers.get("Last-Event-ID")
+    if last_event_id is not None:
+        metrics.sse_reconnects.inc()
 
     async def body():
         async for event in service.stream_events(

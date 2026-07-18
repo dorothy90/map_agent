@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from job_models import JobStatus
 from job_repository import ACTIVE_STATUSES, TransitionConflict
+from observability import metrics
 
 
 LOCK_KEY = "jobs:reconciler"
@@ -91,6 +92,7 @@ class JobReconciler:
                 job["job_id"],
                 self.event_store.snapshot_event(marked),
             )
+            metrics.retry("reconcile")
             reenqueued += 1
 
         cancelled = await self.repository.cancel_stale_waiting(
