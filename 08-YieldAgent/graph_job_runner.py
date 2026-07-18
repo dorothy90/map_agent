@@ -13,6 +13,8 @@ from typing import Any, Awaitable, Callable, Literal
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command, Overwrite
 
+from artifact_context import drain_saved_refs, save_artifact
+from artifact_store import ArtifactRef
 from models import (
     ArtifactEvent,
     ArtifactType,
@@ -32,6 +34,7 @@ from settings import get_settings
 logger = logging.getLogger("graph_job_runner")
 Emit = Callable[[dict[str, Any]], Awaitable[None]]
 Cancelled = Callable[[], Awaitable[bool]]
+PersistArtifacts = Callable[[list[ArtifactRef]], Awaitable[list[ArtifactRef]]]
 
 
 @dataclass(frozen=True)
@@ -304,6 +307,7 @@ async def run_graph(
     request: GraphRunRequest,
     emit: Emit,
     cancelled: Cancelled,
+    persist_artifacts: PersistArtifacts | None = None,
 ) -> GraphRunResult:
     """Run one fresh or resumed graph turn and emit transport-neutral events."""
 
@@ -358,6 +362,26 @@ async def run_graph(
     turn_artifacts: list[dict[str, Any]] = []
     turn_suggestion = ""
     latest_interrupt: dict[str, Any] | None = None
+
+    async def flush_saved_artifacts() -> None:
+        if persist_artifacts is None:
+            return
+        saved = drain_saved_refs()
+        if not saved:
+            return
+        persisted = await persist_artifacts(saved)
+        for ref in persisted:
+            event = {
+                "type": "artifact",
+                "artifact_id": ref.artifact_id,
+                "artifact_type": ref.artifact_type,
+                "mime": ref.mime,
+                "title": ref.title,
+                "agent": ref.agent,
+                "url": f"/jobs/{request.job_id}/artifacts/{ref.artifact_id}",
+            }
+            await emit(event)
+            turn_artifacts.append(event)
 
     try:
         if trace:
@@ -441,6 +465,7 @@ async def run_graph(
                     )))
                     turn_messages.append({"agent": agent_name, "content": content})
 
+                await flush_saved_artifacts()
                 artifact_sources = [
                     ("yield_artifacts", "yield_agent"),
                     ("wads_artifacts", "wads_agent"),
@@ -452,42 +477,53 @@ async def run_graph(
                     ("mining_artifacts", "mining_agent"),
                     ("wt_resp_artifacts", "wt_resp_agent"),
                 ]
-                for key, default_agent in artifact_sources:
-                    for artifact in node_state.get(key, []):
-                        artifact_data = artifact.get("data", "")
-                        if not artifact_data:
-                            continue
-                        artifact_type = _detect_artifact_type(artifact_data)
-                        mime = {
-                            ArtifactType.html: "text/html",
-                            ArtifactType.image: "image/png",
-                            ArtifactType.markdown: "text/markdown",
-                        }.get(artifact_type, "text/html")
-                        event = ArtifactEvent(
-                            artifact_type=artifact_type,
-                            mime=mime,
-                            title=artifact.get("title", key.replace("_artifacts", "")),
-                            agent=artifact.get("agent", default_agent),
-                            data=artifact_data,
-                            step=step_count,
-                        )
-                        await emit(_event_dict(event))
-                        stored_artifact = _event_dict(event)
-                        stored_artifact["data"] = ""
-                        turn_artifacts.append(stored_artifact)
+                if persist_artifacts is None:
+                    for key, default_agent in artifact_sources:
+                        for artifact in node_state.get(key, []):
+                            artifact_data = artifact.get("data", "")
+                            if not artifact_data:
+                                continue
+                            artifact_type = _detect_artifact_type(artifact_data)
+                            mime = {
+                                ArtifactType.html: "text/html",
+                                ArtifactType.image: "image/png",
+                                ArtifactType.markdown: "text/markdown",
+                            }.get(artifact_type, "text/html")
+                            event = ArtifactEvent(
+                                artifact_type=artifact_type,
+                                mime=mime,
+                                title=artifact.get("title", key.replace("_artifacts", "")),
+                                agent=artifact.get("agent", default_agent),
+                                data=artifact_data,
+                                step=step_count,
+                            )
+                            await emit(_event_dict(event))
+                            stored_artifact = _event_dict(event)
+                            stored_artifact["data"] = ""
+                            turn_artifacts.append(stored_artifact)
 
                 analysis = node_state.get("analysis_result", "")
                 if analysis:
-                    event = ArtifactEvent(
-                        artifact_type=ArtifactType.markdown,
-                        mime="text/markdown",
-                        title="analysis",
-                        agent=node_name,
-                        data=analysis,
-                        step=step_count,
-                    )
-                    await emit(_event_dict(event))
-                    turn_artifacts.append(_event_dict(event))
+                    if persist_artifacts is not None:
+                        save_artifact(
+                            analysis,
+                            "text/markdown",
+                            "analysis",
+                            node_name,
+                            "markdown",
+                        )
+                        await flush_saved_artifacts()
+                    else:
+                        event = ArtifactEvent(
+                            artifact_type=ArtifactType.markdown,
+                            mime="text/markdown",
+                            title="analysis",
+                            agent=node_name,
+                            data=analysis,
+                            step=step_count,
+                        )
+                        await emit(_event_dict(event))
+                        turn_artifacts.append(_event_dict(event))
 
                 suggestion = node_state.get("agent_suggestion", "")
                 if suggestion:
@@ -497,6 +533,7 @@ async def run_graph(
                     )))
                     turn_suggestion = suggestion
 
+        await flush_saved_artifacts()
         final_state = await graph.aget_state(config)
         if latest_interrupt is None:
             latest_interrupt = _pending_interrupt_from_state(final_state) or None

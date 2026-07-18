@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class JobStatus(StrEnum):
@@ -69,6 +69,15 @@ class JobError(BaseModel):
     message: str
 
 
+class PublicArtifact(BaseModel):
+    artifact_id: str
+    artifact_type: str
+    mime: str
+    title: str
+    agent: str = ""
+    url: str
+
+
 class JobSnapshot(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -80,7 +89,27 @@ class JobSnapshot(BaseModel):
     progress: str = ""
     latest_interrupt: dict[str, Any] | None = None
     error: JobError | None = None
-    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    artifacts: list[PublicArtifact] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def hide_artifact_storage_metadata(cls, value):
+        if not isinstance(value, dict):
+            return value
+        public = dict(value)
+        job_id = public.get("job_id", "")
+        public["artifacts"] = [
+            {
+                "artifact_id": artifact["artifact_id"],
+                "artifact_type": artifact["artifact_type"],
+                "mime": artifact["mime"],
+                "title": artifact["title"],
+                "agent": artifact.get("agent", ""),
+                "url": f"/jobs/{job_id}/artifacts/{artifact['artifact_id']}",
+            }
+            for artifact in public.get("artifacts", [])
+        ]
+        return public
 
 
 class JobCreated(JobSnapshot):

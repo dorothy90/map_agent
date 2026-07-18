@@ -122,6 +122,78 @@ class JobRepository:
     async def get(self, job_id: str) -> dict | None:
         return await self.jobs.find_one({"job_id": job_id})
 
+    async def persist_artifacts_claimed(
+        self,
+        job_id: str,
+        run_sequence: int,
+        task_id: str,
+        worker_id: str,
+        artifacts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Append new artifact metadata while the caller still owns the claim."""
+        unique: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for artifact in artifacts:
+            artifact_id = artifact["artifact_id"]
+            if artifact_id not in seen:
+                seen.add(artifact_id)
+                unique.append(artifact)
+        if not unique:
+            return []
+
+        before = await self.jobs.find_one_and_update(
+            {
+                "job_id": job_id,
+                "run_sequence": run_sequence,
+                "status": JobStatus.RUNNING.value,
+                "task_id": task_id,
+                "worker_id": worker_id,
+            },
+            [
+                {
+                    "$set": {
+                        "artifacts": {
+                            "$concatArrays": [
+                                {"$ifNull": ["$artifacts", []]},
+                                {
+                                    "$filter": {
+                                        "input": {"$literal": unique},
+                                        "as": "candidate",
+                                        "cond": {
+                                            "$eq": [
+                                                {
+                                                    "$in": [
+                                                        "$$candidate.artifact_id",
+                                                        {
+                                                            "$ifNull": [
+                                                                "$artifacts.artifact_id",
+                                                                [],
+                                                            ]
+                                                        },
+                                                    ]
+                                                },
+                                                False,
+                                            ]
+                                        },
+                                    }
+                                },
+                            ]
+                        },
+                        "updated_at": datetime.now(timezone.utc),
+                    }
+                }
+            ],
+            return_document=ReturnDocument.BEFORE,
+        )
+        if before is None:
+            raise TransitionConflict(f"job {job_id} is no longer owned by this task")
+        existing_ids = {
+            artifact["artifact_id"] for artifact in before.get("artifacts", [])
+        }
+        return [
+            artifact for artifact in unique if artifact["artifact_id"] not in existing_ids
+        ]
+
     async def resume_owned(
         self, job_id: str, owner_id: str, resume_value: str | dict[str, Any]
     ) -> dict:

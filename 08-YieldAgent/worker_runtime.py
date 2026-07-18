@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 from contextlib import suppress
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from redis.asyncio import Redis
 
 from admission import AdmissionController
+from artifact_context import artifact_scope
+from artifact_store import ArtifactRef, ArtifactStore
 from graph_job_runner import GraphRunRequest, GraphRunResult, run_graph
 from job_events import JobEventStore
 from job_failures import classify_failure
@@ -140,16 +143,46 @@ class WorkerRuntime:
                     if await cancelled():
                         raise CooperativeCancellation
 
+                async def persist_artifacts(
+                    refs: list[ArtifactRef],
+                ) -> list[ArtifactRef]:
+                    stored = await repository.persist_artifacts_claimed(
+                        job_id,
+                        run_sequence,
+                        task_id,
+                        worker_id,
+                        [ref.model_dump() for ref in refs],
+                    )
+                    return [ArtifactRef.model_validate(item) for item in stored]
+
                 try:
                     execution_control = claimed.get("execution_control")
-                    if self.settings.environment == "test" and execution_control:
-                        result = await _test_graph_runner(
-                            execution_control, request, emit, cancelled
-                        )
-                    else:
-                        result = await self._graph_runner(
-                            self.graph(), request, emit, cancelled
-                        )
+                    store = ArtifactStore(
+                        self.settings.artifact_root,
+                        owner_hash=claimed["owner_hash"],
+                        job_id=job_id,
+                    )
+                    with artifact_scope(store):
+                        if self.settings.environment == "test" and execution_control:
+                            result = await _test_graph_runner(
+                                execution_control, request, emit, cancelled
+                            )
+                        else:
+                            runner_parameters = inspect.signature(
+                                self._graph_runner
+                            ).parameters
+                            if "persist_artifacts" in runner_parameters:
+                                result = await self._graph_runner(
+                                    self.graph(),
+                                    request,
+                                    emit,
+                                    cancelled,
+                                    persist_artifacts=persist_artifacts,
+                                )
+                            else:
+                                result = await self._graph_runner(
+                                    self.graph(), request, emit, cancelled
+                                )
                 except CooperativeCancellation:
                     stored = await repository.complete_claimed(
                         job_id,
