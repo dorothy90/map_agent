@@ -26,9 +26,12 @@ class RecordingDispatcher:
     def __init__(self):
         self.calls = []
         self.error = None
+        self.hook = None
 
     async def dispatch(self, job_id, run_sequence):
         self.calls.append((job_id, run_sequence))
+        if self.hook is not None:
+            await self.hook(job_id, run_sequence)
         if self.error is not None:
             raise self.error
         return f"{job_id}:{run_sequence}"
@@ -193,6 +196,33 @@ def test_resume_dispatch_failure_rolls_back_only_matching_sequence(control_app):
     assert stored["status"] == "WAITING_INPUT"
     assert stored["run_sequence"] == 1
     assert "resume_value" not in stored
+
+
+def test_resume_succeeds_when_worker_claims_before_dispatch_metadata(control_app):
+    app, client = control_app
+    waiting = _create_waiting(app, client)
+
+    async def fast_claim(job_id, run_sequence):
+        claimed = await app.state.job_repository.claim(
+            job_id,
+            f"{job_id}:{run_sequence}",
+            "fast-worker",
+            60,
+            run_sequence=run_sequence,
+        )
+        assert claimed is not None
+
+    app.state.job_dispatcher.hook = fast_claim
+    response = client.post(
+        f"/jobs/{waiting['job_id']}/resume",
+        headers={"X-Authenticated-User": "owner"},
+        json={"value": {"lotcd": "4SS"}},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "RUNNING"
+    stored = client.portal.call(app.state.job_repository.get, waiting["job_id"])
+    assert "dispatched_at" in stored
 
 
 def test_queued_cancel_is_terminal_releases_session_and_is_idempotent(control_app):

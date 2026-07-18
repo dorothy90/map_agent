@@ -220,3 +220,59 @@ async def test_waiting_input_remains_active_without_expiry(mongo_db):
     assert "active_session_key" in waiting
     assert "artifact_expires_at" not in waiting
     assert "expires_at" not in waiting
+
+
+async def test_mark_dispatched_accepts_same_sequence_already_running(mongo_db):
+    repo = JobRepository(mongo_db)
+    await repo.create_job("job-1", "owner-1", "h1", "s1", "query", None)
+    requested_at = datetime.now(timezone.utc)
+    await repo.mark_dispatch_requested("job-1", 0, "job-1:0", requested_at)
+    await repo.claim("job-1", "job-1:0", "worker-1", lease_seconds=60)
+
+    dispatched_at = datetime.now(timezone.utc)
+    stored = await repo.mark_dispatched(
+        "job-1", 0, "job-1:0", dispatched_at
+    )
+
+    assert stored["status"] == "RUNNING"
+    assert stored["run_sequence"] == 0
+    assert stored["dispatched_at"] == dispatched_at.replace(
+        microsecond=dispatched_at.microsecond // 1000 * 1000
+    )
+
+
+async def test_mark_dispatched_accepts_same_sequence_terminal_without_task_id(
+    mongo_db,
+):
+    repo = JobRepository(mongo_db)
+    await repo.create_job("job-1", "owner-1", "h1", "s1", "query", None)
+    requested_at = datetime.now(timezone.utc)
+    await repo.mark_dispatch_requested("job-1", 0, "job-1:0", requested_at)
+    await repo.transition("job-1", JobStatus.QUEUED, JobStatus.CANCELLED)
+
+    dispatched_at = datetime.now(timezone.utc)
+    stored = await repo.mark_dispatched(
+        "job-1", 0, "job-1:0", dispatched_at
+    )
+
+    assert stored["status"] == "CANCELLED"
+    assert "task_id" not in stored
+    assert stored["dispatched_at"] == dispatched_at.replace(
+        microsecond=dispatched_at.microsecond // 1000 * 1000
+    )
+
+
+async def test_mark_dispatched_rejects_stale_run_sequence(mongo_db):
+    repo = JobRepository(mongo_db)
+    await repo.create_job("job-1", "owner-1", "h1", "s1", "query", None)
+    await repo.jobs.update_one(
+        {"job_id": "job-1"}, {"$set": {"run_sequence": 1}}
+    )
+
+    with pytest.raises(TransitionConflict):
+        await repo.mark_dispatched(
+            "job-1", 0, "job-1:0", datetime.now(timezone.utc)
+        )
+
+    stored = await repo.get("job-1")
+    assert "dispatched_at" not in stored

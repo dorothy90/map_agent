@@ -257,9 +257,7 @@ class JobRepository:
         job = await self.jobs.find_one_and_update(
             {
                 "job_id": job_id,
-                "status": JobStatus.QUEUED.value,
                 "run_sequence": run_sequence,
-                "task_id": task_id,
             },
             {
                 "$set": {
