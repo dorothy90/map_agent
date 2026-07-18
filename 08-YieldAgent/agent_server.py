@@ -50,8 +50,9 @@ from models import (  # noqa: E402
     TokenEvent,
 )
 from admission import AdmissionController  # noqa: E402
+from celery_app import celery_app  # noqa: E402
+from celery_dispatcher import CeleryJobDispatcher  # noqa: E402
 from identity import PlatformIdentity, get_platform_identity  # noqa: E402
-from job_dispatcher import UnavailableJobDispatcher  # noqa: E402
 from job_repository import JobRepository  # noqa: E402
 from job_router import router as job_router  # noqa: E402
 from job_service import JobService, reconcile_admission  # noqa: E402
@@ -177,7 +178,7 @@ async def lifespan(app: FastAPI):
         user_limit=settings.user_job_limit,
         global_limit=settings.global_job_limit,
     )
-    dispatcher = UnavailableJobDispatcher()
+    dispatcher = CeleryJobDispatcher(celery_app)
     service = JobService(repository, admission, dispatcher)
     app.state.motor_db = motor_client[settings.mongo_db]
     app.state.redis = redis
