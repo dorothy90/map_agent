@@ -16,7 +16,7 @@ class JobStatus(StrEnum):
 
 TERMINAL = {JobStatus.SUCCEEDED, JobStatus.FAILED, JobStatus.CANCELLED}
 ALLOWED = {
-    JobStatus.QUEUED: {JobStatus.RUNNING, JobStatus.CANCELLED},
+    JobStatus.QUEUED: {JobStatus.RUNNING, JobStatus.FAILED, JobStatus.CANCELLED},
     JobStatus.RUNNING: {
         JobStatus.QUEUED,
         JobStatus.WAITING_INPUT,

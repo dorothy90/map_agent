@@ -17,18 +17,15 @@ import traceback
 import sys
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
-from langchain_core.messages import HumanMessage
-from langfuse import get_client, observe
-from langgraph.checkpoint.mongodb import MongoDBSaver
-from langgraph.types import Command, Overwrite
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
+from redis.asyncio import Redis
 
 # 이 파일의 디렉터리(08-YieldAgent/)를 sys.path에 추가 (로컬 모듈 임포트용)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -52,23 +49,54 @@ from models import (  # noqa: E402
     ThinkingEvent,
     TokenEvent,
 )
-from common import to_user_message  # noqa: E402
-from local_trace import (  # noqa: E402
-    configure_runtime_terminal_logger,
-    emit_runtime_detail,
-    emit_trace_event,
-    make_trace_id,
-    new_turn_id,
-    preview_text,
-    reset_trace_context,
-    set_trace_context,
-)
-from supervisor import workflow, _resume_is_interrupt_answer  # noqa: E402
-from user_memory import update_profile_from_feedback  # noqa: E402
+from admission import AdmissionController  # noqa: E402
+from identity import PlatformIdentity, get_platform_identity  # noqa: E402
+from job_dispatcher import UnavailableJobDispatcher  # noqa: E402
+from job_repository import JobRepository  # noqa: E402
+from job_router import router as job_router  # noqa: E402
+from job_service import JobService, reconcile_admission  # noqa: E402
+from settings import get_settings  # noqa: E402
 
 # 사용자 선호 메모리 백그라운드 flush 태스크 보관 (GC로 조기 소멸 방지)
 _memory_tasks: set = set()
-from repl_agent.router import router as repl_router  # noqa: E402
+
+_settings = get_settings()
+
+if _settings.enable_local_trace:
+    from local_trace import (  # noqa: E402
+        configure_runtime_terminal_logger,
+        emit_runtime_detail,
+        emit_trace_event,
+        make_trace_id,
+        new_turn_id,
+        preview_text,
+        reset_trace_context,
+        set_trace_context,
+    )
+else:
+    def configure_runtime_terminal_logger() -> None:
+        pass
+
+    def emit_runtime_detail(*args, **kwargs) -> None:
+        pass
+
+    def emit_trace_event(*args, **kwargs) -> None:
+        pass
+
+    def make_trace_id(session_id: str) -> str:
+        return session_id
+
+    def new_turn_id() -> str:
+        return str(uuid.uuid4())
+
+    def preview_text(value, limit: int = 240) -> str:
+        return str(value or "")[:limit]
+
+    def set_trace_context(*args, **kwargs):
+        return None
+
+    def reset_trace_context(*args, **kwargs) -> None:
+        pass
 
 configure_runtime_terminal_logger()
 _handler = logging.StreamHandler()
@@ -98,10 +126,6 @@ def _pending_interrupt_from_state(state_snapshot) -> dict:
         if isinstance(value, dict):
             return value
     return {}
-
-MONGO_URI = "mongodb://localhost:27017"
-MONGO_DB = "yield_agent"
-
 
 async def _wiki_lint_cron_loop(interval_hours: float) -> None:
     """daily lint 백그라운드 task. env WIKI_LINT_CRON_HOURS>0 시에만 시작.
@@ -140,74 +164,131 @@ async def _wiki_lint_cron_loop(interval_hours: float) -> None:
             logger.warning("[wiki_lint cron] error: %s", e)
 
 
-# ── FastAPI lifespan — MongoDB 연결 + wiki_queue 워커 관리 ─
+# ── FastAPI lifespan — shared job dependencies + optional legacy services ─
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # motor (async) — 대화 이력 저장용
-    motor_client = AsyncIOMotorClient(MONGO_URI)
-    app.state.motor_db = motor_client[MONGO_DB]
+    settings = get_settings()
+    app.state.ready = False
+    motor_client = AsyncIOMotorClient(settings.mongo_uri)
+    redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    repository = JobRepository(motor_client[settings.mongo_db])
+    admission = AdmissionController(
+        redis,
+        user_limit=settings.user_job_limit,
+        global_limit=settings.global_job_limit,
+    )
+    dispatcher = UnavailableJobDispatcher()
+    service = JobService(repository, admission, dispatcher)
+    app.state.motor_db = motor_client[settings.mongo_db]
+    app.state.redis = redis
+    app.state.job_repository = repository
+    app.state.admission = admission
+    app.state.job_dispatcher = dispatcher
+    app.state.job_service = service
 
-    # wiki ingest 큐 워커 (Day 2 추가, plan v3 §wiki_queue.py)
-    # Day 3: placeholder summarizer를 실제 LLM summarizer로 교체
-    from wiki_queue import wiki_queue
-    from wiki_summarizer import summarize as wiki_summarize_fn
-    wiki_queue.set_summarizer(wiki_summarize_fn)
-    await wiki_queue.start()
-    app.state.wiki_queue = wiki_queue
-
-    # Day 6: lint daily cron (WIKI_LINT_CRON_HOURS=0 또는 미설정 시 비활성)
-    lint_hours = float(os.getenv("WIKI_LINT_CRON_HOURS", "0") or "0")
+    wiki_queue = None
     lint_task: asyncio.Task | None = None
-    if lint_hours > 0:
-        lint_task = asyncio.create_task(_wiki_lint_cron_loop(lint_hours))
-        logger.info("[wiki_lint cron] started, interval=%sh", lint_hours)
-    app.state.wiki_lint_task = lint_task
+    try:
+        await repository.ensure_indexes()
+        await reconcile_admission(repository, admission, redis)
 
-    # MongoDBSaver (sync) — LangGraph 체크포인터
-    with MongoDBSaver.from_conn_string(MONGO_URI, db_name=MONGO_DB) as checkpointer:
-        app.state.graph = workflow.compile(checkpointer=checkpointer)
-        logger.info("MongoDB 체크포인터 + motor 연결 완료 (%s/%s)", MONGO_URI, MONGO_DB)
-        try:
+        if settings.enable_wiki:
+            from wiki_queue import wiki_queue as enabled_wiki_queue
+            from wiki_summarizer import summarize as wiki_summarize_fn
+
+            wiki_queue = enabled_wiki_queue
+            wiki_queue.set_summarizer(wiki_summarize_fn)
+            await wiki_queue.start()
+            app.state.wiki_queue = wiki_queue
+            lint_hours = float(os.getenv("WIKI_LINT_CRON_HOURS", "0") or "0")
+            if lint_hours > 0:
+                lint_task = asyncio.create_task(_wiki_lint_cron_loop(lint_hours))
+                logger.info("[wiki_lint cron] started, interval=%sh", lint_hours)
+        app.state.wiki_lint_task = lint_task
+
+        with ExitStack() as stack:
+            if settings.enable_legacy_chat:
+                global HumanMessage, Command, Overwrite, get_client
+                global to_user_message, update_profile_from_feedback
+                global workflow, _resume_is_interrupt_answer
+
+                from common import to_user_message
+                from langchain_core.messages import HumanMessage
+                from langfuse import get_client
+                from langgraph.checkpoint.mongodb import MongoDBSaver
+                from langgraph.types import Command, Overwrite
+                from supervisor import workflow, _resume_is_interrupt_answer
+                from user_memory import update_profile_from_feedback
+
+                checkpointer = stack.enter_context(
+                    MongoDBSaver.from_conn_string(
+                        settings.mongo_uri, db_name=settings.mongo_db
+                    )
+                )
+                app.state.graph = workflow.compile(checkpointer=checkpointer)
+                logger.info(
+                    "MongoDB 체크포인터 + motor 연결 완료 (%s/%s)",
+                    settings.mongo_uri,
+                    settings.mongo_db,
+                )
+
+            app.state.ready = True
             yield
-        finally:
-            if lint_task is not None:
-                lint_task.cancel()
-                try:
-                    await lint_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+    finally:
+        app.state.ready = False
+        if lint_task is not None:
+            lint_task.cancel()
+            try:
+                await lint_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if wiki_queue is not None:
             await wiki_queue.stop(timeout=10)
-
-    motor_client.close()
-    logger.info("MongoDB 연결 종료")
+        await redis.aclose()
+        motor_client.close()
+        logger.info("MongoDB/Redis 연결 종료")
 
 
 app = FastAPI(title="Yield Agent Server", lifespan=lifespan)
 
-# ── CORS — dev React server + 사내 wiki 프론트 (cross-origin) ─────────────────
-# 운영: 백엔드(:8001)와 프론트(사내 별도 호스트)가 독립 서버 → cross-origin 호출.
-# WIKI_FRONTEND_ORIGINS=https://wiki.사내,https://other.사내 처럼 콤마 구분으로 추가.
+# ── CORS — production uses only the exact configured origin allowlist ────────
 _dev_origins = ["http://localhost:3000", "http://localhost:5173"]
-_extra_origins = [
-    o.strip() for o in os.getenv("WIKI_FRONTEND_ORIGINS", "").split(",") if o.strip()
-]
+_cors_origins = list(_settings.cors_origins)
+if _settings.environment != "production":
+    _cors_origins = _dev_origins + _cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_dev_origins + _extra_origins,
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── REPL 검증 agent 라우터 마운트 (yield-agent 와 독립) ────
-# plan: ~/.claude/plans/reactive-shimmying-lake.md — "단일 서버 확장" 원칙.
-# repl_agent 패키지는 기존 supervisor/graph 와 import 의존이 없다.
-app.include_router(repl_router, prefix="/repl", tags=["repl"])
+app.include_router(job_router)
 
-# ── Wiki vault graph endpoint (Day 5) ────────────────────
-from wiki_router import router as wiki_router  # noqa: E402
+if _settings.enable_repl:
+    from repl_agent.router import router as repl_router  # noqa: E402
 
-app.include_router(wiki_router, prefix="/api/wiki", tags=["wiki"])
+    app.include_router(repl_router, prefix="/repl", tags=["repl"])
+
+if _settings.enable_wiki:
+    from wiki_router import router as wiki_router  # noqa: E402
+
+    app.include_router(wiki_router, prefix="/api/wiki", tags=["wiki"])
+
+
+_LEGACY_EXACT_PATHS = {"/chat/stream", "/session", "/sessions"}
+_LEGACY_PREFIXES = ("/session/", "/download/pptx/")
+
+
+@app.middleware("http")
+async def block_disabled_legacy_routes(request: Request, call_next):
+    path = request.url.path
+    if not _settings.enable_legacy_chat and (
+        path in _LEGACY_EXACT_PATHS or path.startswith(_LEGACY_PREFIXES)
+    ):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    return await call_next(request)
 
 
 _AGENT_META: dict[str, tuple[str, int, int]] = {
@@ -370,7 +451,10 @@ class TasRequest(BaseModel):
 
 
 @app.post("/mining/tas")
-async def mining_tas(body: TasRequest):
+async def mining_tas(
+    body: TasRequest,
+    _identity: PlatformIdentity = Depends(get_platform_identity),
+):
     logger.info(
         "[TAS] lotcd=%s oper_det_desc=%s key_value=%s fail_name=%s",
         body.lotcd,

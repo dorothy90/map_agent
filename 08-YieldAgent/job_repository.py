@@ -114,6 +114,58 @@ class JobRepository:
             raise JobNotFound(job_id)
         return job
 
+    async def mark_dispatch_requested(
+        self,
+        job_id: str,
+        run_sequence: int,
+        task_id: str,
+        dispatch_requested_at: datetime,
+    ) -> dict:
+        job = await self.jobs.find_one_and_update(
+            {
+                "job_id": job_id,
+                "status": JobStatus.QUEUED.value,
+                "run_sequence": run_sequence,
+            },
+            {
+                "$set": {
+                    "task_id": task_id,
+                    "dispatch_requested_at": dispatch_requested_at,
+                    "updated_at": dispatch_requested_at,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if job is None:
+            raise TransitionConflict(f"job {job_id} is not queued for dispatch")
+        return job
+
+    async def mark_dispatched(
+        self,
+        job_id: str,
+        run_sequence: int,
+        task_id: str,
+        dispatched_at: datetime,
+    ) -> dict:
+        job = await self.jobs.find_one_and_update(
+            {
+                "job_id": job_id,
+                "status": JobStatus.QUEUED.value,
+                "run_sequence": run_sequence,
+                "task_id": task_id,
+            },
+            {
+                "$set": {
+                    "dispatched_at": dispatched_at,
+                    "updated_at": dispatched_at,
+                }
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if job is None:
+            raise TransitionConflict(f"job {job_id} dispatch metadata changed")
+        return job
+
     async def claim(
         self, job_id: str, task_id: str, worker_id: str, lease_seconds: int
     ) -> dict | None:

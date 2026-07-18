@@ -21,3 +21,7 @@ def test_create_rejects_blank_query():
 def test_terminal_statuses():
     assert is_terminal(JobStatus.CANCELLED)
     assert not is_terminal(JobStatus.WAITING_INPUT)
+
+
+def test_queued_job_can_fail_when_broker_dispatch_fails():
+    assert_transition(JobStatus.QUEUED, JobStatus.FAILED)
