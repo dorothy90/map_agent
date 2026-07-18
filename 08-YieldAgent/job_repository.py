@@ -114,6 +114,9 @@ class JobRepository:
             raise JobNotFound(job_id)
         return job
 
+    async def get(self, job_id: str) -> dict | None:
+        return await self.jobs.find_one({"job_id": job_id})
+
     async def mark_dispatch_requested(
         self,
         job_id: str,
@@ -167,11 +170,22 @@ class JobRepository:
         return job
 
     async def claim(
-        self, job_id: str, task_id: str, worker_id: str, lease_seconds: int
+        self,
+        job_id: str,
+        task_id: str,
+        worker_id: str,
+        lease_seconds: int,
+        run_sequence: int | None = None,
     ) -> dict | None:
         now = datetime.now(timezone.utc)
+        query: dict[str, Any] = {
+            "job_id": job_id,
+            "status": JobStatus.QUEUED.value,
+        }
+        if run_sequence is not None:
+            query["run_sequence"] = run_sequence
         return await self.jobs.find_one_and_update(
-            {"job_id": job_id, "status": JobStatus.QUEUED.value},
+            query,
             {
                 "$set": {
                     "status": JobStatus.RUNNING.value,
@@ -186,15 +200,23 @@ class JobRepository:
         )
 
     async def reclaim_expired(
-        self, job_id: str, task_id: str, worker_id: str, lease_seconds: int
+        self,
+        job_id: str,
+        task_id: str,
+        worker_id: str,
+        lease_seconds: int,
+        run_sequence: int | None = None,
     ) -> dict | None:
         now = datetime.now(timezone.utc)
+        query: dict[str, Any] = {
+            "job_id": job_id,
+            "status": JobStatus.RUNNING.value,
+            "lease_expires_at": {"$lt": now},
+        }
+        if run_sequence is not None:
+            query["run_sequence"] = run_sequence
         return await self.jobs.find_one_and_update(
-            {
-                "job_id": job_id,
-                "status": JobStatus.RUNNING.value,
-                "lease_expires_at": {"$lt": now},
-            },
+            query,
             {
                 "$set": {
                     "task_id": task_id,
@@ -255,6 +277,12 @@ class JobRepository:
                 "task_id": "",
                 "worker_id": "",
             }
+        elif target is JobStatus.WAITING_INPUT:
+            update["$unset"] = {
+                "lease_expires_at": "",
+                "task_id": "",
+                "worker_id": "",
+            }
 
         job = await self.jobs.find_one_and_update(
             {"job_id": job_id, "status": current.value},
@@ -268,6 +296,52 @@ class JobRepository:
         raise TransitionConflict(
             f"job {job_id} is not in expected status {current.value}"
         )
+
+    async def complete_claimed(
+        self,
+        job_id: str,
+        run_sequence: int,
+        task_id: str,
+        worker_id: str,
+        target_status: JobStatus | str,
+        updates: dict[str, Any] | None = None,
+    ) -> dict:
+        target = JobStatus(target_status)
+        assert_transition(JobStatus.RUNNING, target)
+        if target is JobStatus.QUEUED:
+            raise ValueError("claimed completion cannot requeue a job")
+
+        now = datetime.now(timezone.utc)
+        set_fields = dict(updates or {})
+        set_fields.update({"status": target.value, "updated_at": now})
+        unset_fields = {
+            "lease_expires_at": "",
+            "task_id": "",
+            "worker_id": "",
+        }
+        if is_terminal(target):
+            set_fields.update(
+                {
+                    "artifact_expires_at": now + timedelta(days=30),
+                    "expires_at": now + timedelta(days=31),
+                }
+            )
+            unset_fields["active_session_key"] = ""
+
+        job = await self.jobs.find_one_and_update(
+            {
+                "job_id": job_id,
+                "run_sequence": run_sequence,
+                "status": JobStatus.RUNNING.value,
+                "task_id": task_id,
+                "worker_id": worker_id,
+            },
+            {"$set": set_fields, "$unset": unset_fields},
+            return_document=ReturnDocument.AFTER,
+        )
+        if job is None:
+            raise TransitionConflict(f"job {job_id} is no longer owned by this task")
+        return job
 
     async def release_terminal(
         self,

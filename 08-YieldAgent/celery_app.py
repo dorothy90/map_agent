@@ -5,7 +5,9 @@ from settings import get_settings
 
 settings = get_settings()
 
-celery_app = Celery("yield_agent", broker=settings.redis_url, backend=None)
+celery_app = Celery(
+    "yield_agent", broker=settings.redis_url, backend=None, include=["job_tasks"]
+)
 celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
