@@ -220,6 +220,14 @@ def analyze_common_process_history(
         item["process"]: item["histories_by_lot"]
         for item in payload["common_processes"]
     }
+    event_owners_by_process = {
+        process: {
+            event["event_id"]: lot_id
+            for lot_id, events in histories_by_lot.items()
+            for event in events
+        }
+        for process, histories_by_lot in histories_by_process.items()
+    }
 
     for process_insight in parsed.process_insights:
         process = process_insight.process
@@ -243,6 +251,16 @@ def analyze_common_process_history(
                 allowed_lots=allowed_lots,
                 histories_by_process=histories_by_process,
             )
+
+        for pattern in process_insight.common_patterns:
+            event_owners = {
+                event_owners_by_process[process][event_id]
+                for event_id in pattern.event_ids
+            }
+            if not event_owners.issubset(set(pattern.lot_ids)):
+                raise ValueError("common pattern event_ids must match declared lot_ids")
+            if len(event_owners) < 2:
+                raise ValueError("common pattern must cite at least two LOTs")
 
     for priority in parsed.priority_processes:
         _validate_references(

@@ -306,6 +306,19 @@ def test_analyze_rejects_common_pattern_from_one_lot(valid_payload):
         analyze_common_process_history(valid_payload, {}, model=FakeModel(raw))
 
 
+def test_analyze_rejects_common_pattern_with_events_from_one_lot(valid_payload):
+    data = json.loads(valid_insight_json(valid_payload))
+    pattern = data["process_insights"][0]["common_patterns"][0]
+    pattern["event_ids"] = [pattern["event_ids"][0]]
+
+    with pytest.raises(ValueError, match="at least two LOTs"):
+        analyze_common_process_history(
+            valid_payload,
+            {},
+            model=FakeModel(json.dumps(data, ensure_ascii=False)),
+        )
+
+
 def test_analyze_rejects_unknown_process_reference(valid_payload):
     data = json.loads(valid_insight_json(valid_payload))
     data["process_insights"][0]["process"] = "INVENTED"
