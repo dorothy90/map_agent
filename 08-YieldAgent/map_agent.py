@@ -76,6 +76,22 @@ except ImportError:
 # ============================================================
 # 내부 DB 조회 함수
 # ============================================================
+def _latest_wafer_rows(rows: list[dict]) -> list[dict]:
+    """동일 (lot_id, wf_id) 중 end_tm이 가장 최신인 행만 유지."""
+    latest_by_wafer: dict[tuple[object, object], dict] = {}
+    for row in rows:
+        key = (row.get("lot_id"), row.get("wf_id"))
+        previous = latest_by_wafer.get(key)
+        row_end_tm = row.get("end_tm")
+        previous_end_tm = previous.get("end_tm") if previous else None
+        if previous is None or (
+            row_end_tm is not None
+            and (previous_end_tm is None or row_end_tm > previous_end_tm)
+        ):
+            latest_by_wafer[key] = row
+    return list(latest_by_wafer.values())
+
+
 def _query_wafer_data(
     lot_id: Optional[str] = None,
     lot_ids: Optional[str] = None,
@@ -226,7 +242,8 @@ def _query_wafer_data(
                     record["map_val_json"] = record["map_val_json"].read()
                 results.append(record)
 
-        logger.info("[MapAgent] _query_wafer_data 완료: %d rows", len(results))
+        results = _latest_wafer_rows(results)
+        logger.info("[MapAgent] _query_wafer_data 완료: %d wafers", len(results))
         return results
     except Exception as e:
         logger.error("[MapAgent] wafer 데이터 조회 실패: %s", e, exc_info=True)
