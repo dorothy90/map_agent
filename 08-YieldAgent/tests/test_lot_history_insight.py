@@ -319,6 +319,29 @@ def test_analyze_rejects_common_pattern_with_events_from_one_lot(valid_payload):
         )
 
 
+def test_analyze_rejects_common_pattern_with_uncited_declared_lot():
+    raw = {}
+    for lot_id in ("LOT-A", "LOT-B", "LOT-C"):
+        sources = _empty_sources()
+        sources["fdc_alarm"] = [
+            {"lot_id": lot_id, "oper_id": "PHOTO", "alarm": "pressure"}
+        ]
+        raw[lot_id] = sources
+    payload = build_common_process_history(raw)
+    data = json.loads(valid_insight_json(payload))
+    pattern = data["process_insights"][0]["common_patterns"][0]
+    pattern["event_ids"] = pattern["event_ids"][:2]
+
+    with pytest.raises(
+        ValueError, match="common pattern event_ids must match declared lot_ids"
+    ):
+        analyze_common_process_history(
+            payload,
+            {},
+            model=FakeModel(json.dumps(data, ensure_ascii=False)),
+        )
+
+
 def test_analyze_rejects_unknown_process_reference(valid_payload):
     data = json.loads(valid_insight_json(valid_payload))
     data["process_insights"][0]["process"] = "INVENTED"

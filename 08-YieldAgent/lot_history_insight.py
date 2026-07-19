@@ -257,10 +257,10 @@ def analyze_common_process_history(
                 event_owners_by_process[process][event_id]
                 for event_id in pattern.event_ids
             }
-            if not event_owners.issubset(set(pattern.lot_ids)):
-                raise ValueError("common pattern event_ids must match declared lot_ids")
             if len(event_owners) < 2:
                 raise ValueError("common pattern must cite at least two LOTs")
+            if event_owners != set(pattern.lot_ids):
+                raise ValueError("common pattern event_ids must match declared lot_ids")
 
     for priority in parsed.priority_processes:
         _validate_references(
