@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from langchain_core.tools import tool
 from langfuse import observe
