@@ -17,6 +17,10 @@ from langchain_core.runnables import RunnableConfig
 from langfuse import observe
 
 from common import timed, html_escape as _h, is_transient_error
+from lot_history_insight import (
+    analyze_common_process_history,
+    build_common_process_history,
+)
 from lot_history_tools import _tool_payload_var, query_lot_history
 from result_contracts import attach_result_envelope, derive_summary_from_rows
 
@@ -57,6 +61,16 @@ body{font-family:'Pretendard',-apple-system,sans-serif;background:#fafafa;color:
 .risk-red{color:#b91c1c;font-size:15px}
 .risk-yellow{color:#b45309;font-size:15px}
 .risk-green{color:#15803d;font-size:15px}
+
+/* common-process insight */
+.insight-card{background:#fff;border:1px solid #dbeafe;border-left:4px solid #3b82f6;border-radius:10px;padding:16px 18px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+.insight-card h2{font-size:16px;color:#1e3a8a;margin-bottom:8px}
+.insight-card h3{font-size:14px;color:#334155;margin:12px 0 6px}
+.insight-card p,.insight-card li{font-size:13px;line-height:1.55;color:#334155}
+.insight-card ul{padding-left:20px}
+.insight-card .insight-process{border-top:1px solid #e2e8f0;margin-top:12px;padding-top:10px}
+.insight-card .insight-meta{color:#64748b;font-size:12px}
+.insight-card.status{border-left-color:#94a3b8;border-color:#e2e8f0}
 
 /* LOT card */
 .lot-card{background:#fff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,0.06);margin-bottom:20px;overflow:hidden;scroll-margin-top:64px;border:1px solid #e5e7eb;border-left:4px solid #cbd5e1}
@@ -635,7 +649,84 @@ def _render_lot_nav(lot_ids: List[str], all_results: Dict[str, Dict[str, List[Di
     return html
 
 
-def _render_lot_history_html(all_results: Dict[str, Dict[str, List[Dict]]]) -> str:
+def _render_common_process_insight(
+    insight: dict[str, Any] | None, status: str
+) -> str:
+    """검증된 공통 공정 분석 또는 비교 상태를 HTML 카드로 렌더링."""
+    if status in {"skipped", "skipped_single_lot"}:
+        return ""
+
+    if status == "empty_intersection":
+        return (
+            '<section class="insight-card status"><h2>🔎 공통 공정 비교</h2>'
+            '<p>모든 LOT에 걸친 공통 공정이 없습니다.</p></section>'
+        )
+    if status == "analysis_failed" or not insight:
+        return (
+            '<section class="insight-card status"><h2>🔎 공통 공정 비교</h2>'
+            '<p>비교 분석을 생성하지 못했습니다. 아래 원본 이력은 정상적으로 표시됩니다.</p></section>'
+        )
+
+    html = '<section class="insight-card"><h2>🔎 공통 공정 비교</h2>'
+    html += f'<p>{_h(insight.get("summary"))}</p>'
+
+    priorities = insight.get("priority_processes") or []
+    if priorities:
+        html += '<h3>우선 확인 공정</h3><ul>'
+        for priority in priorities:
+            lots = ", ".join(_h(lot_id) for lot_id in priority.get("lot_ids", []))
+            lot_text = f' <span class="insight-meta">({lots})</span>' if lots else ""
+            html += (
+                f'<li><strong>{_h(priority.get("process"))}</strong>: '
+                f'{_h(priority.get("reason"))}{lot_text}</li>'
+            )
+        html += '</ul>'
+
+    for process in insight.get("process_insights") or []:
+        html += '<div class="insight-process">'
+        html += f'<h3>{_h(process.get("process"))}</h3>'
+        html += f'<p>{_h(process.get("summary"))}</p>'
+
+        sections = (
+            ("공통 패턴", process.get("common_patterns") or []),
+            ("LOT 차이", process.get("lot_differences") or []),
+        )
+        for title, findings in sections:
+            if not findings:
+                continue
+            html += f'<h3>{title}</h3><ul>'
+            for finding in findings:
+                lots = ", ".join(_h(lot_id) for lot_id in finding.get("lot_ids", []))
+                lot_text = f' <span class="insight-meta">({lots})</span>' if lots else ""
+                html += f'<li>{_h(finding.get("text"))}{lot_text}</li>'
+            html += '</ul>'
+
+        hypotheses = process.get("hypotheses") or []
+        if hypotheses:
+            html += '<h3>가설</h3><ul>'
+            for hypothesis in hypotheses:
+                confidence = _h(hypothesis.get("confidence"))
+                lots = ", ".join(_h(lot_id) for lot_id in hypothesis.get("lot_ids", []))
+                meta_parts = [part for part in (confidence, lots) if part]
+                meta = f' <span class="insight-meta">({" · ".join(meta_parts)})</span>' if meta_parts else ""
+                html += f'<li>{_h(hypothesis.get("text"))}{meta}</li>'
+            html += '</ul>'
+
+        checks = process.get("recommended_checks") or []
+        if checks:
+            html += '<h3>권장 확인 사항</h3><ul>'
+            html += "".join(f'<li>{_h(check)}</li>' for check in checks)
+            html += '</ul>'
+        html += '</div>'
+
+    return html + '</section>'
+
+
+def _render_lot_history_html(
+    all_results: Dict[str, Dict[str, List[Dict]]],
+    common_process_insight: dict[str, Any] | None = None,
+    insight_status: str = "skipped",
+) -> str:
     """전체 결과를 HTML로 렌더링"""
     lot_ids = list(all_results.keys())
     multi = len(lot_ids) > 1
@@ -648,6 +739,8 @@ def _render_lot_history_html(all_results: Dict[str, Dict[str, List[Dict]]]) -> s
 
     if multi:
         html += _render_lot_nav(lot_ids, all_results)
+    html += _render_common_process_insight(common_process_insight, insight_status)
+    if multi:
         html += '<table class="summary-table"><thead><tr>'
         html += '<th style="text-align:left">LOT_ID</th><th>FDC</th><th>Q-TIME</th><th>TROUBLE</th><th>ACTION</th><th>SAMPLE</th><th>위험도</th>'
         html += '</tr></thead><tbody>'
@@ -751,9 +844,34 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     # ContextVar에서 structured 결과 추출 → HTML 렌더링
     lot_history_data = storage.get("lot_history")
+    common_payload: dict[str, Any] = {}
+    common_insight: dict[str, Any] | None = None
+    insight_status = "skipped_single_lot"
+
+    if isinstance(lot_history_data, dict) and "error" not in lot_history_data:
+        common_payload = build_common_process_history(lot_history_data)
+        if len(common_payload["lot_ids"]) >= 2:
+            if common_payload["common_processes"]:
+                try:
+                    common_insight = analyze_common_process_history(common_payload, config)
+                    insight_status = "success"
+                except Exception as exc:
+                    logger.error(
+                        "[LOT History Agent] 공통 공정 분석 실패: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    insight_status = "analysis_failed"
+            else:
+                insight_status = "empty_intersection"
+
     artifacts = []
     if isinstance(lot_history_data, dict) and "error" not in lot_history_data and lot_history_data:
-        html = _render_lot_history_html(lot_history_data)
+        html = _render_lot_history_html(
+            lot_history_data,
+            common_process_insight=common_insight,
+            insight_status=insight_status,
+        )
         artifacts.append({
             "type": "html",
             "mime": "text/html",
@@ -783,6 +901,12 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
                 "lot_history_result": {
                     "lot_ids": list(per_lot_summary.keys()),
                     "per_lot_summary": per_lot_summary,
+                    "common_processes": [
+                        item["process"]
+                        for item in common_payload.get("common_processes", [])
+                    ],
+                    "common_process_insight": common_insight,
+                    "insight_status": insight_status,
                 },
             },
         )
@@ -792,13 +916,17 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         for lot_id, summary in per_lot_summary.items()
     ]
     tool_answer = tool_summary if isinstance(tool_summary, str) else str(tool_summary)
-    answer = derive_summary_from_rows(
+    deterministic_answer = derive_summary_from_rows(
         source_agent="lot_history_agent",
         rows=lot_rows,
         artifacts=artifacts,
         fallback=tool_answer,
         title="lot_history",
     )
+    if insight_status == "success" and common_insight:
+        answer = f'{common_insight["summary"]}\n\n{deterministic_answer}'
+    else:
+        answer = deterministic_answer
     result_message = AIMessage(content=answer, name="lot_history_agent")
     out_messages.append(result_message)
     attach_result_envelope(
@@ -813,7 +941,12 @@ def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         entities={"lot_ids": list(per_lot_summary.keys()) or [v.strip() for v in lh_lot_ids.split(",") if v.strip()]},
         artifacts=artifacts,
         provenance={"task_id": current_task_id, "task_goal": state.get("current_task_goal", "")},
-        metadata={"row_count": len(lot_rows), "artifact_count": len(artifacts or [])},
+        metadata={
+            "row_count": len(lot_rows),
+            "artifact_count": len(artifacts or []),
+            "common_process_count": len(common_payload.get("common_processes", [])),
+            "insight_status": insight_status,
+        },
     )
 
     return {
