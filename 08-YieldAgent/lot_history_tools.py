@@ -39,27 +39,37 @@ _QUERIES = {
     "fdc_alarm": """
         SELECT LOT_CD, LOT_ID, TRANSFER_TM, OPER_ID, EQP_ID, ITEM_NM,
                ALARM_LEVEL_CD, RSLT_VAL, SPEC_MIN_VAL, SPEC_MAX_VAL
-        FROM DF_FDC_ALARM WHERE LOT_ID = :lot_id ORDER BY TRANSFER_TM
+        FROM DF_FDC_ALARM
+        WHERE LOT_ID IN ({lot_placeholders})
+        ORDER BY LOT_ID, TRANSFER_TM
     """,
     "qtime_over": """
         SELECT LOT_CD, LOT_ID, FROM_OPER, TO_OPER,
                CONTROL_LIMIT, Q_TIME, BAL, EVENT_TM
-        FROM DF_QTIME_OVER WHERE LOT_ID = :lot_id ORDER BY EVENT_TM
+        FROM DF_QTIME_OVER
+        WHERE LOT_ID IN ({lot_placeholders})
+        ORDER BY LOT_ID, EVENT_TM
     """,
     "trouble_lot": """
         SELECT LOT_CD, LOT_ID, HOLD_TIME, STEP_DESC, CAUSE_EQ,
                DELAY_TIME, CONTENTS, H_CODE
-        FROM DF_TROUBLE_LOT WHERE LOT_ID = :lot_id ORDER BY HOLD_TIME
+        FROM DF_TROUBLE_LOT
+        WHERE LOT_ID IN ({lot_placeholders})
+        ORDER BY LOT_ID, HOLD_TIME
     """,
     "future_action": """
         SELECT LOT_ID, ACTION_TIME, ACTION_STEP, ACTION_COMMENT,
                ACTION_FLAG, REASON_AREA
-        FROM DF_FUTURE_ACTION WHERE LOT_ID = :lot_id ORDER BY ACTION_TIME
+        FROM DF_FUTURE_ACTION
+        WHERE LOT_ID IN ({lot_placeholders})
+        ORDER BY LOT_ID, ACTION_TIME
     """,
     "sample_split": """
         SELECT LOT_ID, EVENT, STEP, OPER_DESC,
                SAMPLE_SLOT, SAMPLE_SPLIT_ID, QTY
-        FROM DF_SAMPLE_SPLIT WHERE LOT_ID = :lot_id ORDER BY STEP
+        FROM DF_SAMPLE_SPLIT
+        WHERE LOT_ID IN ({lot_placeholders})
+        ORDER BY LOT_ID, STEP
     """,
 }
 
@@ -77,16 +87,38 @@ _COLUMN_NAMES = {
 }
 
 
-def _query_lot(conn, lot_id: str) -> Dict[str, List[Dict]]:
-    """단일 LOT에 대해 5개 테이블 조회, dict 리스트로 반환"""
-    results = {}
+def _parse_lot_ids(lot_ids: str) -> list[str]:
+    seen: set[str] = set()
+    parsed: list[str] = []
+    for raw in lot_ids.split(","):
+        lot_id = raw.strip()
+        if lot_id and lot_id not in seen:
+            seen.add(lot_id)
+            parsed.append(lot_id)
+    return parsed
+
+
+def _query_lots(
+    conn: Any, lot_ids: list[str]
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    results = {
+        lot_id: {source: [] for source in _QUERIES}
+        for lot_id in lot_ids
+    }
+    binds = {f"lot_{index}": lot_id for index, lot_id in enumerate(lot_ids)}
+    placeholders = ", ".join(f":lot_{index}" for index in range(len(lot_ids)))
     cur = conn.cursor()
-    for key, sql in _QUERIES.items():
-        cur.execute(sql, {"lot_id": lot_id})
-        rows = cur.fetchall()
-        cols = _COLUMN_NAMES[key]
-        results[key] = [dict(zip(cols, row)) for row in rows]
-    cur.close()
+    try:
+        for source, sql_template in _QUERIES.items():
+            cur.execute(sql_template.format(lot_placeholders=placeholders), binds)
+            columns = _COLUMN_NAMES[source]
+            for raw_row in cur.fetchall():
+                row = dict(zip(columns, raw_row))
+                lot_id = str(row.get("lot_id") or "").strip()
+                if lot_id in results:
+                    results[lot_id][source].append(row)
+    finally:
+        cur.close()
     return results
 
 
@@ -101,7 +133,7 @@ def query_lot_history(lot_ids: str) -> str:
     Returns:
         조회 결과 요약 문자열 (상세 데이터는 화면에 별도 표시)
     """
-    lot_list = [lid.strip() for lid in lot_ids.split(",") if lid.strip()]
+    lot_list = _parse_lot_ids(lot_ids)
     if not lot_list:
         return "LOT_ID를 입력해주세요."
 
@@ -110,9 +142,7 @@ def query_lot_history(lot_ids: str) -> str:
 
     conn = _get_oracle_connection()
     try:
-        all_results = {}
-        for lot_id in lot_list:
-            all_results[lot_id] = _query_lot(conn, lot_id)
+        all_results = _query_lots(conn, lot_list)
     except Exception as e:
         logger.error("[query_lot_history] Oracle 오류: %s", e, exc_info=True)
         storage["lot_history"] = {"error": str(e)}
