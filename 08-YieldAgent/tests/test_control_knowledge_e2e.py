@@ -13,11 +13,14 @@ from control_knowledge_collector import (
     build_system_snapshot,
     system_snapshot_candidates,
 )
-from control_knowledge_curator import ControlKnowledgeCurator
+from control_knowledge_curator import AGENT_REQUIRED_SECTIONS, ControlKnowledgeCurator
+from control_knowledge_registry import AGENT_CONTROL_PROFILES
 from control_knowledge_service import ControlKnowledgeService
 from control_knowledge_store import ControlKnowledgeStore
 from control_knowledge_validator import scan_bundle
 from verify_control_knowledge_live import validate_ledger_entries
+from models import HITL_CONTRACT_IDS
+from result_contracts import ResultEnvelopeV1
 
 pytestmark = pytest.mark.no_server
 
@@ -49,6 +52,33 @@ class RoutingLLM:
         page_type = candidate["suggested_page_type"]
         title = subject.rsplit("/", 1)[-1].replace("-", " ").title()
         existing = bool(payload["existing_pages"])
+        facts = {item["name"]: item["value"] for item in candidate["facts"]}
+        if page_type == "Agent":
+            body = "\n\n".join(
+                [
+                    f"# {title}",
+                    *[
+                        f"## {section}\n\nVerified content."
+                        for section in AGENT_REQUIRED_SECTIONS
+                    ],
+                ]
+            ) + "\n"
+            related = facts["related_pages"]
+            relations = {
+                "participates_in": sorted(
+                    f"[[{page_id}]]"
+                    for page_id in related
+                    if page_id.startswith("workflows/")
+                ),
+                "uses_contract": sorted(
+                    f"[[{page_id}]]"
+                    for page_id in facts["profile"]["output_contracts"]
+                ),
+                "uses_hitl_contract": ["[[contracts/hitl-contracts]]"],
+            }
+        else:
+            body = f"# {title}\n\nGenerated from structured snapshot evidence.\n"
+            relations = {}
         decision = {
             "action": "update" if existing else "create",
             "target_page_id": subject if existing else "",
@@ -58,10 +88,8 @@ class RoutingLLM:
                 "page_type": page_type,
                 "title": title,
                 "description": candidate["summary"],
-                "body_markdown": (
-                    f"# {title}\n\nGenerated from structured snapshot evidence.\n"
-                ),
-                "relations": {},
+                "body_markdown": body,
+                "relations": relations,
                 "evidence_refs": [candidate["evidence_refs"][0]["ref"]],
             },
         }
@@ -79,10 +107,21 @@ def test_snapshot_to_valid_okf_pages_is_idempotent(tmp_path):
         service = ControlKnowledgeService(
             store, curator, enabled=True, writer=True, retry_base_seconds=0
         )
+        profile = AGENT_CONTROL_PROFILES["wads_agent"].model_copy(
+            update={
+                "required_slots": [],
+                "optional_slots": ["lotcd"],
+                "required_any_slots": [],
+            }
+        )
         snapshot = build_system_snapshot(
             workflow=FakeWorkflow(),
             agent_slot_rules={"wads_agent": {"allowed": {"lotcd"}}},
+            agent_profiles={"wads_agent": profile},
             result_schema_version="result-envelope/v1",
+            result_fields=list(ResultEnvelopeV1.model_fields),
+            artifact_fields=["wads_artifacts"],
+            hitl_contracts=sorted(HITL_CONTRACT_IDS),
             trace_schema_version="local-trace/v1",
             followup_fields=["agent"],
             commit_sha="abc123",
@@ -111,6 +150,13 @@ def test_snapshot_to_valid_okf_pages_is_idempotent(tmp_path):
             "invalid_decision",
             "failed",
         } & {entry["action"] for entry in ledger_entries}
+        agent_page = frontmatter.load(root / "wiki/agents/wads-agent.md")
+        headings = {
+            line[3:].strip()
+            for line in agent_page.content.splitlines()
+            if line.startswith("## ")
+        }
+        assert set(AGENT_REQUIRED_SECTIONS).issubset(headings)
 
         second = ControlKnowledgeService(
             store, curator, enabled=True, writer=True, retry_base_seconds=0

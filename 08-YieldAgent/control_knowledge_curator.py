@@ -8,6 +8,7 @@ from control_knowledge_models import (
     CurationDecision,
     CurationLedgerEntry,
     KnowledgeCandidate,
+    PageDraft,
     PageType,
     candidate_fingerprint,
 )
@@ -27,6 +28,7 @@ AUTO = {
     ("system_snapshot", "Component"),
     ("runtime_observation", "Observation"),
     ("incident", "Observation"),
+    ("registry_drift", "Observation"),
 }
 
 
@@ -48,7 +50,69 @@ The draft must be a complete replacement body whose first H1 equals title.
 Do not include user data, domain entities, rows, SQL, prompts, message text, or artifacts.
 Do not choose a page outside candidate.subjects.
 Do not output analysis or markdown fences around the JSON.
+For Agent drafts, use exactly these H2 sections: Responsibility, Boundaries,
+Inputs, Outputs, Workflow Position, Tools and External Systems, HITL Contracts,
+Verified Failure Modes, Source Evidence, Related Knowledge.
+Copy source evidence only from profile.source_refs and
+profile.failure_modes[*].source_refs. Set participates_in from the Workflow
+related page, uses_contract from profile.output_contracts, and
+uses_hitl_contract to contracts/hitl-contracts. Do not add relation keys.
 """
+
+
+AGENT_REQUIRED_SECTIONS = (
+    "Responsibility",
+    "Boundaries",
+    "Inputs",
+    "Outputs",
+    "Workflow Position",
+    "Tools and External Systems",
+    "HITL Contracts",
+    "Verified Failure Modes",
+    "Source Evidence",
+    "Related Knowledge",
+)
+
+
+def validate_operational_agent_draft(
+    candidate: KnowledgeCandidate, draft: PageDraft
+) -> None:
+    if (
+        candidate.source_kind != "system_snapshot"
+        or draft.page_type != PageType.agent
+    ):
+        return
+    headings = {
+        line[3:].strip()
+        for line in draft.body_markdown.splitlines()
+        if line.startswith("## ")
+    }
+    if set(AGENT_REQUIRED_SECTIONS) - headings:
+        raise ValueError("operational Agent draft is missing required sections")
+
+    facts = {fact.name: fact.value for fact in candidate.facts}
+    profile = facts.get("profile")
+    related = set(facts.get("related_pages") or [])
+    if not isinstance(profile, dict):
+        raise ValueError("operational Agent candidate is missing profile facts")
+    expected_relations = {
+        "participates_in": sorted(
+            f"[[{page_id}]]"
+            for page_id in related
+            if str(page_id).startswith("workflows/")
+        ),
+        "uses_contract": sorted(
+            f"[[{page_id}]]" for page_id in profile["output_contracts"]
+        ),
+        "uses_hitl_contract": ["[[contracts/hitl-contracts]]"],
+    }
+    actual_relations = {
+        key: sorted(values) for key, values in draft.relations.items() if values
+    }
+    if actual_relations != expected_relations:
+        raise ValueError(
+            "operational Agent draft relations differ from registry facts"
+        )
 
 
 class CuratorCallError(RuntimeError):
@@ -124,6 +188,7 @@ class ControlKnowledgeCurator:
                 or not decision.draft.evidence_refs
             ):
                 raise ValueError("draft evidence must come from candidate")
+            validate_operational_agent_draft(candidate, decision.draft)
             disposition = (
                 WriteDisposition.review.value
                 if decision.action == "review_required"

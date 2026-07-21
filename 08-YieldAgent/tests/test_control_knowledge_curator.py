@@ -36,7 +36,20 @@ def _candidate(source="system_snapshot", page_type="Agent", subject="agents/wads
             "suggested_page_type": page_type,
             "summary": "structured change",
             "facts": [
-                {"name": "agent", "value": "wads_agent", "source_path": "registry"}
+                {
+                    "name": "profile",
+                    "value": {"output_contracts": ["contracts/result-envelope"]},
+                    "source_path": "registry",
+                },
+                {
+                    "name": "related_pages",
+                    "value": [
+                        "contracts/hitl-contracts",
+                        "contracts/result-envelope",
+                        "workflows/orchestration-graph",
+                    ],
+                    "source_path": "registry",
+                },
             ],
             "evidence_refs": [
                 {
@@ -49,6 +62,51 @@ def _candidate(source="system_snapshot", page_type="Agent", subject="agents/wads
     )
 
 
+AGENT_SECTIONS = [
+    "Responsibility",
+    "Boundaries",
+    "Inputs",
+    "Outputs",
+    "Workflow Position",
+    "Tools and External Systems",
+    "HITL Contracts",
+    "Verified Failure Modes",
+    "Source Evidence",
+    "Related Knowledge",
+]
+
+
+def _operational_body(title="WADS Agent"):
+    return "\n\n".join(
+        [
+            f"# {title}",
+            *[
+                f"## {section}\n\nVerified content."
+                for section in AGENT_SECTIONS
+            ],
+        ]
+    ) + "\n"
+
+
+def _agent_relations():
+    return {
+        "participates_in": ["[[workflows/orchestration-graph]]"],
+        "uses_contract": ["[[contracts/result-envelope]]"],
+        "uses_hitl_contract": ["[[contracts/hitl-contracts]]"],
+    }
+
+
+def _seed_relation_targets(root: Path) -> None:
+    for page_id in (
+        "contracts/result-envelope",
+        "contracts/hitl-contracts",
+        "workflows/orchestration-graph",
+    ):
+        path = root / "wiki" / f"{page_id}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"---\npage_id: {page_id}\n---\n# Seed\n", encoding="utf-8")
+
+
 def _decision(page_type="Agent", subject="agents/wads-agent", action="create"):
     return {
         "action": action,
@@ -59,8 +117,8 @@ def _decision(page_type="Agent", subject="agents/wads-agent", action="create"):
             "page_type": page_type,
             "title": "WADS Agent",
             "description": "WADS worker boundary",
-            "body_markdown": "# WADS Agent\n\nStructured facts only.\n",
-            "relations": {},
+            "body_markdown": _operational_body(),
+            "relations": _agent_relations() if page_type == "Agent" else {},
             "evidence_refs": ["ev_1"],
         },
     }
@@ -74,6 +132,7 @@ def test_write_policy_is_exact_by_source_and_type():
 
 
 def test_snapshot_agent_page_is_written(tmp_path):
+    _seed_relation_targets(tmp_path)
     store = ControlKnowledgeStore(tmp_path)
     llm = FakeLLM(_decision())
     curator = ControlKnowledgeCurator(store, llm)
@@ -117,3 +176,37 @@ def test_missing_candidate_evidence_is_rejected(tmp_path):
     curator = ControlKnowledgeCurator(ControlKnowledgeStore(tmp_path), FakeLLM(payload))
     entry = curator.curate(_candidate())
     assert entry.action == "invalid_decision"
+
+
+def test_operational_agent_draft_requires_every_section(tmp_path):
+    _seed_relation_targets(tmp_path)
+    payload = _decision()
+    payload["draft"]["body_markdown"] = "# WADS Agent\n\n## Inputs\n\nlotcd\n"
+    entry = ControlKnowledgeCurator(
+        ControlKnowledgeStore(tmp_path), FakeLLM(payload)
+    ).curate(_candidate())
+    assert entry.action == "invalid_decision"
+
+
+def test_operational_agent_draft_accepts_all_sections(tmp_path):
+    _seed_relation_targets(tmp_path)
+    payload = _decision()
+    payload["draft"]["body_markdown"] = _operational_body()
+    entry = ControlKnowledgeCurator(
+        ControlKnowledgeStore(tmp_path), FakeLLM(payload)
+    ).curate(_candidate())
+    assert entry.action == "created"
+
+
+def test_operational_agent_draft_requires_registry_relations(tmp_path):
+    payload = _decision()
+    payload["draft"]["body_markdown"] = _operational_body()
+    payload["draft"]["relations"] = {}
+    entry = ControlKnowledgeCurator(
+        ControlKnowledgeStore(tmp_path), FakeLLM(payload)
+    ).curate(_candidate())
+    assert entry.action == "invalid_decision"
+
+
+def test_registry_drift_observation_is_auto_writable():
+    assert write_disposition("registry_drift", "Observation") == "auto"
