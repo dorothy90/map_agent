@@ -13,6 +13,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+HITL_CONTRACT_IDS = frozenset(
+    {"missing_param", "plan_review", "task_confirm", "postwads_choice"}
+)
+
+
 # ── Request ──────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
