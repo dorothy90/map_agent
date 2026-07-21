@@ -15,6 +15,24 @@ from e2e_client import Session, server_is_up
 from control_knowledge_validator import scan_bundle
 
 
+def validate_ledger_entries(entries: list[dict]) -> None:
+    failed = [
+        entry
+        for entry in entries
+        if entry.get("action") in {"invalid_decision", "failed"}
+    ]
+    if failed:
+        raise SystemExit(f"curation failures recorded: {len(failed)}")
+    successful = {
+        "created",
+        "updated",
+        "proposal",
+        "no_change",
+    }
+    if not any(entry.get("action") in successful for entry in entries):
+        raise SystemExit("no successful curation decision was recorded")
+
+
 def main() -> int:
     root_value = os.getenv("CONTROL_KNOWLEDGE_ROOT", "").strip()
     if not root_value:
@@ -80,6 +98,13 @@ def main() -> int:
             "bundle lint failed: "
             + json.dumps([issue.__dict__ for issue in issues], ensure_ascii=False)
         )
+    compiled_types = {
+        frontmatter.load(path).metadata.get("type")
+        for path in (root / "wiki").rglob("*.md")
+        if path.name != "index.md"
+    }
+    if not {"Agent", "Workflow", "Contract"}.issubset(compiled_types):
+        raise SystemExit("compiled control wiki is missing Agent/Workflow/Contract pages")
     if any(
         "4SS" in path.read_text(encoding="utf-8")
         for path in (root / "wiki").rglob("*.md")
@@ -92,6 +117,7 @@ def main() -> int:
         .splitlines()
         if line.strip()
     ]
+    validate_ledger_entries(ledger_entries)
     fingerprints = [entry["fingerprint"] for entry in ledger_entries]
     if len(fingerprints) != len(set(fingerprints)):
         raise SystemExit("a candidate fingerprint was processed more than once")

@@ -1,3 +1,4 @@
 # Contracts
 
-Contract pages are generated from code-backed candidates.
+- [[contracts/result-envelope]]
+- [[contracts/local-trace]]

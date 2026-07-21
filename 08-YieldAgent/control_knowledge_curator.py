@@ -74,6 +74,7 @@ class ControlKnowledgeCurator:
             "candidate": candidate.model_dump(mode="json"),
             "allowed_target_page_ids": candidate.subjects,
             "existing_pages": page_context,
+            "decision_schema": CurationDecision.model_json_schema(),
         }
         try:
             raw = (

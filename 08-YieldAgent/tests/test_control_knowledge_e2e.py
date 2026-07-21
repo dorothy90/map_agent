@@ -17,8 +17,19 @@ from control_knowledge_curator import ControlKnowledgeCurator
 from control_knowledge_service import ControlKnowledgeService
 from control_knowledge_store import ControlKnowledgeStore
 from control_knowledge_validator import scan_bundle
+from verify_control_knowledge_live import validate_ledger_entries
 
 pytestmark = pytest.mark.no_server
+
+
+def test_live_verifier_rejects_all_invalid_decisions():
+    with pytest.raises(SystemExit, match="curation failures recorded"):
+        validate_ledger_entries(
+            [
+                {"fingerprint": "a", "action": "invalid_decision"},
+                {"fingerprint": "b", "action": "failed"},
+            ]
+        )
 
 
 class FakeWorkflow:
@@ -37,9 +48,10 @@ class RoutingLLM:
         subject = candidate["subjects"][0]
         page_type = candidate["suggested_page_type"]
         title = subject.rsplit("/", 1)[-1].replace("-", " ").title()
+        existing = bool(payload["existing_pages"])
         decision = {
-            "action": "create",
-            "target_page_id": "",
+            "action": "update" if existing else "create",
+            "target_page_id": subject if existing else "",
             "rationale": "new snapshot subject",
             "draft": {
                 "page_id": subject,
@@ -90,6 +102,15 @@ def test_snapshot_to_valid_okf_pages_is_idempotent(tmp_path):
         }
         first_call_count = len(llm.calls)
         assert not scan_bundle(root)
+        ledger_entries = [
+            json.loads(line)
+            for line in store.ledger.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert not {
+            "invalid_decision",
+            "failed",
+        } & {entry["action"] for entry in ledger_entries}
 
         second = ControlKnowledgeService(
             store, curator, enabled=True, writer=True, retry_base_seconds=0

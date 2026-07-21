@@ -75,10 +75,13 @@ def test_write_policy_is_exact_by_source_and_type():
 
 def test_snapshot_agent_page_is_written(tmp_path):
     store = ControlKnowledgeStore(tmp_path)
-    curator = ControlKnowledgeCurator(store, FakeLLM(_decision()))
+    llm = FakeLLM(_decision())
+    curator = ControlKnowledgeCurator(store, llm)
     entry = curator.curate(_candidate())
     assert entry.action == "created"
     assert (tmp_path / "wiki/agents/wads-agent.md").exists()
+    request_payload = json.loads(llm.calls[0][-1]["content"])
+    assert request_payload["decision_schema"]["title"] == "CurationDecision"
 
 
 def test_protected_change_creates_proposal(tmp_path):
