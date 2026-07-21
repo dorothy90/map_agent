@@ -10,8 +10,10 @@ from control_knowledge_collector import (
     build_system_snapshot,
     incident_candidate,
     runtime_candidates,
+    system_collection,
     system_snapshot_candidates,
 )
+from control_knowledge_registry import AGENT_CONTROL_PROFILES, RegistryIssue
 
 pytestmark = pytest.mark.no_server
 
@@ -22,10 +24,20 @@ class FakeWorkflow:
 
 
 def test_snapshot_is_sorted_and_split_into_stable_subjects():
+    profile = AGENT_CONTROL_PROFILES["wads_agent"].model_copy(
+        update={
+            "required_slots": [],
+            "optional_slots": ["fail_type", "lotcd"],
+        }
+    )
     snapshot = build_system_snapshot(
         workflow=FakeWorkflow(),
         agent_slot_rules={"wads_agent": {"allowed": {"fail_type", "lotcd"}}},
+        agent_profiles={"wads_agent": profile},
         result_schema_version="result-envelope/v1",
+        result_fields=["schema_version", "source_agent", "kind", "status"],
+        artifact_fields=["wads_artifacts"],
+        hitl_contracts=["missing_param", "plan_review"],
         trace_schema_version="local-trace/v1",
         followup_fields=["goal", "agent"],
         commit_sha="abc123",
@@ -36,8 +48,80 @@ def test_snapshot_is_sorted_and_split_into_stable_subjects():
         "agents/wads-agent",
         "contracts/result-envelope",
         "contracts/local-trace",
+        "contracts/artifact-delivery",
+        "contracts/hitl-contracts",
         "workflows/orchestration-graph",
     }
+
+
+def test_snapshot_candidate_contains_operational_profile_and_graph_position():
+    profile = AGENT_CONTROL_PROFILES["wads_agent"].model_copy(
+        update={
+            "required_slots": [],
+            "optional_slots": ["fail_type", "lotcd"],
+        }
+    )
+    snapshot = build_system_snapshot(
+        workflow=FakeWorkflow(),
+        agent_slot_rules={"wads_agent": {"allowed": {"fail_type", "lotcd"}}},
+        agent_profiles={"wads_agent": profile},
+        result_schema_version="result-envelope/v1",
+        result_fields=["schema_version", "source_agent", "kind", "status"],
+        artifact_fields=["wads_artifacts"],
+        hitl_contracts=["missing_param", "plan_review"],
+        trace_schema_version="local-trace/v1",
+        followup_fields=["goal", "agent"],
+        commit_sha="abc123",
+    )
+    candidate = next(
+        item
+        for item in system_snapshot_candidates(snapshot)
+        if item.subjects == ["agents/wads-agent"]
+    )
+    facts = {fact.name: fact.value for fact in candidate.facts}
+    assert facts["profile"]["responsibility"]
+    assert facts["profile"]["tool_modules"] == ["wads_tools"]
+    assert facts["workflow_position"] == {
+        "predecessors": [],
+        "successors": ["replanner"],
+    }
+    assert facts["related_pages"] == [
+        "contracts/artifact-delivery",
+        "contracts/hitl-contracts",
+        "contracts/result-envelope",
+        "workflows/orchestration-graph",
+    ]
+
+
+def test_drift_candidate_blocks_affected_agent_snapshot():
+    profile = AGENT_CONTROL_PROFILES["wads_agent"].model_copy(
+        update={
+            "required_slots": [],
+            "optional_slots": ["fail_type", "lotcd"],
+        }
+    )
+    snapshot = build_system_snapshot(
+        workflow=FakeWorkflow(),
+        agent_slot_rules={"wads_agent": {"allowed": {"fail_type", "lotcd"}}},
+        agent_profiles={"wads_agent": profile},
+        result_schema_version="result-envelope/v1",
+        result_fields=["schema_version"],
+        artifact_fields=["wads_artifacts"],
+        hitl_contracts=["missing_param", "plan_review"],
+        trace_schema_version="local-trace/v1",
+        followup_fields=["agent"],
+        commit_sha="abc123",
+    )
+    issues = [RegistryIssue(agent_id="wads_agent", code="slot_mismatch")]
+    collection = system_collection(snapshot, issues)
+    assert "agents/wads-agent" not in {
+        item.subjects[0] for item in collection.candidates
+    }
+    drift = [
+        item for item in collection.candidates if item.source_kind == "registry_drift"
+    ]
+    assert drift[0].subjects == ["observations/registry-drift-wads-agent"]
+    assert "slot_mismatch" in drift[0].model_dump_json()
 
 
 def test_runtime_candidate_keeps_shape_but_drops_rows_and_entities():

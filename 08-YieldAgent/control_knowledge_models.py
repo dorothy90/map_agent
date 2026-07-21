@@ -89,7 +89,11 @@ class KnowledgeCandidate(BaseModel):
     candidate_id: str = Field(default_factory=lambda: f"candidate_{uuid.uuid4().hex}")
     scope: Literal["system"] = "system"
     source_kind: Literal[
-        "system_snapshot", "runtime_observation", "incident", "human_correction"
+        "system_snapshot",
+        "runtime_observation",
+        "incident",
+        "human_correction",
+        "registry_drift",
     ]
     subjects: list[str] = Field(min_length=1)
     suggested_page_type: PageType
@@ -115,18 +119,30 @@ class KnowledgeCandidate(BaseModel):
 class SystemSnapshot(BaseModel):
     model_config = STRICT
 
-    schema_version: Literal["control-system-snapshot/v1"] = (
-        "control-system-snapshot/v1"
+    schema_version: Literal["control-system-snapshot/v2"] = (
+        "control-system-snapshot/v2"
     )
     snapshot_id: str
     commit_sha: str
     graph_nodes: list[str]
     graph_edges: list[list[str]]
     agent_slots: dict[str, list[str]]
+    agent_profiles: dict[str, dict[str, JsonValue]]
     result_schema_version: str
+    result_fields: list[str]
+    artifact_fields: list[str]
+    hitl_contracts: list[str]
     trace_schema_version: str
     followup_fields: list[str]
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class SystemCollection(BaseModel):
+    model_config = STRICT
+
+    snapshot: SystemSnapshot
+    registry_issues: list[dict[str, str]]
+    candidates: list[KnowledgeCandidate]
 
 
 class PageDraft(BaseModel):

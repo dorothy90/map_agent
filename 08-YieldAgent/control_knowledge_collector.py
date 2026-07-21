@@ -10,7 +10,14 @@ from control_knowledge_models import (
     CandidateFact,
     EvidenceRef,
     KnowledgeCandidate,
+    SystemCollection,
     SystemSnapshot,
+)
+from control_knowledge_registry import (
+    AGENT_CONTROL_PROFILES,
+    AgentControlProfile,
+    RegistryIssue,
+    validate_agent_registry,
 )
 from result_contracts import validate_result_envelope
 
@@ -28,7 +35,11 @@ def build_system_snapshot(
     *,
     workflow,
     agent_slot_rules: dict,
+    agent_profiles: dict[str, AgentControlProfile],
     result_schema_version: str,
+    result_fields: list[str],
+    artifact_fields: list[str],
+    hitl_contracts: list[str],
     trace_schema_version: str,
     followup_fields: list[str],
     commit_sha: str,
@@ -44,17 +55,31 @@ def build_system_snapshot(
         "graph_nodes": nodes,
         "graph_edges": edges,
         "agent_slots": slots,
+        "agent_profiles": {
+            agent: profile.model_dump(mode="json")
+            for agent, profile in sorted(agent_profiles.items())
+        },
         "result_schema_version": result_schema_version,
+        "result_fields": sorted(result_fields),
+        "artifact_fields": sorted(artifact_fields),
+        "hitl_contracts": sorted(hitl_contracts),
         "trace_schema_version": trace_schema_version,
         "followup_fields": sorted(followup_fields),
     }
     return SystemSnapshot(snapshot_id=f"snapshot_{_sha(stable)[:16]}", **stable)
 
 
-def current_system_snapshot() -> SystemSnapshot:
+def collect_current_system() -> SystemCollection:
     from canonical_request import AGENT_SLOT_RULES
     from local_trace import TRACE_SCHEMA_VERSION
-    from result_contracts import Followup, RESULT_ENVELOPE_SCHEMA_VERSION
+    from models import HITL_CONTRACT_IDS
+    from query_state import YieldQueryState
+    from result_contracts import (
+        Followup,
+        RESULT_ENVELOPE_SCHEMA_VERSION,
+        ResultEnvelopeV1,
+        ResultKind,
+    )
     from supervisor import workflow
 
     repo = Path(__file__).resolve().parent.parent
@@ -67,21 +92,64 @@ def current_system_snapshot() -> SystemSnapshot:
         timeout=2,
     )
     commit_sha = process.stdout.strip() if process.returncode == 0 else "unknown"
-    return build_system_snapshot(
+    snapshot = build_system_snapshot(
         workflow=workflow,
         agent_slot_rules=AGENT_SLOT_RULES,
+        agent_profiles=AGENT_CONTROL_PROFILES,
         result_schema_version=RESULT_ENVELOPE_SCHEMA_VERSION,
+        result_fields=list(ResultEnvelopeV1.model_fields),
+        artifact_fields=sorted(
+            {
+                field
+                for profile in AGENT_CONTROL_PROFILES.values()
+                for field in profile.artifact_channels
+            }
+        ),
+        hitl_contracts=sorted(HITL_CONTRACT_IDS),
         trace_schema_version=TRACE_SCHEMA_VERSION,
         followup_fields=list(Followup.__annotations__),
         commit_sha=commit_sha,
     )
+    issues = validate_agent_registry(
+        profiles=AGENT_CONTROL_PROFILES,
+        agent_slot_rules=AGENT_SLOT_RULES,
+        graph_nodes=set(workflow.nodes),
+        state_fields=set(YieldQueryState.__annotations__),
+        result_kinds={item.value for item in ResultKind},
+        hitl_contract_ids=set(HITL_CONTRACT_IDS),
+        module_root=Path(__file__).resolve().parent,
+    )
+    return system_collection(snapshot, issues)
+
+
+def current_system_snapshot() -> SystemSnapshot:
+    return collect_current_system().snapshot
+
+
+def _workflow_position(snapshot: SystemSnapshot, agent: str) -> dict[str, list[str]]:
+    return {
+        "predecessors": sorted(
+            source for source, target in snapshot.graph_edges if target == agent
+        ),
+        "successors": sorted(
+            target for source, target in snapshot.graph_edges if source == agent
+        ),
+    }
 
 
 def system_snapshot_candidates(snapshot: SystemSnapshot) -> list[KnowledgeCandidate]:
     snapshot_value = snapshot.model_dump(mode="json", exclude={"created_at"})
     evidence = _evidence("snapshot", snapshot.snapshot_id, snapshot_value)
     candidates: list[KnowledgeCandidate] = []
-    for agent, slots in sorted(snapshot.agent_slots.items()):
+    for agent, profile in sorted(snapshot.agent_profiles.items()):
+        output_contracts = [str(item) for item in profile["output_contracts"]]
+        related_pages = sorted(
+            {
+                *output_contracts,
+                "contracts/hitl-contracts",
+                "workflows/orchestration-graph",
+            }
+        )
         candidates.append(
             KnowledgeCandidate(
                 source_kind="system_snapshot",
@@ -90,16 +158,28 @@ def system_snapshot_candidates(snapshot: SystemSnapshot) -> list[KnowledgeCandid
                 summary=f"Structured snapshot for canonical agent {agent}",
                 facts=[
                     CandidateFact(
-                        name="canonical_agent",
-                        value=agent,
-                        source_path="canonical_request.AGENT_SLOT_RULES",
+                        name="profile",
+                        value=profile,
+                        source_path=f"control_knowledge_registry.{agent}",
                     ),
                     CandidateFact(
-                        name="slot_keys",
-                        value=slots,
-                        source_path=(
-                            f"canonical_request.AGENT_SLOT_RULES.{agent}.allowed"
-                        ),
+                        name="slot_contract",
+                        value={
+                            "allowed": snapshot.agent_slots[agent],
+                            "required": profile["required_slots"],
+                            "required_any": profile["required_any_slots"],
+                        },
+                        source_path=f"canonical_request.AGENT_SLOT_RULES.{agent}",
+                    ),
+                    CandidateFact(
+                        name="workflow_position",
+                        value=_workflow_position(snapshot, agent),
+                        source_path="supervisor.workflow.edges",
+                    ),
+                    CandidateFact(
+                        name="related_pages",
+                        value=related_pages,
+                        source_path=f"control_knowledge_registry.{agent}.output_contracts",
                     ),
                 ],
                 evidence_refs=[evidence],
@@ -117,7 +197,12 @@ def system_snapshot_candidates(snapshot: SystemSnapshot) -> list[KnowledgeCandid
                         name="schema_version",
                         value=snapshot.result_schema_version,
                         source_path="result_contracts.RESULT_ENVELOPE_SCHEMA_VERSION",
-                    )
+                    ),
+                    CandidateFact(
+                        name="schema_fields",
+                        value=snapshot.result_fields,
+                        source_path="result_contracts.ResultEnvelopeV1.model_fields",
+                    ),
                 ],
                 evidence_refs=[evidence],
             ),
@@ -131,6 +216,39 @@ def system_snapshot_candidates(snapshot: SystemSnapshot) -> list[KnowledgeCandid
                         name="schema_version",
                         value=snapshot.trace_schema_version,
                         source_path="local_trace.TRACE_SCHEMA_VERSION",
+                    ),
+                    CandidateFact(
+                        name="event_fields",
+                        value=snapshot.followup_fields,
+                        source_path="result_contracts.Followup.__annotations__",
+                    ),
+                ],
+                evidence_refs=[evidence],
+            ),
+            KnowledgeCandidate(
+                source_kind="system_snapshot",
+                subjects=["contracts/artifact-delivery"],
+                suggested_page_type="Contract",
+                summary="Artifact delivery state-channel snapshot",
+                facts=[
+                    CandidateFact(
+                        name="artifact_fields",
+                        value=snapshot.artifact_fields,
+                        source_path="query_state.YieldQueryState.__annotations__",
+                    )
+                ],
+                evidence_refs=[evidence],
+            ),
+            KnowledgeCandidate(
+                source_kind="system_snapshot",
+                subjects=["contracts/hitl-contracts"],
+                suggested_page_type="Contract",
+                summary="Structured HITL identifier snapshot",
+                facts=[
+                    CandidateFact(
+                        name="hitl_contracts",
+                        value=snapshot.hitl_contracts,
+                        source_path="models.HITL_CONTRACT_IDS",
                     )
                 ],
                 evidence_refs=[evidence],
@@ -162,6 +280,64 @@ def system_snapshot_candidates(snapshot: SystemSnapshot) -> list[KnowledgeCandid
         ]
     )
     return candidates
+
+
+def registry_drift_candidates(
+    issues: list[RegistryIssue],
+) -> list[KnowledgeCandidate]:
+    grouped: dict[str, list[RegistryIssue]] = {}
+    for issue in issues:
+        grouped.setdefault(issue.agent_id, []).append(issue)
+    return [
+        KnowledgeCandidate(
+            source_kind="registry_drift",
+            subjects=[f"observations/registry-drift-{agent.replace('_', '-')}"],
+            suggested_page_type="Observation",
+            summary=f"Registry verification drift for {agent}",
+            facts=[
+                CandidateFact(
+                    name="registry_issues",
+                    value=[
+                        item.model_dump(mode="json")
+                        for item in sorted(
+                            agent_issues,
+                            key=lambda value: (value.code, value.source_ref),
+                        )
+                    ],
+                    source_path="control_knowledge_registry.validate_agent_registry",
+                )
+            ],
+            evidence_refs=[
+                _evidence(
+                    "snapshot",
+                    f"registry_drift_{agent}",
+                    [item.model_dump(mode="json") for item in agent_issues],
+                )
+            ],
+        )
+        for agent, agent_issues in sorted(grouped.items())
+    ]
+
+
+def system_collection(
+    snapshot: SystemSnapshot, issues: list[RegistryIssue]
+) -> SystemCollection:
+    blocked = {issue.agent_id for issue in issues}
+    candidates = [
+        item
+        for item in system_snapshot_candidates(snapshot)
+        if not (
+            item.subjects[0].startswith("agents/")
+            and item.subjects[0].removeprefix("agents/").replace("-", "_")
+            in blocked
+        )
+    ]
+    candidates.extend(registry_drift_candidates(issues))
+    return SystemCollection(
+        snapshot=snapshot,
+        registry_issues=[issue.model_dump(mode="json") for issue in issues],
+        candidates=candidates,
+    )
 
 
 def _result_shapes(messages: list[Any]) -> list[dict[str, Any]]:
