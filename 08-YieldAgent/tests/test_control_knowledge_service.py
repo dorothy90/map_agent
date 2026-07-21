@@ -39,6 +39,38 @@ def _candidate():
     )
 
 
+def test_save_current_collection_persists_drift_not_blocked_agent(tmp_path):
+    from control_knowledge_cli import save_current_collection
+
+    store = ControlKnowledgeStore(tmp_path)
+    drift = KnowledgeCandidate.model_validate(
+        {
+            "source_kind": "registry_drift",
+            "subjects": ["observations/registry-drift-yield-agent"],
+            "suggested_page_type": "Observation",
+            "summary": "registry drift",
+            "facts": [
+                {
+                    "name": "registry_issues",
+                    "value": [
+                        {"agent_id": "yield_agent", "code": "slot_mismatch"}
+                    ],
+                    "source_path": (
+                        "control_knowledge_registry.validate_agent_registry"
+                    ),
+                }
+            ],
+            "evidence_refs": [
+                {"kind": "snapshot", "ref": "drift", "sha256": "a" * 64}
+            ],
+        }
+    )
+    collection = type("Collection", (), {"candidates": [drift]})()
+    paths = save_current_collection(store, collection)
+    assert len(paths) == 1
+    assert store.load_candidate(paths[0]).source_kind == "registry_drift"
+
+
 class RecordingCurator:
     def __init__(self, store, fail_once=False):
         self.store = store

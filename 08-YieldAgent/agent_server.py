@@ -66,10 +66,9 @@ from local_trace import (  # noqa: E402
 from supervisor import workflow, _resume_is_interrupt_answer  # noqa: E402
 from user_memory import update_profile_from_feedback  # noqa: E402
 from control_knowledge_collector import (  # noqa: E402
-    current_system_snapshot,
+    collect_current_system,
     incident_candidate,
     runtime_candidates,
-    system_snapshot_candidates,
 )
 from control_knowledge_service import service_from_env  # noqa: E402
 
@@ -113,6 +112,10 @@ def _schedule_control_submission(service, candidates: list) -> None:
     task = asyncio.create_task(_submit_control_candidates(service, candidates))
     _control_knowledge_tasks.add(task)
     task.add_done_callback(_control_knowledge_tasks.discard)
+
+
+def _startup_control_candidates(collection) -> list:
+    return list(collection.candidates)
 
 
 def _pending_interrupt_from_state(state_snapshot) -> dict:
@@ -187,9 +190,10 @@ async def lifespan(app: FastAPI):
     await control_knowledge.start()
     app.state.control_knowledge = control_knowledge
     if control_knowledge.enabled:
+        collection = collect_current_system()
         await _submit_control_candidates(
             control_knowledge,
-            system_snapshot_candidates(current_system_snapshot()),
+            _startup_control_candidates(collection),
         )
 
     # Day 6: lint daily cron (WIKI_LINT_CRON_HOURS=0 또는 미설정 시 비활성)

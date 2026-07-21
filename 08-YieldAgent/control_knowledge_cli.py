@@ -7,10 +7,7 @@ from pathlib import Path
 import frontmatter
 
 from common import get_llm
-from control_knowledge_collector import (
-    current_system_snapshot,
-    system_snapshot_candidates,
-)
+from control_knowledge_collector import collect_current_system
 from control_knowledge_curator import ControlKnowledgeCurator
 from control_knowledge_store import ControlKnowledgeStore
 from control_knowledge_validator import scan_bundle
@@ -22,6 +19,10 @@ def _root(value: str | None) -> Path:
         or os.getenv("CONTROL_KNOWLEDGE_ROOT")
         or Path(__file__).resolve().parent / "multiagent_knowledge"
     ).resolve()
+
+
+def save_current_collection(store: ControlKnowledgeStore, collection) -> list[Path]:
+    return [store.save_candidate(candidate) for candidate in collection.candidates]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,10 +44,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{issue.code}] {issue.path}: {issue.message}")
         return 1 if issues else 0
     if args.command == "snapshot":
-        paths = [
-            store.save_candidate(item)
-            for item in system_snapshot_candidates(current_system_snapshot())
-        ]
+        paths = save_current_collection(store, collect_current_system())
         print(f"saved={len(paths)}")
         return 0
     if args.command == "curate-once":

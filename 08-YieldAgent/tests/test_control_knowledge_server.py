@@ -11,6 +11,13 @@ from control_knowledge_collector import incident_candidate, runtime_candidates
 pytestmark = pytest.mark.no_server
 
 
+def test_startup_candidates_use_validated_collection():
+    from agent_server import _startup_control_candidates
+
+    collection = type("Collection", (), {"candidates": ["safe"]})()
+    assert _startup_control_candidates(collection) == ["safe"]
+
+
 def test_completed_state_conversion_never_contains_query_or_rows():
     candidates = runtime_candidates(
         {
