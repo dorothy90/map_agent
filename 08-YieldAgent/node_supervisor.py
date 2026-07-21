@@ -18,7 +18,7 @@ from langgraph.types import Command, interrupt
 from common import extract_json_from_llm, stream_event
 from canonical_request import AGENT_SLOT_SCHEMAS, build_task_from_canonical_request
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
-from models import StatusEvent
+from models import HITLContractId, StatusEvent
 from local_trace import emit_runtime_detail, emit_trace_event, preview_text, summarize_params
 
 load_dotenv(override=True)
@@ -447,7 +447,7 @@ def _ask_fields(fields: list[dict], current_task: dict) -> dict:
     observability only; the source of truth is `fields`."""
     slots = [f["slot"] for f in fields]
     answer = interrupt({
-        "type": "missing_param",
+        "type": HITLContractId.missing_param.value,
         "param": slots[0],
         "fields": fields,
         "message": _compose_fields_message(fields),
@@ -542,7 +542,7 @@ def _validate_lotcd_or_early_return(
         },
     )
     answer = interrupt({
-        "type": "missing_param",
+        "type": HITLContractId.missing_param.value,
         "param": "lotcd",
         "fields": [{
             "slot": "lotcd",
@@ -1015,7 +1015,7 @@ def _confirm_or_drop(
         return {}
     answer = interrupt({
         "type": "confirm",
-        "interrupt_type": "task_confirm",
+        "interrupt_type": HITLContractId.task_confirm.value,
         "param": "task_confirm",
         "message": message,
         # InterruptEvent.options 스키마는 list[dict] — label/value 형태.
@@ -1208,7 +1208,7 @@ def _resolve_single_choice(
         options = prefilter + [{"label": "안 함", "value": "none"}]
         answer = interrupt({
             "type": "confirm",
-            "interrupt_type": "postwads_choice",  # agent_server 가드/resume 호환 타입 재사용
+            "interrupt_type": HITLContractId.postwads_choice.value,  # agent_server 가드/resume 호환 타입 재사용
             "param": "followup_choice",
             "message": str(fu.get("prefilter_message") or "어느 항목의 후속을 분석할까요?"),
             "options": options,
@@ -1255,7 +1255,7 @@ def _resolve_single_choice(
     options = [o for o in base_options if isinstance(o, dict)] + [{"label": "안 함", "value": "none"}]
     answer = interrupt({
         "type": "confirm",
-        "interrupt_type": "postwads_choice",
+        "interrupt_type": HITLContractId.postwads_choice.value,
         "param": "followup_choice",
         "message": str(fu.get("choice_message") or "이어서 무엇을 할까요?"),
         "options": options,

@@ -54,3 +54,28 @@ Approve a reviewed proposal by ID:
 ```bash
 python control_knowledge_cli.py --root multiagent_knowledge approve <proposal_id>
 ```
+
+## Registry drift recovery
+
+Inspect drift observations and rerun the registry and compiled-page checks:
+
+```bash
+find multiagent_knowledge/wiki/observations -maxdepth 1 -name 'registry-drift-*.md' -print
+uv run python -m pytest tests/test_control_knowledge_registry.py \
+  tests/test_control_knowledge_validator.py -v
+uv run python control_knowledge_cli.py --root multiagent_knowledge lint
+```
+
+An affected Agent page remains unchanged until the registry/code mismatch is corrected and a new valid snapshot is processed.
+
+## Retry invalid decisions
+
+`invalid_decision` and `failed` ledger entries are audit records, not terminal processing states. After correcting the curator model, prompt, or validation issue, retry pending candidates:
+
+```bash
+jq 'select(.action == "invalid_decision" or .action == "failed")' \
+  multiagent_knowledge/raw/curation-ledger.jsonl
+uv run python control_knowledge_cli.py --root multiagent_knowledge curate-once
+```
+
+A later successful entry with the same fingerprint becomes the current terminal result; the earlier failure remains in the append-only ledger.

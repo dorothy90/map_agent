@@ -67,11 +67,14 @@ class ControlKnowledgeStore:
         if not self.ledger.exists():
             return set()
         result = set()
+        terminal_actions = {"no_change", "created", "updated", "proposal"}
         for line in self.ledger.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             try:
-                result.add(str(json.loads(line).get("fingerprint") or ""))
+                entry = json.loads(line)
+                if entry.get("action") in terminal_actions:
+                    result.add(str(entry.get("fingerprint") or ""))
             except json.JSONDecodeError:
                 continue
         return {item for item in result if item}
@@ -142,11 +145,7 @@ class ControlKnowledgeStore:
         metadata["llmwiki_agent_use"] = metadata["agent_use"]
         return metadata
 
-    def write_page(self, draft: PageDraft, candidate: KnowledgeCandidate) -> Path:
-        self.ensure_dirs()
-        path = (self.wiki / f"{draft.page_id}.md").resolve()
-        if self.wiki not in path.parents:
-            raise ValueError("page_id escapes wiki root")
+    def validate_draft_relations(self, draft: PageDraft) -> None:
         known_ids = {
             str(frontmatter.load(item).metadata.get("page_id") or "")
             for item in self.wiki.rglob("*.md")
@@ -159,6 +158,13 @@ class ControlKnowledgeStore:
                 target = str(value)[2:-2]
                 if target not in known_ids:
                     raise ValueError(f"relation target does not exist: {target}")
+
+    def write_page(self, draft: PageDraft, candidate: KnowledgeCandidate) -> Path:
+        self.ensure_dirs()
+        path = (self.wiki / f"{draft.page_id}.md").resolve()
+        if self.wiki not in path.parents:
+            raise ValueError("page_id escapes wiki root")
+        self.validate_draft_relations(draft)
         existing_pages = self.load_pages([draft.page_id])
         existing = existing_pages[0] if existing_pages else None
         metadata = self._metadata_for(draft, candidate, existing)

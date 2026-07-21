@@ -11,6 +11,7 @@ from langgraph.types import Command, interrupt
 
 from common import extract_json_from_llm
 from canonical_request import build_tasks_from_canonical_requests, canonical_requests_from_tasks, normalize_canonical_request
+from models import HITLContractId
 from task_normalizer_validator import apply_ordinal_ref
 
 load_dotenv(override=True)
@@ -84,7 +85,11 @@ def plan_review_node(
 
     # ── interrupt 1회 (이 노드 실행당 하나만) ──
     user_response = interrupt(
-        {"type": "plan_review", "tasks": task_plan, "missing_params": []}
+        {
+            "type": HITLContractId.plan_review.value,
+            "tasks": task_plan,
+            "missing_params": [],
+        }
     )
     resp = (user_response or "").strip()
 

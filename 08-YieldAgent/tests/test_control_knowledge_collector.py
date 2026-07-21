@@ -101,7 +101,7 @@ def test_snapshot_candidate_contains_operational_profile_and_graph_position():
     ]
 
 
-def test_drift_candidate_blocks_affected_agent_snapshot():
+def test_registry_drift_blocks_every_system_snapshot_candidate():
     profile = AGENT_CONTROL_PROFILES["wads_agent"].model_copy(
         update={
             "required_slots": [],
@@ -126,9 +126,7 @@ def test_drift_candidate_blocks_affected_agent_snapshot():
     )
     issues = [RegistryIssue(agent_id="wads_agent", code="slot_mismatch")]
     collection = system_collection(snapshot, issues)
-    assert "agents/wads-agent" not in {
-        item.subjects[0] for item in collection.candidates
-    }
+    assert {item.source_kind for item in collection.candidates} == {"registry_drift"}
     drift = [
         item for item in collection.candidates if item.source_kind == "registry_drift"
     ]

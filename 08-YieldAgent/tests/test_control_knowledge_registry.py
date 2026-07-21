@@ -11,7 +11,7 @@ from control_knowledge_registry import (
     AgentControlProfile,
     validate_agent_registry,
 )
-from models import HITL_CONTRACT_IDS
+from models import HITL_CONTRACT_IDS, HITLContractId, InterruptEvent
 from query_state import YieldQueryState
 from result_contracts import ResultKind
 from supervisor import workflow
@@ -34,6 +34,14 @@ def _issues(profiles=AGENT_CONTROL_PROFILES):
 def test_registry_covers_exact_canonical_agents():
     assert set(AGENT_CONTROL_PROFILES) == set(AGENT_SLOT_RULES)
     assert not _issues()
+
+
+def test_runtime_interrupt_contract_uses_registry_hitl_ids():
+    assert {item.value for item in HITLContractId} == set(HITL_CONTRACT_IDS)
+    schema = InterruptEvent.model_json_schema()
+    ref = schema["properties"]["interrupt_type"]["$ref"]
+    enum_name = ref.rsplit("/", 1)[-1]
+    assert set(schema["$defs"][enum_name]["enum"]) == set(HITL_CONTRACT_IDS)
 
 
 def test_registry_profiles_have_operational_evidence():

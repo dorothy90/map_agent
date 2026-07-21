@@ -13,7 +13,7 @@ from control_knowledge_curator import (
     ControlKnowledgeCurator,
     write_disposition,
 )
-from control_knowledge_models import KnowledgeCandidate
+from control_knowledge_models import KnowledgeCandidate, PageDraft
 from control_knowledge_store import ControlKnowledgeStore
 
 pytestmark = pytest.mark.no_server
@@ -32,6 +32,19 @@ class FakeLLM:
     def invoke(self, messages):
         self.calls.append(messages)
         return FakeResponse(json.dumps(self.payload, ensure_ascii=False))
+
+
+class SequenceLLM:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.calls = 0
+        self.messages = []
+
+    def invoke(self, messages):
+        self.messages.append(messages)
+        payload = self.payloads[self.calls]
+        self.calls += 1
+        return FakeResponse(json.dumps(payload, ensure_ascii=False))
 
 
 def _candidate(source="system_snapshot", page_type="Agent", subject="agents/wads-agent"):
@@ -171,7 +184,13 @@ def test_no_change_writes_only_ledger(tmp_path):
     curator = ControlKnowledgeCurator(
         store, FakeLLM({"action": "no_change", "rationale": "same"})
     )
-    entry = curator.curate(_candidate())
+    entry = curator.curate(
+        _candidate(
+            source="runtime_observation",
+            page_type="Observation",
+            subject="observations/runtime-shape",
+        )
+    )
     assert entry.action == "no_change"
     assert store.ledger.exists()
     assert not (tmp_path / "wiki/agents/wads-agent.md").exists()
@@ -205,14 +224,16 @@ def test_operational_agent_draft_accepts_all_sections(tmp_path):
     assert entry.action == "created"
 
 
-def test_operational_agent_draft_requires_registry_relations(tmp_path):
+def test_operational_agent_draft_normalizes_registry_relations(tmp_path):
+    _seed_relation_targets(tmp_path)
     payload = _decision()
     payload["draft"]["body_markdown"] = _operational_body()
     payload["draft"]["relations"] = {}
-    entry = ControlKnowledgeCurator(
-        ControlKnowledgeStore(tmp_path), FakeLLM(payload)
-    ).curate(_candidate())
-    assert entry.action == "invalid_decision"
+    store = ControlKnowledgeStore(tmp_path)
+    entry = ControlKnowledgeCurator(store, FakeLLM(payload)).curate(_candidate())
+    assert entry.action == "created"
+    post = frontmatter.load(tmp_path / "wiki/agents/wads-agent.md")
+    assert post.metadata["relations"] == _agent_relations()
 
 
 def test_registry_drift_observation_is_auto_writable():
@@ -257,3 +278,99 @@ def test_shared_snapshot_draft_requires_subject_outline(tmp_path, page_id, secti
         ControlKnowledgeStore(tmp_path), FakeLLM(payload)
     ).curate(_candidate(page_type=page_type, subject=page_id))
     assert entry.action == "invalid_decision"
+
+
+def test_invalid_draft_is_retried_before_ledger_failure(tmp_path):
+    _seed_relation_targets(tmp_path)
+    invalid = _decision()
+    invalid["draft"]["body_markdown"] = "# WADS Agent\n\n## Inputs\n\nlotcd\n"
+    llm = SequenceLLM([invalid, _decision()])
+    store = ControlKnowledgeStore(tmp_path)
+    entry = ControlKnowledgeCurator(store, llm).curate(_candidate())
+    assert entry.action == "created"
+    assert llm.calls == 2
+    retry_payload = json.loads(llm.messages[1][-1]["content"])
+    assert retry_payload["previous_validation_error"] == (
+        "operational Agent draft is missing required sections"
+    )
+    actions = [
+        json.loads(line)["action"]
+        for line in store.ledger.read_text(encoding="utf-8").splitlines()
+    ]
+    assert actions == ["created"]
+
+
+def test_no_change_retries_when_existing_operational_page_is_invalid(tmp_path):
+    _seed_relation_targets(tmp_path)
+    store = ControlKnowledgeStore(tmp_path)
+    store.write_page(
+        PageDraft.model_validate(
+            _decision()["draft"]
+            | {"body_markdown": "# WADS Agent\n\n## Inputs\n\nlotcd\n"}
+        ),
+        _candidate(),
+    )
+    llm = SequenceLLM(
+        [
+            {"action": "no_change", "rationale": "same"},
+            _decision(action="update"),
+        ]
+    )
+    entry = ControlKnowledgeCurator(store, llm).curate(_candidate())
+    assert entry.action == "updated"
+    assert "existing operational page is missing required sections" in json.loads(
+        llm.messages[1][-1]["content"]
+    )["previous_validation_error"]
+
+
+def test_persistence_failure_is_not_retried(tmp_path, monkeypatch):
+    _seed_relation_targets(tmp_path)
+    store = ControlKnowledgeStore(tmp_path)
+    llm = FakeLLM(_decision())
+    monkeypatch.setattr(
+        store,
+        "write_page",
+        lambda *_: (_ for _ in ()).throw(OSError("disk")),
+    )
+    with pytest.raises(OSError, match="disk"):
+        ControlKnowledgeCurator(store, llm).curate(_candidate())
+    assert len(llm.calls) == 1
+
+
+def test_ledger_failure_is_not_retried(tmp_path, monkeypatch):
+    store = ControlKnowledgeStore(tmp_path)
+    llm = FakeLLM({"action": "no_change", "rationale": "same"})
+    monkeypatch.setattr(
+        store,
+        "append_ledger",
+        lambda *_: (_ for _ in ()).throw(OSError("ledger")),
+    )
+    candidate = _candidate(
+        source="runtime_observation",
+        page_type="Observation",
+        subject="observations/runtime-shape",
+    )
+    with pytest.raises(OSError, match="ledger"):
+        ControlKnowledgeCurator(store, llm).curate(candidate)
+    assert len(llm.calls) == 1
+
+
+def test_relation_preflight_failure_is_retried(tmp_path):
+    candidate = _candidate(
+        source="runtime_observation",
+        page_type="Observation",
+        subject="observations/runtime-shape",
+    )
+    invalid = _decision(page_type="Observation", subject=candidate.subjects[0])
+    invalid["draft"]["relations"] = {"related_to": ["not-a-wikilink"]}
+    valid = _decision(page_type="Observation", subject=candidate.subjects[0])
+    valid["draft"]["relations"] = {}
+    llm = SequenceLLM([invalid, valid])
+    entry = ControlKnowledgeCurator(ControlKnowledgeStore(tmp_path), llm).curate(
+        candidate
+    )
+    assert entry.action == "created"
+    assert llm.calls == 2
+    assert json.loads(llm.messages[1][-1]["content"])[
+        "previous_validation_error"
+    ] == "relation must be an exact wikilink"

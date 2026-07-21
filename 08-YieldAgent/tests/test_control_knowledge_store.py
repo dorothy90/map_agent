@@ -7,7 +7,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from control_knowledge_models import KnowledgeCandidate, PageDraft
+from control_knowledge_models import (
+    CurationLedgerEntry,
+    KnowledgeCandidate,
+    PageDraft,
+    candidate_fingerprint,
+)
 from control_knowledge_store import ControlKnowledgeStore
 
 pytestmark = pytest.mark.no_server
@@ -93,3 +98,16 @@ def test_proposal_does_not_modify_canonical_page(tmp_path):
     proposal = store.write_proposal(_draft(), _candidate(), rationale="human review")
     assert proposal.parent.name == "review_queue"
     assert not (tmp_path / "wiki/agents/wads-agent.md").exists()
+
+
+def test_invalid_decision_remains_pending_for_recovery(tmp_path):
+    store = ControlKnowledgeStore(tmp_path)
+    path = store.save_candidate(_candidate())
+    store.append_ledger(
+        CurationLedgerEntry(
+            candidate_id=_candidate().candidate_id,
+            fingerprint=candidate_fingerprint(_candidate()),
+            action="invalid_decision",
+        )
+    )
+    assert store.pending_candidates() == [path]

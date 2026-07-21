@@ -12,13 +12,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from e2e_client import Session, server_is_up
+from control_knowledge_curator import AGENT_REQUIRED_SECTIONS
+from control_knowledge_registry import AGENT_CONTROL_PROFILES
 from control_knowledge_validator import scan_bundle
 
 
 def validate_ledger_entries(entries: list[dict]) -> None:
+    latest_by_fingerprint = {
+        str(entry.get("fingerprint") or ""): entry for entry in entries
+    }
     failed = [
         entry
-        for entry in entries
+        for entry in latest_by_fingerprint.values()
         if entry.get("action") in {"invalid_decision", "failed"}
     ]
     if failed:
@@ -29,8 +34,61 @@ def validate_ledger_entries(entries: list[dict]) -> None:
         "proposal",
         "no_change",
     }
-    if not any(entry.get("action") in successful for entry in entries):
+    if not any(
+        entry.get("action") in successful
+        for entry in latest_by_fingerprint.values()
+    ):
         raise SystemExit("no successful curation decision was recorded")
+
+
+def ledger_covers_candidates(
+    candidate_fingerprints: set[str], entries: list[dict]
+) -> bool:
+    processed = {str(entry.get("fingerprint") or "") for entry in entries}
+    return bool(candidate_fingerprints) and candidate_fingerprints <= processed
+
+
+def validate_operational_pages(root: Path) -> None:
+    agents = [
+        path
+        for path in (root / "wiki/agents").glob("*.md")
+        if path.name != "index.md"
+    ]
+    if len(agents) != 9:
+        raise SystemExit(f"expected 9 Agent pages, found {len(agents)}")
+    for path in agents:
+        post = frontmatter.load(path)
+        headings = {
+            line[3:].strip()
+            for line in post.content.splitlines()
+            if line.startswith("## ")
+        }
+        missing = set(AGENT_REQUIRED_SECTIONS) - headings
+        if missing:
+            raise SystemExit(
+                f"operational sections missing in {path.name}: {sorted(missing)}"
+            )
+        relations = post.metadata.get("relations") or {}
+        if "[[workflows/orchestration-graph]]" not in relations.get(
+            "participates_in", []
+        ):
+            raise SystemExit(f"workflow relation missing in {path.name}")
+        agent_id = path.stem.replace("-", "_")
+        expected_contracts = {
+            f"[[{contract}]]"
+            for contract in AGENT_CONTROL_PROFILES[agent_id].output_contracts
+        }
+        actual_contracts = set(relations.get("uses_contract", []))
+        if actual_contracts != expected_contracts:
+            raise SystemExit(
+                f"contract relations differ in {path.name}: "
+                f"expected={sorted(expected_contracts)} "
+                f"actual={sorted(actual_contracts)}"
+            )
+        if relations.get("uses_hitl_contract") != [
+            "[[contracts/hitl-contracts]]"
+        ]:
+            raise SystemExit(f"HITL contract relation missing in {path.name}")
 
 
 def main() -> int:
@@ -51,15 +109,24 @@ def main() -> int:
     if not any(event.get("type") == "stream_end" for event in result.sse_events):
         raise SystemExit("live turn did not reach stream_end")
 
-    deadline = time.time() + 60
+    deadline = time.time() + 900
+    ledger_entries: list[dict] = []
     while time.time() < deadline:
         candidates = list((root / "raw/candidates").glob("*.json"))
         ledger = root / "raw/curation-ledger.jsonl"
         if candidates and ledger.exists() and ledger.stat().st_size:
-            break
+            ledger_entries = [
+                json.loads(line)
+                for line in ledger.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if ledger_covers_candidates(
+                {path.stem for path in candidates}, ledger_entries
+            ):
+                break
         time.sleep(1)
     else:
-        raise SystemExit("control candidate/ledger was not produced")
+        raise SystemExit("not every control candidate reached the ledger")
 
     forbidden_keys = {
         "rows",
@@ -98,6 +165,7 @@ def main() -> int:
             "bundle lint failed: "
             + json.dumps([issue.__dict__ for issue in issues], ensure_ascii=False)
         )
+    validate_operational_pages(root)
     compiled_types = {
         frontmatter.load(path).metadata.get("type")
         for path in (root / "wiki").rglob("*.md")
@@ -110,17 +178,7 @@ def main() -> int:
         for path in (root / "wiki").rglob("*.md")
     ):
         raise SystemExit("controlled domain sentinel leaked into compiled control wiki")
-    ledger_entries = [
-        json.loads(line)
-        for line in (root / "raw/curation-ledger.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()
-        if line.strip()
-    ]
     validate_ledger_entries(ledger_entries)
-    fingerprints = [entry["fingerprint"] for entry in ledger_entries]
-    if len(fingerprints) != len(set(fingerprints)):
-        raise SystemExit("a candidate fingerprint was processed more than once")
     version_state = root / "raw/live-verifier-state.json"
     current_versions = {
         str(post.metadata["page_id"]): int(post.metadata["version"])

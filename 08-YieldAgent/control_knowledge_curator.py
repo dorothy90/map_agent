@@ -115,6 +115,25 @@ SHARED_REQUIRED_SECTIONS = {
 }
 
 
+def _expected_agent_relations(candidate: KnowledgeCandidate) -> dict[str, list[str]]:
+    facts = {fact.name: fact.value for fact in candidate.facts}
+    profile = facts.get("profile")
+    related = set(facts.get("related_pages") or [])
+    if not isinstance(profile, dict):
+        raise ValueError("operational Agent candidate is missing profile facts")
+    return {
+        "participates_in": sorted(
+            f"[[{page_id}]]"
+            for page_id in related
+            if str(page_id).startswith("workflows/")
+        ),
+        "uses_contract": sorted(
+            f"[[{page_id}]]" for page_id in profile["output_contracts"]
+        ),
+        "uses_hitl_contract": ["[[contracts/hitl-contracts]]"],
+    }
+
+
 def validate_operational_agent_draft(
     candidate: KnowledgeCandidate, draft: PageDraft
 ) -> None:
@@ -130,31 +149,7 @@ def validate_operational_agent_draft(
     }
     if set(AGENT_REQUIRED_SECTIONS) - headings:
         raise ValueError("operational Agent draft is missing required sections")
-
-    facts = {fact.name: fact.value for fact in candidate.facts}
-    profile = facts.get("profile")
-    related = set(facts.get("related_pages") or [])
-    if not isinstance(profile, dict):
-        raise ValueError("operational Agent candidate is missing profile facts")
-    expected_relations = {
-        "participates_in": sorted(
-            f"[[{page_id}]]"
-            for page_id in related
-            if str(page_id).startswith("workflows/")
-        ),
-        "uses_contract": sorted(
-            f"[[{page_id}]]" for page_id in profile["output_contracts"]
-        ),
-        "uses_hitl_contract": ["[[contracts/hitl-contracts]]"],
-    }
-    actual_relations = {
-        key: sorted(values) for key, values in draft.relations.items() if values
-    }
-    if actual_relations != expected_relations:
-        raise ValueError(
-            "operational Agent draft relations differ from registry facts"
-        )
-    draft.relations = expected_relations
+    draft.relations = _expected_agent_relations(candidate)
 
 
 def validate_shared_snapshot_draft(
@@ -174,6 +169,43 @@ def validate_shared_snapshot_draft(
         raise ValueError("shared snapshot draft is missing required sections")
 
 
+def validate_existing_snapshot_pages(candidate: KnowledgeCandidate, pages) -> None:
+    if candidate.source_kind != "system_snapshot":
+        return
+    if len(pages) != len(candidate.subjects):
+        raise ValueError("existing operational page does not exist")
+    for page in pages:
+        page_id = str(page.metadata.get("page_id") or "")
+        if page_id not in candidate.subjects:
+            raise ValueError("existing operational page ID differs from candidate")
+        if page.metadata.get("type") != candidate.suggested_page_type.value:
+            raise ValueError("existing operational page type differs from candidate")
+        headings = {
+            line[3:].strip()
+            for line in page.body_markdown.splitlines()
+            if line.startswith("## ")
+        }
+        if page.metadata.get("type") == PageType.agent.value:
+            if set(AGENT_REQUIRED_SECTIONS) - headings:
+                raise ValueError(
+                    "existing operational page is missing required sections"
+                )
+            actual_relations = {
+                key: sorted(values)
+                for key, values in (page.metadata.get("relations") or {}).items()
+                if values
+            }
+            if actual_relations != _expected_agent_relations(candidate):
+                raise ValueError(
+                    "existing operational page relations differ from registry facts"
+                )
+        required = SHARED_REQUIRED_SECTIONS.get(page_id)
+        if required and set(required) - headings:
+            raise ValueError(
+                "existing operational page is missing required sections"
+            )
+
+
 class CuratorCallError(RuntimeError):
     pass
 
@@ -183,7 +215,9 @@ class ControlKnowledgeCurator:
         self.store = store
         self.llm = llm
 
-    def _decision(self, candidate: KnowledgeCandidate) -> CurationDecision:
+    def _decision(
+        self, candidate: KnowledgeCandidate, previous_validation_error: str | None = None
+    ) -> CurationDecision:
         pages = self.store.load_pages(candidate.subjects)
         page_context = [
             {
@@ -199,6 +233,8 @@ class ControlKnowledgeCurator:
             "existing_pages": page_context,
             "decision_schema": CurationDecision.model_json_schema(),
         }
+        if previous_validation_error:
+            user_payload["previous_validation_error"] = previous_validation_error
         try:
             raw = (
                 self.llm.invoke(
@@ -218,62 +254,88 @@ class ControlKnowledgeCurator:
             raise CuratorCallError(type(exc).__name__) from exc
         return extract_json_from_llm(raw, CurationDecision)
 
-    def curate(self, candidate: KnowledgeCandidate) -> CurationLedgerEntry:
+    def curate(
+        self,
+        candidate: KnowledgeCandidate,
+        *,
+        _decision_attempt: int = 0,
+        _previous_validation_error: str | None = None,
+    ) -> CurationLedgerEntry:
         fingerprint = candidate_fingerprint(candidate)
+        persistence_started = False
         try:
-            decision = self._decision(candidate)
+            decision = self._decision(candidate, _previous_validation_error)
             if decision.action == "no_change":
+                validate_existing_snapshot_pages(
+                    candidate, self.store.load_pages(candidate.subjects)
+                )
                 entry = CurationLedgerEntry(
                     candidate_id=candidate.candidate_id,
                     fingerprint=fingerprint,
                     action="no_change",
                     rationale=decision.rationale,
                 )
-                self.store.append_ledger(entry)
-                return entry
-            assert decision.draft is not None
-            if decision.draft.page_id not in candidate.subjects:
-                raise ValueError("draft target is outside candidate subjects")
-            existing = bool(self.store.load_pages([decision.draft.page_id]))
-            if decision.action == "create" and existing:
-                raise ValueError("create target already exists")
-            if decision.action == "update" and (
-                not existing or decision.target_page_id != decision.draft.page_id
-            ):
-                raise ValueError("update target must exist and match draft page_id")
-            candidate_refs = {item.ref for item in candidate.evidence_refs}
-            if (
-                not set(decision.draft.evidence_refs).issubset(candidate_refs)
-                or not decision.draft.evidence_refs
-            ):
-                raise ValueError("draft evidence must come from candidate")
-            validate_operational_agent_draft(candidate, decision.draft)
-            validate_shared_snapshot_draft(candidate, decision.draft)
-            disposition = (
-                WriteDisposition.review.value
-                if decision.action == "review_required"
-                else write_disposition(candidate.source_kind, decision.draft.page_type)
-            )
-            if disposition == "auto":
-                self.store.write_page(decision.draft, candidate)
-                action = "updated" if existing else "created"
-            elif disposition == "review":
-                self.store.write_proposal(
-                    decision.draft, candidate, rationale=decision.rationale
-                )
-                action = "proposal"
             else:
-                raise ValueError("candidate source cannot write requested page type")
-            entry = CurationLedgerEntry(
-                candidate_id=candidate.candidate_id,
-                fingerprint=fingerprint,
-                action=action,
-                target_page_id=decision.draft.page_id,
-                rationale=decision.rationale,
-            )
+                assert decision.draft is not None
+                if decision.draft.page_id not in candidate.subjects:
+                    raise ValueError("draft target is outside candidate subjects")
+                existing = bool(self.store.load_pages([decision.draft.page_id]))
+                if decision.action == "create" and existing:
+                    raise ValueError("create target already exists")
+                if decision.action == "update" and (
+                    not existing or decision.target_page_id != decision.draft.page_id
+                ):
+                    raise ValueError(
+                        "update target must exist and match draft page_id"
+                    )
+                candidate_refs = {item.ref for item in candidate.evidence_refs}
+                if (
+                    not set(decision.draft.evidence_refs).issubset(candidate_refs)
+                    or not decision.draft.evidence_refs
+                ):
+                    raise ValueError("draft evidence must come from candidate")
+                validate_operational_agent_draft(candidate, decision.draft)
+                validate_shared_snapshot_draft(candidate, decision.draft)
+                self.store.validate_draft_relations(decision.draft)
+                disposition = (
+                    WriteDisposition.review.value
+                    if decision.action == "review_required"
+                    else write_disposition(
+                        candidate.source_kind, decision.draft.page_type
+                    )
+                )
+                if disposition == "auto":
+                    persistence_started = True
+                    self.store.write_page(decision.draft, candidate)
+                    action = "updated" if existing else "created"
+                elif disposition == "review":
+                    persistence_started = True
+                    self.store.write_proposal(
+                        decision.draft, candidate, rationale=decision.rationale
+                    )
+                    action = "proposal"
+                else:
+                    raise ValueError(
+                        "candidate source cannot write requested page type"
+                    )
+                entry = CurationLedgerEntry(
+                    candidate_id=candidate.candidate_id,
+                    fingerprint=fingerprint,
+                    action=action,
+                    target_page_id=decision.draft.page_id,
+                    rationale=decision.rationale,
+                )
         except CuratorCallError:
             raise
         except Exception as exc:
+            if persistence_started:
+                raise
+            if _decision_attempt == 0:
+                return self.curate(
+                    candidate,
+                    _decision_attempt=1,
+                    _previous_validation_error=str(exc),
+                )
             entry = CurationLedgerEntry(
                 candidate_id=candidate.candidate_id,
                 fingerprint=fingerprint,

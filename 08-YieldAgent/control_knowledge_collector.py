@@ -403,17 +403,11 @@ def registry_drift_candidates(
 def system_collection(
     snapshot: SystemSnapshot, issues: list[RegistryIssue]
 ) -> SystemCollection:
-    blocked = {issue.agent_id for issue in issues}
-    candidates = [
-        item
-        for item in system_snapshot_candidates(snapshot)
-        if not (
-            item.subjects[0].startswith("agents/")
-            and item.subjects[0].removeprefix("agents/").replace("-", "_")
-            in blocked
-        )
-    ]
-    candidates.extend(registry_drift_candidates(issues))
+    candidates = (
+        registry_drift_candidates(issues)
+        if issues
+        else system_snapshot_candidates(snapshot)
+    )
     return SystemCollection(
         snapshot=snapshot,
         registry_issues=[issue.model_dump(mode="json") for issue in issues],

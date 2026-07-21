@@ -22,7 +22,11 @@ from control_knowledge_registry import AGENT_CONTROL_PROFILES
 from control_knowledge_service import ControlKnowledgeService
 from control_knowledge_store import ControlKnowledgeStore
 from control_knowledge_validator import scan_bundle
-from verify_control_knowledge_live import validate_ledger_entries
+from verify_control_knowledge_live import (
+    ledger_covers_candidates,
+    validate_ledger_entries,
+    validate_operational_pages,
+)
 from models import HITL_CONTRACT_IDS
 from result_contracts import ResultEnvelopeV1
 
@@ -37,6 +41,27 @@ def test_live_verifier_rejects_all_invalid_decisions():
                 {"fingerprint": "b", "action": "failed"},
             ]
         )
+
+
+def test_live_verifier_accepts_recovered_candidate_audit():
+    validate_ledger_entries(
+        [
+            {"fingerprint": "a", "action": "invalid_decision"},
+            {"fingerprint": "a", "action": "updated"},
+        ]
+    )
+
+
+def test_live_verifier_accepts_canonical_operational_pages():
+    root = Path(__file__).resolve().parent.parent / "multiagent_knowledge"
+    validate_operational_pages(root)
+
+
+def test_live_verifier_waits_for_every_candidate_fingerprint():
+    assert not ledger_covers_candidates({"a", "b"}, [{"fingerprint": "a"}])
+    assert ledger_covers_candidates(
+        {"a", "b"}, [{"fingerprint": "a"}, {"fingerprint": "b"}]
+    )
 
 
 class FakeWorkflow:

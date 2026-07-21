@@ -13,9 +13,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-HITL_CONTRACT_IDS = frozenset(
-    {"missing_param", "plan_review", "task_confirm", "postwads_choice"}
-)
+class HITLContractId(str, Enum):
+    missing_param = "missing_param"
+    plan_review = "plan_review"
+    task_confirm = "task_confirm"
+    postwads_choice = "postwads_choice"
+
+
+HITL_CONTRACT_IDS = frozenset(item.value for item in HITLContractId)
 
 
 # ── Request ──────────────────────────────────────────────
@@ -111,7 +116,7 @@ class ErrorEvent(BaseModel):
 
 class InterruptEvent(BaseModel):
     type: Literal["interrupt"] = "interrupt"
-    interrupt_type: str = "missing_param"  # "missing_param" | "plan_review" | HITL issue type
+    interrupt_type: HITLContractId = HITLContractId.missing_param
     param: str          # 대표 슬롯명(관측성/하위호환). batch에선 첫 슬롯일 뿐 — 권위는 fields.
     message: str        # 사용자에게 보여줄 한국어 메시지(Streamlit fallback 표시용)
     route: str = ""     # 대상 에이전트
