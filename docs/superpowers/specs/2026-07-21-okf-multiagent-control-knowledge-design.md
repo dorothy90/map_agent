@@ -179,14 +179,24 @@ Validator는 OKF 구조, governance field, relation target, allowed status/type,
 
 일반 page 필수 field:
 
+`page_id`는 `wiki/` 아래 확장자 없는 상대 경로와 동일한 안정 ID다. 예를 들어
+`wiki/agents/wads-agent.md`의 `page_id`는 `agents/wads-agent`다. 관계와 candidate
+`subjects`는 이 ID를 사용한다.
+
 ```yaml
 type: Agent
+page_id: agents/wads-agent
 title: WADS Agent
 description: WADS 분석 worker의 책임과 입출력 경계
+routing_summary: WADS worker의 입력, 결과, followup 경계를 변경하기 전에 읽는다
 status: current
 owner: yield-platform
 source_status: code-backed
 agent_use: read-and-propose
+llmwiki_status: current
+llmwiki_owner: yield-platform
+llmwiki_source_status: code-backed
+llmwiki_agent_use: read-and-propose
 sensitivity: internal
 last_reviewed: 2026-07-21
 review_cycle: P90D
@@ -226,16 +236,21 @@ class KnowledgeCandidate(BaseModel):
 ### 8.2 CurationDecision
 
 ```python
+class PageDraft(BaseModel):
+    page_id: str
+    page_type: PageType
+    title: str
+    description: str
+    routing_summary: str = ""
+    body_markdown: str
+    relations: dict[str, list[str]] = {}
+    evidence_refs: list[str] = []
+
+
 class CurationDecision(BaseModel):
     action: Literal["no_change", "create", "update", "review_required"]
     target_page_id: str = ""
-    proposed_slug: str = ""
-    page_type: PageType | None = None
-    title: str = ""
-    description: str = ""
-    body_markdown: str = ""
-    relations: dict[str, list[str]] = {}
-    evidence_refs: list[str] = []
+    draft: PageDraft | None = None
     rationale: str
 ```
 
@@ -307,10 +322,10 @@ Wiki는 코드보다 높은 권위가 아니다. `source_status: code-backed` pa
 
 - `CONTROL_KNOWLEDGE_ENABLED=false`: candidate 수집 전체 toggle
 - `CONTROL_KNOWLEDGE_WRITER=false`: 이 process가 curator/writer인지 결정
-- `CONTROL_KNOWLEDGE_ROOT=<repo>/08-YieldAgent/multiagent_knowledge`: bundle root
+- `CONTROL_KNOWLEDGE_ROOT`: bundle root의 절대 경로. 미설정 시 `08-YieldAgent/multiagent_knowledge`
 - `CONTROL_KNOWLEDGE_QUEUE_SIZE=100`: bounded queue
 - `CONTROL_KNOWLEDGE_MAX_RETRIES=3`: curator retry
-- `CONTROL_KNOWLEDGE_MODEL=<model>`: 미설정 시 기존 LLM factory 기본값
+- `CONTROL_KNOWLEDGE_MODEL`: 선택적 model name. 미설정 시 기존 LLM factory 기본값
 
 기본값은 비활성이다. shadow 환경에서 candidate와 `no_change` 비율을 확인한 뒤 writer를 켠다.
 
@@ -357,4 +372,3 @@ Wiki는 코드보다 높은 권위가 아니다. `source_status: code-backed` pa
 - Policy, Decision, governance는 자동으로 canonical 수정되지 않는다.
 - knowledge subsystem 장애가 분석 응답 latency와 성공 여부에 영향을 주지 않는다.
 - 실제 E2E 후 `08-YieldAgent/wiki/`에는 변경이 없다.
-
