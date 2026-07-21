@@ -65,9 +65,18 @@ from local_trace import (  # noqa: E402
 )
 from supervisor import workflow, _resume_is_interrupt_answer  # noqa: E402
 from user_memory import update_profile_from_feedback  # noqa: E402
+from control_knowledge_collector import (  # noqa: E402
+    current_system_snapshot,
+    incident_candidate,
+    runtime_candidates,
+    system_snapshot_candidates,
+)
+from control_knowledge_service import service_from_env  # noqa: E402
 
 # 사용자 선호 메모리 백그라운드 flush 태스크 보관 (GC로 조기 소멸 방지)
 _memory_tasks: set = set()
+# control knowledge 제출 태스크 보관 (SSE 응답과 독립, shutdown 시 drain)
+_control_knowledge_tasks: set[asyncio.Task] = set()
 from repl_agent.router import router as repl_router  # noqa: E402
 
 configure_runtime_terminal_logger()
@@ -85,6 +94,25 @@ for _name in ("agent_server", "yield_agent"):
 
 logger = logging.getLogger("agent_server")
 logger.info("terminal log level=%s", logging.getLevelName(_runtime_log_level))
+
+
+async def _submit_control_candidates(service, candidates: list) -> None:
+    for candidate in candidates:
+        try:
+            await service.submit(candidate)
+        except Exception as exc:
+            logger.warning(
+                "[ControlKnowledge] candidate submission failed: %s",
+                type(exc).__name__,
+            )
+
+
+def _schedule_control_submission(service, candidates: list) -> None:
+    if not candidates:
+        return
+    task = asyncio.create_task(_submit_control_candidates(service, candidates))
+    _control_knowledge_tasks.add(task)
+    task.add_done_callback(_control_knowledge_tasks.discard)
 
 
 def _pending_interrupt_from_state(state_snapshot) -> dict:
@@ -155,6 +183,15 @@ async def lifespan(app: FastAPI):
     await wiki_queue.start()
     app.state.wiki_queue = wiki_queue
 
+    control_knowledge = service_from_env()
+    await control_knowledge.start()
+    app.state.control_knowledge = control_knowledge
+    if control_knowledge.enabled:
+        await _submit_control_candidates(
+            control_knowledge,
+            system_snapshot_candidates(current_system_snapshot()),
+        )
+
     # Day 6: lint daily cron (WIKI_LINT_CRON_HOURS=0 또는 미설정 시 비활성)
     lint_hours = float(os.getenv("WIKI_LINT_CRON_HOURS", "0") or "0")
     lint_task: asyncio.Task | None = None
@@ -176,6 +213,17 @@ async def lifespan(app: FastAPI):
                     await lint_task
                 except (asyncio.CancelledError, Exception):
                     pass
+            if _control_knowledge_tasks:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *list(_control_knowledge_tasks), return_exceptions=True
+                        ),
+                        timeout=10,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("[ControlKnowledge] submission drain timeout")
+            await control_knowledge.stop(timeout=10)
             await wiki_queue.stop(timeout=10)
 
     motor_client.close()
@@ -975,6 +1023,18 @@ async def chat_stream(request: ChatRequest, req: Request):
                     },
                 )
                 yield _sse(ErrorEvent(message=to_user_message(e)))
+                _schedule_control_submission(
+                    req.app.state.control_knowledge,
+                    [
+                        incident_candidate(
+                            e,
+                            source="agent_server",
+                            trace_id=trace_id,
+                            turn_id=turn_id,
+                            task_id="",
+                        )
+                    ],
+                )
                 try:
                     get_client().flush()
                 except Exception:
@@ -1027,12 +1087,15 @@ async def chat_stream(request: ChatRequest, req: Request):
             except Exception as e:
                 logger.warning("대화 이력 저장 실패: %s", e)
 
-            # 사용자 선호 메모리: 턴이 END 도달(게이트 미대기) & 피드백 존재 시 백그라운드 1회 갱신.
-            # stream_end 이후 + create_task(to_thread)라 SSE 지연 없음. 실패는 전부 무시.
+            # 완료 state는 메모리 flush와 control knowledge 수집이 함께 재사용한다.
             if not interrupt_emitted:
                 try:
                     _fs = await graph.aget_state(config)
                     _vals = _fs.values or {}
+                    _schedule_control_submission(
+                        req.app.state.control_knowledge,
+                        runtime_candidates(_vals),
+                    )
                     _uid = _vals.get("user_id") or request.user_id
                     _events = _vals.get("memory_feedback") or []
                     if _uid and _events:

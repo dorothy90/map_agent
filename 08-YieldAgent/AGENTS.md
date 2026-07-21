@@ -123,3 +123,15 @@ implementation of this section.
 ├── AGENTS.md             # 에이전트 아키텍처 문서
 └── SKILL.md              # 스킬 레퍼런스
 ```
+
+## Multi-Agent Control Knowledge
+
+Before changing orchestration, handoff, HITL, agent inputs, or result contracts:
+
+1. Read `multiagent_knowledge/wiki/index.md`.
+2. Follow the relevant local index to the Agent, Workflow, or Contract page.
+3. Read linked Decision and Runbook pages.
+4. Verify every claim against the implementation; code remains runtime authority.
+5. Do not write user, LOT, product, SQL, result rows, prompts, messages, or artifact payloads into this bundle.
+6. General agents submit structured candidates or review proposals; they do not directly edit protected canonical pages.
+7. Run `python control_knowledge_cli.py --root multiagent_knowledge lint` after a knowledge change.
