@@ -18,9 +18,31 @@ source_status: code-backed
 status: current
 title: Artifact Delivery
 type: Contract
-version: 1
+version: 2
 ---
 
 # Artifact Delivery
 
-Defines the state channels through which agents expose generated artifacts without embedding artifact payloads in the control Wiki.
+## Artifact Channels
+
+- **fail_history_agent**: fail_history_artifacts
+- **lot_history_agent**: lot_history_artifacts
+- **map_agent**: map_artifacts
+- **mining_agent**: mining_artifacts
+- **ppt_export**: ppt_artifacts
+- **relation_tree_agent**: relation_tree_artifacts
+- **wads_agent**: wads_artifacts
+- **yield_agent**: yield_artifacts
+
+## Payload Boundary
+
+Artifacts are exposed through state channels; the actual artifact payloads are not embedded in the control Wiki but are referenced via these channels.
+
+## Producers and Consumers
+
+- **Producers**: each agent listed in the Artifact Channels section produces the corresponding artifacts.
+- **Consumers**: any downstream agents or processes that subscribe to the respective channel may consume the artifacts.
+
+## Source Evidence
+
+- code:query_state.YieldQueryState

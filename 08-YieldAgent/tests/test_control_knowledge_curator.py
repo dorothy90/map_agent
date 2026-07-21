@@ -2,11 +2,17 @@ import json
 from pathlib import Path
 import sys
 
+import frontmatter
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from control_knowledge_curator import ControlKnowledgeCurator, write_disposition
+from control_knowledge_curator import (
+    CURATOR_SYSTEM,
+    SHARED_REQUIRED_SECTIONS,
+    ControlKnowledgeCurator,
+    write_disposition,
+)
 from control_knowledge_models import KnowledgeCandidate
 from control_knowledge_store import ControlKnowledgeStore
 
@@ -99,6 +105,7 @@ def _agent_relations():
 def _seed_relation_targets(root: Path) -> None:
     for page_id in (
         "contracts/result-envelope",
+        "contracts/artifact-delivery",
         "contracts/hitl-contracts",
         "workflows/orchestration-graph",
     ):
@@ -210,3 +217,43 @@ def test_operational_agent_draft_requires_registry_relations(tmp_path):
 
 def test_registry_drift_observation_is_auto_writable():
     assert write_disposition("registry_drift", "Observation") == "auto"
+
+
+def test_curator_prompt_requires_exact_wikilink_relation_values():
+    assert "[[workflows/orchestration-graph]]" in CURATOR_SYSTEM
+    assert "[[contracts/hitl-contracts]]" in CURATOR_SYSTEM
+    assert "wrap every output contract page ID in [[...]]" in CURATOR_SYSTEM
+
+
+def test_agent_relations_are_written_in_canonical_order(tmp_path):
+    _seed_relation_targets(tmp_path)
+    candidate = _candidate()
+    candidate.facts[0].value["output_contracts"] = [
+        "contracts/result-envelope",
+        "contracts/artifact-delivery",
+    ]
+    payload = _decision()
+    payload["draft"]["relations"]["uses_contract"] = [
+        "[[contracts/result-envelope]]",
+        "[[contracts/artifact-delivery]]",
+    ]
+    entry = ControlKnowledgeCurator(
+        ControlKnowledgeStore(tmp_path), FakeLLM(payload)
+    ).curate(candidate)
+    assert entry.action == "created"
+    post = frontmatter.load(tmp_path / "wiki/agents/wads-agent.md")
+    assert post.metadata["relations"]["uses_contract"] == [
+        "[[contracts/artifact-delivery]]",
+        "[[contracts/result-envelope]]",
+    ]
+
+
+@pytest.mark.parametrize("page_id,sections", SHARED_REQUIRED_SECTIONS.items())
+def test_shared_snapshot_draft_requires_subject_outline(tmp_path, page_id, sections):
+    page_type = "Workflow" if page_id.startswith("workflows/") else "Contract"
+    payload = _decision(page_type=page_type, subject=page_id)
+    payload["draft"]["body_markdown"] = "# WADS Agent\n\nIncomplete.\n"
+    entry = ControlKnowledgeCurator(
+        ControlKnowledgeStore(tmp_path), FakeLLM(payload)
+    ).curate(_candidate(page_type=page_type, subject=page_id))
+    assert entry.action == "invalid_decision"

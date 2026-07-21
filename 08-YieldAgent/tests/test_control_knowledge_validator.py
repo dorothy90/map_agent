@@ -1,11 +1,14 @@
 from pathlib import Path
 import sys
 
+import frontmatter
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from control_knowledge_validator import scan_bundle
+from control_knowledge_curator import AGENT_REQUIRED_SECTIONS
+from control_knowledge_registry import AGENT_CONTROL_PROFILES
 
 pytestmark = pytest.mark.no_server
 
@@ -75,3 +78,68 @@ evidence_refs: [snapshot:abc]
     )
     issues = scan_bundle(tmp_path)
     assert any(i.code == "broken_relation" for i in issues)
+
+
+def test_real_bundle_has_operational_agent_pages():
+    root = Path(__file__).resolve().parent.parent / "multiagent_knowledge"
+    expected = {
+        "yield-agent",
+        "wads-agent",
+        "map-agent",
+        "fail-history-agent",
+        "lot-history-agent",
+        "relation-tree-agent",
+        "mining-agent",
+        "wt-resp-agent",
+        "ppt-export",
+    }
+    paths = {path.stem: path for path in (root / "wiki/agents").glob("*.md")}
+    assert expected <= set(paths)
+    for name in expected:
+        post = frontmatter.load(paths[name])
+        assert post.metadata["version"] == 2
+        assert "snapshot_" not in paths[name].read_text(encoding="utf-8")
+        headings = {
+            line[3:].strip()
+            for line in post.content.splitlines()
+            if line.startswith("## ")
+        }
+        assert set(AGENT_REQUIRED_SECTIONS).issubset(headings), name
+        assert post.metadata["relations"]["participates_in"] == [
+            "[[workflows/orchestration-graph]]"
+        ]
+        agent_id = name.replace("-", "_")
+        assert post.metadata["relations"]["uses_contract"] == [
+            f"[[{contract}]]"
+            for contract in sorted(
+                AGENT_CONTROL_PROFILES[agent_id].output_contracts
+            )
+        ]
+        assert post.metadata["relations"]["uses_hitl_contract"] == [
+            "[[contracts/hitl-contracts]]"
+        ]
+
+
+def test_shared_pages_include_machine_contract_sections():
+    root = Path(__file__).resolve().parent.parent / "multiagent_knowledge/wiki"
+    result = frontmatter.load(root / "contracts/result-envelope.md").content
+    trace = frontmatter.load(root / "contracts/local-trace.md").content
+    artifact = frontmatter.load(root / "contracts/artifact-delivery.md").content
+    hitl = frontmatter.load(root / "contracts/hitl-contracts.md").content
+    workflow = frontmatter.load(root / "workflows/orchestration-graph.md").content
+    assert "## Fields" in result and "## Producers and Consumers" in result
+    assert "## Event Boundary" in trace and "## Redaction Boundary" in trace
+    assert "## Artifact Channels" in artifact and "## Payload Boundary" in artifact
+    assert "## Interrupt Types" in hitl and "## Resume Contract" in hitl
+    assert "## State and Result Flow" in workflow
+    assert "## Dynamic Handoffs" in workflow
+    for path in [
+        root / "contracts/result-envelope.md",
+        root / "contracts/local-trace.md",
+        root / "contracts/artifact-delivery.md",
+        root / "contracts/hitl-contracts.md",
+        root / "workflows/orchestration-graph.md",
+    ]:
+        post = frontmatter.load(path)
+        assert post.metadata["version"] == 2
+        assert "snapshot_" not in path.read_text(encoding="utf-8")

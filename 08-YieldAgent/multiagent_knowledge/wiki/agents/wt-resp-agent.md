@@ -1,8 +1,9 @@
 ---
 agent_use: read-and-propose
-description: Canonical definition of the wt_resp_agent, including its allowed slot
-  keys.
+description: Agent that builds WT response groups for a selected lot, parameter, and
+  main operation.
 evidence_refs:
+- code:control_knowledge_registry.AGENT_CONTROL_PROFILES
 - code:canonical_request.AGENT_SLOT_RULES
 last_reviewed: '2026-07-21'
 llmwiki_agent_use: read-and-propose
@@ -11,23 +12,62 @@ llmwiki_source_status: code-backed
 llmwiki_status: current
 owner: yield-platform
 page_id: agents/wt-resp-agent
-relations: {}
+relations:
+  participates_in:
+  - '[[workflows/orchestration-graph]]'
+  uses_contract:
+  - '[[contracts/result-envelope]]'
+  uses_hitl_contract:
+  - '[[contracts/hitl-contracts]]'
 review_cycle: P90D
-routing_summary: Canonical definition of the wt_resp_agent, including its allowed
-  slot keys.
+routing_summary: Agent that builds WT response groups for a selected lot, parameter,
+  and main operation.
 sensitivity: internal
 source_status: code-backed
 status: current
-title: wt_resp_agent
+title: WT Response Agent
 type: Agent
-version: 1
+version: 2
 ---
 
-# wt_resp_agent
+# WT Response Agent
 
-**Canonical Agent**: wt_resp_agent
+## Responsibility
+Builds WT response groups for a selected lot, parameter, and main operation.
 
-**Slot Keys**:
+## Boundaries
+- Does not select the main operation or run the subsequent mining analysis.
+
+## Inputs
+**Required slots:**
 - cause_oper
 - fail_type
 - lotcd
+
+## Outputs
+- Result kind: report
+- Output contract: [[contracts/result-envelope]]
+
+## Workflow Position
+- Predecessors: none
+- Successors: replanner
+
+## Tools and External Systems
+- External system: Oracle
+
+## HITL Contracts
+- missing_param
+- plan_review
+- task_confirm
+
+## Verified Failure Modes
+- **required_input_missing**: Skips WT response analysis when a required input is absent. (Source: `wt_resp_agent.py:94`)
+
+## Source Evidence
+- Source module: `wt_resp_agent.py`
+- Additional source: `canonical_request.py:45`
+
+## Related Knowledge
+- [[contracts/hitl-contracts]]
+- [[contracts/result-envelope]]
+- [[workflows/orchestration-graph]]

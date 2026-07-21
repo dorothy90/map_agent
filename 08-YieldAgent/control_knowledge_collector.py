@@ -41,6 +41,10 @@ def build_system_snapshot(
     artifact_fields: list[str],
     hitl_contracts: list[str],
     trace_schema_version: str,
+    trace_event_types: list[str],
+    trace_fields: list[str],
+    trace_redacted_keys: list[str],
+    hitl_resume_schema: dict,
     followup_fields: list[str],
     commit_sha: str,
 ) -> SystemSnapshot:
@@ -64,6 +68,10 @@ def build_system_snapshot(
         "artifact_fields": sorted(artifact_fields),
         "hitl_contracts": sorted(hitl_contracts),
         "trace_schema_version": trace_schema_version,
+        "trace_event_types": sorted(trace_event_types),
+        "trace_fields": sorted(trace_fields),
+        "trace_redacted_keys": sorted(trace_redacted_keys),
+        "hitl_resume_schema": hitl_resume_schema,
         "followup_fields": sorted(followup_fields),
     }
     return SystemSnapshot(snapshot_id=f"snapshot_{_sha(stable)[:16]}", **stable)
@@ -71,8 +79,13 @@ def build_system_snapshot(
 
 def collect_current_system() -> SystemCollection:
     from canonical_request import AGENT_SLOT_RULES
-    from local_trace import TRACE_SCHEMA_VERSION
-    from models import HITL_CONTRACT_IDS
+    from local_trace import (
+        TRACE_EVENT_FIELDS,
+        TRACE_EVENT_TYPES,
+        TRACE_REDACTED_KEYS,
+        TRACE_SCHEMA_VERSION,
+    )
+    from models import ChatRequest, HITL_CONTRACT_IDS
     from query_state import YieldQueryState
     from result_contracts import (
         Followup,
@@ -107,6 +120,12 @@ def collect_current_system() -> SystemCollection:
         ),
         hitl_contracts=sorted(HITL_CONTRACT_IDS),
         trace_schema_version=TRACE_SCHEMA_VERSION,
+        trace_event_types=sorted(TRACE_EVENT_TYPES),
+        trace_fields=sorted(TRACE_EVENT_FIELDS),
+        trace_redacted_keys=sorted(TRACE_REDACTED_KEYS),
+        hitl_resume_schema=ChatRequest.model_json_schema()["properties"][
+            "resume_value"
+        ],
         followup_fields=list(Followup.__annotations__),
         commit_sha=commit_sha,
     )
@@ -141,6 +160,28 @@ def system_snapshot_candidates(snapshot: SystemSnapshot) -> list[KnowledgeCandid
     snapshot_value = snapshot.model_dump(mode="json", exclude={"created_at"})
     evidence = _evidence("snapshot", snapshot.snapshot_id, snapshot_value)
     candidates: list[KnowledgeCandidate] = []
+    result_producers = sorted(
+        agent
+        for agent, profile in snapshot.agent_profiles.items()
+        if "contracts/result-envelope" in profile["output_contracts"]
+    )
+    channels_by_agent = {
+        agent: sorted(str(item) for item in profile["artifact_channels"])
+        for agent, profile in sorted(snapshot.agent_profiles.items())
+        if profile["artifact_channels"]
+    }
+    output_contracts_by_agent = {
+        agent: [str(item) for item in profile["output_contracts"]]
+        for agent, profile in sorted(snapshot.agent_profiles.items())
+    }
+    applicable_agents = {
+        hitl: sorted(
+            agent
+            for agent, profile in snapshot.agent_profiles.items()
+            if hitl in profile["hitl_contracts"]
+        )
+        for hitl in snapshot.hitl_contracts
+    }
     for agent, profile in sorted(snapshot.agent_profiles.items()):
         output_contracts = [str(item) for item in profile["output_contracts"]]
         related_pages = sorted(
@@ -203,6 +244,11 @@ def system_snapshot_candidates(snapshot: SystemSnapshot) -> list[KnowledgeCandid
                         value=snapshot.result_fields,
                         source_path="result_contracts.ResultEnvelopeV1.model_fields",
                     ),
+                    CandidateFact(
+                        name="producers",
+                        value=result_producers,
+                        source_path="control_knowledge_registry.output_contracts",
+                    ),
                 ],
                 evidence_refs=[evidence],
             ),
@@ -218,9 +264,19 @@ def system_snapshot_candidates(snapshot: SystemSnapshot) -> list[KnowledgeCandid
                         source_path="local_trace.TRACE_SCHEMA_VERSION",
                     ),
                     CandidateFact(
-                        name="event_fields",
-                        value=snapshot.followup_fields,
-                        source_path="result_contracts.Followup.__annotations__",
+                        name="event_types",
+                        value=snapshot.trace_event_types,
+                        source_path="local_trace.TRACE_EVENT_TYPES",
+                    ),
+                    CandidateFact(
+                        name="fields",
+                        value=snapshot.trace_fields,
+                        source_path="local_trace.TRACE_EVENT_FIELDS",
+                    ),
+                    CandidateFact(
+                        name="redacted_keys",
+                        value=snapshot.trace_redacted_keys,
+                        source_path="local_trace.TRACE_REDACTED_KEYS",
                     ),
                 ],
                 evidence_refs=[evidence],
@@ -235,7 +291,12 @@ def system_snapshot_candidates(snapshot: SystemSnapshot) -> list[KnowledgeCandid
                         name="artifact_fields",
                         value=snapshot.artifact_fields,
                         source_path="query_state.YieldQueryState.__annotations__",
-                    )
+                    ),
+                    CandidateFact(
+                        name="channels_by_agent",
+                        value=channels_by_agent,
+                        source_path="control_knowledge_registry.artifact_channels",
+                    ),
                 ],
                 evidence_refs=[evidence],
             ),
@@ -249,7 +310,17 @@ def system_snapshot_candidates(snapshot: SystemSnapshot) -> list[KnowledgeCandid
                         name="hitl_contracts",
                         value=snapshot.hitl_contracts,
                         source_path="models.HITL_CONTRACT_IDS",
-                    )
+                    ),
+                    CandidateFact(
+                        name="applicable_agents",
+                        value=applicable_agents,
+                        source_path="control_knowledge_registry.hitl_contracts",
+                    ),
+                    CandidateFact(
+                        name="resume_value_schema",
+                        value=snapshot.hitl_resume_schema,
+                        source_path="models.ChatRequest.resume_value",
+                    ),
                 ],
                 evidence_refs=[evidence],
             ),
@@ -273,6 +344,16 @@ def system_snapshot_candidates(snapshot: SystemSnapshot) -> list[KnowledgeCandid
                         name="followup_fields",
                         value=snapshot.followup_fields,
                         source_path="result_contracts.Followup.__annotations__",
+                    ),
+                    CandidateFact(
+                        name="output_contracts_by_agent",
+                        value=output_contracts_by_agent,
+                        source_path="control_knowledge_registry.output_contracts",
+                    ),
+                    CandidateFact(
+                        name="artifact_fields",
+                        value=snapshot.artifact_fields,
+                        source_path="query_state.YieldQueryState.__annotations__",
                     ),
                 ],
                 evidence_refs=[evidence],

@@ -13,7 +13,11 @@ from control_knowledge_collector import (
     build_system_snapshot,
     system_snapshot_candidates,
 )
-from control_knowledge_curator import AGENT_REQUIRED_SECTIONS, ControlKnowledgeCurator
+from control_knowledge_curator import (
+    AGENT_REQUIRED_SECTIONS,
+    SHARED_REQUIRED_SECTIONS,
+    ControlKnowledgeCurator,
+)
 from control_knowledge_registry import AGENT_CONTROL_PROFILES
 from control_knowledge_service import ControlKnowledgeService
 from control_knowledge_store import ControlKnowledgeStore
@@ -76,6 +80,17 @@ class RoutingLLM:
                 ),
                 "uses_hitl_contract": ["[[contracts/hitl-contracts]]"],
             }
+        elif subject in SHARED_REQUIRED_SECTIONS:
+            body = "\n\n".join(
+                [
+                    f"# {title}",
+                    *[
+                        f"## {section}\n\nVerified content."
+                        for section in SHARED_REQUIRED_SECTIONS[subject]
+                    ],
+                ]
+            ) + "\n"
+            relations = {}
         else:
             body = f"# {title}\n\nGenerated from structured snapshot evidence.\n"
             relations = {}
@@ -123,6 +138,12 @@ def test_snapshot_to_valid_okf_pages_is_idempotent(tmp_path):
             artifact_fields=["wads_artifacts"],
             hitl_contracts=sorted(HITL_CONTRACT_IDS),
             trace_schema_version="local-trace/v1",
+            trace_event_types=["agent_started"],
+            trace_fields=["schema_version", "event_type"],
+            trace_redacted_keys=["query", "rows"],
+            hitl_resume_schema={
+                "anyOf": [{"type": "string"}, {"type": "object"}]
+            },
             followup_fields=["agent"],
             commit_sha="abc123",
         )

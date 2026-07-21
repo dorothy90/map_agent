@@ -39,6 +39,10 @@ def test_snapshot_is_sorted_and_split_into_stable_subjects():
         artifact_fields=["wads_artifacts"],
         hitl_contracts=["missing_param", "plan_review"],
         trace_schema_version="local-trace/v1",
+        trace_event_types=["agent_started"],
+        trace_fields=["schema_version", "event_type"],
+        trace_redacted_keys=["query", "rows"],
+        hitl_resume_schema={"anyOf": [{"type": "string"}, {"type": "object"}]},
         followup_fields=["goal", "agent"],
         commit_sha="abc123",
     )
@@ -70,6 +74,10 @@ def test_snapshot_candidate_contains_operational_profile_and_graph_position():
         artifact_fields=["wads_artifacts"],
         hitl_contracts=["missing_param", "plan_review"],
         trace_schema_version="local-trace/v1",
+        trace_event_types=["agent_started"],
+        trace_fields=["schema_version", "event_type"],
+        trace_redacted_keys=["query", "rows"],
+        hitl_resume_schema={"anyOf": [{"type": "string"}, {"type": "object"}]},
         followup_fields=["goal", "agent"],
         commit_sha="abc123",
     )
@@ -109,6 +117,10 @@ def test_drift_candidate_blocks_affected_agent_snapshot():
         artifact_fields=["wads_artifacts"],
         hitl_contracts=["missing_param", "plan_review"],
         trace_schema_version="local-trace/v1",
+        trace_event_types=["agent_started"],
+        trace_fields=["schema_version", "event_type"],
+        trace_redacted_keys=["query", "rows"],
+        hitl_resume_schema={"anyOf": [{"type": "string"}, {"type": "object"}]},
         followup_fields=["agent"],
         commit_sha="abc123",
     )
@@ -122,6 +134,69 @@ def test_drift_candidate_blocks_affected_agent_snapshot():
     ]
     assert drift[0].subjects == ["observations/registry-drift-wads-agent"]
     assert "slot_mismatch" in drift[0].model_dump_json()
+
+
+def test_shared_contract_candidates_include_registry_ownership_mappings():
+    profile = AGENT_CONTROL_PROFILES["wads_agent"].model_copy(
+        update={
+            "required_slots": [],
+            "optional_slots": ["fail_type", "lotcd"],
+        }
+    )
+    snapshot = build_system_snapshot(
+        workflow=FakeWorkflow(),
+        agent_slot_rules={"wads_agent": {"allowed": {"fail_type", "lotcd"}}},
+        agent_profiles={"wads_agent": profile},
+        result_schema_version="result-envelope/v1",
+        result_fields=["schema_version"],
+        artifact_fields=["wads_artifacts"],
+        hitl_contracts=["plan_review", "task_confirm"],
+        trace_schema_version="local-trace/v1",
+        trace_event_types=["agent_started", "task_completed"],
+        trace_fields=["schema_version", "event_type"],
+        trace_redacted_keys=["query", "rows"],
+        hitl_resume_schema={"anyOf": [{"type": "string"}, {"type": "object"}]},
+        followup_fields=["agent"],
+        commit_sha="abc123",
+    )
+    candidates = {
+        item.subjects[0]: {fact.name: fact.value for fact in item.facts}
+        for item in system_snapshot_candidates(snapshot)
+    }
+    assert candidates["contracts/result-envelope"]["producers"] == ["wads_agent"]
+    assert candidates["contracts/artifact-delivery"]["channels_by_agent"] == {
+        "wads_agent": ["wads_artifacts"]
+    }
+    assert candidates["contracts/hitl-contracts"]["applicable_agents"] == {
+        "plan_review": ["wads_agent"],
+        "task_confirm": ["wads_agent"],
+    }
+    assert candidates["contracts/hitl-contracts"]["resume_value_schema"] == {
+        "anyOf": [{"type": "string"}, {"type": "object"}]
+    }
+    assert candidates["contracts/local-trace"]["event_types"] == [
+        "agent_started",
+        "task_completed",
+    ]
+    assert candidates["contracts/local-trace"]["fields"] == [
+        "event_type",
+        "schema_version",
+    ]
+    assert candidates["contracts/local-trace"]["redacted_keys"] == [
+        "query",
+        "rows",
+    ]
+    assert candidates["workflows/orchestration-graph"][
+        "output_contracts_by_agent"
+    ] == {
+        "wads_agent": [
+            "contracts/result-envelope",
+            "contracts/artifact-delivery",
+        ]
+    }
+    assert candidates["workflows/orchestration-graph"]["artifact_fields"] == [
+        "wads_artifacts"
+    ]
 
 
 def test_runtime_candidate_keeps_shape_but_drops_rows_and_entities():

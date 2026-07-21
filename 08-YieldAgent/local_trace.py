@@ -42,6 +42,21 @@ TRACE_EVENT_TYPES = frozenset({
     "task_failed",
     "memory_profile_injected",
 })
+TRACE_EVENT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "event_id",
+        "timestamp",
+        "event_type",
+        "severity",
+        "trace_id",
+        "turn_id",
+        "task_id",
+        "result_id",
+        "source",
+        "payload",
+    }
+)
 
 _MAX_SAFE_STRING_CHARS = 160
 _MAX_DICT_KEYS = 80
@@ -78,6 +93,7 @@ _SENSITIVE_EXACT_KEYS = frozenset({
     "token",
     "value",
 })
+TRACE_REDACTED_KEYS = _SENSITIVE_EXACT_KEYS
 _SENSITIVE_KEY_PARTS = ("base64", "bytes", "html", "image", "payload", "query", "raw", "sql")
 _PAYLOAD_LIKE_RE = re.compile(
     r"(<html|<!doctype html|<body|<svg|data:image/|data:application/|select\s+.+\s+from\s+)",

@@ -133,6 +133,10 @@ class SystemSnapshot(BaseModel):
     artifact_fields: list[str]
     hitl_contracts: list[str]
     trace_schema_version: str
+    trace_event_types: list[str]
+    trace_fields: list[str]
+    trace_redacted_keys: list[str]
+    hitl_resume_schema: dict[str, JsonValue]
     followup_fields: list[str]
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

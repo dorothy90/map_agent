@@ -53,10 +53,18 @@ Do not output analysis or markdown fences around the JSON.
 For Agent drafts, use exactly these H2 sections: Responsibility, Boundaries,
 Inputs, Outputs, Workflow Position, Tools and External Systems, HITL Contracts,
 Verified Failure Modes, Source Evidence, Related Knowledge.
-Copy source evidence only from profile.source_refs and
-profile.failure_modes[*].source_refs. Set participates_in from the Workflow
-related page, uses_contract from profile.output_contracts, and
-uses_hitl_contract to contracts/hitl-contracts. Do not add relation keys.
+In the body, copy code evidence only from profile.source_refs and
+profile.failure_modes[*].source_refs; draft.evidence_refs still uses candidate
+evidence IDs. Relation values must be exact wikilinks including brackets:
+participates_in is ["[[workflows/orchestration-graph]]"] and uses_hitl_contract
+is ["[[contracts/hitl-contracts]]"]. For uses_contract, wrap every output contract page ID in [[...]]. Do not add relation keys.
+For shared snapshot drafts, use every required H2 for the target page:
+- contracts/result-envelope: Fields; Producers and Consumers; Boundary; Source Evidence
+- contracts/local-trace: Event Boundary; Redaction Boundary; Fields; Source Evidence
+- contracts/artifact-delivery: Artifact Channels; Payload Boundary; Producers and Consumers; Source Evidence
+- contracts/hitl-contracts: Interrupt Types; Resume Contract; Applicable Agents; Source Evidence
+- workflows/orchestration-graph: Nodes and Edges; State and Result Flow; Dynamic Handoffs; Source Evidence
+Choose update, not no_change, when an existing target lacks any required H2.
 """
 
 
@@ -72,6 +80,39 @@ AGENT_REQUIRED_SECTIONS = (
     "Source Evidence",
     "Related Knowledge",
 )
+
+SHARED_REQUIRED_SECTIONS = {
+    "contracts/result-envelope": (
+        "Fields",
+        "Producers and Consumers",
+        "Boundary",
+        "Source Evidence",
+    ),
+    "contracts/local-trace": (
+        "Event Boundary",
+        "Redaction Boundary",
+        "Fields",
+        "Source Evidence",
+    ),
+    "contracts/artifact-delivery": (
+        "Artifact Channels",
+        "Payload Boundary",
+        "Producers and Consumers",
+        "Source Evidence",
+    ),
+    "contracts/hitl-contracts": (
+        "Interrupt Types",
+        "Resume Contract",
+        "Applicable Agents",
+        "Source Evidence",
+    ),
+    "workflows/orchestration-graph": (
+        "Nodes and Edges",
+        "State and Result Flow",
+        "Dynamic Handoffs",
+        "Source Evidence",
+    ),
+}
 
 
 def validate_operational_agent_draft(
@@ -113,6 +154,24 @@ def validate_operational_agent_draft(
         raise ValueError(
             "operational Agent draft relations differ from registry facts"
         )
+    draft.relations = expected_relations
+
+
+def validate_shared_snapshot_draft(
+    candidate: KnowledgeCandidate, draft: PageDraft
+) -> None:
+    if candidate.source_kind != "system_snapshot":
+        return
+    required = SHARED_REQUIRED_SECTIONS.get(draft.page_id)
+    if not required:
+        return
+    headings = {
+        line[3:].strip()
+        for line in draft.body_markdown.splitlines()
+        if line.startswith("## ")
+    }
+    if set(required) - headings:
+        raise ValueError("shared snapshot draft is missing required sections")
 
 
 class CuratorCallError(RuntimeError):
@@ -189,6 +248,7 @@ class ControlKnowledgeCurator:
             ):
                 raise ValueError("draft evidence must come from candidate")
             validate_operational_agent_draft(candidate, decision.draft)
+            validate_shared_snapshot_draft(candidate, decision.draft)
             disposition = (
                 WriteDisposition.review.value
                 if decision.action == "review_required"
