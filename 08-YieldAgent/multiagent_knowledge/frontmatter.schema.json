@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["type", "page_id", "title", "description", "routing_summary", "status", "owner", "source_status", "agent_use", "llmwiki_status", "llmwiki_owner", "llmwiki_source_status", "llmwiki_agent_use", "sensitivity", "last_reviewed", "review_cycle", "version", "relations", "evidence_refs"],
+  "properties": {
+    "type": {"enum": ["Agent", "Workflow", "Contract", "Component", "Runbook", "Observation", "Decision", "Policy", "Proposal"]},
+    "page_id": {"type": "string"},
+    "title": {"type": "string"},
+    "description": {"type": "string"},
+    "routing_summary": {"type": "string"},
+    "status": {"enum": ["draft", "reviewed", "current", "stale", "deprecated", "archived", "blocked"]},
+    "owner": {"type": "string"},
+    "source_status": {"type": "string"},
+    "agent_use": {"type": "string"},
+    "llmwiki_status": {"type": "string"},
+    "llmwiki_owner": {"type": "string"},
+    "llmwiki_source_status": {"type": "string"},
+    "llmwiki_agent_use": {"type": "string"},
+    "sensitivity": {"const": "internal"},
+    "last_reviewed": {"type": ["string", "object"]},
+    "review_cycle": {"type": "string"},
+    "version": {"type": "integer", "minimum": 1},
+    "relations": {"type": "object"},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

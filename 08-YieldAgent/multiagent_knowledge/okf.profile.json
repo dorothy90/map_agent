@@ -1,0 +1,7 @@
+{
+  "okf_version": "1.0",
+  "bundle_root": "wiki",
+  "reserved_paths": {"index": "index.md", "log": "log.md"},
+  "allowed_page_types": ["Agent", "Workflow", "Contract", "Component", "Runbook", "Observation", "Decision", "Policy", "Proposal"],
+  "required_governance_fields": ["type", "page_id", "title", "description", "routing_summary", "status", "owner", "source_status", "agent_use", "llmwiki_status", "llmwiki_owner", "llmwiki_source_status", "llmwiki_agent_use", "sensitivity", "last_reviewed", "review_cycle", "version", "relations", "evidence_refs"]
+}
