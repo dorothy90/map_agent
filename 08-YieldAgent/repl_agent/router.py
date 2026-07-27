@@ -223,8 +223,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
         cancel_task: asyncio.Task[bool] | None = None
         agent_stream: AsyncIterator[Any] | None = None
         text_message_id: str | None = None
-        yield _sse(emitter.build(RunStarted))
         try:
+            yield _sse(emitter.build(RunStarted))
             agent = get_agent()
             prev_state = await agent.aget_state(config)
             is_first_turn = not (

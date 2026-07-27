@@ -473,6 +473,30 @@ def test_failing_aclose_still_finishes_session_and_unregisters_run(
     assert record.active_run_id is None
 
 
+def test_close_immediately_after_run_started_cleans_lifecycle(
+    ready_session, monkeypatch
+):
+    monkeypatch.setattr(router_module, "get_agent", lambda: FakeAgent())
+
+    async def close_stream():
+        response = await router_module.chat(router_module.ChatIn(
+            session_id=ready_session,
+            query="mean",
+        ))
+        stream = response.body_iterator.__aiter__()
+        started = decode_sse(await anext(stream))[0]
+        await stream.aclose()
+        return started
+
+    started = asyncio.run(close_stream())
+
+    assert started["type"] == "RUN_STARTED"
+    assert router_module.run_registry.get(started["run_id"]) is None
+    record = session_store.get_session(ready_session)
+    assert record.status == "ready"
+    assert record.active_run_id is None
+
+
 def test_cancel_winner_survives_discarded_child_cleanup_error(
     ready_session, monkeypatch
 ):
