@@ -23,18 +23,23 @@ test("real LLM executes Python, reuses worker state, and renders a Plotly analys
   await expect(firstCard.locator("pre.code")).toContainText("emit_plot", { timeout: 180_000 });
   await expect(firstCard.locator(".result-status")).toContainText("success", { timeout: 180_000 });
   await expect(firstCard.locator(".js-plotly-plot")).toBeVisible({ timeout: 180_000 });
-  await expect(firstCard.getByText(/판정|관찰/)).toBeVisible({ timeout: 180_000 });
+  await expect(firstCard.locator(".analysis-answer").getByText(/판정|관찰/)).toBeVisible({
+    timeout: 180_000,
+  });
   await expect(firstCard.locator(".analysis-status")).toHaveText("완료", { timeout: 180_000 });
 
   await questionInput(page).fill(
-    "이전 Python 실행에서 저장한 e2e_state_marker에 1을 더한 값을 run_python으로 print해서 worker 상태가 유지됐는지 확인해줘",
+    "이전 Python 실행에서 저장한 e2e_state_marker에 1을 더한 값만 run_python에서 print(e2e_state_marker + 1)로 출력해서 worker 상태가 유지됐는지 확인해줘",
   );
   await page.getByRole("button", { name: "보내기" }).click();
 
   const secondCard = page.locator(".analysis-card").nth(1);
   await expect(page.locator(".analysis-card")).toHaveCount(2);
   await expect(secondCard.getByText("run_python")).toBeVisible({ timeout: 180_000 });
-  await expect(secondCard.locator(".result-output")).toContainText("42", { timeout: 180_000 });
+  await expect(secondCard.locator(".result-status")).toHaveText("success", { timeout: 180_000 });
+  await expect(
+    secondCard.locator(".result-output section").filter({ hasText: "stdout" }).locator("pre"),
+  ).toHaveText("42", { timeout: 180_000 });
   await expect(secondCard.locator(".analysis-status")).toHaveText("완료", { timeout: 180_000 });
 
   await page.getByRole("button", { name: "새 세션" }).click();

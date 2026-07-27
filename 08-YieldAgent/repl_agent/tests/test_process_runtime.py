@@ -151,6 +151,9 @@ def test_timeout_terminates_worker_and_loses_runtime():
 def test_cancel_terminates_actual_running_worker():
     runtime = ProcessPythonRuntime(startup_timeout_seconds=10)
     runtime.create_session("s1", ROWS, QUERY)
+    handle = runtime._handles["s1"]
+    process = handle.process
+    pid = process.pid
     box = {}
     thread = threading.Thread(
         target=lambda: box.setdefault(
@@ -165,6 +168,12 @@ def test_cancel_terminates_actual_running_worker():
         assert thread.is_alive() is False
         assert box["result"].status == "cancelled"
         assert runtime.is_alive("s1") is False
+        assert handle.exitcode is not None
+        assert handle.process_closed is True
+        assert_pid_reaped(pid)
+        assert handle.connection.closed is True
+        assert runtime._handles["s1"].process is process
+        assert runtime._handles["s1"].pid == pid
     finally:
         runtime.close_all()
 
