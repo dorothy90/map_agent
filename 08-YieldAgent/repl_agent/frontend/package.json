@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "e2e:live": "playwright test e2e/repl-live.spec.ts",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -19,6 +20,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.0.0",

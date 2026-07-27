@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // /repl/* 요청을 backend(기존 agent_server, port 8001)로 프록시.
@@ -8,6 +8,7 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: "jsdom",
+    exclude: [...configDefaults.exclude, "e2e/**"],
     setupFiles: "./src/test/setup.ts",
   },
   server: {

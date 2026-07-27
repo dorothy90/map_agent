@@ -69,6 +69,7 @@ from user_memory import update_profile_from_feedback  # noqa: E402
 # 사용자 선호 메모리 백그라운드 flush 태스크 보관 (GC로 조기 소멸 방지)
 _memory_tasks: set = set()
 from repl_agent.router import router as repl_router  # noqa: E402
+from repl_agent.session_store import close_all_sessions  # noqa: E402
 
 configure_runtime_terminal_logger()
 _handler = logging.StreamHandler()
@@ -177,6 +178,7 @@ async def lifespan(app: FastAPI):
                 except (asyncio.CancelledError, Exception):
                     pass
             await wiki_queue.stop(timeout=10)
+            close_all_sessions()
 
     motor_client.close()
     logger.info("MongoDB 연결 종료")
