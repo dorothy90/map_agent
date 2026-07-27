@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AnalysisRun } from "./replReducer";
 import { AnalysisCard } from "./AnalysisCard";
@@ -8,6 +8,13 @@ vi.mock("./PlotlyMessage", () => ({
     <div data-testid={`plot-artifact-${artifact.artifact_id}`} />
   ),
 }));
+
+const plotArtifact = {
+  artifact_id: "p1",
+  kind: "plotly" as const,
+  mime_type: "application/vnd.plotly.v1+json" as const,
+  spec: { data: [], layout: {} },
+};
 
 const completedRun: AnalysisRun = {
   runId: "r1",
@@ -27,16 +34,10 @@ const completedRun: AnalysisRun = {
         execution_time_ms: 12,
         stdout_truncated: true,
       },
+      artifacts: [plotArtifact],
     },
   ],
-  artifacts: [
-    {
-      artifact_id: "p1",
-      kind: "plotly",
-      mime_type: "application/vnd.plotly.v1+json",
-      spec: { data: [], layout: {} },
-    },
-  ],
+  artifacts: [plotArtifact],
 };
 
 const runningRun: AnalysisRun = {
@@ -57,9 +58,35 @@ describe("AnalysisCard", () => {
     expect(screen.getByText(/stdout: 3.5/)).toBeInTheDocument();
     expect(screen.getByText(/warning: sample size/)).toBeInTheDocument();
     expect(screen.getByText("12 ms")).toBeInTheDocument();
-    expect(screen.getByText("잘림")).toBeInTheDocument();
-    expect(screen.getByTestId("plot-artifact-p1")).toBeInTheDocument();
+    expect(screen.getByText("success")).toBeInTheDocument();
+    const stdoutSection = screen.getByText("stdout").closest("section")!;
+    const stderrSection = screen.getByText("stderr").closest("section")!;
+    expect(within(stdoutSection).getByText("잘림")).toBeInTheDocument();
+    expect(within(stderrSection).queryByText("잘림")).not.toBeInTheDocument();
+    const plots = screen.getAllByTestId("plot-artifact-p1");
+    expect(plots).toHaveLength(1);
+    expect(plots[0].closest(".analysis-step")).toBeInTheDocument();
     expect(screen.getByText(/판정: 평균 차이/)).toBeInTheDocument();
+  });
+
+  it("labels stderr truncation independently from stdout", () => {
+    const run: AnalysisRun = {
+      ...completedRun,
+      steps: [{
+        ...completedRun.steps[0],
+        result: {
+          ...completedRun.steps[0].result,
+          stdout_truncated: false,
+          stderr_truncated: true,
+        },
+      }],
+    };
+    render(<AnalysisCard run={run} onCancel={vi.fn()} cancelPending={false} />);
+
+    const stdoutSection = screen.getByText("stdout").closest("section")!;
+    const stderrSection = screen.getByText("stderr").closest("section")!;
+    expect(within(stdoutSection).queryByText("잘림")).not.toBeInTheDocument();
+    expect(within(stderrSection).getByText("잘림")).toBeInTheDocument();
   });
 
   it("offers stop only while running", () => {

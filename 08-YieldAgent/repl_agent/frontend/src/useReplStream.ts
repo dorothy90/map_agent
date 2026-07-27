@@ -16,6 +16,7 @@ const isAbortError = (error: unknown): boolean =>
 export function useReplStream(sessionId: string) {
   const [state, dispatch] = useReducer(replReducer, initialChatState);
   const [cancelPending, setCancelPending] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const streamControllerRef = useRef<AbortController | null>(null);
   const cancelControllerRef = useRef<AbortController | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
@@ -30,6 +31,7 @@ export function useReplStream(sessionId: string) {
     activeRunIdRef.current = null;
     cancelPendingRef.current = false;
     setCancelPending(false);
+    setCancelError(null);
     dispatch({ type: "RESET" });
 
     return () => {
@@ -55,6 +57,7 @@ export function useReplStream(sessionId: string) {
       let currentRunId = localRunId;
       let terminalReceived = false;
       const controller = new AbortController();
+      setCancelError(null);
       streamControllerRef.current = controller;
       activeRunIdRef.current = localRunId;
       dispatch({ type: "USER_SUBMITTED", runId: localRunId, query });
@@ -113,6 +116,7 @@ export function useReplStream(sessionId: string) {
     if (!mountedRef.current || !runId || cancelPendingRef.current) return;
     const generation = generationRef.current;
     const controller = new AbortController();
+    setCancelError(null);
     cancelControllerRef.current = controller;
     cancelPendingRef.current = true;
     setCancelPending(true);
@@ -126,6 +130,7 @@ export function useReplStream(sessionId: string) {
       const generationChanged =
         !mountedRef.current || generationRef.current !== generation;
       if (!(isAbortError(error) && (controller.signal.aborted || generationChanged))) {
+        if (!generationChanged) setCancelError(errorMessage(error));
         throw error;
       }
     } finally {
@@ -141,5 +146,5 @@ export function useReplStream(sessionId: string) {
     state.activeRunId !== null &&
     state.runs.some((run) => run.runId === state.activeRunId && run.status === "running");
 
-  return { state, send, cancel, sending, cancelPending };
+  return { state, send, cancel, sending, cancelPending, cancelError };
 }

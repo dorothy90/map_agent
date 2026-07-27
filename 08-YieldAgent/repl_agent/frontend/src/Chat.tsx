@@ -11,7 +11,7 @@ const presets = [
 
 export function Chat({ sessionId }: { sessionId: string }) {
   const [input, setInput] = useState("");
-  const { state, send, cancel, sending, cancelPending } = useReplStream(sessionId);
+  const { state, send, cancel, sending, cancelPending, cancelError } = useReplStream(sessionId);
   const locked = sending || state.runtimeLost;
 
   function submitQuestion(question: string) {
@@ -24,6 +24,14 @@ export function Chat({ sessionId }: { sessionId: string }) {
   function submit(event: React.FormEvent) {
     event.preventDefault();
     submitQuestion(input);
+  }
+
+  async function requestCancel() {
+    try {
+      await cancel();
+    } catch {
+      // useReplStream exposes the presentation error while preserving rejection for other callers.
+    }
   }
 
   return (
@@ -45,13 +53,18 @@ export function Chat({ sessionId }: { sessionId: string }) {
           <AnalysisCard
             key={run.runId}
             run={run}
-            onCancel={() => void cancel()}
+            onCancel={() => void requestCancel()}
             cancelPending={cancelPending && run.status === "running"}
           />
         ))}
         {state.runtimeLost ? (
           <div className="runtime-lost" role="alert">
             Python 실행 상태가 소실되었습니다. 새 세션을 시작해주세요.
+          </div>
+        ) : null}
+        {cancelError ? (
+          <div className="cancel-error" role="alert">
+            중지 요청을 보내지 못했습니다. 다시 시도해주세요. ({cancelError})
           </div>
         ) : null}
       </div>

@@ -26,6 +26,7 @@ function ToolExecution({ step, index }: { step: ToolStep; index: number }) {
   const stdout = result && typeof result.stdout === "string" ? result.stdout : "";
   const stderr = result && typeof result.stderr === "string" ? result.stderr : "";
   const elapsed = result?.execution_time_ms;
+  const resultStatus = result && typeof result.status === "string" ? result.status : null;
   const error = result?.error;
   const remainder = result
     ? Object.fromEntries(Object.entries(result).filter(([key]) => ![
@@ -50,14 +51,22 @@ function ToolExecution({ step, index }: { step: ToolStep; index: number }) {
           <details open>
             <summary>
               결과
+              {resultStatus ? <span className="result-status">{resultStatus}</span> : null}
               {typeof elapsed === "number" ? <span className="result-meta">{elapsed} ms</span> : null}
-              {result.stdout_truncated || result.stderr_truncated ? (
-                <span className="truncation-badge">잘림</span>
-              ) : null}
             </summary>
             <div className="result-output">
-              {stdout ? <section><h4>stdout</h4><pre>{stdout}</pre></section> : null}
-              {stderr ? <section><h4>stderr</h4><pre>{stderr}</pre></section> : null}
+              {stdout ? (
+                <section>
+                  <h4>stdout{result.stdout_truncated ? <span className="truncation-badge">잘림</span> : null}</h4>
+                  <pre>{stdout}</pre>
+                </section>
+              ) : null}
+              {stderr ? (
+                <section>
+                  <h4>stderr{result.stderr_truncated ? <span className="truncation-badge">잘림</span> : null}</h4>
+                  <pre>{stderr}</pre>
+                </section>
+              ) : null}
               {error ? <section className="execution-error"><h4>error</h4><pre>{textValue(error)}</pre></section> : null}
               {Object.keys(remainder).length > 0 ? (
                 <section><h4>result</h4><pre>{JSON.stringify(remainder, null, 2)}</pre></section>

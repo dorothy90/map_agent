@@ -9,13 +9,20 @@ const hook = vi.hoisted(() => ({
   cancel: vi.fn(),
   sending: false,
   cancelPending: false,
+  cancelError: null as string | null,
 }));
 
 vi.mock("./useReplStream", () => ({ useReplStream: () => hook }));
 vi.mock("./PlotlyMessage", () => ({ PlotlyMessage: () => null }));
 vi.mock("./AnalysisCard", () => ({
-  AnalysisCard: ({ run }: { run: { runId: string; userMessage: string } }) => (
-    <article data-testid={`analysis-${run.runId}`}>{run.userMessage}</article>
+  AnalysisCard: ({ run, onCancel }: {
+    run: { runId: string; userMessage: string };
+    onCancel: () => void;
+  }) => (
+    <article data-testid={`analysis-${run.runId}`}>
+      {run.userMessage}
+      <button type="button" onClick={onCancel}>중지</button>
+    </article>
   ),
 }));
 
@@ -28,6 +35,7 @@ describe("Chat", () => {
     hook.cancel.mockReset();
     hook.sending = false;
     hook.cancelPending = false;
+    hook.cancelError = null;
   });
 
   it("renders exactly one analysis card for one run", () => {
@@ -69,5 +77,29 @@ describe("Chat", () => {
     expect(screen.getByPlaceholderText(/질문 입력/)).toBeDisabled();
     expect(screen.getByText(/새 세션을 시작/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "보내기" })).toBeDisabled();
+  });
+
+  it("handles cancellation rejection and shows an actionable error", async () => {
+    hook.state = {
+      runs: [{
+        runId: "r1",
+        status: "running",
+        userMessage: "느린 분석",
+        assistantText: "",
+        steps: [],
+        artifacts: [],
+        lastSequence: 1,
+      }],
+      activeRunId: "r1",
+      runtimeLost: false,
+    };
+    hook.cancelError = "HTTP 503";
+    hook.cancel.mockRejectedValueOnce(new Error("HTTP 503"));
+    render(<Chat sessionId="session-1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "중지" }));
+
+    expect(await screen.findByText(/중지 요청을 보내지 못했습니다/)).toBeInTheDocument();
+    expect(hook.cancel).toHaveBeenCalledOnce();
   });
 });

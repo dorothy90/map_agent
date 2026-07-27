@@ -335,10 +335,45 @@ describe("useReplStream", () => {
     });
     await waitFor(() => expect(result.current.state.activeRunId).toBe("r1"));
 
-    await expect(result.current.cancel()).rejects.toThrow("cancel network down");
+    await act(async () => {
+      await expect(result.current.cancel()).rejects.toThrow("cancel network down");
+    });
 
+    expect(result.current.cancelError).toBe("cancel network down");
     expect(result.current.state.runs[0].status).toBe("running");
     streamController.close();
     await act(async () => sendPromise);
+  });
+
+  it("clears a cancellation error when the session changes", async () => {
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+          controller.enqueue(encoder.encode(
+            'data: {"type":"RUN_STARTED","run_id":"r1","thread_id":"s1","sequence":1}\n\n',
+          ));
+        },
+      })))
+      .mockRejectedValueOnce(new TypeError("cancel network down"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result, rerender } = renderHook(
+      ({ sessionId }) => useReplStream(sessionId),
+      { initialProps: { sessionId: "s1" } },
+    );
+    act(() => { void result.current.send("slow"); });
+    await waitFor(() => expect(result.current.state.activeRunId).toBe("r1"));
+    await act(async () => {
+      await expect(result.current.cancel()).rejects.toThrow("cancel network down");
+    });
+    expect(result.current.cancelError).toBe("cancel network down");
+
+    rerender({ sessionId: "s2" });
+
+    await waitFor(() => expect(result.current.cancelError).toBeNull());
+    streamController.close();
   });
 });
