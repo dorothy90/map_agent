@@ -138,15 +138,18 @@ async def _next_or_cancel(
     cancel_task: asyncio.Task[bool],
 ) -> tuple[bool, Any]:
     next_task = asyncio.create_task(anext(stream))
-    done, _ = await asyncio.wait(
-        {next_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
-    )
-    if cancel_task in done:
-        next_task.cancel()
+    try:
+        done, _ = await asyncio.wait(
+            {next_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if cancel_task in done:
+            return True, None
+        return False, next_task.result()
+    finally:
+        if not next_task.done():
+            next_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
             await next_task
-        return True, None
-    return False, next_task.result()
 
 
 @router.get("/health")
@@ -294,8 +297,7 @@ async def chat(body: ChatIn) -> StreamingResponse:
                 with contextlib.suppress(asyncio.CancelledError):
                     await cancel_task
             if agent_stream is not None:
-                with contextlib.suppress(Exception):
-                    await agent_stream.aclose()
+                await agent_stream.aclose()
             finish_run(thread_id, run_id)
             run_registry.unregister(run_id)
 

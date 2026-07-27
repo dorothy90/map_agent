@@ -204,7 +204,7 @@ def test_cancel_reservation_blocks_next_run_until_runtime_is_lost(monkeypatch):
     assert session_store.get_session(session_id).active_run_id is None
 
 
-def test_failed_cancel_applies_completion_deferred_by_reservation(monkeypatch):
+def test_idle_cancel_wins_over_completion_deferred_by_reservation(monkeypatch):
     fake = BlockingCancelRuntime(result=False)
     monkeypatch.setattr(session_store, "_runtime", fake)
     info = _create_session()
@@ -227,12 +227,13 @@ def test_failed_cancel_applies_completion_deferred_by_reservation(monkeypatch):
         cancel_thread.join(timeout=5)
 
     assert not cancel_thread.is_alive()
-    assert result == [False]
-    assert session_store.get_session(session_id).status == "ready"
+    assert result == [True]
+    assert fake.closed == [session_id]
+    assert session_store.get_session(session_id).status == "runtime_lost"
     assert session_store.get_session(session_id).active_run_id is None
 
 
-def test_failed_cancel_without_completion_preserves_active_run(monkeypatch):
+def test_cancel_closes_idle_runtime_and_marks_session_lost(monkeypatch):
     fake = FakeRuntime()
     fake.cancel = lambda session_id, run_id: False
     monkeypatch.setattr(session_store, "_runtime", fake)
@@ -240,9 +241,11 @@ def test_failed_cancel_without_completion_preserves_active_run(monkeypatch):
     session_id = info["session_id"]
     session_store.begin_run(session_id, "run-1")
 
-    assert session_store.cancel_run("run-1") is False
-    assert session_store.get_session(session_id).status == "running"
-    assert session_store.get_session(session_id).active_run_id == "run-1"
+    assert session_store.cancel_run("run-1") is True
+    assert fake.closed == [session_id]
+    record = session_store.get_session(session_id)
+    assert record.status == "runtime_lost"
+    assert record.active_run_id is None
 
 
 def test_close_session_is_idempotent(monkeypatch):

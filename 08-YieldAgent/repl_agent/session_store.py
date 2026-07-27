@@ -228,7 +228,7 @@ def mark_runtime_lost(session_id: str, run_id: str) -> bool:
 
 
 def cancel_run(run_id: str) -> bool:
-    """활성 실행을 찾아 런타임을 취소하고 해당 세션을 손실 상태로 만든다."""
+    """활성 agent 실행의 worker 를 파괴하고 세션을 손실 상태로 만든다."""
     with _lock:
         match = next(
             (
@@ -245,11 +245,13 @@ def cancel_run(run_id: str) -> bool:
 
     try:
         cancelled = _runtime.cancel(match.session_id, run_id)
+        if not cancelled:
+            _runtime.close_session(match.session_id)
     except BaseException:
         _resolve_cancellation(reservation, cancelled=False)
         raise
-    _resolve_cancellation(reservation, cancelled=cancelled)
-    return cancelled
+    _resolve_cancellation(reservation, cancelled=True)
+    return True
 
 
 def _resolve_cancellation(

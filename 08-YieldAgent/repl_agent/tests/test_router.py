@@ -108,6 +108,22 @@ class BlockingAgent(FakeAgent):
         await asyncio.Event().wait()
 
 
+class TrackingBlockingAgent(FakeAgent):
+    def __init__(self):
+        super().__init__()
+        self.started = asyncio.Event()
+        self.finalized = asyncio.Event()
+
+    async def astream(self, inputs, config, stream_mode):
+        try:
+            self.started.set()
+            if False:
+                yield None
+            await asyncio.Event().wait()
+        finally:
+            self.finalized.set()
+
+
 def decode_sse(body: str) -> list[dict]:
     return [
         json.loads(block.removeprefix("data: "))
@@ -324,6 +340,80 @@ def test_stream_cancellation_emits_terminal_event_and_cleans_registry(
     assert session_store.get_session(ready_session).status == "ready"
 
 
+def test_idle_runtime_cancel_is_destructive_and_endpoint_is_idempotent(
+    ready_session, monkeypatch
+):
+    agent = BlockingAgent()
+    runtime = FakeRuntime()
+    runtime.cancel = lambda session_id, run_id: False
+    monkeypatch.setattr(router_module, "get_agent", lambda: agent)
+    monkeypatch.setattr(session_store, "_runtime", runtime)
+
+    async def cancel_stream():
+        response = await router_module.chat(router_module.ChatIn(
+            session_id=ready_session,
+            query="mean",
+        ))
+        stream = response.body_iterator.__aiter__()
+        started = decode_sse(await anext(stream))[0]
+        first = await router_module.cancel_active_run(started["run_id"])
+        events = [
+            event
+            async for chunk in stream
+            for event in decode_sse(chunk)
+        ]
+        second = await router_module.cancel_active_run(started["run_id"])
+        return started, events, first, second
+
+    started, events, first, second = asyncio.run(cancel_stream())
+
+    assert first["cancelled"] is True
+    assert second["cancelled"] is False
+    assert [started["type"], *[event["type"] for event in events]] == [
+        "RUN_STARTED", "RUN_CANCELLED"
+    ]
+    assert runtime.cancelled == []
+    assert runtime.closed == [ready_session]
+    record = session_store.get_session(ready_session)
+    assert record is not None
+    assert record.status == "runtime_lost"
+    assert record.active_run_id is None
+
+
+def test_request_cancellation_awaits_child_task_and_finalizes_agent_stream(
+    ready_session, monkeypatch
+):
+    agent = TrackingBlockingAgent()
+    monkeypatch.setattr(router_module, "get_agent", lambda: agent)
+
+    async def cancel_request():
+        response = await router_module.chat(router_module.ChatIn(
+            session_id=ready_session,
+            query="mean",
+        ))
+        stream = response.body_iterator.__aiter__()
+        started = decode_sse(await anext(stream))[0]
+        consumer = asyncio.create_task(anext(stream))
+        await agent.started.wait()
+        consumer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+        await asyncio.sleep(0)
+        pending_children = [
+            task
+            for task in asyncio.all_tasks()
+            if task is not asyncio.current_task() and not task.done()
+        ]
+        return started, pending_children
+
+    started, pending_children = asyncio.run(cancel_request())
+
+    assert pending_children == []
+    assert agent.finalized.is_set()
+    assert router_module.run_registry.get(started["run_id"]) is None
+    assert session_store.get_session(ready_session).status == "ready"
+
+
 def test_delete_session_closes_worker(client, ready_session, monkeypatch):
     closed = []
     monkeypatch.setattr(
@@ -374,6 +464,20 @@ def test_run_python_uses_runtime_and_emits_correlated_artifacts(
         "tool_call_id": "tool-1",
         "artifacts": [artifact.model_dump()],
     }]
+
+
+def test_run_python_description_documents_json_result_contract():
+    description = tools_module.run_python.description
+
+    assert all(field in description for field in [
+        "status",
+        "stdout",
+        "stderr",
+        "execution_time_ms",
+        "error",
+        "stdout_truncated",
+        "stderr_truncated",
+    ])
 
 
 def test_healthy_python_error_keeps_session_runtime_available(

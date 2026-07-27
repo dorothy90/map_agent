@@ -29,7 +29,10 @@ def run_python(
       - emit_plot(fig): 이 턴에 주입되는 헬퍼. fig 는 plotly Figure. 프론트로 바로 전달됨.
 
     같은 세션 안에서 이 툴을 여러 번 호출해도 `df` 와 이전에 만든 변수(`summary` 등)가 유지된다.
-    stdout 만 결과로 돌려준다 — 마지막 expression 자동 출력 없음. 필요하면 `print(...)`.
+    결과는 JSON 문자열이다. `status`, `stdout`, `stderr`, `execution_time_ms`, `error`,
+    `stdout_truncated`, `stderr_truncated` 필드를 포함한다. `error` 는 실패 코드, 예외 이름,
+    메시지, traceback 을 담고 성공 시 null 이다. truncation 필드가 true 면 해당 출력은
+    런타임 한도에서 잘린 것이다. 마지막 expression 은 자동 출력되지 않으므로 필요하면 `print(...)`.
 
     주의: `exec()` 기반, 샌드박스 아님. 내부망/단일 사용자 환경 전제.
     """
