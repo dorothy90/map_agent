@@ -43,7 +43,15 @@ class SessionStateError(ValueError):
         self.code = code
 
 
+@dataclass
+class _CancellationReservation:
+    record: SessionRecord
+    completion_status: SessionStatus | None = None
+
+
 _SESSIONS: dict[str, SessionRecord] = {}
+_CANCELLATIONS: dict[str, _CancellationReservation] = {}
+_lifecycle_generation = 0
 _lock = threading.Lock()
 
 
@@ -125,9 +133,19 @@ async def create_session(
         summary=_build_session_summary(df, query, column_guideline),
     )
 
+    with _lock:
+        creation_generation = _lifecycle_generation
+
     _runtime.create_session(session_id, rows, query)
     with _lock:
-        _SESSIONS[session_id] = record
+        publish = creation_generation == _lifecycle_generation
+        if publish:
+            _SESSIONS[session_id] = record
+    if not publish:
+        _runtime.close_session(session_id)
+        raise SessionStateError(
+            "session_closed", "Session creation was interrupted by runtime shutdown"
+        )
 
     # 숫자 컬럼이 뭐가 있는지 힌트를 같이 반환 — 프론트에서 첫 메시지로 보여주기 좋다.
     numeric_cols: list[str] = []
@@ -193,6 +211,11 @@ def finish_run(
         if record is None or record.active_run_id != run_id:
             return False
         status: SessionStatus = "runtime_lost" if runtime_lost else "ready"
+        reservation = _CANCELLATIONS.get(session_id)
+        if reservation is not None and reservation.record is record:
+            if reservation.completion_status != "runtime_lost":
+                reservation.completion_status = status
+            return True
         _SESSIONS[session_id] = replace(
             record, status=status, active_run_id=None
         )
@@ -215,16 +238,49 @@ def cancel_run(run_id: str) -> bool:
             ),
             None,
         )
-    if match is None or not _runtime.cancel(match.session_id, run_id):
-        return False
-    mark_runtime_lost(match.session_id, run_id)
-    return True
+        if match is None or match.session_id in _CANCELLATIONS:
+            return False
+        reservation = _CancellationReservation(record=match)
+        _CANCELLATIONS[match.session_id] = reservation
+
+    try:
+        cancelled = _runtime.cancel(match.session_id, run_id)
+    except BaseException:
+        _resolve_cancellation(reservation, cancelled=False)
+        raise
+    _resolve_cancellation(reservation, cancelled=cancelled)
+    return cancelled
+
+
+def _resolve_cancellation(
+    reservation: _CancellationReservation,
+    cancelled: bool,
+) -> None:
+    """같은 레코드 세대에만 취소 결과 또는 보류된 완료를 반영한다."""
+    session_id = reservation.record.session_id
+    with _lock:
+        if _CANCELLATIONS.get(session_id) is not reservation:
+            return
+        current = _SESSIONS.get(session_id)
+        if current is reservation.record:
+            if cancelled:
+                _SESSIONS[session_id] = replace(
+                    current, status="runtime_lost", active_run_id=None
+                )
+            elif reservation.completion_status is not None:
+                _SESSIONS[session_id] = replace(
+                    current,
+                    status=reservation.completion_status,
+                    active_run_id=None,
+                )
+        del _CANCELLATIONS[session_id]
 
 
 def close_session(session_id: str) -> bool:
     """세션 레코드와 런타임을 한 번만 닫는다."""
     with _lock:
         record = _SESSIONS.pop(session_id, None)
+        _CANCELLATIONS.pop(session_id, None)
     if record is None:
         return False
     _runtime.close_session(session_id)
@@ -233,6 +289,9 @@ def close_session(session_id: str) -> bool:
 
 def close_all_sessions() -> None:
     """모든 런타임을 닫고 세션 레코드를 비운다."""
+    global _lifecycle_generation
     with _lock:
+        _lifecycle_generation += 1
         _SESSIONS.clear()
+        _CANCELLATIONS.clear()
     _runtime.close_all()

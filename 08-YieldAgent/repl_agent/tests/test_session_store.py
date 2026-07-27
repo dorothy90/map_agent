@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
@@ -46,15 +47,43 @@ class FakeRuntime:
         self.close_all_calls += 1
 
 
+class BlockingCancelRuntime(FakeRuntime):
+    def __init__(self, result: bool):
+        super().__init__()
+        self.result = result
+        self.cancel_started = threading.Event()
+        self.release_cancel = threading.Event()
+
+    def cancel(self, session_id, run_id):
+        self.cancelled.append((session_id, run_id))
+        self.cancel_started.set()
+        assert self.release_cancel.wait(timeout=5)
+        return self.result
+
+
+class BlockingCreateRuntime(FakeRuntime):
+    def __init__(self):
+        super().__init__()
+        self.create_started = threading.Event()
+        self.release_create = threading.Event()
+
+    def create_session(self, session_id, rows, query):
+        self.created.append(session_id)
+        self.create_started.set()
+        assert self.release_create.wait(timeout=5)
+
+
 @pytest.fixture(autouse=True)
 def isolated_store(monkeypatch):
     async def fetch_rows(lotcd, start, end, fail_name):
         return ROWS
 
     session_store._SESSIONS.clear()
+    getattr(session_store, "_CANCELLATIONS", {}).clear()
     monkeypatch.setattr(session_store, "_fetch_rows", fetch_rows)
     yield
     session_store._SESSIONS.clear()
+    getattr(session_store, "_CANCELLATIONS", {}).clear()
 
 
 def _create_session() -> dict:
@@ -147,6 +176,75 @@ def test_cancel_marks_runtime_lost(monkeypatch):
     assert session_store.get_session(info["session_id"]).status == "runtime_lost"
 
 
+def test_cancel_reservation_blocks_next_run_until_runtime_is_lost(monkeypatch):
+    fake = BlockingCancelRuntime(result=True)
+    monkeypatch.setattr(session_store, "_runtime", fake)
+    info = _create_session()
+    session_id = info["session_id"]
+    session_store.begin_run(session_id, "run-1")
+    result: list[bool] = []
+    cancel_thread = threading.Thread(
+        target=lambda: result.append(session_store.cancel_run("run-1"))
+    )
+
+    cancel_thread.start()
+    assert fake.cancel_started.wait(timeout=5)
+    try:
+        assert session_store.finish_run(session_id, "run-1") is True
+        with pytest.raises(session_store.SessionStateError) as exc:
+            session_store.begin_run(session_id, "run-2")
+        assert exc.value.code == "session_busy"
+    finally:
+        fake.release_cancel.set()
+        cancel_thread.join(timeout=5)
+
+    assert not cancel_thread.is_alive()
+    assert result == [True]
+    assert session_store.get_session(session_id).status == "runtime_lost"
+    assert session_store.get_session(session_id).active_run_id is None
+
+
+def test_failed_cancel_applies_completion_deferred_by_reservation(monkeypatch):
+    fake = BlockingCancelRuntime(result=False)
+    monkeypatch.setattr(session_store, "_runtime", fake)
+    info = _create_session()
+    session_id = info["session_id"]
+    session_store.begin_run(session_id, "run-1")
+    result: list[bool] = []
+    cancel_thread = threading.Thread(
+        target=lambda: result.append(session_store.cancel_run("run-1"))
+    )
+
+    cancel_thread.start()
+    assert fake.cancel_started.wait(timeout=5)
+    try:
+        assert session_store.finish_run(session_id, "run-1") is True
+        with pytest.raises(session_store.SessionStateError) as exc:
+            session_store.begin_run(session_id, "run-2")
+        assert exc.value.code == "session_busy"
+    finally:
+        fake.release_cancel.set()
+        cancel_thread.join(timeout=5)
+
+    assert not cancel_thread.is_alive()
+    assert result == [False]
+    assert session_store.get_session(session_id).status == "ready"
+    assert session_store.get_session(session_id).active_run_id is None
+
+
+def test_failed_cancel_without_completion_preserves_active_run(monkeypatch):
+    fake = FakeRuntime()
+    fake.cancel = lambda session_id, run_id: False
+    monkeypatch.setattr(session_store, "_runtime", fake)
+    info = _create_session()
+    session_id = info["session_id"]
+    session_store.begin_run(session_id, "run-1")
+
+    assert session_store.cancel_run("run-1") is False
+    assert session_store.get_session(session_id).status == "running"
+    assert session_store.get_session(session_id).active_run_id == "run-1"
+
+
 def test_close_session_is_idempotent(monkeypatch):
     fake = FakeRuntime()
     monkeypatch.setattr(session_store, "_runtime", fake)
@@ -168,3 +266,31 @@ def test_close_all_sessions_clears_records(monkeypatch):
     assert fake.close_all_calls == 1
     assert session_store.get_session(first["session_id"]) is None
     assert session_store.get_session(second["session_id"]) is None
+
+
+def test_close_all_during_create_prevents_late_publication(monkeypatch):
+    fake = BlockingCreateRuntime()
+    monkeypatch.setattr(session_store, "_runtime", fake)
+    errors: list[BaseException] = []
+
+    def create_in_thread():
+        try:
+            _create_session()
+        except BaseException as exc:
+            errors.append(exc)
+
+    create_thread = threading.Thread(target=create_in_thread)
+    create_thread.start()
+    assert fake.create_started.wait(timeout=5)
+
+    session_store.close_all_sessions()
+    fake.release_create.set()
+    create_thread.join(timeout=5)
+
+    assert not create_thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], session_store.SessionStateError)
+    assert errors[0].code == "session_closed"
+    assert session_store.get_session(fake.created[0]) is None
+    assert fake.close_all_calls == 1
+    assert fake.closed == [fake.created[0]]
