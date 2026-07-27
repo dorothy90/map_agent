@@ -12,6 +12,7 @@ router.chat 이 첫 턴에만 이 요약을 HumanMessage 에 prefix 로 넣는�
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 import uuid
@@ -53,6 +54,19 @@ _SESSIONS: dict[str, SessionRecord] = {}
 _CANCELLATIONS: dict[str, _CancellationReservation] = {}
 _lifecycle_generation = 0
 _lock = threading.Lock()
+
+
+async def _wait_for_owned_task(task: asyncio.Task[Any]) -> bool:
+    """Wait for a thread-backed task without letting request cancellation abandon it."""
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except BaseException:
+            break
+    return cancelled
 
 
 def _build_session_summary(
@@ -136,13 +150,29 @@ async def create_session(
     with _lock:
         creation_generation = _lifecycle_generation
 
-    _runtime.create_session(session_id, rows, query)
+    startup_task = asyncio.create_task(
+        asyncio.to_thread(_runtime.create_session, session_id, rows, query)
+    )
+    cancelled = await _wait_for_owned_task(startup_task)
+    try:
+        startup_task.result()
+    except BaseException as exc:
+        if cancelled:
+            raise asyncio.CancelledError from exc
+        raise
+    if cancelled:
+        close_task = asyncio.create_task(
+            asyncio.to_thread(_runtime.close_session, session_id)
+        )
+        await _wait_for_owned_task(close_task)
+        close_task.result()
+        raise asyncio.CancelledError
     with _lock:
         publish = creation_generation == _lifecycle_generation
         if publish:
             _SESSIONS[session_id] = record
     if not publish:
-        _runtime.close_session(session_id)
+        await asyncio.to_thread(_runtime.close_session, session_id)
         raise SessionStateError(
             "session_closed", "Session creation was interrupted by runtime shutdown"
         )

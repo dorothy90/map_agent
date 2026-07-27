@@ -56,6 +56,7 @@ from .session_store import (
     create_session,
     finish_run,
     get_session_summary,
+    mark_runtime_lost,
 )
 
 logger = logging.getLogger("repl_agent")
@@ -87,9 +88,17 @@ def _session_error(exc: SessionStateError) -> HTTPException:
         "session_busy": 409,
         "runtime_lost": 410,
     }
+    messages = {
+        "session_not_found": "Session was not found.",
+        "session_busy": "Session already has an active run.",
+        "runtime_lost": "Python runtime is no longer available. Start a new session.",
+    }
     return HTTPException(
         status_code=status_codes.get(exc.code, 409),
-        detail={"code": exc.code, "message": str(exc)},
+        detail={
+            "code": exc.code,
+            "message": messages.get(exc.code, "Session state does not allow this request."),
+        },
     )
 
 
@@ -196,7 +205,10 @@ async def start_session(body: SessionIn) -> dict[str, Any]:
         logger.exception("repl_agent session creation failed")
         raise HTTPException(
             status_code=502,
-            detail=f"데이터 로드 실패: {type(exc).__name__}: {exc}",
+            detail={
+                "code": "worker_start_failed",
+                "message": "Python worker failed to start. Please retry.",
+            },
         ) from exc
     return info
 
@@ -289,6 +301,31 @@ async def chat(body: ChatIn) -> StreamingResponse:
                 if mode == "updates":
                     for event in _tool_events(data, emitter):
                         yield _sse(event)
+                        if isinstance(event, ToolResult):
+                            status = event.result.get("status")
+                            if status not in {"timeout", "cancelled", "runtime_lost"}:
+                                continue
+                            mark_runtime_lost(thread_id, run_id)
+                            if text_message_id is not None:
+                                yield _sse(emitter.build(
+                                    TextMessageEnd, message_id=text_message_id
+                                ))
+                                text_message_id = None
+                            if status == "cancelled":
+                                yield _sse(emitter.build(RunCancelled))
+                            elif status == "timeout":
+                                yield _sse(emitter.build(
+                                    RunError,
+                                    code="execution_timeout",
+                                    message="Python execution timed out. Start a new session.",
+                                ))
+                            else:
+                                yield _sse(emitter.build(
+                                    RunError,
+                                    code="runtime_lost",
+                                    message="Python runtime is no longer available. Start a new session.",
+                                ))
+                            return
 
             if text_message_id is not None:
                 yield _sse(emitter.build(
@@ -299,8 +336,8 @@ async def chat(body: ChatIn) -> StreamingResponse:
             logger.exception("repl_agent chat error")
             yield _sse(emitter.build(
                 RunError,
-                code="agent_error",
-                message=f"{type(exc).__name__}: {exc}",
+                code="agent_stream_error",
+                message="Agent stream failed. Please retry.",
             ))
         finally:
             try:

@@ -6,6 +6,14 @@ from pydantic import BaseModel, Field
 
 ExecutionStatus = Literal["success", "error", "timeout", "cancelled", "runtime_lost"]
 
+_PUBLIC_ERROR_MESSAGES = {
+    "python_syntax_error": "Python code has invalid syntax.",
+    "python_runtime_error": "Python code execution failed.",
+    "execution_timeout": "Python execution timed out. Start a new session.",
+    "execution_cancelled": "Python execution was cancelled. Start a new session.",
+    "worker_protocol_error": "Python runtime is no longer available. Start a new session.",
+}
+
 
 class ExecutionError(BaseModel):
     code: str
@@ -32,7 +40,13 @@ class ExecutionResult(BaseModel):
     execution_time_ms: int
 
     def to_tool_payload(self) -> dict[str, Any]:
-        return self.model_dump(exclude={"plots"})
+        payload = self.model_dump(exclude={"plots": True, "error": {"traceback"}})
+        error = payload.get("error")
+        if isinstance(error, dict):
+            error["message"] = _PUBLIC_ERROR_MESSAGES.get(
+                str(error.get("code")), "Python execution failed."
+            )
+        return payload
 
 
 class PythonRuntime(Protocol):

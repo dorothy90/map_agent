@@ -103,7 +103,9 @@ export function AnalysisCard({ run, onCancel, cancelPending }: AnalysisCardProps
           <h2 id={`query-${run.runId}`}>{run.userMessage}</h2>
         </div>
         <div className="analysis-controls">
-          <span className="analysis-status">{statusLabels[run.status]}</span>
+          <span className="analysis-status" role="status" aria-live="polite">
+            {cancelPending ? "중지 중…" : statusLabels[run.status]}
+          </span>
           {run.status === "running" ? (
             <button className="stop-button" type="button" onClick={onCancel} disabled={cancelPending}>
               {cancelPending ? "중지 중…" : "중지"}

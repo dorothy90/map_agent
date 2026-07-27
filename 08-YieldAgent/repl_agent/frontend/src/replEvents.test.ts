@@ -30,7 +30,7 @@ describe("parseReplEvent", () => {
       },
     },
     { type: "RUN_FINISHED", ...common },
-    { type: "RUN_ERROR", ...common, code: "agent_error", message: "failed" },
+    { type: "RUN_ERROR", ...common, code: "agent_stream_error", message: "failed" },
     {
       type: "RUN_CANCELLED",
       ...common,
@@ -125,7 +125,7 @@ describe("parseReplEvent", () => {
       },
     ],
     ["RUN_ERROR code", { type: "RUN_ERROR", ...common, message: "failed" }],
-    ["RUN_ERROR message", { type: "RUN_ERROR", ...common, code: "agent_error" }],
+    ["RUN_ERROR message", { type: "RUN_ERROR", ...common, code: "agent_stream_error" }],
     [
       "RUN_CANCELLED code",
       { type: "RUN_CANCELLED", ...common, code: "cancelled", message: "cancelled" },
@@ -169,7 +169,7 @@ describe("SSE parsing", () => {
 
   it("decodes a response body when UTF-8 bytes split inside a character", async () => {
     const bytes = new TextEncoder().encode(
-      'data: {"type":"RUN_ERROR","run_id":"r1","thread_id":"s1","sequence":1,"code":"agent_error","message":"실패"}\n\n',
+      'data: {"type":"RUN_ERROR","run_id":"r1","thread_id":"s1","sequence":1,"code":"agent_stream_error","message":"실패"}\n\n',
     );
     const koreanByte = bytes.indexOf(0xec);
     const body = new ReadableStream<Uint8Array>({

@@ -80,6 +80,33 @@ class FakeToolAgent(FakeAgent):
         )]}}
 
 
+class DestructiveToolAgent(FakeAgent):
+    def __init__(self, status: str, code: str):
+        super().__init__()
+        self.status = status
+        self.code = code
+        self.finalized = False
+
+    async def astream(self, inputs, config, stream_mode):
+        try:
+            yield "updates", {"tools": {"messages": [ToolMessage(
+                content=json.dumps({
+                    "status": self.status,
+                    "error": {
+                        "code": self.code,
+                        "exception_name": "PythonRuntimeError",
+                        "message": "safe public message",
+                    },
+                    "execution_time_ms": 0,
+                }),
+                tool_call_id="tool-1",
+                name="run_python",
+            )]}}
+            yield "messages", (AIMessageChunk(content="must not be emitted"), {})
+        finally:
+            self.finalized = True
+
+
 class FakeArtifactAgent(FakeAgent):
     async def astream(self, inputs, config, stream_mode):
         yield "custom", {
@@ -218,9 +245,10 @@ def test_chat_stream_uses_standard_envelope(client, ready_session, monkeypatch):
 
 def test_tool_updates_become_correlated_events(client, ready_session, monkeypatch):
     monkeypatch.setattr(router_module, "get_agent", lambda: FakeToolAgent())
-    events = decode_sse(client.post(
+    response = client.post(
         "/repl/chat", json={"session_id": ready_session, "query": "mean"}
-    ).text)
+    )
+    events = decode_sse(response.text)
 
     tool_events = [event for event in events if event["type"].startswith("TOOL_")]
 
@@ -249,7 +277,10 @@ def test_busy_session_returns_structured_409(client, busy_session):
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "session_busy"
+    assert response.json()["detail"] == {
+        "code": "session_busy",
+        "message": "Session already has an active run.",
+    }
 
 
 def test_missing_and_lost_sessions_have_structured_errors(
@@ -266,9 +297,15 @@ def test_missing_and_lost_sessions_have_structured_errors(
     )
 
     assert missing.status_code == 404
-    assert missing.json()["detail"]["code"] == "session_not_found"
+    assert missing.json()["detail"] == {
+        "code": "session_not_found",
+        "message": "Session was not found.",
+    }
     assert lost.status_code == 410
-    assert lost.json()["detail"]["code"] == "runtime_lost"
+    assert lost.json()["detail"] == {
+        "code": "runtime_lost",
+        "message": "Python runtime is no longer available. Start a new session.",
+    }
 
 
 def test_run_registry_is_cleaned_after_stream(client, ready_session, monkeypatch):
@@ -282,20 +319,75 @@ def test_run_registry_is_cleaned_after_stream(client, ready_session, monkeypatch
     assert session_store.get_session(ready_session).status == "ready"
 
 
-def test_agent_error_is_standardized_and_cleanup_keeps_runtime_ready(
+def test_agent_stream_error_is_safe_and_cleanup_keeps_runtime_ready(
     client, ready_session, monkeypatch
 ):
     monkeypatch.setattr(router_module, "get_agent", lambda: FailingAgent())
+
+    response = client.post(
+        "/repl/chat", json={"session_id": ready_session, "query": "mean"}
+    )
+    events = decode_sse(response.text)
+
+    assert [event["type"] for event in events] == ["RUN_STARTED", "RUN_ERROR"]
+    assert events[-1] == {
+        **{key: events[-1][key] for key in ("type", "run_id", "thread_id", "sequence")},
+        "code": "agent_stream_error",
+        "message": "Agent stream failed. Please retry.",
+    }
+    assert "developer bug" not in response.text
+    assert session_store.get_session(ready_session).status == "ready"
+    assert router_module.run_registry.get(events[0]["run_id"]) is None
+
+
+@pytest.mark.parametrize(
+    ("status", "result_code", "terminal_type", "terminal_code"),
+    [
+        ("timeout", "execution_timeout", "RUN_ERROR", "execution_timeout"),
+        ("cancelled", "execution_cancelled", "RUN_CANCELLED", "execution_cancelled"),
+        ("runtime_lost", "worker_protocol_error", "RUN_ERROR", "runtime_lost"),
+    ],
+)
+def test_destructive_tool_result_is_the_only_terminal_and_closes_agent_stream(
+    client, ready_session, monkeypatch, status, result_code, terminal_type, terminal_code
+):
+    agent = DestructiveToolAgent(status, result_code)
+    monkeypatch.setattr(router_module, "get_agent", lambda: agent)
 
     events = decode_sse(client.post(
         "/repl/chat", json={"session_id": ready_session, "query": "mean"}
     ).text)
 
-    assert [event["type"] for event in events] == ["RUN_STARTED", "RUN_ERROR"]
-    assert events[-1]["code"] == "agent_error"
-    assert "RuntimeError: developer bug" in events[-1]["message"]
-    assert session_store.get_session(ready_session).status == "ready"
-    assert router_module.run_registry.get(events[0]["run_id"]) is None
+    assert [item["type"] for item in events] == [
+        "RUN_STARTED", "TOOL_RESULT", terminal_type
+    ]
+    assert events[-1]["code"] == terminal_code
+    assert sum(item["type"] in {"RUN_FINISHED", "RUN_ERROR", "RUN_CANCELLED"} for item in events) == 1
+    assert "must not be emitted" not in str(events)
+    assert agent.finalized is True
+    assert session_store.get_session(ready_session).status == "runtime_lost"
+
+
+def test_session_start_failure_uses_safe_stable_public_error(client, monkeypatch):
+    async def fail_create_session(**kwargs):
+        raise RuntimeError("provider exploded at /srv/private/app.py SECRET_TOKEN=hidden")
+
+    monkeypatch.setattr(router_module, "create_session", fail_create_session)
+
+    response = client.post("/repl/session", json={
+        "lotcd": "L12345",
+        "start": "2026-02-01",
+        "end": "2026-04-30",
+        "fail_name": "OPEN",
+    })
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": {
+        "code": "worker_start_failed",
+        "message": "Python worker failed to start. Please retry.",
+    }}
+    assert "/srv/private" not in response.text
+    assert "SECRET_TOKEN" not in response.text
 
 
 def test_first_turn_preserves_summary_and_later_turn_does_not_repeat_it(
@@ -600,6 +692,7 @@ def test_run_python_description_documents_json_result_contract():
         "stdout_truncated",
         "stderr_truncated",
     ])
+    assert "traceback" not in description
 
 
 def test_healthy_python_error_keeps_session_runtime_available(

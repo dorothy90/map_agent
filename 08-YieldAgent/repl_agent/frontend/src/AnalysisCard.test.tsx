@@ -112,6 +112,8 @@ describe("AnalysisCard", () => {
       <AnalysisCard run={runningRun} onCancel={vi.fn()} cancelPending />,
     );
     expect(screen.getByRole("button", { name: "중지 중…" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveAttribute("aria-live", "polite");
+    expect(screen.getByRole("status")).toHaveTextContent("중지 중…");
 
     rerender(<AnalysisCard run={failedRun} onCancel={vi.fn()} cancelPending={false} />);
     expect(screen.getByText("분석 코드를 실행하지 못했습니다.")).toBeInTheDocument();

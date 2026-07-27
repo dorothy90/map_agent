@@ -158,6 +158,30 @@ describe("useReplStream", () => {
     });
   });
 
+  it("parses a structured runtime-lost chat error and disables the session", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      detail: {
+        code: "runtime_lost",
+        message: "Python runtime is no longer available. Start a new session.",
+      },
+    }), {
+      status: 410,
+      headers: { "Content-Type": "application/json" },
+    })));
+    const { result } = renderHook(() => useReplStream("s1"));
+
+    await act(async () => result.current.send("mean"));
+
+    expect(result.current.state.runs[0]).toMatchObject({
+      status: "failed",
+      error: {
+        code: "runtime_lost",
+        message: "Python runtime is no longer available. Start a new session.",
+      },
+    });
+    expect(result.current.state.runtimeLost).toBe(true);
+  });
+
   it("fails a premature EOF before allowing the next send", async () => {
     const encoder = new TextEncoder();
     let firstController!: ReadableStreamDefaultController<Uint8Array>;

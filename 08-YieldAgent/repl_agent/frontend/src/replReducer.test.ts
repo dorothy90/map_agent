@@ -146,7 +146,7 @@ describe("replReducer", () => {
               run_id: "r1",
               thread_id: "s1",
               sequence: 2,
-              code: "agent_error",
+              code: "agent_stream_error",
               message: "failed",
             })
           : event({
@@ -175,6 +175,35 @@ describe("replReducer", () => {
     expect(state.runtimeLost).toBe(true);
   });
 
+  it("keeps a timeout failed and runtime-lost even if a late finish arrives", () => {
+    const events: ReplEvent[] = [
+      runStarted,
+      toolCall,
+      {
+        ...toolResult,
+        result: { status: "timeout", error: { code: "execution_timeout" } },
+      },
+      {
+        type: "RUN_ERROR",
+        run_id: "r1",
+        thread_id: "s1",
+        sequence: 4,
+        code: "execution_timeout",
+        message: "Python execution timed out. Start a new session.",
+      },
+      { type: "RUN_FINISHED", run_id: "r1", thread_id: "s1", sequence: 5 },
+    ];
+
+    const state = events.reduce(
+      (current, serverEvent) => replReducer(current, { type: "SERVER_EVENT", event: serverEvent }),
+      initialChatState,
+    );
+
+    expect(state.runs[0].status).toBe("failed");
+    expect(state.runs[0].error?.code).toBe("execution_timeout");
+    expect(state.runtimeLost).toBe(true);
+  });
+
   it("ignores events for unknown runs and stores local failures at sequence zero", () => {
     const unknown = replReducer(initialChatState, {
       type: "SERVER_EVENT",
@@ -190,6 +219,7 @@ describe("replReducer", () => {
     state = replReducer(state, {
       type: "LOCAL_ERROR",
       runId: "local-1",
+      code: "network_error",
       message: "network down",
     });
     expect(state.runs[0]).toMatchObject({

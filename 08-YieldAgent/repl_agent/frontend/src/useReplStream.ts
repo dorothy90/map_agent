@@ -13,6 +13,27 @@ const isAbortError = (error: unknown): boolean =>
   "name" in error &&
   error.name === "AbortError";
 
+const chatHttpError = async (response: Response): Promise<{ code: string; message: string }> => {
+  const fallback = {
+    code: response.status === 410 ? "runtime_lost" : "request_failed",
+    message: `Chat request failed (HTTP ${response.status}).`,
+  };
+  try {
+    const body = await response.json() as unknown;
+    if (typeof body !== "object" || body === null) return fallback;
+    const detail = (body as Record<string, unknown>).detail;
+    if (typeof detail !== "object" || detail === null) return fallback;
+    const code = (detail as Record<string, unknown>).code;
+    const message = (detail as Record<string, unknown>).message;
+    return {
+      code: response.status === 410 ? "runtime_lost" : typeof code === "string" ? code : fallback.code,
+      message: typeof message === "string" ? message : fallback.message,
+    };
+  } catch {
+    return fallback;
+  }
+};
+
 export function useReplStream(sessionId: string) {
   const [state, dispatch] = useReducer(replReducer, initialChatState);
   const [cancelPending, setCancelPending] = useState(false);
@@ -70,8 +91,12 @@ export function useReplStream(sessionId: string) {
           signal: controller.signal,
         });
         if (!response.ok) {
-          const detail = await response.text().catch(() => "");
-          throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
+          const failure = await chatHttpError(response);
+          if (!isCurrent()) return;
+          activeRunIdRef.current = null;
+          setCancelError(null);
+          dispatch({ type: "LOCAL_ERROR", runId: currentRunId, ...failure });
+          return;
         }
         for await (const event of parseSseStream(response.body)) {
           if (!isCurrent()) return;
@@ -98,6 +123,7 @@ export function useReplStream(sessionId: string) {
           dispatch({
             type: "LOCAL_ERROR",
             runId: currentRunId,
+            code: "network_error",
             message: "SSE stream ended before a terminal event",
           });
         }
@@ -105,7 +131,12 @@ export function useReplStream(sessionId: string) {
         if (isCurrent() && !(error instanceof DOMException && error.name === "AbortError")) {
           activeRunIdRef.current = null;
           setCancelError(null);
-          dispatch({ type: "LOCAL_ERROR", runId: currentRunId, message: errorMessage(error) });
+          dispatch({
+            type: "LOCAL_ERROR",
+            runId: currentRunId,
+            code: "network_error",
+            message: errorMessage(error),
+          });
         }
       } finally {
         if (streamControllerRef.current === controller) streamControllerRef.current = null;

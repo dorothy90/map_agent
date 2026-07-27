@@ -110,6 +110,109 @@ def test_create_session_publishes_record_after_runtime_ack(monkeypatch):
     assert "df.shape: (1, 9)" in session_store.get_session_summary(info["session_id"])
 
 
+def test_create_session_keeps_event_loop_responsive_during_worker_start(monkeypatch):
+    class SlowRuntime(FakeRuntime):
+        def __init__(self):
+            super().__init__()
+            self.create_started = threading.Event()
+            self.release_create = threading.Event()
+
+        def create_session(self, session_id, rows, query):
+            self.created.append(session_id)
+            self.create_started.set()
+            assert self.release_create.wait(timeout=2)
+
+    fake = SlowRuntime()
+    monkeypatch.setattr(session_store, "_runtime", fake)
+
+    async def scenario():
+        task = asyncio.create_task(session_store.create_session(
+            "L12345", "2026-02-01", "2026-04-30", "OPEN"
+        ))
+        await asyncio.to_thread(fake.create_started.wait, 1)
+        await asyncio.sleep(0)
+        responsive_before_release = not fake.release_create.is_set()
+        fake.release_create.set()
+        await task
+        return responsive_before_release
+
+    assert asyncio.run(scenario()) is True
+
+
+def test_cancelled_create_waits_for_worker_start_and_closes_unpublished_runtime(monkeypatch):
+    fake = BlockingCreateRuntime()
+    monkeypatch.setattr(session_store, "_runtime", fake)
+
+    async def scenario():
+        task = asyncio.create_task(session_store.create_session(
+            "L12345", "2026-02-01", "2026-04-30", "OPEN"
+        ))
+        await asyncio.to_thread(fake.create_started.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        retained_ownership = not task.done()
+        fake.release_create.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return retained_ownership
+
+    assert asyncio.run(scenario()) is True
+    assert len(fake.created) == 1
+    assert fake.closed == fake.created
+    assert session_store.get_session(fake.created[0]) is None
+
+
+def test_repeated_cancellation_cannot_abandon_starting_worker(monkeypatch):
+    fake = BlockingCreateRuntime()
+    monkeypatch.setattr(session_store, "_runtime", fake)
+
+    async def scenario():
+        task = asyncio.create_task(session_store.create_session(
+            "L12345", "2026-02-01", "2026-04-30", "OPEN"
+        ))
+        await asyncio.to_thread(fake.create_started.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        retained_ownership = not task.done()
+        fake.release_create.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return retained_ownership
+
+    assert asyncio.run(scenario()) is True
+    assert fake.closed == fake.created
+    assert session_store.get_session(fake.created[0]) is None
+
+
+def test_cancellation_takes_precedence_when_worker_start_later_fails(monkeypatch):
+    class FailingBlockedRuntime(BlockingCreateRuntime):
+        def create_session(self, session_id, rows, query):
+            self.created.append(session_id)
+            self.create_started.set()
+            assert self.release_create.wait(timeout=5)
+            raise RuntimeError("worker startup failed")
+
+    fake = FailingBlockedRuntime()
+    monkeypatch.setattr(session_store, "_runtime", fake)
+
+    async def scenario():
+        task = asyncio.create_task(session_store.create_session(
+            "L12345", "2026-02-01", "2026-04-30", "OPEN"
+        ))
+        await asyncio.to_thread(fake.create_started.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        fake.release_create.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert fake.closed == []
+    assert session_store.get_session(fake.created[0]) is None
+
+
 def test_create_session_failure_does_not_publish_record(monkeypatch):
     class FailingRuntime(FakeRuntime):
         def create_session(self, session_id, rows, query):

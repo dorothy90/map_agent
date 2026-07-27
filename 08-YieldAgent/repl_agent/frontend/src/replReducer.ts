@@ -41,7 +41,7 @@ export const initialChatState: ChatState = {
 export type ReplAction =
   | { type: "USER_SUBMITTED"; runId: string; query: string }
   | { type: "SERVER_EVENT"; event: ReplEvent }
-  | { type: "LOCAL_ERROR"; runId: string; message: string }
+  | { type: "LOCAL_ERROR"; runId: string; code: string; message: string }
   | { type: "RESET" };
 
 const runtimeLossCodes = new Set([
@@ -159,11 +159,12 @@ export function replReducer(state: ChatState, action: ReplAction): ChatState {
     const stateWithRun = replaceRun(state, index, {
       ...state.runs[index],
       status: "failed",
-      error: { code: "network_error", message: action.message },
+      error: { code: action.code, message: action.message },
     });
     return {
       ...stateWithRun,
       activeRunId: state.activeRunId === action.runId ? null : state.activeRunId,
+      runtimeLost: state.runtimeLost || runtimeLossCodes.has(action.code),
     };
   }
 
@@ -191,7 +192,11 @@ export function replReducer(state: ChatState, action: ReplAction): ChatState {
       activeRunId: event.run_id,
     };
   }
-  if (index < 0 || event.sequence <= state.runs[index].lastSequence) return state;
+  if (
+    index < 0 ||
+    event.sequence <= state.runs[index].lastSequence ||
+    state.runs[index].status !== "running"
+  ) return state;
 
   const run = applyServerEvent(state.runs[index], event);
   let next = replaceRun(state, index, run);
