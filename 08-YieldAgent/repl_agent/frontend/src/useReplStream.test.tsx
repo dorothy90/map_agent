@@ -376,4 +376,81 @@ describe("useReplStream", () => {
     await waitFor(() => expect(result.current.cancelError).toBeNull());
     streamController.close();
   });
+
+  it.each([
+    ["RUN_FINISHED", '{"type":"RUN_FINISHED","run_id":"r1","thread_id":"s1","sequence":2}'],
+    ["RUN_ERROR", '{"type":"RUN_ERROR","run_id":"r1","thread_id":"s1","sequence":2,"code":"python_error","message":"failed"}'],
+    ["RUN_CANCELLED", '{"type":"RUN_CANCELLED","run_id":"r1","thread_id":"s1","sequence":2,"code":"execution_cancelled","message":"cancelled"}'],
+    ["LOCAL_ERROR", null],
+  ])("clears a cancellation error when the active run ends with %s", async (_name, terminalEvent) => {
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+          controller.enqueue(encoder.encode(
+            'data: {"type":"RUN_STARTED","run_id":"r1","thread_id":"s1","sequence":1}\n\n',
+          ));
+        },
+      })))
+      .mockRejectedValueOnce(new TypeError("cancel network down"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useReplStream("s1"));
+    let sendPromise!: Promise<void>;
+    act(() => { sendPromise = result.current.send("slow"); });
+    await waitFor(() => expect(result.current.state.activeRunId).toBe("r1"));
+    await act(async () => {
+      await expect(result.current.cancel()).rejects.toThrow("cancel network down");
+    });
+    expect(result.current.cancelError).toBe("cancel network down");
+
+    if (terminalEvent) streamController.enqueue(encoder.encode(`data: ${terminalEvent}\n\n`));
+    streamController.close();
+    await act(async () => sendPromise);
+
+    expect(result.current.cancelError).toBeNull();
+  });
+
+  it("does not recreate a cancellation error when its failure arrives after the run ends", async () => {
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    let rejectCancel!: (error: Error) => void;
+    const cancelResponse = new Promise<Response>((_resolve, reject) => {
+      rejectCancel = reject;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+          controller.enqueue(encoder.encode(
+            'data: {"type":"RUN_STARTED","run_id":"r1","thread_id":"s1","sequence":1}\n\n',
+          ));
+        },
+      })))
+      .mockReturnValueOnce(cancelResponse);
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useReplStream("s1"));
+    let sendPromise!: Promise<void>;
+    let cancelPromise!: Promise<void>;
+    act(() => { sendPromise = result.current.send("slow"); });
+    await waitFor(() => expect(result.current.state.activeRunId).toBe("r1"));
+    act(() => { cancelPromise = result.current.cancel(); });
+    await waitFor(() => expect(result.current.cancelPending).toBe(true));
+
+    streamController.enqueue(encoder.encode(
+      'data: {"type":"RUN_FINISHED","run_id":"r1","thread_id":"s1","sequence":2}\n\n',
+    ));
+    streamController.close();
+    await act(async () => sendPromise);
+    expect(result.current.state.activeRunId).toBeNull();
+
+    await act(async () => {
+      rejectCancel(new TypeError("late cancel failure"));
+      await expect(cancelPromise).rejects.toThrow("late cancel failure");
+    });
+    expect(result.current.cancelError).toBeNull();
+  });
 });

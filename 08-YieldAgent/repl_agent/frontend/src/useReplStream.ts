@@ -88,11 +88,13 @@ export function useReplStream(sessionId: string) {
           ) {
             terminalReceived = true;
             activeRunIdRef.current = null;
+            setCancelError(null);
             break;
           }
         }
         if (isCurrent() && !terminalReceived) {
           activeRunIdRef.current = null;
+          setCancelError(null);
           dispatch({
             type: "LOCAL_ERROR",
             runId: currentRunId,
@@ -102,6 +104,7 @@ export function useReplStream(sessionId: string) {
       } catch (error) {
         if (isCurrent() && !(error instanceof DOMException && error.name === "AbortError")) {
           activeRunIdRef.current = null;
+          setCancelError(null);
           dispatch({ type: "LOCAL_ERROR", runId: currentRunId, message: errorMessage(error) });
         }
       } finally {
@@ -130,7 +133,9 @@ export function useReplStream(sessionId: string) {
       const generationChanged =
         !mountedRef.current || generationRef.current !== generation;
       if (!(isAbortError(error) && (controller.signal.aborted || generationChanged))) {
-        if (!generationChanged) setCancelError(errorMessage(error));
+        if (!generationChanged && activeRunIdRef.current === runId) {
+          setCancelError(errorMessage(error));
+        }
         throw error;
       }
     } finally {
