@@ -43,6 +43,18 @@ button.link {
   font: inherit;
   text-decoration: underline;
 }
+button.link:disabled {
+  color: #64748b;
+  cursor: wait;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
+}
 
 /* ── 메시지 리스트 ─────────────────────────────────────── */
 .messages {
@@ -224,6 +236,187 @@ button.link {
   font-size: 0.85rem;
 }
 
+/* ── 분석 실행 카드 ──────────────────────────────────── */
+.analysis-card {
+  width: 100%;
+  background: #111a2d;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.analysis-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid #1e293b;
+}
+.analysis-card-header h2 {
+  margin: 0.25rem 0 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.45;
+  color: #f8fafc;
+}
+.analysis-label {
+  display: block;
+  color: #64748b;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.analysis-controls {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 0.5rem;
+}
+.analysis-status {
+  color: #cbd5e1;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.status-running .analysis-status { color: #93c5fd; }
+.status-completed .analysis-status { color: #6ee7b7; }
+.status-failed .analysis-status,
+.status-cancelled .analysis-status { color: #fca5a5; }
+.stop-button {
+  padding: 0.35rem 0.65rem;
+  border: 1px solid #7f1d1d;
+  border-radius: 6px;
+  background: #450a0a;
+  color: #fecaca;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.75rem;
+}
+.stop-button:hover:not(:disabled) { background: #7f1d1d; }
+.stop-button:disabled { cursor: wait; opacity: 0.65; }
+
+.analysis-steps {
+  margin: 0;
+  padding: 0.9rem 1rem 0.2rem 2.9rem;
+  list-style: none;
+}
+.analysis-step {
+  position: relative;
+  padding: 0 0 1rem 1.1rem;
+  border-left: 1px solid #334155;
+}
+.analysis-step:last-child { border-left-color: transparent; }
+.step-index {
+  position: absolute;
+  top: 0;
+  left: -0.8rem;
+  display: grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  place-items: center;
+  border: 1px solid #3b82f6;
+  border-radius: 50%;
+  background: #0f172a;
+  color: #bfdbfe;
+  font: 700 0.68rem ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.step-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 1.5rem;
+  margin-bottom: 0.45rem;
+}
+.step-heading code { color: #e2e8f0; font-size: 0.82rem; }
+.step-kind {
+  color: #60a5fa;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.step-content details {
+  margin-top: 0.4rem;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  background: #0f172a;
+  overflow: hidden;
+}
+.step-content summary {
+  padding: 0.5rem 0.7rem;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+.result-meta,
+.truncation-badge {
+  margin-left: 0.55rem;
+  color: #94a3b8;
+  font: 0.7rem ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.truncation-badge {
+  padding: 0.08rem 0.35rem;
+  border: 1px solid #92400e;
+  border-radius: 999px;
+  color: #fcd34d;
+}
+.step-content pre,
+.result-output pre {
+  margin: 0;
+  padding: 0.7rem;
+  overflow: auto;
+  color: #e2e8f0;
+  background: #050a15;
+  font: 0.78rem/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.result-output section { border-top: 1px solid #1e293b; }
+.result-output h4 {
+  margin: 0;
+  padding: 0.4rem 0.7rem;
+  color: #64748b;
+  font-size: 0.67rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.execution-error h4,
+.execution-error pre { color: #fecaca; }
+.empty-output { margin: 0; padding: 0.7rem; color: #64748b; font-size: 0.78rem; }
+.artifact {
+  margin: 0.75rem 1rem 1rem;
+  padding: 0.4rem;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  background: #0b1220;
+  overflow: hidden;
+}
+.step-content .artifact { margin: 0.65rem 0 0; }
+.analysis-answer {
+  padding: 0.9rem 1rem 1rem;
+  border-top: 1px solid #1e293b;
+  color: #e2e8f0;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+.analysis-answer .analysis-label { margin-bottom: 0.4rem; }
+.analysis-error,
+.runtime-lost,
+.session-close-error {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid #7f1d1d;
+  border-radius: 6px;
+  background: #450a0a;
+  color: #fecaca;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+.analysis-error { margin: 0.8rem 1rem; }
+.runtime-lost { flex: none; }
+.session-close-error { margin-top: 0.75rem; }
+
 /* ── 입력 폼 ──────────────────────────────────────────── */
 form.input-row {
   display: flex;
@@ -318,4 +511,18 @@ form.input-row button:disabled {
   padding: 0.5rem 0.75rem;
   border-radius: 6px;
   font-size: 0.8rem;
+}
+
+@media (max-width: 640px) {
+  .app { padding: 0.8rem; }
+  .analysis-card-header { flex-direction: column; gap: 0.65rem; }
+  .analysis-controls { width: 100%; justify-content: space-between; }
+  .analysis-steps { padding-left: 2rem; padding-right: 0.7rem; }
+  .artifact { margin-left: 0.7rem; margin-right: 0.7rem; }
+  form.input-row input { min-width: 0; }
+  form.input-row button { padding: 0 0.85rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor { animation: none; }
 }
