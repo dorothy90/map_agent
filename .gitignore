@@ -253,3 +253,4 @@ image.png
 .playwright-mcp
 08-YieldAgent/yield_frontend/node_modules
 08-YieldAgent/yield_frontend/*.tsbuildinfo
+.worktrees/
