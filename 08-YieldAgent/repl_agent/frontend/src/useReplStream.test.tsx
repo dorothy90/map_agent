@@ -1,0 +1,157 @@
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useReplStream } from "./useReplStream";
+
+const sseResponse = (frames: string[]): Response => {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const frame of frames) controller.enqueue(encoder.encode(frame));
+        controller.close();
+      },
+    }),
+    { status: 200, headers: { "Content-Type": "text/event-stream" } },
+  );
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("useReplStream", () => {
+  it("posts the query and reduces every streamed event", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseResponse([
+        'data: {"type":"RUN_STARTED","run_id":"r1","thread_id":"s1","sequence":1}\n\n',
+        'data: {"type":"TEXT_MESSAGE_CONTENT","run_id":"r1","thread_id":"s1","sequence":2,"message_id":"m1","content":"answer"}\n\n' +
+          'data: {"type":"RUN_FINISHED","run_id":"r1","thread_id":"s1","sequence":3}\n\n',
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useReplStream("s1"));
+
+    await act(async () => result.current.send("mean"));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/repl/chat",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "s1", query: "mean" }),
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(result.current.state.runs[0]).toMatchObject({
+      runId: "r1",
+      status: "completed",
+      userMessage: "mean",
+      assistantText: "answer",
+      lastSequence: 3,
+    });
+    expect(result.current.sending).toBe(false);
+  });
+
+  it("posts cancellation without aborting the open stream", async () => {
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(
+          encoder.encode(
+            'data: {"type":"RUN_STARTED","run_id":"r1","thread_id":"s1","sequence":1}\n\n',
+          ),
+        );
+      },
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(stream, { status: 200 }))
+      .mockResolvedValueOnce(new Response('{"cancelled":true}', { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useReplStream("s1"));
+
+    let sendPromise!: Promise<void>;
+    act(() => {
+      sendPromise = result.current.send("slow");
+    });
+    await waitFor(() => expect(result.current.state.activeRunId).toBe("r1"));
+    const chatSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+
+    await act(async () => result.current.cancel());
+
+    expect(fetchMock).toHaveBeenLastCalledWith("/repl/runs/r1/cancel", { method: "POST" });
+    expect(chatSignal.aborted).toBe(false);
+    expect(result.current.sending).toBe(true);
+    streamController.enqueue(
+      encoder.encode(
+        'data: {"type":"RUN_CANCELLED","run_id":"r1","thread_id":"s1","sequence":2,"code":"execution_cancelled","message":"cancelled"}\n\n',
+      ),
+    );
+    streamController.close();
+    await act(async () => sendPromise);
+    expect(result.current.state.runs[0].status).toBe("cancelled");
+    expect(result.current.sending).toBe(false);
+  });
+
+  it("keeps cancel stable and suppresses duplicate cancellation requests", async () => {
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    let resolveCancel!: (response: Response) => void;
+    const cancelResponse = new Promise<Response>((resolve) => {
+      resolveCancel = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              streamController = controller;
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"type":"RUN_STARTED","run_id":"r1","thread_id":"s1","sequence":1}\n\n',
+                ),
+              );
+            },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockReturnValue(cancelResponse);
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useReplStream("s1"));
+    act(() => {
+      void result.current.send("slow");
+    });
+    await waitFor(() => expect(result.current.state.activeRunId).toBe("r1"));
+    const initialCancel = result.current.cancel;
+
+    act(() => {
+      void result.current.cancel();
+      void result.current.cancel();
+    });
+
+    await waitFor(() => expect(result.current.cancelPending).toBe(true));
+    expect(result.current.cancel).toBe(initialCancel);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    resolveCancel(new Response(null, { status: 200 }));
+    await waitFor(() => expect(result.current.cancelPending).toBe(false));
+    streamController.close();
+  });
+
+  it("creates a sequence-zero local failure when chat fetch fails", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("network down")));
+    const { result } = renderHook(() => useReplStream("s1"));
+
+    await act(async () => result.current.send("mean"));
+
+    expect(result.current.state.runs[0]).toMatchObject({
+      status: "failed",
+      userMessage: "mean",
+      lastSequence: 0,
+      error: { code: "network_error", message: "network down" },
+    });
+  });
+});
