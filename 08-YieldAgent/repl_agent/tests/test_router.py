@@ -124,6 +124,37 @@ class TrackingBlockingAgent(FakeAgent):
             self.finalized.set()
 
 
+class FailingCloseStream:
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+    async def aclose(self):
+        raise RuntimeError("close failed")
+
+
+class FailingCloseAgent(FakeAgent):
+    def astream(self, inputs, config, stream_mode):
+        return FailingCloseStream()
+
+
+class CleanupFailingAgent(FakeAgent):
+    def __init__(self):
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def astream(self, inputs, config, stream_mode):
+        try:
+            self.started.set()
+            if False:
+                yield None
+            await asyncio.Event().wait()
+        finally:
+            raise RuntimeError("discarded child cleanup failed")
+
+
 def decode_sse(body: str) -> list[dict]:
     return [
         json.loads(block.removeprefix("data: "))
@@ -412,6 +443,73 @@ def test_request_cancellation_awaits_child_task_and_finalizes_agent_stream(
     assert agent.finalized.is_set()
     assert router_module.run_registry.get(started["run_id"]) is None
     assert session_store.get_session(ready_session).status == "ready"
+
+
+def test_failing_aclose_still_finishes_session_and_unregisters_run(
+    ready_session, monkeypatch
+):
+    monkeypatch.setattr(router_module, "get_agent", lambda: FailingCloseAgent())
+
+    async def consume_stream():
+        response = await router_module.chat(router_module.ChatIn(
+            session_id=ready_session,
+            query="mean",
+        ))
+        stream = response.body_iterator.__aiter__()
+        started = decode_sse(await anext(stream))[0]
+        terminal = decode_sse(await anext(stream))[0]
+        with pytest.raises(RuntimeError, match="close failed"):
+            await anext(stream)
+        return started, terminal
+
+    started, terminal = asyncio.run(consume_stream())
+
+    assert [started["type"], terminal["type"]] == [
+        "RUN_STARTED", "RUN_FINISHED"
+    ]
+    assert router_module.run_registry.get(started["run_id"]) is None
+    record = session_store.get_session(ready_session)
+    assert record.status == "ready"
+    assert record.active_run_id is None
+
+
+def test_cancel_winner_survives_discarded_child_cleanup_error(
+    ready_session, monkeypatch
+):
+    agent = CleanupFailingAgent()
+    runtime = FakeRuntime()
+    runtime.cancel = lambda session_id, run_id: False
+    monkeypatch.setattr(router_module, "get_agent", lambda: agent)
+    monkeypatch.setattr(session_store, "_runtime", runtime)
+
+    async def cancel_stream():
+        response = await router_module.chat(router_module.ChatIn(
+            session_id=ready_session,
+            query="mean",
+        ))
+        stream = response.body_iterator.__aiter__()
+        started = decode_sse(await anext(stream))[0]
+        pending = asyncio.create_task(anext(stream))
+        await agent.started.wait()
+        await router_module.cancel_active_run(started["run_id"])
+        events = [decode_sse(await pending)[0]]
+        events.extend([
+            event
+            async for chunk in stream
+            for event in decode_sse(chunk)
+        ])
+        return started, events
+
+    started, events = asyncio.run(cancel_stream())
+
+    assert [started["type"], *[event["type"] for event in events]] == [
+        "RUN_STARTED", "RUN_CANCELLED"
+    ]
+    assert runtime.closed == [ready_session]
+    assert router_module.run_registry.get(started["run_id"]) is None
+    record = session_store.get_session(ready_session)
+    assert record.status == "runtime_lost"
+    assert record.active_run_id is None
 
 
 def test_delete_session_closes_worker(client, ready_session, monkeypatch):

@@ -138,18 +138,29 @@ async def _next_or_cancel(
     cancel_task: asyncio.Task[bool],
 ) -> tuple[bool, Any]:
     next_task = asyncio.create_task(anext(stream))
+    cancel_won = False
     try:
         done, _ = await asyncio.wait(
             {next_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
         )
         if cancel_task in done:
+            cancel_won = True
             return True, None
         return False, next_task.result()
     finally:
         if not next_task.done():
             next_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+        try:
             await next_task
+        except (asyncio.CancelledError, StopAsyncIteration):
+            pass
+        except Exception:
+            if not cancel_won:
+                raise
+            logger.warning(
+                "discarded agent stream task failed after cancellation won",
+                exc_info=True,
+            )
 
 
 @router.get("/health")
@@ -292,14 +303,18 @@ async def chat(body: ChatIn) -> StreamingResponse:
                 message=f"{type(exc).__name__}: {exc}",
             ))
         finally:
-            if cancel_task is not None and not cancel_task.done():
-                cancel_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await cancel_task
-            if agent_stream is not None:
-                await agent_stream.aclose()
-            finish_run(thread_id, run_id)
-            run_registry.unregister(run_id)
+            try:
+                if cancel_task is not None and not cancel_task.done():
+                    cancel_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await cancel_task
+                if agent_stream is not None:
+                    await agent_stream.aclose()
+            finally:
+                try:
+                    finish_run(thread_id, run_id)
+                finally:
+                    run_registry.unregister(run_id)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
