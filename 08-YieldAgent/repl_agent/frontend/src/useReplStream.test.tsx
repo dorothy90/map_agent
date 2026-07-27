@@ -258,10 +258,6 @@ describe("useReplStream", () => {
   it("aborts both chat and cancellation requests on unmount", async () => {
     const encoder = new TextEncoder();
     let streamController!: ReadableStreamDefaultController<Uint8Array>;
-    let resolveCancel!: (response: Response) => void;
-    const cancelResponse = new Promise<Response>((resolve) => {
-      resolveCancel = resolve;
-    });
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -279,7 +275,13 @@ describe("useReplStream", () => {
           { status: 200 },
         ),
       )
-      .mockReturnValueOnce(cancelResponse);
+      .mockImplementationOnce((_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("cancel aborted", "AbortError"));
+          });
+        }),
+      );
     vi.stubGlobal("fetch", fetchMock);
     const { result, unmount } = renderHook(() => useReplStream("s1"));
     let sendPromise!: Promise<void>;
@@ -300,7 +302,43 @@ describe("useReplStream", () => {
     expect(chatSignal.aborted).toBe(true);
     expect(cancelSignal.aborted).toBe(true);
     streamController.close();
-    resolveCancel(new Response(null, { status: 200 }));
-    await Promise.allSettled([sendPromise, cancelPromise]);
+    await expect(cancelPromise).resolves.toBeUndefined();
+    await sendPromise;
+  });
+
+  it("rejects unexpected cancellation transport failures", async () => {
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              streamController = controller;
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"type":"RUN_STARTED","run_id":"r1","thread_id":"s1","sequence":1}\n\n',
+                ),
+              );
+            },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockRejectedValueOnce(new TypeError("cancel network down"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useReplStream("s1"));
+    let sendPromise!: Promise<void>;
+    act(() => {
+      sendPromise = result.current.send("slow");
+    });
+    await waitFor(() => expect(result.current.state.activeRunId).toBe("r1"));
+
+    await expect(result.current.cancel()).rejects.toThrow("cancel network down");
+
+    expect(result.current.state.runs[0].status).toBe("running");
+    streamController.close();
+    await act(async () => sendPromise);
   });
 });

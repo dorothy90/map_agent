@@ -7,6 +7,12 @@ let nextLocalRunId = 1;
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const isAbortError = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "name" in error &&
+  error.name === "AbortError";
+
 export function useReplStream(sessionId: string) {
   const [state, dispatch] = useReducer(replReducer, initialChatState);
   const [cancelPending, setCancelPending] = useState(false);
@@ -116,6 +122,12 @@ export function useReplStream(sessionId: string) {
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      const generationChanged =
+        !mountedRef.current || generationRef.current !== generation;
+      if (!(isAbortError(error) && (controller.signal.aborted || generationChanged))) {
+        throw error;
+      }
     } finally {
       if (cancelControllerRef.current === controller) cancelControllerRef.current = null;
       if (mountedRef.current && generationRef.current === generation) {
