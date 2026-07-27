@@ -42,15 +42,100 @@ describe("parseReplEvent", () => {
   });
 
   it.each([
-    null,
-    [],
-    { type: "RUN_STARTED", thread_id: "s1", sequence: 1 },
-    { type: "RUN_STARTED", ...common, sequence: 0 },
-    { type: "TEXT_MESSAGE_CONTENT", ...common, message_id: "m1" },
-    { type: "TOOL_CALL_ARGS", ...common, tool_call_id: "t1", args: [] },
-    { type: "RUN_CANCELLED", ...common, code: "cancelled", message: "cancelled" },
-    { type: "NOT_APPROVED", ...common },
-  ])("rejects invalid local event schema %#", (value) => {
+    ["non-object", null],
+    ["array", []],
+    ["missing run_id", { type: "RUN_STARTED", thread_id: "s1", sequence: 1 }],
+    ["invalid sequence", { type: "RUN_STARTED", ...common, sequence: 0 }],
+    ["TEXT_MESSAGE_START message_id", { type: "TEXT_MESSAGE_START", ...common }],
+    [
+      "TEXT_MESSAGE_CONTENT content",
+      { type: "TEXT_MESSAGE_CONTENT", ...common, message_id: "m1" },
+    ],
+    [
+      "TEXT_MESSAGE_CONTENT message_id",
+      { type: "TEXT_MESSAGE_CONTENT", ...common, content: "hello" },
+    ],
+    ["TEXT_MESSAGE_END message_id", { type: "TEXT_MESSAGE_END", ...common }],
+    [
+      "TOOL_CALL_START name",
+      { type: "TOOL_CALL_START", ...common, tool_call_id: "t1" },
+    ],
+    [
+      "TOOL_CALL_START tool_call_id",
+      { type: "TOOL_CALL_START", ...common, name: "run_python" },
+    ],
+    ["TOOL_CALL_ARGS args", { type: "TOOL_CALL_ARGS", ...common, tool_call_id: "t1", args: [] }],
+    ["TOOL_CALL_ARGS tool_call_id", { type: "TOOL_CALL_ARGS", ...common, args: {} }],
+    ["TOOL_CALL_END tool_call_id", { type: "TOOL_CALL_END", ...common }],
+    [
+      "TOOL_RESULT result",
+      { type: "TOOL_RESULT", ...common, tool_call_id: "t1", result: [] },
+    ],
+    ["TOOL_RESULT tool_call_id", { type: "TOOL_RESULT", ...common, result: {} }],
+    ["ARTIFACT tool_call_id", { type: "ARTIFACT", ...common, artifact: {} }],
+    ["ARTIFACT object", { type: "ARTIFACT", ...common, tool_call_id: "t1", artifact: [] }],
+    [
+      "ARTIFACT artifact_id",
+      {
+        type: "ARTIFACT",
+        ...common,
+        tool_call_id: "t1",
+        artifact: {
+          kind: "plotly",
+          mime_type: "application/vnd.plotly.v1+json",
+          spec: {},
+        },
+      },
+    ],
+    [
+      "ARTIFACT kind",
+      {
+        type: "ARTIFACT",
+        ...common,
+        tool_call_id: "t1",
+        artifact: {
+          artifact_id: "p1",
+          kind: "png",
+          mime_type: "application/vnd.plotly.v1+json",
+          spec: {},
+        },
+      },
+    ],
+    [
+      "ARTIFACT mime_type",
+      {
+        type: "ARTIFACT",
+        ...common,
+        tool_call_id: "t1",
+        artifact: { artifact_id: "p1", kind: "plotly", mime_type: "text/plain", spec: {} },
+      },
+    ],
+    [
+      "ARTIFACT spec",
+      {
+        type: "ARTIFACT",
+        ...common,
+        tool_call_id: "t1",
+        artifact: {
+          artifact_id: "p1",
+          kind: "plotly",
+          mime_type: "application/vnd.plotly.v1+json",
+          spec: [],
+        },
+      },
+    ],
+    ["RUN_ERROR code", { type: "RUN_ERROR", ...common, message: "failed" }],
+    ["RUN_ERROR message", { type: "RUN_ERROR", ...common, code: "agent_error" }],
+    [
+      "RUN_CANCELLED code",
+      { type: "RUN_CANCELLED", ...common, code: "cancelled", message: "cancelled" },
+    ],
+    [
+      "RUN_CANCELLED message",
+      { type: "RUN_CANCELLED", ...common, code: "execution_cancelled" },
+    ],
+    ["unknown type", { type: "NOT_APPROVED", ...common }],
+  ])("rejects invalid local event schema: %s", (_label, value) => {
     expect(() => parseReplEvent(value)).toThrow();
   });
 });

@@ -99,6 +99,38 @@ describe("replReducer", () => {
     });
   });
 
+  it("preserves artifact correlation across distinct tool calls", () => {
+    const artifact = (sequence: number, toolCallId: string, artifactId: string): ReplEvent => ({
+      type: "ARTIFACT",
+      run_id: "r1",
+      thread_id: "s1",
+      sequence,
+      tool_call_id: toolCallId,
+      artifact: {
+        artifact_id: artifactId,
+        kind: "plotly",
+        mime_type: "application/vnd.plotly.v1+json",
+        spec: { data: [] },
+      },
+    });
+    const events: ReplEvent[] = [
+      runStarted,
+      toolCall,
+      { ...toolCall, sequence: 3, tool_call_id: "t2" },
+      artifact(4, "t1", "p1"),
+      artifact(5, "t2", "p2"),
+    ];
+
+    const state = events.reduce(
+      (current, serverEvent) => replReducer(current, { type: "SERVER_EVENT", event: serverEvent }),
+      initialChatState,
+    );
+
+    expect(state.runs[0].artifacts.map((item) => item.artifact_id)).toEqual(["p1", "p2"]);
+    expect(state.runs[0].steps[0].artifacts?.map((item) => item.artifact_id)).toEqual(["p1"]);
+    expect(state.runs[0].steps[1].artifacts?.map((item) => item.artifact_id)).toEqual(["p2"]);
+  });
+
   it.each([
     ["RUN_FINISHED", "completed"],
     ["RUN_ERROR", "failed"],

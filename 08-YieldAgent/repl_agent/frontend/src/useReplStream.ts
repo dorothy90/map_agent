@@ -11,27 +11,46 @@ export function useReplStream(sessionId: string) {
   const [state, dispatch] = useReducer(replReducer, initialChatState);
   const [cancelPending, setCancelPending] = useState(false);
   const streamControllerRef = useRef<AbortController | null>(null);
+  const cancelControllerRef = useRef<AbortController | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
   const cancelPendingRef = useRef(false);
+  const generationRef = useRef(0);
+  const mountedRef = useRef(false);
 
   useEffect(() => {
-    activeRunIdRef.current = state.activeRunId;
-  }, [state.activeRunId]);
+    mountedRef.current = true;
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    activeRunIdRef.current = null;
+    cancelPendingRef.current = false;
+    setCancelPending(false);
+    dispatch({ type: "RESET" });
 
-  useEffect(
-    () => () => {
+    return () => {
+      if (generationRef.current === generation) generationRef.current += 1;
+      mountedRef.current = false;
       streamControllerRef.current?.abort();
-    },
-    [sessionId],
-  );
+      cancelControllerRef.current?.abort();
+      streamControllerRef.current = null;
+      cancelControllerRef.current = null;
+      activeRunIdRef.current = null;
+      cancelPendingRef.current = false;
+    };
+  }, [sessionId]);
 
   const send = useCallback(
     async (query: string): Promise<void> => {
-      if (streamControllerRef.current) return;
+      if (!mountedRef.current || streamControllerRef.current || activeRunIdRef.current) {
+        return;
+      }
+      const generation = generationRef.current;
+      const isCurrent = () => mountedRef.current && generationRef.current === generation;
       const localRunId = `local-${nextLocalRunId++}`;
       let currentRunId = localRunId;
+      let terminalReceived = false;
       const controller = new AbortController();
       streamControllerRef.current = controller;
+      activeRunIdRef.current = localRunId;
       dispatch({ type: "USER_SUBMITTED", runId: localRunId, query });
 
       try {
@@ -46,11 +65,34 @@ export function useReplStream(sessionId: string) {
           throw new Error(`HTTP ${response.status}${detail ? `: ${detail}` : ""}`);
         }
         for await (const event of parseSseStream(response.body)) {
-          if (event.type === "RUN_STARTED") currentRunId = event.run_id;
+          if (!isCurrent()) return;
+          if (event.type === "RUN_STARTED") {
+            currentRunId = event.run_id;
+            activeRunIdRef.current = event.run_id;
+          }
           dispatch({ type: "SERVER_EVENT", event });
+          if (
+            event.run_id === currentRunId &&
+            (event.type === "RUN_FINISHED" ||
+              event.type === "RUN_ERROR" ||
+              event.type === "RUN_CANCELLED")
+          ) {
+            terminalReceived = true;
+            activeRunIdRef.current = null;
+            break;
+          }
+        }
+        if (isCurrent() && !terminalReceived) {
+          activeRunIdRef.current = null;
+          dispatch({
+            type: "LOCAL_ERROR",
+            runId: currentRunId,
+            message: "SSE stream ended before a terminal event",
+          });
         }
       } catch (error) {
-        if (!(error instanceof DOMException && error.name === "AbortError")) {
+        if (isCurrent() && !(error instanceof DOMException && error.name === "AbortError")) {
+          activeRunIdRef.current = null;
           dispatch({ type: "LOCAL_ERROR", runId: currentRunId, message: errorMessage(error) });
         }
       } finally {
@@ -62,15 +104,24 @@ export function useReplStream(sessionId: string) {
 
   const cancel = useCallback(async (): Promise<void> => {
     const runId = activeRunIdRef.current;
-    if (!runId || cancelPendingRef.current) return;
+    if (!mountedRef.current || !runId || cancelPendingRef.current) return;
+    const generation = generationRef.current;
+    const controller = new AbortController();
+    cancelControllerRef.current = controller;
     cancelPendingRef.current = true;
     setCancelPending(true);
     try {
-      const response = await fetch(`/repl/runs/${runId}/cancel`, { method: "POST" });
+      const response = await fetch(`/repl/runs/${runId}/cancel`, {
+        method: "POST",
+        signal: controller.signal,
+      });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
     } finally {
-      cancelPendingRef.current = false;
-      setCancelPending(false);
+      if (cancelControllerRef.current === controller) cancelControllerRef.current = null;
+      if (mountedRef.current && generationRef.current === generation) {
+        cancelPendingRef.current = false;
+        setCancelPending(false);
+      }
     }
   }, []);
 

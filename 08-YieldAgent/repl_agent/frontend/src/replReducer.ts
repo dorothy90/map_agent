@@ -12,6 +12,7 @@ export interface ToolStep {
   name: string;
   args?: Record<string, unknown>;
   result?: Record<string, unknown>;
+  artifacts?: PlotArtifact[];
 }
 
 export interface AnalysisRun {
@@ -40,7 +41,8 @@ export const initialChatState: ChatState = {
 export type ReplAction =
   | { type: "USER_SUBMITTED"; runId: string; query: string }
   | { type: "SERVER_EVENT"; event: ReplEvent }
-  | { type: "LOCAL_ERROR"; runId: string; message: string };
+  | { type: "LOCAL_ERROR"; runId: string; message: string }
+  | { type: "RESET" };
 
 const runtimeLossCodes = new Set([
   "runtime_lost",
@@ -111,7 +113,14 @@ function applyServerEvent(run: AnalysisRun, event: ReplEvent): AnalysisRun {
         })),
       };
     case "ARTIFACT":
-      return { ...next, artifacts: [...run.artifacts, event.artifact] };
+      return {
+        ...next,
+        artifacts: [...run.artifacts, event.artifact],
+        steps: upsertStep(run.steps, event.tool_call_id, (step) => ({
+          ...step,
+          artifacts: [...(step.artifacts ?? []), event.artifact],
+        })),
+      };
     case "RUN_FINISHED":
       return { ...next, status: "completed" };
     case "RUN_ERROR":
@@ -134,6 +143,8 @@ function applyServerEvent(run: AnalysisRun, event: ReplEvent): AnalysisRun {
 }
 
 export function replReducer(state: ChatState, action: ReplAction): ChatState {
+  if (action.type === "RESET") return initialChatState;
+
   if (action.type === "USER_SUBMITTED") {
     return {
       ...state,

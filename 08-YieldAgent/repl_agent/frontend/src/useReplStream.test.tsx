@@ -81,7 +81,10 @@ describe("useReplStream", () => {
 
     await act(async () => result.current.cancel());
 
-    expect(fetchMock).toHaveBeenLastCalledWith("/repl/runs/r1/cancel", { method: "POST" });
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/repl/runs/r1/cancel",
+      expect.objectContaining({ method: "POST", signal: expect.any(AbortSignal) }),
+    );
     expect(chatSignal.aborted).toBe(false);
     expect(result.current.sending).toBe(true);
     streamController.enqueue(
@@ -153,5 +156,151 @@ describe("useReplStream", () => {
       lastSequence: 0,
       error: { code: "network_error", message: "network down" },
     });
+  });
+
+  it("fails a premature EOF before allowing the next send", async () => {
+    const encoder = new TextEncoder();
+    let firstController!: ReadableStreamDefaultController<Uint8Array>;
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              firstController = controller;
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"type":"RUN_STARTED","run_id":"r1","thread_id":"s1","sequence":1}\n\n',
+                ),
+              );
+            },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        sseResponse([
+          'data: {"type":"RUN_STARTED","run_id":"r2","thread_id":"s1","sequence":1}\n\n' +
+            'data: {"type":"RUN_FINISHED","run_id":"r2","thread_id":"s1","sequence":2}\n\n',
+        ]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useReplStream("s1"));
+    let firstSend!: Promise<void>;
+    act(() => {
+      firstSend = result.current.send("first");
+    });
+    await waitFor(() => expect(result.current.state.activeRunId).toBe("r1"));
+
+    await act(async () => result.current.send("must not overlap"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    firstController.close();
+    await act(async () => firstSend);
+    expect(result.current.state.runs[0]).toMatchObject({
+      runId: "r1",
+      status: "failed",
+      lastSequence: 1,
+      error: { code: "network_error", message: expect.stringMatching(/terminal/i) },
+    });
+
+    await act(async () => result.current.send("second"));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.state.runs.map((run) => [run.runId, run.status])).toEqual([
+      ["r1", "failed"],
+      ["r2", "completed"],
+    ]);
+    expect(result.current.state.activeRunId).toBeNull();
+  });
+
+  it("resets on session change and ignores a late response from the old session", async () => {
+    let resolveOld!: (response: Response) => void;
+    const oldResponse = new Promise<Response>((resolve) => {
+      resolveOld = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(oldResponse)
+      .mockResolvedValueOnce(
+        sseResponse([
+          'data: {"type":"RUN_STARTED","run_id":"r2","thread_id":"s2","sequence":1}\n\n' +
+            'data: {"type":"RUN_FINISHED","run_id":"r2","thread_id":"s2","sequence":2}\n\n',
+        ]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result, rerender } = renderHook(
+      ({ sessionId }) => useReplStream(sessionId),
+      { initialProps: { sessionId: "s1" } },
+    );
+    let oldSend!: Promise<void>;
+    act(() => {
+      oldSend = result.current.send("old");
+    });
+    const oldSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+
+    rerender({ sessionId: "s2" });
+    await waitFor(() => expect(result.current.state.runs).toEqual([]));
+    expect(oldSignal.aborted).toBe(true);
+    resolveOld(
+      sseResponse([
+        'data: {"type":"RUN_STARTED","run_id":"old","thread_id":"s1","sequence":1}\n\n' +
+          'data: {"type":"RUN_FINISHED","run_id":"old","thread_id":"s1","sequence":2}\n\n',
+      ]),
+    );
+    await act(async () => oldSend);
+    expect(result.current.state.runs).toEqual([]);
+
+    await act(async () => result.current.send("new"));
+    expect(result.current.state.runs).toEqual([
+      expect.objectContaining({ runId: "r2", userMessage: "new", status: "completed" }),
+    ]);
+  });
+
+  it("aborts both chat and cancellation requests on unmount", async () => {
+    const encoder = new TextEncoder();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    let resolveCancel!: (response: Response) => void;
+    const cancelResponse = new Promise<Response>((resolve) => {
+      resolveCancel = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              streamController = controller;
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"type":"RUN_STARTED","run_id":"r1","thread_id":"s1","sequence":1}\n\n',
+                ),
+              );
+            },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockReturnValueOnce(cancelResponse);
+    vi.stubGlobal("fetch", fetchMock);
+    const { result, unmount } = renderHook(() => useReplStream("s1"));
+    let sendPromise!: Promise<void>;
+    let cancelPromise!: Promise<void>;
+    act(() => {
+      sendPromise = result.current.send("slow");
+    });
+    await waitFor(() => expect(result.current.state.activeRunId).toBe("r1"));
+    act(() => {
+      cancelPromise = result.current.cancel();
+    });
+    await waitFor(() => expect(result.current.cancelPending).toBe(true));
+    const chatSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+    const cancelSignal = fetchMock.mock.calls[1][1].signal as AbortSignal;
+
+    unmount();
+
+    expect(chatSignal.aborted).toBe(true);
+    expect(cancelSignal.aborted).toBe(true);
+    streamController.close();
+    resolveCancel(new Response(null, { status: 200 }));
+    await Promise.allSettled([sendPromise, cancelPromise]);
   });
 });
