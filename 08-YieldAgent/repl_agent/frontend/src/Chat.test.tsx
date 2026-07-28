@@ -67,6 +67,14 @@ describe("Chat", () => {
     expect(within(chat).getByRole("form", { name: "분석 질문" })).toBeInTheDocument();
   });
 
+  it("presents suggestions and a named send action inside the empty chat", () => {
+    render(<Chat sessionId="session-1" />);
+
+    const suggestions = screen.getByRole("group", { name: "추천 질문" });
+    expect(within(suggestions).getAllByRole("button")).toHaveLength(4);
+    expect(screen.getByRole("button", { name: "질문 보내기" })).toHaveTextContent("보내기");
+  });
+
   it("submits a trimmed question through useReplStream", () => {
     render(<Chat sessionId="session-1" />);
     const input = screen.getByPlaceholderText(/질문 입력/);
@@ -84,7 +92,7 @@ describe("Chat", () => {
 
     expect(screen.getByPlaceholderText(/질문 입력/)).toBeDisabled();
     expect(screen.getByText(/새 세션을 시작/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "보내기" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "질문 보내기" })).toBeDisabled();
   });
 
   it("handles cancellation rejection and shows an actionable error", async () => {

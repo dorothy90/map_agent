@@ -30,7 +30,7 @@
 - Consumes: `useReplStream(sessionId)` with existing `state`, `send`, `cancel`, `sending`, `cancelPending`, and `cancelError` values.
 - Produces: one `<section className="chat-shell" aria-label="분석 대화">` containing the existing message stream and composer; all Quartz styles use this boundary.
 
-- [ ] **Step 1: Write the failing chat-boundary test**
+- [x] **Step 1: Write the failing chat-boundary test**
 
 Add this test to `Chat.test.tsx`:
 
@@ -46,7 +46,7 @@ it("owns a labeled chat surface with its composer inside", () => {
 
 Import `within` from `@testing-library/react`.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -56,7 +56,7 @@ npm test -- src/Chat.test.tsx -t "owns a labeled chat surface"
 
 Expected: FAIL because no region named `분석 대화` exists.
 
-- [ ] **Step 3: Add the minimal semantic wrapper**
+- [x] **Step 3: Add the minimal semantic wrapper**
 
 Change `Chat` to return this structure without changing submission or cancellation logic:
 
@@ -72,7 +72,7 @@ return (
 );
 ```
 
-- [ ] **Step 4: Add only the layout styles needed by the wrapper**
+- [x] **Step 4: Add only the layout styles needed by the wrapper**
 
 Add chat-scoped tokens and layout at the start of the chat section in `styles.css`:
 
@@ -101,7 +101,7 @@ Add chat-scoped tokens and layout at the start of the chat section in `styles.cs
 
 Move chat layout styling under `.chat-shell` where necessary; do not change `.app`, `header`, or session-form ownership in this task.
 
-- [ ] **Step 5: Run the focused and full Chat tests**
+- [x] **Step 5: Run the focused and full Chat tests**
 
 Run:
 
@@ -111,7 +111,7 @@ npm test -- src/Chat.test.tsx
 
 Expected: 5 tests pass, including the new semantic-boundary test.
 
-- [ ] **Step 6: Commit Task 1**
+- [x] **Step 6: Commit Task 1**
 
 ```bash
 git add 08-YieldAgent/repl_agent/frontend/src/Chat.tsx \
@@ -135,7 +135,7 @@ git commit -m "feat(repl-ui): add quartz chat surface"
 - Consumes: unchanged `AnalysisRun`, `ToolStep`, `PlotlyMessage`, `onCancel`, and `cancelPending` props.
 - Produces: one `.analysis-run` article containing `.user-turn`, an ordered list labeled `Python 실행 과정`, disclosure-based execution details, correlated artifacts, and `.assistant-turn`.
 
-- [ ] **Step 1: Write failing semantic-flow tests**
+- [x] **Step 1: Write failing semantic-flow tests**
 
 Add these assertions to the main completed-run test in `AnalysisCard.test.tsx`:
 
@@ -150,7 +150,7 @@ expect(within(run).getByText(/stdout/).closest("details")).not.toHaveAttribute("
 
 The article obtains its name through the existing heading referenced by `aria-labelledby`.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -160,7 +160,7 @@ npm test -- src/AnalysisCard.test.tsx -t "renders code, structured output"
 
 Expected: FAIL because `.user-turn-text`, the labeled execution list, and `.assistant-turn` do not exist, and the disclosures are currently open.
 
-- [ ] **Step 3: Reshape the run without changing its data logic**
+- [x] **Step 3: Reshape the run without changing its data logic**
 
 Keep `correlatedArtifacts`, `uncorrelatedArtifacts`, result parsing, truncation handling, and Markdown rendering intact. Change presentation as follows:
 
@@ -193,7 +193,7 @@ Remove `open` from code and result `<details>`. Apply `step-completed` when `ste
 <li className={`analysis-step ${result ? "step-completed" : "step-running"}`}>
 ```
 
-- [ ] **Step 4: Implement Quartz Light run and timeline styles**
+- [x] **Step 4: Implement Quartz Light run and timeline styles**
 
 Replace the dark `.analysis-card` styles with chat-scoped `.analysis-run`, `.user-turn`, `.run-meta`, `.analysis-steps`, `.analysis-step`, `.step-index`, disclosure, output, artifact, answer, and state styles. Use:
 
@@ -229,7 +229,7 @@ Replace the dark `.analysis-card` styles with chat-scoped `.analysis-run`, `.use
 
 Use white surfaces for details and Plotly artifacts, pale warning/error surfaces, dark code text on a light blue-gray code background, and local overflow for code, tables, and plots. Do not introduce gradients or decorative animation.
 
-- [ ] **Step 5: Run the AnalysisCard suite**
+- [x] **Step 5: Run the AnalysisCard suite**
 
 Run:
 
@@ -237,9 +237,9 @@ Run:
 npm test -- src/AnalysisCard.test.tsx
 ```
 
-Expected: all 4 tests pass with disclosures collapsed in markup while their content remains available to assistive technology and the DOM.
+Expected: all 4 AnalysisCard tests pass with disclosures collapsed in markup while their content remains in the DOM; both Plotly tests pass with Quartz defaults and container-resize handling.
 
-- [ ] **Step 6: Commit Task 2**
+- [x] **Step 6: Commit Task 2**
 
 Before committing, add a `PlotlyMessage` test that asserts the default `paper_bgcolor`, `plot_bgcolor`, and font color are `#ffffff`, `#ffffff`, and `#172126`. Observe it fail against the dark defaults, then update only those three defaults so incoming artifact layout values can still override them.
 
@@ -260,13 +260,13 @@ git commit -m "feat(repl-ui): reshape analysis timeline"
 - Modify: `08-YieldAgent/repl_agent/frontend/src/Chat.test.tsx`
 - Modify: `08-YieldAgent/repl_agent/frontend/src/Chat.tsx`
 - Modify: `08-YieldAgent/repl_agent/frontend/src/styles.css`
-- Verify: `08-YieldAgent/repl_agent/frontend/e2e/repl-live.spec.ts`
+- Modify: `08-YieldAgent/repl_agent/frontend/e2e/repl-live.spec.ts`
 
 **Interfaces:**
 - Consumes: existing four preset tuples and existing `locked` behavior.
 - Produces: a Quartz Light empty state, suggestion chips, sticky white composer, narrow-layout safeguards, and unchanged live user flow.
 
-- [ ] **Step 1: Write the failing empty-state and composer test**
+- [x] **Step 1: Write the failing empty-state and composer test**
 
 Add to `Chat.test.tsx`:
 
@@ -280,7 +280,7 @@ it("presents suggestions and a named send action inside the empty chat", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -290,7 +290,7 @@ npm test -- src/Chat.test.tsx -t "presents suggestions"
 
 Expected: FAIL because the recommendation group and named send action do not exist.
 
-- [ ] **Step 3: Add accessible labels without changing behavior**
+- [x] **Step 3: Add accessible labels without changing behavior**
 
 Change only the preset container and submit button:
 
@@ -303,7 +303,7 @@ Change only the preset container and submit button:
 </button>
 ```
 
-- [ ] **Step 4: Finish chat-scoped Quartz Light CSS**
+- [x] **Step 4: Finish chat-scoped Quartz Light CSS**
 
 Apply the approved palette to `.messages`, `.empty-hint`, `.preset-row`, `.input-row`, cursor, errors, Markdown, and responsive rules only beneath `.chat-shell`. Required behavior:
 
@@ -338,7 +338,7 @@ Apply the approved palette to `.messages`, `.empty-hint`, `.preset-row`, `.input
 
 Ensure `.md table`, code blocks, `.artifact`, and `.result-output` have `max-width: 100%` and their own overflow. Keep focus rings and reduced-motion behavior.
 
-- [ ] **Step 5: Run focused tests, full frontend tests, and build**
+- [x] **Step 5: Run focused tests, full frontend tests, and build**
 
 Run:
 
@@ -348,9 +348,11 @@ npm test
 npm run build
 ```
 
-Expected: 80 frontend tests pass (two new tests) and the TypeScript/Vite build exits 0.
+Expected: 82 frontend tests pass (two new Chat tests and two new Plotly tests) and the TypeScript/Vite build exits 0.
 
-- [ ] **Step 6: Run real browser verification**
+- [x] **Step 6: Run real browser verification**
+
+Update the live selectors from `.analysis-card` to `.analysis-run` and from the old send accessible name to `질문 보내기`. Because code and result disclosures are intentionally collapsed, open their summaries before asserting code, status, and stdout.
 
 Start or reuse the real FastAPI and Vite servers, then run:
 
@@ -358,9 +360,9 @@ Start or reuse the real FastAPI and Vite servers, then run:
 PLAYWRIGHT_BASE_URL=http://127.0.0.1:5174 npm run e2e:live
 ```
 
-Expected: live session creation, real streamed Python execution, Plotly artifact, final assistant response, and cancellation scenarios pass. Inspect the rendered desktop and narrow viewport to confirm Quartz colors, inline ordering, composer visibility, and no horizontal overflow.
+Expected: live session creation, real streamed Python execution, Plotly artifact, final assistant response, worker reuse, and session close pass. Inspect the rendered desktop and narrow viewport to confirm Quartz colors, inline ordering, composer visibility, and no horizontal overflow; cancellation remains covered by the existing component and hook suites.
 
-- [ ] **Step 7: Review scope and commit Task 3**
+- [x] **Step 7: Review scope and commit Task 3**
 
 Run:
 

@@ -40,7 +40,7 @@ export function Chat({ sessionId }: { sessionId: string }) {
         {state.runs.length === 0 && !state.runtimeLost ? (
           <div className="empty-hint">
             <p>질문을 입력하거나 아래 예시를 선택하세요.</p>
-            <div className="preset-row">
+            <div className="preset-row" role="group" aria-label="추천 질문">
               {presets.map(([label, question]) => (
                 <button key={label} type="button" onClick={() => submitQuestion(question)} disabled={locked}>
                   {label}
@@ -75,7 +75,7 @@ export function Chat({ sessionId }: { sessionId: string }) {
           placeholder="질문 입력 — 예: fail_value 평균, 분포, wafer별 비교..."
           disabled={locked}
         />
-        <button type="submit" disabled={locked || !input.trim()}>
+        <button type="submit" aria-label="질문 보내기" disabled={locked || !input.trim()}>
           {sending ? "분석 중…" : "보내기"}
         </button>
       </form>

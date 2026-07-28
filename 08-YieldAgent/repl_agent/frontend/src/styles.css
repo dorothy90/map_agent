@@ -641,6 +641,88 @@ form.input-row button:disabled {
   cursor: not-allowed;
 }
 
+.chat-shell .messages {
+  min-height: 0;
+  gap: 1.6rem;
+  padding: clamp(1rem, 2.8vw, 2rem);
+  color: var(--chat-text);
+  scrollbar-gutter: stable;
+}
+.chat-shell .empty-hint {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  justify-content: center;
+  padding: clamp(1rem, 5vw, 3rem);
+  color: var(--chat-muted);
+  text-align: center;
+}
+.chat-shell .empty-hint p {
+  margin-bottom: 1rem;
+  color: var(--chat-text);
+  font-size: 1rem;
+  font-weight: 600;
+}
+.chat-shell .preset-row {
+  justify-content: center;
+  gap: 0.55rem;
+}
+.chat-shell .preset-row button {
+  min-height: 2.5rem;
+  border-color: var(--chat-divider);
+  border-radius: 999px;
+  background: var(--chat-surface);
+  color: #42545c;
+  transition: border-color 150ms ease, background-color 150ms ease, color 150ms ease;
+}
+.chat-shell .preset-row button:hover:not(:disabled) {
+  border-color: #9fb6c0;
+  background: #f8fbfc;
+  color: var(--chat-text);
+}
+.chat-shell form.input-row {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0 clamp(0.75rem, 2vw, 1.5rem) clamp(0.75rem, 2vw, 1.25rem);
+  padding: 0.45rem;
+  border: 1px solid var(--chat-divider);
+  border-radius: 14px;
+  background: var(--chat-surface);
+  box-shadow: 0 8px 24px rgb(23 33 38 / 8%);
+}
+.chat-shell form.input-row:focus-within {
+  border-color: #8caee9;
+  box-shadow: 0 0 0 3px rgb(39 102 216 / 10%), 0 8px 24px rgb(23 33 38 / 8%);
+}
+.chat-shell form.input-row input {
+  min-width: 0;
+  padding: 0.65rem 0.75rem;
+  border: 0;
+  background: transparent;
+  color: var(--chat-text);
+}
+.chat-shell form.input-row input::placeholder { color: #7b898f; }
+.chat-shell form.input-row input:focus-visible { outline: 0; }
+.chat-shell form.input-row button {
+  min-width: 4.6rem;
+  min-height: 2.5rem;
+  padding: 0 0.9rem;
+  border-radius: 10px;
+  background: var(--chat-action);
+  color: #ffffff;
+  font-weight: 650;
+}
+.chat-shell form.input-row button:hover:not(:disabled) { background: #1f58bd; }
+.chat-shell form.input-row button:disabled {
+  background: #bcc8cf;
+  color: #ffffff;
+}
+.chat-shell button:focus-visible,
+.chat-shell input:focus-visible,
+.chat-shell summary:focus-visible {
+  outline-color: var(--chat-action);
+}
+
 /* ── 세션 폼 ──────────────────────────────────────────── */
 .session-form {
   display: flex;
@@ -715,8 +797,17 @@ form.input-row button:disabled {
   .artifact { margin-left: 0.7rem; margin-right: 0.7rem; }
   form.input-row input { min-width: 0; }
   form.input-row button { padding: 0 0.85rem; }
+  .chat-shell { margin-top: 0.5rem; border-radius: 14px; }
+  .chat-shell .messages { padding: 1rem 0.75rem; }
+  .chat-shell .user-turn-text { max-width: 86%; }
+  .chat-shell .analysis-controls { width: auto; flex-wrap: wrap; }
+  .chat-shell .analysis-steps { padding-left: 1.8rem; padding-right: 0; }
+  .chat-shell .artifact { margin-left: 0; margin-right: 0; }
+  .chat-shell form.input-row { margin: 0 0.65rem 0.65rem; }
+  .chat-shell form.input-row button { min-width: 3.9rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .cursor { animation: none; }
+  .chat-shell .preset-row button { transition: none; }
 }
