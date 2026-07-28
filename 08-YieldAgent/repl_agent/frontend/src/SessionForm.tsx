@@ -49,14 +49,19 @@ export function SessionForm({ onStarted }: { onStarted: (info: SessionInfo) => v
 
   return (
     <form className="session-form" onSubmit={submit}>
-      <h2>새 세션</h2>
-      <p className="muted">LOTCD / 기간 / fail_name 을 지정하면 서버가 데이터를 한 번 불러와 이후 여러 검증을 이어서 수행합니다.</p>
+      <div className="session-form-heading">
+        <div>
+          <span className="data-sheet-label">ANALYSIS SOURCE</span>
+          <h2>데이터 선택</h2>
+        </div>
+        <p className="muted">분석할 LOT과 기간, 불량 유형을 선택하세요.</p>
+      </div>
 
-      <label>
-        LOTCD
-        <input value={lotcd} onChange={(e) => setLotcd(e.target.value)} required />
-      </label>
-      <div className="row">
+      <div className="session-form-grid">
+        <label>
+          LOTCD
+          <input value={lotcd} onChange={(e) => setLotcd(e.target.value)} required />
+        </label>
         <label>
           기간 시작
           <input type="date" value={start} onChange={(e) => setStart(e.target.value)} required />
@@ -65,20 +70,24 @@ export function SessionForm({ onStarted }: { onStarted: (info: SessionInfo) => v
           기간 끝
           <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} required />
         </label>
+        <label>
+          fail_name
+          <input value={failName} onChange={(e) => setFailName(e.target.value)} required />
+        </label>
       </div>
-      <label>
-        fail_name
-        <input value={failName} onChange={(e) => setFailName(e.target.value)} required />
-      </label>
-      <label>
-        컬럼 설명 (선택) — LLM 에 전달
-        <textarea
-          value={columnGuideline}
-          onChange={(e) => setColumnGuideline(e.target.value)}
-          placeholder={"예)\nfail_value: 이 wafer 의 불량 수치 (wafer 당 1개)\nlegend/legend_value: 공정 속성 (Equip/Chamber/Recipe/Route × 1~4)\noper: oper1~oper500 공정 step\nend_tm: wafer 완료 시각 (YYYY-MM-DD HH:MM:SS)"}
-          rows={4}
-        />
-      </label>
+
+      <details className="column-guideline">
+        <summary>컬럼 설명 추가 <span>선택</span></summary>
+        <label>
+          LLM에 전달할 컬럼 설명
+          <textarea
+            value={columnGuideline}
+            onChange={(e) => setColumnGuideline(e.target.value)}
+            placeholder={"예)\nfail_value: 이 wafer 의 불량 수치 (wafer 당 1개)\nlegend/legend_value: 공정 속성 (Equip/Chamber/Recipe/Route × 1~4)\noper: oper1~oper500 공정 step\nend_tm: wafer 완료 시각 (YYYY-MM-DD HH:MM:SS)"}
+            rows={4}
+          />
+        </label>
+      </details>
 
       {error && <div className="error">{error}</div>}
 

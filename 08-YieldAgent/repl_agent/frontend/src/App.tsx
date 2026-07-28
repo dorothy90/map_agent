@@ -43,28 +43,49 @@ export function App() {
 
   return (
     <div className="app">
-      <header>
-        <h1>Yield 검증 REPL</h1>
-        {session ? (
-          <p className="muted">
-            세션 {session.session_id.slice(0, 8)}… ·
-            LOTCD <b>{session.query.lotcd}</b> ·
-            기간 <b>{session.query.start}</b> ~ <b>{session.query.end}</b> ·
-            fail_name <b>{session.query.fail_name}</b> ·
-            {" "}rows <b>{session.rowcount}</b> ·
-            columns [{session.columns.join(", ")}]
-            {" · "}
-            <button className="link" onClick={() => void startNewSession()} disabled={closing}>
-              {closing ? "세션 종료 중…" : "새 세션"}
-            </button>
-          </p>
-        ) : (
-          <p className="muted">세션을 시작해 데이터를 먼저 불러오세요.</p>
-        )}
-      </header>
+      <main className="workspace" aria-label="Yield 분석 워크스페이스">
+        <header className="workspace-header">
+          <div className="brand-lockup">
+            <span className="brand-kicker">YIELD ANALYSIS</span>
+            <h1>Yield Agent</h1>
+          </div>
+          {session ? (
+            <span className="data-context-pill" aria-label="현재 데이터">
+              {session.query.lotcd} · {session.query.fail_name}
+            </span>
+          ) : (
+            <span className="data-context-pill is-empty">데이터 선택</span>
+          )}
+        </header>
 
-      {closeError ? <div className="session-close-error" role="alert">{closeError}</div> : null}
-      {session ? <Chat sessionId={session.session_id} /> : <SessionForm onStarted={setSession} />}
+        {session ? (
+          <section className="data-sheet data-sheet-summary" aria-label="선택된 데이터">
+            <div>
+              <span className="data-sheet-label">분석 데이터</span>
+              <strong>{session.query.lotcd} · {session.query.fail_name}</strong>
+              <span className="data-sheet-meta">
+                {session.query.start} — {session.query.end} · {session.rowcount.toLocaleString()} rows
+              </span>
+            </div>
+            <button className="data-change-button" onClick={() => void startNewSession()} disabled={closing}>
+              {closing ? "세션 종료 중…" : "데이터 변경"}
+            </button>
+          </section>
+        ) : (
+          <section className="data-sheet data-sheet-expanded" aria-label="분석 데이터 선택">
+            <SessionForm onStarted={setSession} />
+          </section>
+        )}
+
+        {closeError ? <div className="session-close-error" role="alert">{closeError}</div> : null}
+        {session ? (
+          <Chat sessionId={session.session_id} />
+        ) : (
+          <section className="chat-preview" aria-label="분석 대화 준비">
+            <p>데이터를 선택하면 이 화면에서 바로 분석을 시작할 수 있습니다.</p>
+          </section>
+        )}
+      </main>
     </div>
   );
 }

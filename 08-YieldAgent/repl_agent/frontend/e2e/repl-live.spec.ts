@@ -10,7 +10,9 @@ test("real LLM executes Python, reuses worker state, and renders a Plotly analys
 
   await page.goto("/");
   await page.getByRole("button", { name: "세션 시작" }).click();
-  await expect(page.getByText(/세션 [0-9a-f]{8}/)).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByLabel("현재 데이터")).toContainText("L12345 · OPEN", {
+    timeout: 60_000,
+  });
 
   await questionInput(page).fill(
     "wafer 단위로 중복 제거한 fail_value의 평균과 표준편차를 계산하고 히스토그램을 emit_plot으로 반드시 보여준 뒤 가설 검증 관점에서 판정해줘. 같은 Python worker 상태 재사용 검증을 위해 e2e_state_marker = 41 변수도 저장해줘",
@@ -71,6 +73,6 @@ test("real LLM executes Python, reuses worker state, and renders a Plotly analys
   ).toHaveText("42", { timeout: 180_000 });
   await expect(secondCard.locator(".analysis-status")).toHaveText("완료", { timeout: 180_000 });
 
-  await page.getByRole("button", { name: "새 세션" }).click();
+  await page.getByRole("button", { name: "데이터 변경" }).click();
   await expect(page.getByRole("button", { name: "세션 시작" })).toBeVisible({ timeout: 30_000 });
 });
