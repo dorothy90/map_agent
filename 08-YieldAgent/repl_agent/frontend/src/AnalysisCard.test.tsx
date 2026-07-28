@@ -53,6 +53,12 @@ describe("AnalysisCard", () => {
   it("renders code, structured output, plot, and final text in one card", () => {
     render(<AnalysisCard run={completedRun} onCancel={vi.fn()} cancelPending={false} />);
 
+    const run = screen.getByRole("article", { name: "fail_value 평균을 계산해줘" });
+    expect(within(run).getByText("fail_value 평균을 계산해줘")).toHaveClass("user-turn-text");
+    expect(within(run).getByRole("list", { name: "Python 실행 과정" })).toBeInTheDocument();
+    expect(within(run).getByText(/판정: 평균 차이/).closest(".assistant-turn")).toBeInTheDocument();
+    expect(within(run).getByText("코드").closest("details")).not.toHaveAttribute("open");
+    expect(within(run).getByText("stdout").closest("details")).not.toHaveAttribute("open");
     expect(screen.getByText("fail_value 평균을 계산해줘")).toBeInTheDocument();
     expect(screen.getByText(/wafer_df =/)).toBeInTheDocument();
     expect(screen.getByText(/stdout: 3.5/)).toBeInTheDocument();

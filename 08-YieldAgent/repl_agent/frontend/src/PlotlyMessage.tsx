@@ -16,9 +16,9 @@ export function PlotlyMessage({ artifact }: { artifact: PlotArtifact }) {
       <Plot
         data={spec.data}
         layout={{
-          paper_bgcolor: "#0b1220",
-          plot_bgcolor: "#0b1220",
-          font: { color: "#e2e8f0" },
+          paper_bgcolor: "#ffffff",
+          plot_bgcolor: "#ffffff",
+          font: { color: "#172126" },
           margin: { l: 48, r: 24, t: 48, b: 48 },
           ...(spec.layout ?? {}),
         }}

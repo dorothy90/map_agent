@@ -127,6 +127,8 @@ git commit -m "feat(repl-ui): add quartz chat surface"
 **Files:**
 - Modify: `08-YieldAgent/repl_agent/frontend/src/AnalysisCard.test.tsx`
 - Modify: `08-YieldAgent/repl_agent/frontend/src/AnalysisCard.tsx`
+- Create: `08-YieldAgent/repl_agent/frontend/src/PlotlyMessage.test.tsx`
+- Modify: `08-YieldAgent/repl_agent/frontend/src/PlotlyMessage.tsx`
 - Modify: `08-YieldAgent/repl_agent/frontend/src/styles.css`
 
 **Interfaces:**
@@ -239,9 +241,13 @@ Expected: all 4 tests pass with disclosures collapsed in markup while their cont
 
 - [ ] **Step 6: Commit Task 2**
 
+Before committing, add a `PlotlyMessage` test that asserts the default `paper_bgcolor`, `plot_bgcolor`, and font color are `#ffffff`, `#ffffff`, and `#172126`. Observe it fail against the dark defaults, then update only those three defaults so incoming artifact layout values can still override them.
+
 ```bash
 git add 08-YieldAgent/repl_agent/frontend/src/AnalysisCard.tsx \
   08-YieldAgent/repl_agent/frontend/src/AnalysisCard.test.tsx \
+  08-YieldAgent/repl_agent/frontend/src/PlotlyMessage.tsx \
+  08-YieldAgent/repl_agent/frontend/src/PlotlyMessage.test.tsx \
   08-YieldAgent/repl_agent/frontend/src/styles.css
 git commit -m "feat(repl-ui): reshape analysis timeline"
 ```

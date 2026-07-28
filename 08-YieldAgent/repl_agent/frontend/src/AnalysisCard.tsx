@@ -36,19 +36,19 @@ function ToolExecution({ step, index }: { step: ToolStep; index: number }) {
     : {};
 
   return (
-    <li className="analysis-step">
+    <li className={`analysis-step ${result ? "step-completed" : "step-running"}`}>
       <span className="step-index" aria-hidden="true">{index + 1}</span>
       <div className="step-content">
         <div className="step-heading">
           <span className="step-kind">Python</span>
           <code>{step.name || "도구 실행"}</code>
         </div>
-        <details open>
+        <details>
           <summary>코드</summary>
           <pre className="code"><code>{code || "(인자 없음)"}</code></pre>
         </details>
         {result ? (
-          <details open>
+          <details>
             <summary>
               결과
               {resultStatus ? <span className="result-status">{resultStatus}</span> : null}
@@ -96,12 +96,13 @@ export function AnalysisCard({ run, onCancel, cancelPending }: AnalysisCardProps
   );
 
   return (
-    <article className={`analysis-card status-${run.status}`} aria-labelledby={`query-${run.runId}`}>
-      <header className="analysis-card-header">
-        <div>
-          <span className="analysis-label">분석 요청</span>
-          <h2 id={`query-${run.runId}`}>{run.userMessage}</h2>
-        </div>
+    <article className={`analysis-run status-${run.status}`} aria-labelledby={`query-${run.runId}`}>
+      <header className="user-turn">
+        <h2 className="user-turn-text" id={`query-${run.runId}`}>{run.userMessage}</h2>
+      </header>
+
+      <div className="run-meta">
+        <span className="analysis-label">Analysis</span>
         <div className="analysis-controls">
           <span className="analysis-status" role="status" aria-live="polite">
             {cancelPending ? "중지 중…" : statusLabels[run.status]}
@@ -112,10 +113,10 @@ export function AnalysisCard({ run, onCancel, cancelPending }: AnalysisCardProps
             </button>
           ) : null}
         </div>
-      </header>
+      </div>
 
       {run.steps.length > 0 ? (
-        <ol className="analysis-steps">
+        <ol className="analysis-steps" aria-label="Python 실행 과정">
           {run.steps.map((step, index) => (
             <ToolExecution key={step.toolCallId} step={step} index={index} />
           ))}
@@ -135,7 +136,7 @@ export function AnalysisCard({ run, onCancel, cancelPending }: AnalysisCardProps
       ) : null}
 
       {run.assistantText || run.status === "running" ? (
-        <div className="analysis-answer md">
+        <div className="assistant-turn analysis-answer md">
           <span className="analysis-label">분석 결과</span>
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{run.assistantText || " "}</ReactMarkdown>
           {run.status === "running" ? <span className="cursor" aria-label="응답 작성 중">▍</span> : null}

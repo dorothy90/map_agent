@@ -443,6 +443,174 @@ summary:focus-visible {
 .cancel-error { flex: none; }
 .session-close-error { margin-top: 0.75rem; }
 
+/* ── Quartz Light 분석 흐름 ────────────────────────────── */
+.chat-shell .analysis-run {
+  width: 100%;
+  padding: 0.25rem 0 1.8rem;
+  border-bottom: 1px solid var(--chat-divider);
+}
+.chat-shell .analysis-run:last-child {
+  border-bottom: 0;
+}
+.chat-shell .user-turn {
+  display: flex;
+  justify-content: flex-end;
+}
+.chat-shell .user-turn-text {
+  max-width: 82%;
+  margin: 0;
+  padding: 0.7rem 0.9rem;
+  border-radius: 16px 16px 4px 16px;
+  background: #dde8f7;
+  color: var(--chat-text);
+  font-size: 0.92rem;
+  font-weight: 500;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.chat-shell .run-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+.chat-shell .analysis-label {
+  color: var(--chat-action);
+  font: 700 0.68rem/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.chat-shell .analysis-controls {
+  display: flex;
+  align-items: center;
+  flex: none;
+  gap: 0.55rem;
+}
+.chat-shell .analysis-status {
+  color: var(--chat-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.chat-shell .status-running .analysis-status { color: var(--chat-action); }
+.chat-shell .status-completed .analysis-status { color: var(--chat-success); }
+.chat-shell .status-failed .analysis-status,
+.chat-shell .status-cancelled .analysis-status { color: #a34139; }
+.chat-shell .stop-button {
+  min-height: 2rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid #e3b8b2;
+  border-radius: 8px;
+  background: #fff5f3;
+  color: #963b34;
+}
+.chat-shell .stop-button:hover:not(:disabled) { background: #fde8e5; }
+.chat-shell .analysis-steps {
+  margin: 0;
+  padding: 1rem 0 0.15rem 2.2rem;
+}
+.chat-shell .analysis-step {
+  border-left: 1px solid var(--chat-divider);
+  padding: 0 0 1.15rem 1.15rem;
+}
+.chat-shell .analysis-step:last-child { border-left-color: transparent; }
+.chat-shell .step-index {
+  left: -0.76rem;
+  width: 1.45rem;
+  height: 1.45rem;
+  border-color: var(--chat-action);
+  background: var(--chat-surface);
+  color: var(--chat-action);
+}
+.chat-shell .step-completed .step-index {
+  border-color: var(--chat-success);
+  background: var(--chat-success);
+  color: #ffffff;
+}
+.chat-shell .step-running .step-index {
+  border-color: var(--chat-action);
+  background: var(--chat-surface);
+  color: var(--chat-action);
+}
+.chat-shell .step-heading code {
+  color: var(--chat-text);
+}
+.chat-shell .step-kind {
+  color: var(--chat-action);
+}
+.chat-shell .step-content details {
+  border-color: var(--chat-divider);
+  border-radius: 9px;
+  background: var(--chat-surface);
+}
+.chat-shell .step-content summary {
+  min-height: 2.4rem;
+  padding: 0.58rem 0.75rem;
+  color: var(--chat-muted);
+}
+.chat-shell .step-content summary:hover { color: var(--chat-text); }
+.chat-shell .result-status { color: var(--chat-success); }
+.chat-shell .result-meta { color: var(--chat-muted); }
+.chat-shell .truncation-badge {
+  border-color: #e3b15f;
+  background: #fff7e7;
+  color: #86530a;
+}
+.chat-shell .step-content pre,
+.chat-shell .result-output pre {
+  max-width: 100%;
+  border-top-color: var(--chat-divider);
+  background: #edf2f5;
+  color: #243238;
+}
+.chat-shell .result-output section { border-top-color: var(--chat-divider); }
+.chat-shell .result-output h4 { color: var(--chat-muted); }
+.chat-shell .execution-error h4,
+.chat-shell .execution-error pre { color: #963b34; }
+.chat-shell .empty-output { color: var(--chat-muted); }
+.chat-shell .artifact {
+  max-width: 100%;
+  border-color: var(--chat-divider);
+  border-radius: 10px;
+  background: var(--chat-surface);
+}
+.chat-shell .analysis-answer {
+  padding: 1rem 0 0;
+  border-top: 0;
+  color: var(--chat-text);
+}
+.chat-shell .analysis-answer .analysis-label { margin-bottom: 0.55rem; }
+.chat-shell .md h1,
+.chat-shell .md h2,
+.chat-shell .md h3,
+.chat-shell .md h4,
+.chat-shell .md strong { color: var(--chat-text); }
+.chat-shell .md code {
+  background: #e4ebef;
+  color: #84520b;
+}
+.chat-shell .md pre {
+  max-width: 100%;
+  background: #e8eef1;
+}
+.chat-shell .md pre code { color: var(--chat-text); }
+.chat-shell .md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.chat-shell .md th,
+.chat-shell .md td { border-color: var(--chat-divider); }
+.chat-shell .analysis-error,
+.chat-shell .runtime-lost,
+.chat-shell .cancel-error {
+  border-color: #e7bbb5;
+  background: #fff2f0;
+  color: #8f342e;
+}
+.chat-shell .analysis-error { margin: 0.8rem 0 0; }
+.chat-shell .cursor { color: var(--chat-action); }
+
 /* ── 입력 폼 ──────────────────────────────────────────── */
 form.input-row {
   display: flex;
