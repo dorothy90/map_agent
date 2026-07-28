@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatState } from "./replReducer";
 import { Chat } from "./Chat";
@@ -57,6 +57,14 @@ describe("Chat", () => {
 
     expect(screen.getAllByTestId("analysis-r1")).toHaveLength(1);
     expect(screen.getByText("평균을 계산해줘")).toBeInTheDocument();
+  });
+
+  it("owns a labeled chat surface with its composer inside", () => {
+    render(<Chat sessionId="session-1" />);
+
+    const chat = screen.getByRole("region", { name: "분석 대화" });
+    expect(chat).toHaveClass("chat-shell");
+    expect(within(chat).getByRole("form", { name: "분석 질문" })).toBeInTheDocument();
   });
 
   it("submits a trimmed question through useReplStream", () => {

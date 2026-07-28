@@ -35,7 +35,7 @@ export function Chat({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <>
+    <section className="chat-shell" aria-label="분석 대화">
       <div className="messages">
         {state.runs.length === 0 && !state.runtimeLost ? (
           <div className="empty-hint">
@@ -68,7 +68,7 @@ export function Chat({ sessionId }: { sessionId: string }) {
           </div>
         ) : null}
       </div>
-      <form className="input-row" onSubmit={submit}>
+      <form className="input-row" aria-label="분석 질문" onSubmit={submit}>
         <input
           value={input}
           onChange={(event) => setInput(event.target.value)}
@@ -79,6 +79,6 @@ export function Chat({ sessionId }: { sessionId: string }) {
           {sending ? "분석 중…" : "보내기"}
         </button>
       </form>
-    </>
+    </section>
   );
 }

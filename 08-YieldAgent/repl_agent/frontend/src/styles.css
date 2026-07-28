@@ -57,6 +57,26 @@ summary:focus-visible {
 }
 
 /* ── 메시지 리스트 ─────────────────────────────────────── */
+.chat-shell {
+  --chat-canvas: #f1f4f5;
+  --chat-surface: #ffffff;
+  --chat-text: #172126;
+  --chat-muted: #65757c;
+  --chat-action: #2766d8;
+  --chat-success: #168765;
+  --chat-anomaly: #d47b36;
+  --chat-divider: #d6dfe2;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  margin-top: 0.75rem;
+  overflow: hidden;
+  border: 1px solid var(--chat-divider);
+  border-radius: 18px;
+  background: var(--chat-canvas);
+  color: var(--chat-text);
+}
 .messages {
   flex: 1;
   overflow-y: auto;
