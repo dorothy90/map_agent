@@ -1,49 +1,72 @@
-"""세션 시작 시 데이터를 미리 로드해 세션 네임스페이스를 만든다.
+"""세션 데이터 요약과 격리 프로세스 런타임의 수명 주기를 관리한다.
 
-`POST /repl/session` 이 이 모듈의 `create_session` 을 호출해 df 를 적재하고,
-이후 `run_python` 툴이 같은 세션(thread_id) 에 대해 `get_namespace(session_id)` 로
-동일한 dict 를 계속 사용한다. 변수는 턴 간 유지된다.
+`POST /repl/session` 이 이 모듈의 `create_session` 을 호출해 데이터를 적재하고,
+실제 DataFrame 및 실행 네임스페이스는 공유 프로세스 런타임이 소유한다.
 
 DATA_API_BASE_URL 이 설정되면 httpx 로 외부 API 를 탄다 — 없으면 같은 프로세스의
 mock 라우터 함수를 직접 호출한다. 둘 다 반환 스키마는 `{rows, query}`.
 
-추가로: P1 개선 — 세션 생성 시 df.shape/dtypes/head 요약을 문자열로 만들어 ns 에
-`__summary__` 로 저장한다. router.chat 이 첫 턴에만 이 요약을 HumanMessage 에
-prefix 로 넣어 LLM 이 컬럼/dtype 탐색 tool call 을 건너뛰게 한다.
+세션 생성 시 df.shape/dtypes/head 요약을 문자열로 만들어 레코드에 저장한다.
+router.chat 이 첫 턴에만 이 요약을 HumanMessage 에 prefix 로 넣는다.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 import uuid
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import Any, Literal
 
 import httpx
-import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import scipy  # noqa: F401 — run_python 네임스페이스 노출용
-import statsmodels.api as sm
 
 from .mock.routes import get_data as _mock_get_data
+from .runtime import runtime as _runtime
 
 _DATA_BASE = os.environ.get("DATA_API_BASE_URL")
 
-_SESSIONS: dict[str, dict[str, Any]] = {}
+SessionStatus = Literal["ready", "running", "runtime_lost"]
+
+
+@dataclass(frozen=True)
+class SessionRecord:
+    session_id: str
+    summary: str
+    status: SessionStatus = "ready"
+    active_run_id: str | None = None
+
+
+class SessionStateError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass
+class _CancellationReservation:
+    record: SessionRecord
+    completion_status: SessionStatus | None = None
+
+
+_SESSIONS: dict[str, SessionRecord] = {}
+_CANCELLATIONS: dict[str, _CancellationReservation] = {}
+_lifecycle_generation = 0
 _lock = threading.Lock()
 
 
-def _base_namespace() -> dict[str, Any]:
-    """매 세션 새로 만들어지는 베이스 네임스페이스 — 라이브러리 이름들만."""
-    return {
-        "pd": pd,
-        "np": np,
-        "px": px,
-        "go": go,
-        "sm": sm,
-    }
+async def _wait_for_owned_task(task: asyncio.Task[Any]) -> bool:
+    """Wait for a thread-backed task without letting request cancellation abandon it."""
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except BaseException:
+            break
+    return cancelled
 
 
 def _build_session_summary(
@@ -117,16 +140,42 @@ async def create_session(
     """
     rows = await _fetch_rows(lotcd, start, end, fail_name)
     df = pd.DataFrame(rows)
-    ns = _base_namespace()
     query = {"lotcd": lotcd, "start": start, "end": end, "fail_name": fail_name}
-    ns["df"] = df
-    ns["query"] = query
-    ns["__summary__"] = _build_session_summary(df, query, column_guideline)
-    ns["__column_guideline__"] = column_guideline or ""
-
     session_id = str(uuid.uuid4())
+    record = SessionRecord(
+        session_id=session_id,
+        summary=_build_session_summary(df, query, column_guideline),
+    )
+
     with _lock:
-        _SESSIONS[session_id] = ns
+        creation_generation = _lifecycle_generation
+
+    startup_task = asyncio.create_task(
+        asyncio.to_thread(_runtime.create_session, session_id, rows, query)
+    )
+    cancelled = await _wait_for_owned_task(startup_task)
+    try:
+        startup_task.result()
+    except BaseException as exc:
+        if cancelled:
+            raise asyncio.CancelledError from exc
+        raise
+    if cancelled:
+        close_task = asyncio.create_task(
+            asyncio.to_thread(_runtime.close_session, session_id)
+        )
+        await _wait_for_owned_task(close_task)
+        close_task.result()
+        raise asyncio.CancelledError
+    with _lock:
+        publish = creation_generation == _lifecycle_generation
+        if publish:
+            _SESSIONS[session_id] = record
+    if not publish:
+        await asyncio.to_thread(_runtime.close_session, session_id)
+        raise SessionStateError(
+            "session_closed", "Session creation was interrupted by runtime shutdown"
+        )
 
     # 숫자 컬럼이 뭐가 있는지 힌트를 같이 반환 — 프론트에서 첫 메시지로 보여주기 좋다.
     numeric_cols: list[str] = []
@@ -143,8 +192,8 @@ async def create_session(
     }
 
 
-def get_namespace(session_id: str) -> dict[str, Any] | None:
-    """세션 네임스페이스를 반환 (없으면 None)."""
+def get_session(session_id: str) -> SessionRecord | None:
+    """현재 세션 수명 주기 레코드를 반환한다."""
     with _lock:
         return _SESSIONS.get(session_id)
 
@@ -154,13 +203,127 @@ def get_session_summary(session_id: str) -> str | None:
 
     router.chat 이 첫 턴에만 HumanMessage 에 이 텍스트를 붙인다.
     """
-    ns = get_namespace(session_id)
-    if ns is None:
+    record = get_session(session_id)
+    if record is None:
         return None
-    return ns.get("__summary__")
+    return record.summary
 
 
-def drop_session(session_id: str) -> bool:
-    """세션 네임스페이스 해제."""
+def begin_run(session_id: str, run_id: str) -> None:
+    """준비된 세션을 실행 중으로 원자적으로 전환한다."""
     with _lock:
-        return _SESSIONS.pop(session_id, None) is not None
+        record = _SESSIONS.get(session_id)
+        if record is None:
+            raise SessionStateError(
+                "session_not_found", f"Unknown session: {session_id}"
+            )
+        if record.status == "runtime_lost":
+            raise SessionStateError(
+                "runtime_lost", f"Session runtime is no longer available: {session_id}"
+            )
+        if record.status == "running":
+            raise SessionStateError(
+                "session_busy", f"Session already has an active run: {session_id}"
+            )
+        _SESSIONS[session_id] = replace(
+            record, status="running", active_run_id=run_id
+        )
+
+
+def finish_run(
+    session_id: str,
+    run_id: str,
+    runtime_lost: bool = False,
+) -> bool:
+    """일치하는 실행만 종료하고 세션을 준비 또는 손실 상태로 전환한다."""
+    with _lock:
+        record = _SESSIONS.get(session_id)
+        if record is None or record.active_run_id != run_id:
+            return False
+        status: SessionStatus = "runtime_lost" if runtime_lost else "ready"
+        reservation = _CANCELLATIONS.get(session_id)
+        if reservation is not None and reservation.record is record:
+            if reservation.completion_status != "runtime_lost":
+                reservation.completion_status = status
+            return True
+        _SESSIONS[session_id] = replace(
+            record, status=status, active_run_id=None
+        )
+        return True
+
+
+def mark_runtime_lost(session_id: str, run_id: str) -> bool:
+    """일치하는 실행의 런타임을 파괴적 종료 상태로 표시한다."""
+    return finish_run(session_id, run_id, runtime_lost=True)
+
+
+def cancel_run(run_id: str) -> bool:
+    """활성 agent 실행의 worker 를 파괴하고 세션을 손실 상태로 만든다."""
+    with _lock:
+        match = next(
+            (
+                record
+                for record in _SESSIONS.values()
+                if record.status == "running" and record.active_run_id == run_id
+            ),
+            None,
+        )
+        if match is None or match.session_id in _CANCELLATIONS:
+            return False
+        reservation = _CancellationReservation(record=match)
+        _CANCELLATIONS[match.session_id] = reservation
+
+    try:
+        cancelled = _runtime.cancel(match.session_id, run_id)
+        if not cancelled:
+            _runtime.close_session(match.session_id)
+    except BaseException:
+        _resolve_cancellation(reservation, cancelled=False)
+        raise
+    _resolve_cancellation(reservation, cancelled=True)
+    return True
+
+
+def _resolve_cancellation(
+    reservation: _CancellationReservation,
+    cancelled: bool,
+) -> None:
+    """같은 레코드 세대에만 취소 결과 또는 보류된 완료를 반영한다."""
+    session_id = reservation.record.session_id
+    with _lock:
+        if _CANCELLATIONS.get(session_id) is not reservation:
+            return
+        current = _SESSIONS.get(session_id)
+        if current is reservation.record:
+            if cancelled:
+                _SESSIONS[session_id] = replace(
+                    current, status="runtime_lost", active_run_id=None
+                )
+            elif reservation.completion_status is not None:
+                _SESSIONS[session_id] = replace(
+                    current,
+                    status=reservation.completion_status,
+                    active_run_id=None,
+                )
+        del _CANCELLATIONS[session_id]
+
+
+def close_session(session_id: str) -> bool:
+    """세션 레코드와 런타임을 한 번만 닫는다."""
+    with _lock:
+        record = _SESSIONS.pop(session_id, None)
+        _CANCELLATIONS.pop(session_id, None)
+    if record is None:
+        return False
+    _runtime.close_session(session_id)
+    return True
+
+
+def close_all_sessions() -> None:
+    """모든 런타임을 닫고 세션 레코드를 비운다."""
+    global _lifecycle_generation
+    with _lock:
+        _lifecycle_generation += 1
+        _SESSIONS.clear()
+        _CANCELLATIONS.clear()
+    _runtime.close_all()

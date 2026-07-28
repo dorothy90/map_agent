@@ -16,9 +16,12 @@ P4 개선: astream config 에 recursion_limit=30 을 넣어 도구 반복 폭주
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import uuid
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -27,8 +30,34 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from pydantic import BaseModel
 
 from .agent import get_agent
+from .events import (
+    ArtifactEvent,
+    BaseReplEvent,
+    EventEmitter,
+    RunCancelled,
+    RunError,
+    RunFinished,
+    RunStarted,
+    TextMessageContent,
+    TextMessageEnd,
+    TextMessageStart,
+    ToolCallArgs,
+    ToolCallEnd,
+    ToolCallStart,
+    ToolResult,
+)
 from .mock.routes import router as mock_router
-from .session_store import create_session, get_namespace, get_session_summary
+from .run_registry import run_registry
+from .session_store import (
+    SessionStateError,
+    begin_run,
+    cancel_run,
+    close_session,
+    create_session,
+    finish_run,
+    get_session_summary,
+    mark_runtime_lost,
+)
 
 logger = logging.getLogger("repl_agent")
 
@@ -49,8 +78,98 @@ class ChatIn(BaseModel):
     query: str
 
 
-def _sse(event: dict[str, Any]) -> str:
-    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+def _sse(event: BaseReplEvent) -> str:
+    return f"data: {event.model_dump_json()}\n\n"
+
+
+def _session_error(exc: SessionStateError) -> HTTPException:
+    status_codes = {
+        "session_not_found": 404,
+        "session_busy": 409,
+        "runtime_lost": 410,
+    }
+    messages = {
+        "session_not_found": "Session was not found.",
+        "session_busy": "Session already has an active run.",
+        "runtime_lost": "Python runtime is no longer available. Start a new session.",
+    }
+    return HTTPException(
+        status_code=status_codes.get(exc.code, 409),
+        detail={
+            "code": exc.code,
+            "message": messages.get(exc.code, "Session state does not allow this request."),
+        },
+    )
+
+
+def _tool_events(data: Any, emitter: EventEmitter) -> list[BaseReplEvent]:
+    events: list[BaseReplEvent] = []
+    if not isinstance(data, dict):
+        return events
+    for node_state in data.values():
+        if not isinstance(node_state, dict):
+            continue
+        for message in node_state.get("messages", []):
+            if isinstance(message, AIMessage):
+                for tool_call in message.tool_calls or []:
+                    tool_call_id = tool_call.get("id", "")
+                    events.extend([
+                        emitter.build(
+                            ToolCallStart,
+                            tool_call_id=tool_call_id,
+                            name=tool_call.get("name", ""),
+                        ),
+                        emitter.build(
+                            ToolCallArgs,
+                            tool_call_id=tool_call_id,
+                            args=tool_call.get("args", {}),
+                        ),
+                        emitter.build(ToolCallEnd, tool_call_id=tool_call_id),
+                    ])
+            elif isinstance(message, ToolMessage):
+                raw = message.content
+                try:
+                    result = json.loads(raw) if isinstance(raw, str) else raw
+                except json.JSONDecodeError:
+                    result = {"content": raw}
+                if not isinstance(result, dict):
+                    result = {"content": result}
+                events.append(emitter.build(
+                    ToolResult,
+                    tool_call_id=message.tool_call_id or "",
+                    result=result,
+                ))
+    return events
+
+
+async def _next_or_cancel(
+    stream: AsyncIterator[Any],
+    cancel_task: asyncio.Task[bool],
+) -> tuple[bool, Any]:
+    next_task = asyncio.create_task(anext(stream))
+    cancel_won = False
+    try:
+        done, _ = await asyncio.wait(
+            {next_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if cancel_task in done:
+            cancel_won = True
+            return True, None
+        return False, next_task.result()
+    finally:
+        if not next_task.done():
+            next_task.cancel()
+        try:
+            await next_task
+        except (asyncio.CancelledError, StopAsyncIteration):
+            pass
+        except Exception:
+            if not cancel_won:
+                raise
+            logger.warning(
+                "discarded agent stream task failed after cancellation won",
+                exc_info=True,
+            )
 
 
 @router.get("/health")
@@ -86,7 +205,10 @@ async def start_session(body: SessionIn) -> dict[str, Any]:
         logger.exception("repl_agent session creation failed")
         raise HTTPException(
             status_code=502,
-            detail=f"데이터 로드 실패: {type(exc).__name__}: {exc}",
+            detail={
+                "code": "worker_start_failed",
+                "message": "Python worker failed to start. Please retry.",
+            },
         ) from exc
     return info
 
@@ -94,91 +216,160 @@ async def start_session(body: SessionIn) -> dict[str, Any]:
 @router.post("/chat")
 async def chat(body: ChatIn) -> StreamingResponse:
     """세션 안에서 agent 에 질문을 던지고 SSE 로 응답."""
-    if get_namespace(body.session_id) is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"session '{body.session_id}' 가 없거나 만료됨. /repl/session 으로 먼저 시작하세요.",
-        )
-
     thread_id = body.session_id
+    run_id = str(uuid.uuid4())
+    try:
+        begin_run(thread_id, run_id)
+    except SessionStateError as exc:
+        raise _session_error(exc) from exc
+
+    control = run_registry.register(run_id, thread_id)
+    emitter = EventEmitter(run_id=run_id, thread_id=thread_id)
     # recursion_limit: 기존 yield supervisor 와 동일한 값(agent_server.py:243). 도구 반복 폭주 차단.
-    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 30}
-    agent = get_agent()
+    config = {
+        "configurable": {"thread_id": thread_id, "run_id": run_id},
+        "recursion_limit": 30,
+    }
 
-    # 첫 턴 여부: checkpointer 에 해당 thread 의 messages 가 비어있으면 first-turn 으로 판단.
-    # (agent_server.py:279-280 의 `prev_state = await graph.aget_state(config)` 패턴 차용)
-    prev_state = await agent.aget_state(config)
-    is_first_turn = not (
-        prev_state and prev_state.values and prev_state.values.get("messages")
-    )
-
-    user_content = body.query
-    if is_first_turn:
-        summary = get_session_summary(body.session_id) or ""
-        if summary:
-            user_content = f"{summary}\n\n[질문]\n{body.query}"
-
-    async def generate():
-        yield _sse({"type": "start", "session_id": thread_id})
+    async def generate() -> AsyncIterator[str]:
+        cancel_task: asyncio.Task[bool] | None = None
+        agent_stream: AsyncIterator[Any] | None = None
+        text_message_id: str | None = None
         try:
-            async for mode, data in agent.astream(
+            yield _sse(emitter.build(RunStarted))
+            agent = get_agent()
+            prev_state = await agent.aget_state(config)
+            is_first_turn = not (
+                prev_state and prev_state.values and prev_state.values.get("messages")
+            )
+            user_content = body.query
+            if is_first_turn:
+                summary = get_session_summary(thread_id) or ""
+                if summary:
+                    user_content = f"{summary}\n\n[질문]\n{body.query}"
+
+            agent_stream = agent.astream(
                 {"messages": [{"role": "user", "content": user_content}]},
                 config=config,
                 stream_mode=["updates", "messages", "custom"],
-            ):
+            ).__aiter__()
+            cancel_task = asyncio.create_task(control.cancel_event.wait())
+
+            while True:
+                try:
+                    cancelled, part = await _next_or_cancel(agent_stream, cancel_task)
+                except StopAsyncIteration:
+                    break
+                if cancelled:
+                    if text_message_id is not None:
+                        yield _sse(emitter.build(
+                            TextMessageEnd, message_id=text_message_id
+                        ))
+                    yield _sse(emitter.build(RunCancelled))
+                    return
+
+                mode, data = part
                 if mode == "custom":
-                    if isinstance(data, dict) and data.get("kind") == "plot":
-                        yield _sse({"type": "plot", "payload": data["spec"]})
+                    if isinstance(data, dict) and data.get("kind") == "artifacts":
+                        tool_call_id = data.get("tool_call_id", "")
+                        for artifact in data.get("artifacts", []):
+                            yield _sse(emitter.build(
+                                ArtifactEvent,
+                                tool_call_id=tool_call_id,
+                                artifact=artifact,
+                            ))
                     continue
 
                 if mode == "messages":
                     msg, _meta = data
-                    # AIMessageChunk 만 토큰 스트림으로 취급한다.
-                    # (ToolMessage 도 이 채널로 올 수 있어 assistant 버블에 섞이는 걸 방지)
                     if not isinstance(msg, AIMessageChunk):
                         continue
                     content = msg.content
                     if isinstance(content, str) and content:
-                        yield _sse({"type": "token", "content": content})
+                        if text_message_id is None:
+                            text_message_id = str(uuid.uuid4())
+                            yield _sse(emitter.build(
+                                TextMessageStart, message_id=text_message_id
+                            ))
+                        yield _sse(emitter.build(
+                            TextMessageContent,
+                            message_id=text_message_id,
+                            content=content,
+                        ))
                     continue
 
                 if mode == "updates":
-                    if not isinstance(data, dict):
-                        continue
-                    for _node_name, node_state in data.items():
-                        if not isinstance(node_state, dict):
-                            continue
-                        for m in node_state.get("messages", []):
-                            if isinstance(m, AIMessage):
-                                # LLM 이 호출한 도구들 — 각 tool_call 을 개별 이벤트로 방출
-                                for tc in getattr(m, "tool_calls", None) or []:
-                                    yield _sse({
-                                        "type": "tool_call",
-                                        "id": tc.get("id", ""),
-                                        "name": tc.get("name", ""),
-                                        "args": tc.get("args", {}),
-                                    })
-                                # 최종 assistant 텍스트 (토큰 스트림이 비어있을 때의 fallback)
-                                content = m.content
-                                if isinstance(content, str) and content:
-                                    yield _sse({"type": "assistant", "content": content})
-                            elif isinstance(m, ToolMessage):
-                                raw = m.content
-                                tm_content = raw if isinstance(raw, str) else str(raw)
-                                yield _sse({
-                                    "type": "tool_result",
-                                    "tool_call_id": getattr(m, "tool_call_id", "") or "",
-                                    "name": getattr(m, "name", "") or "",
-                                    "content": tm_content,
-                                })
+                    for event in _tool_events(data, emitter):
+                        yield _sse(event)
+                        if isinstance(event, ToolResult):
+                            status = event.result.get("status")
+                            if status not in {"timeout", "cancelled", "runtime_lost"}:
+                                continue
+                            mark_runtime_lost(thread_id, run_id)
+                            if text_message_id is not None:
+                                yield _sse(emitter.build(
+                                    TextMessageEnd, message_id=text_message_id
+                                ))
+                                text_message_id = None
+                            if status == "cancelled":
+                                yield _sse(emitter.build(RunCancelled))
+                            elif status == "timeout":
+                                yield _sse(emitter.build(
+                                    RunError,
+                                    code="execution_timeout",
+                                    message="Python execution timed out. Start a new session.",
+                                ))
+                            else:
+                                yield _sse(emitter.build(
+                                    RunError,
+                                    code="runtime_lost",
+                                    message="Python runtime is no longer available. Start a new session.",
+                                ))
+                            return
+
+            if text_message_id is not None:
+                yield _sse(emitter.build(
+                    TextMessageEnd, message_id=text_message_id
+                ))
+            yield _sse(emitter.build(RunFinished))
         except Exception as exc:
             logger.exception("repl_agent chat error")
-            yield _sse({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
-            return
-
-        yield _sse({"type": "end"})
+            yield _sse(emitter.build(
+                RunError,
+                code="agent_stream_error",
+                message="Agent stream failed. Please retry.",
+            ))
+        finally:
+            try:
+                if cancel_task is not None and not cancel_task.done():
+                    cancel_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await cancel_task
+                if agent_stream is not None:
+                    await agent_stream.aclose()
+            finally:
+                try:
+                    finish_run(thread_id, run_id)
+                finally:
+                    run_registry.unregister(run_id)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_active_run(run_id: str) -> dict[str, Any]:
+    control = run_registry.get(run_id)
+    signalled = control is not None
+    cancelled = await asyncio.to_thread(cancel_run, run_id)
+    if control is not None:
+        control.cancel_event.set()
+    return {"run_id": run_id, "cancelled": signalled or cancelled}
+
+
+@router.delete("/session/{session_id}")
+async def delete_session(session_id: str) -> dict[str, Any]:
+    closed = await asyncio.to_thread(close_session, session_id)
+    return {"session_id": session_id, "closed": closed}
 
 
 # session_id 는 위의 POST /session 이 만드는 uuid 지만, 혹시 프론트가 직접 만들고 싶을 때 대비해
