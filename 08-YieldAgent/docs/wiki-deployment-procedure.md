@@ -56,7 +56,8 @@ uv add pyyaml      # 또는 pip install pyyaml
 ```bash
 # 필수
 WIKI_FIRST_ENABLED=true                            # 장애 시 false로 즉시 차단 가능
-WIKI_VAULT_PATH=/opt/yield-agent/wiki              # 사내 영구 저장 위치 (예시)
+WIKI_VAULT_PATH=/Users/daehwankim/SYLDAIX/YieldWiki
+WIKI_REQUIRE_EXTERNAL_VAULT=true
 DOWNLOAD_BASE_URL=https://internal-api/docs        # 사내 PPT 다운로드 베이스
 WIKI_SUMMARIZE_MODEL=<사내 로컬 LLM 모델명>          # 미설정 시 RETRIEVE_CHAIN_MODEL fallback
 
@@ -67,11 +68,106 @@ OPENSEARCH_INDEX=fail-history
 RETRIEVE_CHAIN_MODEL=<사내 LLM>
 ```
 
+위 경로는 로컬/enterprise 검증용 절대 경로입니다. 실제 운영 서버에서는 워크스테이션
+경로를 사용하지 말고, 서버에 마운트한 전용 절대 경로를 `WIKI_VAULT_PATH`에 설정합니다.
+환경 변수 이름은 배포 환경마다 동일하게 유지합니다.
+
 vault 폴더는 코드가 자동 `mkdir` — uvicorn 실행 유저의 권한만 확인:
 ```bash
 mkdir -p $WIKI_VAULT_PATH
 ls -ld $WIKI_VAULT_PATH    # 쓰기 권한 확인
 ```
+
+---
+
+## 3-1. 기존 Vault를 외부 Vault로 비파괴 마이그레이션
+
+먼저 dry-run으로 대상 파일 수를 확인한 뒤 apply를 실행합니다.
+
+```bash
+cd 08-YieldAgent
+python migrate_wiki_vault.py \
+  --source wiki \
+  --target /Users/daehwankim/SYLDAIX/YieldWiki \
+  --dry-run
+
+python migrate_wiki_vault.py \
+  --source wiki \
+  --target /Users/daehwankim/SYLDAIX/YieldWiki \
+  --apply
+```
+
+마이그레이션은 source Vault 파일을 삭제하지 않습니다. 롤백이 필요하면 서버를 중지한
+다음, 이전 `WIKI_VAULT_PATH`로 복원하여 재기동합니다.
+
+---
+
+## 3-2. M1 외부 Vault 검증 절차
+
+### 3-2-1. 격리 Wiki 테스트
+
+```bash
+cd 08-YieldAgent
+python -m pytest -q tests/wiki
+```
+
+모든 M1 Wiki 테스트가 실패 없이 통과해야 합니다.
+
+### 3-2-2. 문법 및 공백 검증
+
+```bash
+cd 08-YieldAgent
+python -m py_compile wiki_config.py wiki_store.py wiki_router.py bootstrap_wiki_warmup.py wiki_lint.py migrate_v2_to_v3.py migrate_wiki_vault.py agent_server.py
+git diff --check
+```
+
+두 명령은 모두 exit `0`이어야 합니다.
+
+### 3-2-3. 실제 OpenSearch → LLM → 외부 Vault 합성
+
+아래 명령은 `4SS | EASY | PRE METAL CLN` 한 트리플에 대해서만 실제 OpenSearch와
+설정된 LLM을 호출합니다.
+
+```bash
+cd 08-YieldAgent
+WIKI_VAULT_PATH=/Users/daehwankim/SYLDAIX/YieldWiki \
+WIKI_REQUIRE_EXTERNAL_VAULT=true \
+python -c 'from bootstrap_wiki_warmup import process_triple; status, message = process_triple({"product": "4SS", "fail_type": "EASY", "cause_oper": "PRE METAL CLN", "source": "e2e"}, max_docs=5); print(status, message); raise SystemExit(0 if status == "ok" else 1)'
+```
+
+`fail-history`가 해당 트리플 문서를 반환하고, 구조화된 Concept 합성 결과가
+`/Users/daehwankim/SYLDAIX/YieldWiki/concepts/`에 생성 또는 갱신되며, 명령은 `ok`와
+exit `0`을 출력해야 합니다.
+
+### 3-2-4. production Wiki router로 같은 외부 Vault 검증
+
+현재 전역 환경에서는 기록된 `motor`/`pymongo` 호환성 문제로 전체 `agent_server`를
+import할 수 없습니다. M1에서는 의존성 버전을 바꾸지 않고, production `wiki_router`를
+변경 없이 mount한 최소 FastAPI 프로세스를 사용합니다. 첫 터미널에서 실행합니다.
+
+```bash
+cd 08-YieldAgent
+WIKI_VAULT_PATH=/Users/daehwankim/SYLDAIX/YieldWiki \
+WIKI_REQUIRE_EXTERNAL_VAULT=true \
+python -c 'from fastapi import FastAPI; import uvicorn; from wiki_router import router; app=FastAPI(); app.include_router(router, prefix="/api/wiki"); uvicorn.run(app, host="127.0.0.1", port=8001)'
+```
+
+두 번째 터미널에서 graph를 요청합니다.
+
+```bash
+curl --fail 'http://127.0.0.1:8001/api/wiki/graph?view=product_tree&limit=20'
+```
+
+HTTP `200` JSON에 외부 Vault의 Concept 하나 이상이 `has_wiki: true`로 포함되어야 합니다.
+
+### 3-2-5. M1 범위 확인
+
+```bash
+git diff main...HEAD --name-only | rg '^(08-YieldAgent/(yield_frontend|wiki_frontend|repl_agent/frontend|pages)/|08-YieldAgent/app.py$)'
+```
+
+출력이 없어야 합니다. 이 검증은 M1에서 기존 frontend source와 `app.py`를 변경하지
+않았음을 확인합니다.
 
 ---
 
