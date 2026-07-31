@@ -35,6 +35,8 @@ def migrate_vault(source: Path, target: Path, *, apply: bool) -> MigrationReport
     target = target.resolve()
     if not source.is_dir():
         raise FileNotFoundError(f"source Vault not found: {source}")
+    if target.is_relative_to(source):
+        raise ValueError(f"target Vault must not be inside source Vault: {target}")
     files = plan_migration(source)
     if not apply:
         return MigrationReport(planned=len(files), copied=0, identical=0)
@@ -67,7 +69,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         report = migrate_vault(args.source, args.target, apply=args.apply)
-    except (FileNotFoundError, FileExistsError, OSError) as exc:
+    except (FileNotFoundError, FileExistsError, OSError, ValueError) as exc:
         print(f"migration failed: {exc}")
         return 1
     print(f"source={args.source.resolve()}")

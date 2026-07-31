@@ -1,8 +1,9 @@
+import sys
 from pathlib import Path
 
 import pytest
 
-from migrate_wiki_vault import migrate_vault, sha256_file
+from migrate_wiki_vault import main, migrate_vault, sha256_file
 
 
 pytestmark = pytest.mark.no_server
@@ -38,6 +39,47 @@ def test_apply_copies_and_verifies_checksums(tmp_path):
     assert sha256_file(source / "concepts" / "one.md") == sha256_file(
         target / "concepts" / "one.md"
     )
+
+
+def test_apply_is_idempotent_for_a_separate_target(tmp_path):
+    source = _source_vault(tmp_path)
+    target = tmp_path / "target"
+
+    migrate_vault(source, target, apply=True)
+    report = migrate_vault(source, target, apply=True)
+
+    assert report.copied == 0
+    assert report.identical == 2
+
+
+def test_apply_refuses_target_nested_inside_source(tmp_path):
+    source = _source_vault(tmp_path)
+    target = source / "export"
+
+    with pytest.raises(ValueError, match="target.*source"):
+        migrate_vault(source, target, apply=True)
+
+    assert not target.exists()
+
+
+def test_cli_reports_nested_target_as_a_migration_failure(tmp_path, monkeypatch, capsys):
+    source = _source_vault(tmp_path)
+    target = source / "export"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "migrate_wiki_vault.py",
+            "--source",
+            str(source),
+            "--target",
+            str(target),
+            "--apply",
+        ],
+    )
+
+    assert main() == 1
+    assert "migration failed: target Vault must not be inside source Vault" in capsys.readouterr().out
 
 
 def test_apply_refuses_different_existing_target(tmp_path):
