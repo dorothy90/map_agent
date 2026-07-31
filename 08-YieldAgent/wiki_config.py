@@ -67,6 +67,17 @@ def resolve_wiki_paths(
     )
 
 
+def _initialize_file(path: Path, content: str) -> None:
+    if path.exists():
+        return
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def initialize_wiki_vault(paths: WikiPaths) -> None:
     for directory in (
         paths.episodes,
@@ -80,16 +91,22 @@ def initialize_wiki_vault(paths: WikiPaths) -> None:
         paths.state_dir,
     ):
         directory.mkdir(parents=True, exist_ok=True)
-    if not paths.log.exists():
-        paths.log.write_text("# Wiki Operation Log\n\n", encoding="utf-8")
-    if not paths.index.exists():
-        paths.index.write_text("# Wiki Index\n\n", encoding="utf-8")
+    _initialize_file(paths.log, "# Wiki Operation Log\n\n")
+    _initialize_file(paths.index, "# Wiki Index\n\n")
 
 
 def validate_wiki_vault(paths: WikiPaths) -> None:
     probe = paths.state_dir / f".write-probe-{uuid.uuid4().hex}"
+    error: OSError | None = None
     try:
         probe.write_text("ok", encoding="utf-8")
-        probe.unlink()
     except OSError as exc:
-        raise WikiConfigurationError(f"Wiki Vault is not writable: {paths.root}") from exc
+        error = exc
+    finally:
+        try:
+            probe.unlink(missing_ok=True)
+        except OSError as exc:
+            if error is None:
+                error = exc
+    if error is not None:
+        raise WikiConfigurationError(f"Wiki Vault is not writable: {paths.root}") from error

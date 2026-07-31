@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import wiki_config
 
 from wiki_config import (
     WikiConfigurationError,
@@ -50,6 +51,24 @@ def test_initialize_creates_complete_m1_layout(tmp_path):
     assert paths.log.read_text(encoding="utf-8") == "# Wiki Operation Log\n\n"
 
 
+def test_initialize_creates_index_and_log_with_same_directory_atomic_replace(
+    tmp_path, monkeypatch
+):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    original_replace = wiki_config.os.replace
+    replacements = []
+
+    def record_replace(source, destination):
+        replacements.append((Path(source), Path(destination)))
+        original_replace(source, destination)
+
+    monkeypatch.setattr(wiki_config.os, "replace", record_replace)
+    initialize_wiki_vault(paths)
+
+    assert {destination for _, destination in replacements} == {paths.index, paths.log}
+    assert all(source.parent == destination.parent for source, destination in replacements)
+
+
 def test_validate_reports_unwritable_vault(tmp_path, monkeypatch):
     paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
     initialize_wiki_vault(paths)
@@ -60,3 +79,27 @@ def test_validate_reports_unwritable_vault(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "write_text", fail_write_text)
     with pytest.raises(WikiConfigurationError, match="not writable"):
         validate_wiki_vault(paths)
+
+
+def test_validate_attempts_probe_cleanup_when_writing_fails(tmp_path, monkeypatch):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    cleanup_attempts = []
+
+    def fail_write_text(self, *args, **kwargs):
+        raise PermissionError("write failed")
+
+    def fail_unlink(self, *args, **kwargs):
+        cleanup_attempts.append(self)
+        raise PermissionError("cleanup failed")
+
+    monkeypatch.setattr(Path, "write_text", fail_write_text)
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    with pytest.raises(WikiConfigurationError, match="not writable") as exc_info:
+        validate_wiki_vault(paths)
+
+    assert len(cleanup_attempts) == 1
+    assert cleanup_attempts[0].parent == paths.state_dir
+    assert cleanup_attempts[0].name.startswith(".write-probe-")
+    assert isinstance(exc_info.value.__cause__, PermissionError)
+    assert str(exc_info.value.__cause__) == "write failed"
