@@ -1,5 +1,6 @@
 import os
 import stat
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -91,11 +92,14 @@ def test_initialize_preserves_file_created_during_promotion(tmp_path, monkeypatc
 def test_validate_reports_unwritable_vault(tmp_path, monkeypatch):
     paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
     initialize_wiki_vault(paths)
+    original_open = wiki_config.os.open
 
-    def fail_write_text(self, *args, **kwargs):
-        raise PermissionError("read-only share")
+    def fail_probe_open(path, flags, mode=0o777, *, dir_fd=None):
+        if str(path).startswith(".write-probe-"):
+            raise PermissionError("read-only share")
+        return original_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr(Path, "write_text", fail_write_text)
+    monkeypatch.setattr(wiki_config.os, "open", fail_probe_open)
     with pytest.raises(WikiConfigurationError, match="not writable"):
         validate_wiki_vault(paths)
 
@@ -103,27 +107,34 @@ def test_validate_reports_unwritable_vault(tmp_path, monkeypatch):
 def test_validate_probes_every_managed_writer_directory(tmp_path, monkeypatch):
     paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
     initialize_wiki_vault(paths)
-    original_write_text = Path.write_text
+    original_open = wiki_config.os.open
     probed = []
 
-    def record_write_text(self, *args, **kwargs):
-        if self.name.startswith(".write-probe-"):
-            probed.append(self.parent)
-        return original_write_text(self, *args, **kwargs)
+    def record_probe_open(path, flags, mode=0o777, *, dir_fd=None):
+        if str(path).startswith(".write-probe-"):
+            info = os.fstat(dir_fd)
+            probed.append((info.st_dev, info.st_ino))
+        return original_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr(Path, "write_text", record_write_text)
+    monkeypatch.setattr(wiki_config.os, "open", record_probe_open)
     validate_wiki_vault(paths)
 
+    expected_directories = {
+        path
+        for path in (
+            paths.episodes,
+            paths.concepts,
+            paths.aliases,
+            paths.super_concepts,
+            paths.sources,
+            paths.reviews,
+            paths.attachments,
+            paths.lint_logs,
+            paths.state_dir,
+        )
+    }
     assert set(probed) == {
-        paths.episodes,
-        paths.concepts,
-        paths.aliases,
-        paths.super_concepts,
-        paths.sources,
-        paths.reviews,
-        paths.attachments,
-        paths.lint_logs,
-        paths.state_dir,
+        (path.stat().st_dev, path.stat().st_ino) for path in expected_directories
     }
 
 
@@ -158,26 +169,88 @@ def test_validate_rejects_non_appendable_log_without_changing_content(tmp_path):
         paths.log.chmod(original_mode)
 
 
+def test_validate_rejects_symlinked_managed_directory_without_writing_outside(
+    tmp_path,
+):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    outside = tmp_path / "outside-concepts"
+    outside.mkdir()
+    sentinel = outside / "sentinel.md"
+    sentinel.write_text("retained", encoding="utf-8")
+    before_entries = sorted(path.name for path in outside.iterdir())
+    before_mtime = outside.stat().st_mtime_ns
+    paths.concepts.rmdir()
+    paths.concepts.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(WikiConfigurationError, match=str(paths.concepts)):
+        validate_wiki_vault(paths)
+
+    assert sorted(path.name for path in outside.iterdir()) == before_entries
+    assert outside.stat().st_mtime_ns == before_mtime
+    assert sentinel.read_text(encoding="utf-8") == "retained"
+
+
+def test_validate_rejects_symlinked_log_without_opening_outside_file(tmp_path):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    outside_log = tmp_path / "outside-log.md"
+    outside_log.write_text("outside retained\n", encoding="utf-8")
+    before_content = outside_log.read_bytes()
+    before_stat = outside_log.stat()
+    paths.log.unlink()
+    paths.log.symlink_to(outside_log)
+
+    with pytest.raises(WikiConfigurationError, match=str(paths.log)):
+        validate_wiki_vault(paths)
+
+    after_stat = outside_log.stat()
+    assert outside_log.read_bytes() == before_content
+    assert after_stat.st_mtime_ns == before_stat.st_mtime_ns
+    assert after_stat.st_size == before_stat.st_size
+
+
+def test_validate_rejects_managed_path_outside_resolved_root_without_probe(tmp_path):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    outside = tmp_path / "outside-managed"
+    outside.mkdir()
+    before_mtime = outside.stat().st_mtime_ns
+    escaped_paths = replace(paths, concepts=outside)
+
+    with pytest.raises(WikiConfigurationError, match=str(outside)):
+        validate_wiki_vault(escaped_paths)
+
+    assert list(outside.iterdir()) == []
+    assert outside.stat().st_mtime_ns == before_mtime
+
+
 def test_validate_attempts_probe_cleanup_when_writing_fails(tmp_path, monkeypatch):
     paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
     initialize_wiki_vault(paths)
     cleanup_attempts = []
+    original_open = wiki_config.os.open
 
-    def fail_write_text(self, *args, **kwargs):
-        raise PermissionError("write failed")
+    def fail_probe_open(path, flags, mode=0o777, *, dir_fd=None):
+        if str(path).startswith(".write-probe-"):
+            raise PermissionError("write failed")
+        return original_open(path, flags, mode, dir_fd=dir_fd)
 
-    def fail_unlink(self, *args, **kwargs):
-        cleanup_attempts.append(self)
+    def fail_unlink(path, *, dir_fd=None):
+        info = os.fstat(dir_fd)
+        cleanup_attempts.append((str(path), info.st_dev, info.st_ino))
         raise PermissionError("cleanup failed")
 
-    monkeypatch.setattr(Path, "write_text", fail_write_text)
-    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    monkeypatch.setattr(wiki_config.os, "open", fail_probe_open)
+    monkeypatch.setattr(wiki_config.os, "unlink", fail_unlink)
     with pytest.raises(WikiConfigurationError, match="not writable") as exc_info:
         validate_wiki_vault(paths)
 
     assert len(cleanup_attempts) == 1
-    assert cleanup_attempts[0].parent == paths.episodes
-    assert cleanup_attempts[0].name.startswith(".write-probe-")
+    probe_name, device, inode = cleanup_attempts[0]
+    episodes_info = paths.episodes.stat()
+    assert probe_name.startswith(".write-probe-")
+    assert (device, inode) == (episodes_info.st_dev, episodes_info.st_ino)
     assert isinstance(exc_info.value.__cause__, PermissionError)
     assert str(exc_info.value.__cause__) == "write failed"
 

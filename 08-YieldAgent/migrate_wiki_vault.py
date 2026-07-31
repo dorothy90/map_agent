@@ -72,16 +72,23 @@ def plan_migration(source: Path) -> list[Path]:
     return sorted(files)
 
 
-def _open_target_parent(root_descriptor: int, relative: Path, target: Path) -> int:
+def _open_target_parent(
+    root_descriptor: int,
+    relative: Path,
+    target: Path,
+    *,
+    create: bool = True,
+) -> int:
     descriptor = os.dup(root_descriptor)
     current = target
     try:
         for part in relative.parts:
             current /= part
-            try:
-                os.mkdir(part, dir_fd=descriptor)
-            except FileExistsError:
-                pass
+            if create:
+                try:
+                    os.mkdir(part, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
             try:
                 child = os.open(
                     part,
@@ -151,6 +158,71 @@ def _target_checksum(parent_descriptor: int, name: str, target_file: Path) -> st
         os.close(descriptor)
 
 
+def _entry_identity(info: os.stat_result) -> tuple[int, int]:
+    return (info.st_dev, info.st_ino)
+
+
+def _unlink_if_owned(
+    parent_descriptor: int,
+    name: str,
+    expected_identity: tuple[int, int],
+) -> None:
+    try:
+        current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if _entry_identity(current) == expected_identity:
+        os.unlink(name, dir_fd=parent_descriptor)
+
+
+def _validate_published_target(
+    target: Path,
+    target_root: Path,
+    root_descriptor: int,
+    relative_parent: Path,
+    target_file: Path,
+    parent_descriptor: int,
+    published_identity: tuple[int, int],
+) -> None:
+    canonical_parent_descriptor = -1
+    try:
+        _validate_target_anchor(target, target_root, root_descriptor)
+        canonical_parent_descriptor = _open_target_parent(
+            root_descriptor,
+            relative_parent,
+            target,
+            create=False,
+        )
+        if _entry_identity(os.fstat(canonical_parent_descriptor)) != _entry_identity(
+            os.fstat(parent_descriptor)
+        ):
+            raise ValueError(f"target path changed during publication: {target_file.parent}")
+        held_entry = os.stat(
+            target_file.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        canonical_entry = os.stat(
+            target_file.name,
+            dir_fd=canonical_parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(held_entry.st_mode)
+            or stat.S_ISLNK(canonical_entry.st_mode)
+            or _entry_identity(held_entry) != published_identity
+            or _entry_identity(canonical_entry) != published_identity
+        ):
+            raise ValueError(f"target file changed during publication: {target_file}")
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("target path changed"):
+            raise
+        raise ValueError(f"target path changed during publication: {target_file}") from exc
+    finally:
+        if canonical_parent_descriptor >= 0:
+            os.close(canonical_parent_descriptor)
+
+
 def _copy_to_staging(
     source_file: Path,
     source_root: Path,
@@ -193,8 +265,11 @@ def _copy_to_staging(
 def _migrate_file(
     source_file: Path,
     source_root: Path,
+    target: Path,
     target_file: Path,
     target_root: Path,
+    root_descriptor: int,
+    relative_parent: Path,
     parent_descriptor: int,
 ) -> str:
     source_checksum = sha256_file(source_file)
@@ -220,6 +295,9 @@ def _migrate_file(
         if sha256_file(staging_file) != source_checksum:
             raise OSError(f"checksum mismatch: {target_file}")
         _validate_target_parent(target_file, target_root, parent_descriptor)
+        published_identity = _entry_identity(
+            os.stat(staging_name, dir_fd=parent_descriptor, follow_symlinks=False)
+        )
         try:
             os.link(
                 staging_name,
@@ -234,6 +312,23 @@ def _migrate_file(
             ) != source_checksum:
                 raise FileExistsError(f"different target file: {target_file}")
             return "identical"
+        try:
+            _validate_published_target(
+                target,
+                target_root,
+                root_descriptor,
+                relative_parent,
+                target_file,
+                parent_descriptor,
+                published_identity,
+            )
+        except BaseException:
+            _unlink_if_owned(
+                parent_descriptor,
+                target_file.name,
+                published_identity,
+            )
+            raise
         return "copied"
     finally:
         try:
@@ -279,8 +374,11 @@ def migrate_vault(source: Path, target: Path, *, apply: bool) -> MigrationReport
                 result = _migrate_file(
                     source_file,
                     source_root,
+                    target,
                     target_file,
                     target_root,
+                    root_descriptor,
+                    relative.parent,
                     parent_descriptor,
                 )
             finally:

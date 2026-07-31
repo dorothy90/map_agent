@@ -286,3 +286,27 @@ def test_target_parent_replacement_during_staging_verification_aborts_publicatio
     assert not (target / "concepts" / "one.md").exists()
     assert not (displaced / "one.md").exists()
     assert not list(displaced.glob(".wiki-migrate-*.tmp"))
+
+
+def test_target_parent_replacement_during_publication_rolls_back_owned_link(
+    tmp_path, monkeypatch
+):
+    source = _single_file_source(tmp_path)
+    target = tmp_path / "target"
+    escaped_parent = tmp_path / "escaped-concepts"
+    original_link = os.link
+
+    def publish_then_escape_parent(source_name, destination_name, *args, **kwargs):
+        result = original_link(source_name, destination_name, *args, **kwargs)
+        (target / "concepts").rename(escaped_parent)
+        (target / "concepts").mkdir()
+        return result
+
+    monkeypatch.setattr(migration.os, "link", publish_then_escape_parent)
+
+    with pytest.raises(ValueError, match="target path changed"):
+        migrate_vault(source, target, apply=True)
+
+    assert not (target / "concepts" / "one.md").exists()
+    assert not (escaped_parent / "one.md").exists()
+    assert not list(escaped_parent.glob(".wiki-migrate-*.tmp"))
