@@ -123,10 +123,11 @@ git diff --check
 
 두 명령은 모두 exit `0`이어야 합니다.
 
-### 3-2-3. 실제 OpenSearch → LLM → 외부 Vault 합성
+### 3-2-3. 운영 provider 합성 명령 (운영 준비 시)
 
 아래 명령은 `4SS | EASY | PRE METAL CLN` 한 트리플에 대해서만 실제 OpenSearch와
-설정된 LLM을 호출합니다.
+설정된 사내 로컬 LLM을 호출합니다. 운영 endpoint가 사용 가능한 경우에만 실행하는
+운영 준비 검증 명령입니다.
 
 ```bash
 cd 08-YieldAgent
@@ -139,11 +140,14 @@ python -c 'from bootstrap_wiki_warmup import process_triple; status, message = p
 `/Users/daehwankim/SYLDAIX/YieldWiki/concepts/`에 생성 또는 갱신되며, 명령은 `ok`와
 exit `0`을 출력해야 합니다.
 
-### 3-2-3A. 선택 사항: 승인된 비민감 E2E용 임시 free-provider fallback
+### 3-2-3A. Task 6 승인 비민감 E2E: process-only Kilo free provider
 
 운영 기본값은 계속 사내 로컬 LLM(`WIKI_SUMMARIZE_MODEL` 또는
-`RETRIEVE_CHAIN_MODEL`)입니다. 아래는 사내 LLM이 일시적으로 이용 불가하고, 승인된
-**비민감 테스트 데이터**만으로 E2E를 확인해야 할 때의 일회성 fallback입니다. 코드나
+`RETRIEVE_CHAIN_MODEL`)입니다. Task 6의 원래 configured/OpenRouter provider 호출은
+HTTP 402로 사용할 수 없었습니다. 이후 사용자가 이 E2E의 live-verification provider를
+승인된 **비민감 테스트 데이터**의 process-only `kilo-auto/free`로 명시적으로 교체했습니다.
+따라서 아래 명령이 Task 6에서 승인된 실제 OpenSearch → LLM → 외부 Vault E2E 경로입니다.
+이는 configured/OpenRouter 또는 사내 운영 provider가 성공했다는 증거가 아닙니다. 코드나
 `.env`의 provider 기본값을 변경하지 않고, 실행 프로세스 안에서만
 `wiki_summarizer.get_llm`을 monkeypatch합니다.
 
@@ -173,13 +177,18 @@ WIKI_REQUIRE_EXTERNAL_VAULT=true \
 python -c 'from fastapi import FastAPI; import uvicorn; from wiki_router import router; app=FastAPI(); app.include_router(router, prefix="/api/wiki"); uvicorn.run(app, host="127.0.0.1", port=8001)'
 ```
 
-두 번째 터미널에서 graph를 요청합니다.
+두 번째 터미널에서 합성한 Concept가 포함되는 product-filtered graph를 요청하고, 정확한
+Concept identity와 `has_wiki`를 확인합니다. 전역 graph에 작은 limit를 적용하면 다른
+product의 product/fail-type node가 먼저 소비되어 이 검증 대상이 제외될 수 있으므로,
+unfiltered `limit=20`은 이 acceptance check에 사용하지 않습니다.
 
 ```bash
-curl --fail 'http://127.0.0.1:8001/api/wiki/graph?view=product_tree&limit=20'
+curl --fail 'http://127.0.0.1:8001/api/wiki/graph?view=product_tree&product=4SS&limit=100' \
+  | jq -e 'any(.nodes[]; .id == "concept:4SS|PRE METAL CLN|EASY" and .has_wiki == true)'
 ```
 
-HTTP `200` JSON에 외부 Vault의 Concept 하나 이상이 `has_wiki: true`로 포함되어야 합니다.
+명령은 exit `0`이어야 하며, HTTP `200` JSON에는
+`concept:4SS|PRE METAL CLN|EASY` node 하나가 `has_wiki: true`로 포함되어야 합니다.
 
 ### 3-2-5. M1 범위 확인
 
