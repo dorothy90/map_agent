@@ -141,7 +141,11 @@ def _validate_target_parent(
         raise ValueError(f"target path changed during migration: {target_file.parent}")
 
 
-def _target_checksum(parent_descriptor: int, name: str, target_file: Path) -> str:
+def _target_checksum(
+    parent_descriptor: int,
+    name: str,
+    target_file: Path,
+) -> tuple[str, tuple[int, int]]:
     info = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
     if stat.S_ISLNK(info.st_mode):
         raise ValueError(f"target file is a symlink: {target_file}")
@@ -153,7 +157,13 @@ def _target_checksum(parent_descriptor: int, name: str, target_file: Path) -> st
         dir_fd=parent_descriptor,
     )
     try:
-        return _sha256_descriptor(descriptor)
+        descriptor_info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(descriptor_info.st_mode)
+            or _entry_identity(descriptor_info) != _entry_identity(info)
+        ):
+            raise ValueError(f"target file changed during checksum: {target_file}")
+        return _sha256_descriptor(descriptor), _entry_identity(descriptor_info)
     finally:
         os.close(descriptor)
 
@@ -278,8 +288,22 @@ def _migrate_file(
     except FileNotFoundError:
         pass
     else:
-        if _target_checksum(parent_descriptor, target_file.name, target_file) != source_checksum:
+        target_checksum, target_identity = _target_checksum(
+            parent_descriptor,
+            target_file.name,
+            target_file,
+        )
+        if target_checksum != source_checksum:
             raise FileExistsError(f"different target file: {target_file}")
+        _validate_published_target(
+            target,
+            target_root,
+            root_descriptor,
+            relative_parent,
+            target_file,
+            parent_descriptor,
+            target_identity,
+        )
         return "identical"
 
     staging_name = f".wiki-migrate-{uuid.uuid4().hex}.tmp"
@@ -307,10 +331,20 @@ def _migrate_file(
                 follow_symlinks=False,
             )
         except FileExistsError:
-            if _target_checksum(
+            target_checksum, target_identity = _target_checksum(
                 parent_descriptor, target_file.name, target_file
-            ) != source_checksum:
+            )
+            if target_checksum != source_checksum:
                 raise FileExistsError(f"different target file: {target_file}")
+            _validate_published_target(
+                target,
+                target_root,
+                root_descriptor,
+                relative_parent,
+                target_file,
+                parent_descriptor,
+                target_identity,
+            )
             return "identical"
         try:
             _validate_published_target(

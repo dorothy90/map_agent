@@ -220,6 +220,66 @@ def test_concurrent_identical_destination_is_counted_without_overwrite(
     assert (target / "concepts" / "one.md").read_text(encoding="utf-8") == "source body\n"
 
 
+def test_existing_identical_destination_requires_stable_canonical_parent(
+    tmp_path, monkeypatch
+):
+    source = _single_file_source(tmp_path)
+    target = tmp_path / "target"
+    target_file = target / "concepts" / "one.md"
+    target_file.parent.mkdir(parents=True)
+    target_file.write_bytes((source / "concepts" / "one.md").read_bytes())
+    escaped_parent = tmp_path / "escaped-existing-concepts"
+    original_target_checksum = migration._target_checksum
+
+    def checksum_then_escape_parent(parent_descriptor, name, target_path):
+        result = original_target_checksum(parent_descriptor, name, target_path)
+        target_file.parent.rename(escaped_parent)
+        target_file.parent.mkdir()
+        return result
+
+    monkeypatch.setattr(migration, "_target_checksum", checksum_then_escape_parent)
+
+    with pytest.raises(ValueError, match="target path changed"):
+        migrate_vault(source, target, apply=True)
+
+    assert not target_file.exists()
+    assert (escaped_parent / "one.md").read_text(encoding="utf-8") == "source body\n"
+
+
+def test_concurrent_identical_destination_requires_stable_canonical_parent(
+    tmp_path, monkeypatch
+):
+    source = _single_file_source(tmp_path)
+    target = tmp_path / "target"
+    target_file = target / "concepts" / "one.md"
+    escaped_parent = tmp_path / "escaped-concurrent-concepts"
+    original_link = os.link
+    content = (source / "concepts" / "one.md").read_bytes()
+
+    def publish_after_concurrent_create(source_name, destination_name, *args, **kwargs):
+        destination_fd = os.open(
+            destination_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=kwargs["dst_dir_fd"],
+        )
+        try:
+            os.write(destination_fd, content)
+        finally:
+            os.close(destination_fd)
+        target_file.parent.rename(escaped_parent)
+        target_file.parent.mkdir()
+        return original_link(source_name, destination_name, *args, **kwargs)
+
+    monkeypatch.setattr(migration.os, "link", publish_after_concurrent_create)
+
+    with pytest.raises(ValueError, match="target path changed"):
+        migrate_vault(source, target, apply=True)
+
+    assert not target_file.exists()
+    assert (escaped_parent / "one.md").read_text(encoding="utf-8") == "source body\n"
+
+
 def test_concurrent_different_destination_is_preserved_as_conflict(
     tmp_path, monkeypatch
 ):
