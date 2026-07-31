@@ -184,7 +184,7 @@ unfiltered `limit=20`은 이 acceptance check에 사용하지 않습니다.
 
 ```bash
 curl --fail 'http://127.0.0.1:8001/api/wiki/graph?view=product_tree&product=4SS&limit=100' \
-  | jq -e 'any(.nodes[]; .id == "concept:4SS|PRE METAL CLN|EASY" and .has_wiki == true)'
+  | jq -e 'any(.nodes[]; .key == "concept:4SS|PRE METAL CLN|EASY" and .attributes.has_wiki == true)'
 ```
 
 명령은 exit `0`이어야 하며, HTTP `200` JSON에는
