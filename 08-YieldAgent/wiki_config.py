@@ -98,8 +98,22 @@ def initialize_wiki_vault(paths: WikiPaths) -> None:
     _initialize_file(paths.index, "# Wiki Index\n\n")
 
 
-def validate_wiki_vault(paths: WikiPaths) -> None:
-    probe = paths.state_dir / f".write-probe-{uuid.uuid4().hex}"
+def _managed_writer_directories(paths: WikiPaths) -> tuple[Path, ...]:
+    return (
+        paths.episodes,
+        paths.concepts,
+        paths.aliases,
+        paths.super_concepts,
+        paths.sources,
+        paths.reviews,
+        paths.attachments,
+        paths.lint_logs,
+        paths.state_dir,
+    )
+
+
+def _validate_writable_directory(directory: Path) -> None:
+    probe = directory / f".write-probe-{uuid.uuid4().hex}"
     error: OSError | None = None
     try:
         probe.write_text("ok", encoding="utf-8")
@@ -112,4 +126,19 @@ def validate_wiki_vault(paths: WikiPaths) -> None:
             if error is None:
                 error = exc
     if error is not None:
-        raise WikiConfigurationError(f"Wiki Vault is not writable: {paths.root}") from error
+        raise WikiConfigurationError(
+            f"Wiki Vault path is not writable: {directory}"
+        ) from error
+
+
+def validate_wiki_vault(paths: WikiPaths) -> None:
+    for directory in _managed_writer_directories(paths):
+        _validate_writable_directory(directory)
+    try:
+        descriptor = os.open(paths.log, os.O_WRONLY | os.O_APPEND)
+    except OSError as exc:
+        raise WikiConfigurationError(
+            f"Wiki Vault log is not appendable: {paths.log}"
+        ) from exc
+    else:
+        os.close(descriptor)

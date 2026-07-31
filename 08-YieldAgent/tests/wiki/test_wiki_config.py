@@ -1,3 +1,5 @@
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -98,6 +100,64 @@ def test_validate_reports_unwritable_vault(tmp_path, monkeypatch):
         validate_wiki_vault(paths)
 
 
+def test_validate_probes_every_managed_writer_directory(tmp_path, monkeypatch):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    original_write_text = Path.write_text
+    probed = []
+
+    def record_write_text(self, *args, **kwargs):
+        if self.name.startswith(".write-probe-"):
+            probed.append(self.parent)
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", record_write_text)
+    validate_wiki_vault(paths)
+
+    assert set(probed) == {
+        paths.episodes,
+        paths.concepts,
+        paths.aliases,
+        paths.super_concepts,
+        paths.sources,
+        paths.reviews,
+        paths.attachments,
+        paths.lint_logs,
+        paths.state_dir,
+    }
+
+
+def test_validate_rejects_read_only_managed_directory(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses POSIX mode permission checks")
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    original_mode = stat.S_IMODE(paths.concepts.stat().st_mode)
+    paths.concepts.chmod(original_mode & ~0o222)
+    try:
+        with pytest.raises(WikiConfigurationError, match=str(paths.concepts)):
+            validate_wiki_vault(paths)
+    finally:
+        paths.concepts.chmod(original_mode)
+
+
+def test_validate_rejects_non_appendable_log_without_changing_content(tmp_path):
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses POSIX mode permission checks")
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    paths.log.write_text("# retained log\n\nentry\n", encoding="utf-8")
+    original_content = paths.log.read_bytes()
+    original_mode = stat.S_IMODE(paths.log.stat().st_mode)
+    paths.log.chmod(original_mode & ~0o222)
+    try:
+        with pytest.raises(WikiConfigurationError, match=str(paths.log)):
+            validate_wiki_vault(paths)
+        assert paths.log.read_bytes() == original_content
+    finally:
+        paths.log.chmod(original_mode)
+
+
 def test_validate_attempts_probe_cleanup_when_writing_fails(tmp_path, monkeypatch):
     paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
     initialize_wiki_vault(paths)
@@ -116,7 +176,7 @@ def test_validate_attempts_probe_cleanup_when_writing_fails(tmp_path, monkeypatc
         validate_wiki_vault(paths)
 
     assert len(cleanup_attempts) == 1
-    assert cleanup_attempts[0].parent == paths.state_dir
+    assert cleanup_attempts[0].parent == paths.episodes
     assert cleanup_attempts[0].name.startswith(".write-probe-")
     assert isinstance(exc_info.value.__cause__, PermissionError)
     assert str(exc_info.value.__cause__) == "write failed"
@@ -126,7 +186,18 @@ def test_validate_removes_write_probe(tmp_path):
     paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
     initialize_wiki_vault(paths)
     validate_wiki_vault(paths)
-    assert list(paths.state_dir.glob(".write-probe-*")) == []
+    for directory in (
+        paths.episodes,
+        paths.concepts,
+        paths.aliases,
+        paths.super_concepts,
+        paths.sources,
+        paths.reviews,
+        paths.attachments,
+        paths.lint_logs,
+        paths.state_dir,
+    ):
+        assert list(directory.glob(".write-probe-*")) == []
 
 
 def test_agent_server_prepares_vault_before_queue_start():

@@ -78,6 +78,17 @@ mkdir -p $WIKI_VAULT_PATH
 ls -ld $WIKI_VAULT_PATH    # 쓰기 권한 확인
 ```
 
+M1은 cross-process lock이 없는 **단일 자동 writer** 구조입니다. 운영 순서는 반드시
+`migrate → bootstrap → validate/lint → server` 입니다. 마이그레이션, v2→v3 보강,
+bootstrap 중에는 `agent_server`와 `wiki_queue`가 완전히 중지되어 있어야 합니다.
+운영 트래픽과 mutating CLI를 동시에 실행하지 않습니다.
+
+```bash
+# 현재 server/queue writer 중지 및 확인
+pkill -f "uvicorn agent_server" || true
+pgrep -af "uvicorn agent_server" && exit 1 || true
+```
+
 ---
 
 ## 3-1. 기존 Vault를 외부 Vault로 비파괴 마이그레이션
@@ -88,13 +99,21 @@ ls -ld $WIKI_VAULT_PATH    # 쓰기 권한 확인
 cd 08-YieldAgent
 python migrate_wiki_vault.py \
   --source wiki \
-  --target /Users/daehwankim/SYLDAIX/YieldWiki \
+  --target "$WIKI_VAULT_PATH" \
   --dry-run
 
 python migrate_wiki_vault.py \
   --source wiki \
-  --target /Users/daehwankim/SYLDAIX/YieldWiki \
+  --target "$WIKI_VAULT_PATH" \
   --apply
+```
+
+기존 노트에 v3 frontmatter 보강이 필요하면 server가 중지된 이 단계에서 먼저 dry-run을
+검토하고 적용합니다. 이 CLI는 `--apply` 옵션이 없으며, `--dry-run`을 생략하면 적용합니다.
+
+```bash
+python migrate_v2_to_v3.py --vault "$WIKI_VAULT_PATH" --dry-run
+python migrate_v2_to_v3.py --vault "$WIKI_VAULT_PATH"
 ```
 
 마이그레이션은 source Vault 파일을 삭제하지 않습니다. 롤백이 필요하면 서버를 중지한
@@ -231,7 +250,8 @@ git diff main...HEAD --name-only | rg '^(08-YieldAgent/(yield_frontend|wiki_fron
 
 ## 4. `foundations.yaml` 사내 도메인 조정
 
-`08-YieldAgent/wiki/foundations.yaml` 은 로컬 PoC seed로 작성돼 있음. 사내 운영 우선순위에 맞게 수정:
+초기 cutover에서는 `migrate_wiki_vault.py`가 repository Vault의 `foundations.yaml`도 함께
+옮기므로 보통 별도 복사가 필요 없습니다. 우선순위는 bootstrap 전에 검토합니다.
 
 ```yaml
 foundations:
@@ -240,212 +260,179 @@ foundations:
     cause_oper: PRE METAL CLN
     priority: high
     note: 자주 조회되는 핵심 트리플
-  # … 사내 도메인 지식으로 추가/수정
 ```
 
-- **priority high**: 반드시 사전 warm-up 대상. lint가 vault 미존재 시 `gap` 알림.
-- **priority medium/low**: warm-up은 들어가지만 미충족 허용.
+- **priority high**: lint에서 미합성 triple을 `gap`으로 보고합니다.
+- **priority medium/low**: bootstrap seed에는 포함되지만 gap 강제 대상은 아닙니다.
 
-vault 경로가 `WIKI_VAULT_PATH`와 다르면 그 경로에 `foundations.yaml` 을 직접 복사:
+외부 Vault에 파일이 정말 없을 때만 create-only 복사를 사용합니다. `cp -n`은 기존 파일을
+덮어쓰지 않습니다.
+
 ```bash
-cp 08-YieldAgent/wiki/foundations.yaml $WIKI_VAULT_PATH/foundations.yaml
+test ! -e "$WIKI_VAULT_PATH/foundations.yaml" || exit 1
+cp -n wiki/foundations.yaml "$WIKI_VAULT_PATH/foundations.yaml"
 ```
+
+파일이 이미 있으면 위 명령을 사용하지 않습니다. source와 operator-edited target을 각각
+보존한 뒤 snapshot/diff/승인 절차로 조정합니다.
+
+```bash
+REVIEW_DIR="$(mktemp -d "${TMPDIR:-/tmp}/wiki-foundations-review.XXXXXX")"
+cp -p wiki/foundations.yaml "$REVIEW_DIR/foundations.yaml.source"
+cp -p "$WIKI_VAULT_PATH/foundations.yaml" "$REVIEW_DIR/foundations.yaml.target"
+diff -u "$REVIEW_DIR/foundations.yaml.source" "$REVIEW_DIR/foundations.yaml.target" || true
+```
+
+두 사본은 승인 완료까지 유지합니다. 승인된 병합본만 Vault backup/change-management
+절차로 반영하며, 기존 target에 직접 `cp`하지 않습니다.
 
 ---
 
-## 5. 서버 재기동
+## 5. Bootstrap 실행 — server는 계속 중지
 
-`migrate_v2_to_v3.py`는 빈 vault라 실행 불요.
+### 5-1. Dry-run으로 seed 후보 확인
+
+Dry-run은 foundations와 OpenSearch aggregation 결과만 보여주며 LLM이나 Vault writer를
+실행하지 않습니다.
 
 ```bash
-# uvicorn 현재 PID 확인 후 종료
-pkill -f "uvicorn agent_server"
+python bootstrap_wiki_warmup.py --dry-run \
+  --top 20 \
+  --min-docs 2 \
+  --max-docs 15
+```
 
-# 재기동 (사내 운영은 --reload 미사용)
+### 5-2. 작은 범위부터 직접 합성
+
+현재 bootstrap은 처리할 triple마다 raw document를 최대 `--max-docs`개 조회하고
+`synthesize_concept_from_docs`를 한 번 호출한 뒤 Concept를 직접 upsert합니다.
+**트리플당 LLM 호출 1회**이며 bootstrap은 episode를 생성하지 않습니다.
+
+```bash
+python bootstrap_wiki_warmup.py --apply \
+  --top 5 \
+  --min-docs 2 \
+  --max-docs 10 \
+  --skip-existing \
+  --no-lint
+```
+
+확인 후 `--top 20 --max-docs 15`처럼 범위를 넓힙니다. `--skip-existing`은 confidence가
+0보다 큰 기존 Concept를 건너뜁니다. 이 옵션을 빼면 같은 triple도 다시 합성합니다.
+모든 seed가 skip되어 실제 처리 건수가 0이면 현재 CLI는 exit `1`을 반환하므로 출력의
+`--skip-existing` 전후 seed 수를 함께 확인합니다.
+
+`--no-lint`는 이 절차에서 lint를 다음 검증 단계로 분리하기 위한 옵션입니다. 이 옵션을
+빼면 bootstrap 종료 시 `wiki_lint.scan()`을 실행하지만 persisted lint report는 만들지
+않습니다.
+
+---
+
+## 6. Vault validate + persisted lint — server는 계속 중지
+
+초기화는 누락된 디렉터리와 `index.md`/`log.md`만 create-only로 만들고 기존 파일을
+덮어쓰지 않습니다. validation은 모든 managed writer 디렉터리의 실제 create/remove와
+기존 `log.md` append-open을 검사합니다.
+
+```bash
+python -c 'from wiki_config import resolve_wiki_paths, initialize_wiki_vault, validate_wiki_vault; paths = resolve_wiki_paths(); initialize_wiki_vault(paths); validate_wiki_vault(paths); print(paths.root)'
+python wiki_lint.py --vault $WIKI_VAULT_PATH --log
+```
+
+`wiki_lint.py --log`를 명시한 두 번째 명령만 `lint_logs/YYYY-MM-DD.md` persisted report를
+작성합니다. exit `1`이면 report의 `gap`, `low_confidence`, `stale_episode`를 검토하고,
+경로 오류인 exit `2`와 구분합니다.
+
+---
+
+## 7. Server/queue writer 시작
+
+마이그레이션·bootstrap·validation/lint가 끝난 뒤에만 production writer를 시작합니다.
+
+```bash
 nohup uvicorn agent_server:app --host 0.0.0.0 --port 8001 \
   --log-level info >> /var/log/yield-agent/agent.log 2>&1 &
 ```
 
-로그에 다음 표시 확인:
+로그에서 `Wiki Vault ready: ...`, wiki queue 시작, `Application startup complete`를 모두
+확인합니다. startup validation이 실패하면 workers는 시작되지 않습니다.
+
+---
+
+## 8. 배포 후 검증
+
+### 8-1. Vault와 검색
+
+```bash
+find "$WIKI_VAULT_PATH/concepts" -type f -name '*.md' | wc -l
+find "$WIKI_VAULT_PATH/episodes" -type f -name '*.md' | wc -l
+head -30 "$WIKI_VAULT_PATH/concepts/4SS_PRE_METAL_CLN_EASY.md"
 ```
-INFO:     Application startup complete
-... [wiki_queue] started ...
+
+Concept frontmatter의 `confidence`와 `citations`, 본문을 확인합니다. Bootstrap 자체는
+Episode를 만들지 않으므로 `episodes/` 증가는 질문 기반 검색/queue 경로에서만 기대합니다.
+
+warm-up한 triple의 검색에서는 wiki-first/assisted 여부, citation link, confidence badge를
+실제 응답과 server log에서 확인합니다. warm-up하지 않은 triple은 OpenSearch baseline
+경로로 검색되고 질문 기반 queue가 Episode를 누적할 수 있어야 합니다. latency는 고정
+수치로 가정하지 말고 배포 환경의 기존 SLO와 비교합니다.
+
+### 8-2. API 확인
+
+```bash
+curl --fail 'http://127.0.0.1:8001/api/wiki/graph?view=product_tree&product=4SS&limit=100' \
+  | jq -e 'any(.nodes[]; .key == "concept:4SS|PRE METAL CLN|EASY" and .attributes.has_wiki == true)'
 ```
 
 ---
 
-## 6. Warm-up 실행
+## 9. 운영 모니터링과 롤백
 
-### 6-1. Dry-run으로 seed 후보 확인
-
-```bash
-python 08-YieldAgent/bootstrap_wiki_warmup.py --dry-run
-```
-
-출력 예시:
-```
-1) foundations.yaml seed: 8
-  - 4SS|EASY|PRE METAL CLN (priority=high)
-  ...
-
-2) OpenSearch aggregation top-20 (min_docs=2): 18
-  - 4SS|EASY(W)|PRE METAL CLN (doc=7)
-  - 4SS|IDSAT(I)|ILD CMP (doc=5)
-  ...
-
-3) merged seeds: 26
-```
-
-### 6-2. 실 적용
+Server가 실행 중일 때는 read-only 모니터링만 수행합니다.
 
 ```bash
-python 08-YieldAgent/bootstrap_wiki_warmup.py --apply \
-  --top 20 \
-  --queries-per-triple 3 \
-  --drain-timeout 600
-```
-
-- 트리플당 LLM 호출 ≈ 3회(summarize) + 1회(synthesize) = 4회
-- seed 26개면 ≈ 100회 LLM 호출. 사내 LLM 처리 속도 기준 5~15분 예상
-- 끝에 vault 요약 + lint 자동 실행 → `lint_logs/<오늘>.md` 생성
-
-### 6-3. 부분 실행
-
-처음엔 작게 시작 권장:
-```bash
-python bootstrap_wiki_warmup.py --apply --top 5 --queries-per-triple 2
-```
-
-성공 확인 후 더 큰 N으로 재실행 (이미 합성된 트리플은 evidence_diversity 가드로 중복 합성 안 함).
-
----
-
-## 7. 검증
-
-### 7-1. vault 상태
-```bash
-ls $WIKI_VAULT_PATH/concepts/ | wc -l    # 합성된 concept 수
-ls $WIKI_VAULT_PATH/episodes/ | wc -l    # 누적 episode 수
-cat $WIKI_VAULT_PATH/concepts/4SS_PRE_METAL_CLN_EASY.md | head -30
-```
-
-frontmatter에 `confidence`, `citations`, `body_versions` 채워졌는지 확인.
-
-### 7-2. 검색 응답 확인
-
-사내 Streamlit/agent에서 warm-up 한 트리플로 검색 → 응답에 다음 모두 표시되어야:
-
-- ✅ `## 누적 패턴 (N건 분석)` 형태 본문
-- ✅ `**참고 자료 (N건)**:` + 클릭 가능 `[원본 PPT 다운로드](url)` 마크다운
-- ✅ `_wiki-first 응답 · confidence=N · OpenSearch 호출 0회_` 마커
-- ✅ `confidence < 0.7` 인 경우 머리에 배지:
-  - `> ⚠️ **근거 약함** — evidence N건, confidence=0.4X. 운영자 검수 권장.`
-  - `> ℹ️ **참고용** — evidence N건, confidence=0.6X.`
-
-### 7-3. Latency 확인
-
-`fail_history_agent` 노드 latency:
-- wiki-first 경로: **< 10s** (LLM 호출 0회)
-- baseline 경로 (warm-up 안 한 트리플): 20~30s
-
-### 7-4. 회귀 — warm-up 안 한 트리플
-- 새 트리플로 검색 → `baseline` 모드 정상 응답 + episode 자동 누적
-
-### 7-5. Lint 한 번 더
-```bash
-python 08-YieldAgent/wiki_lint.py --vault $WIKI_VAULT_PATH --log
-cat $WIKI_VAULT_PATH/lint_logs/<오늘>.md
-```
-
-- `gap (priority=high 미존재)` ≤ 3건 — 초과 시 foundations.yaml 보강 또는 warm-up 재실행
-- `low_confidence` 항목 검토 — confidence < 0.5 concept은 운영자 수동 검수 또는 archive
-- `stale_episode` — 30일 경과 orphan, 필요 시 archive
-
----
-
-## 8. 운영 가드 + 롤백
-
-### 8-1. 모니터링
-
-매주 확인:
-```bash
-# vault 디스크 사용량
-du -sh $WIKI_VAULT_PATH
-
-# concept 수 / confidence 분포
-python -c "
-import sys; sys.path.insert(0, '08-YieldAgent')
-from bootstrap_wiki_warmup import summarize_vault
-summarize_vault()
-"
-
-# uvicorn 로그에서 wiki-first hit 통계
+du -sh "$WIKI_VAULT_PATH"
+find "$WIKI_VAULT_PATH/concepts" -type f -name '*.md' | wc -l
+python wiki_lint.py --vault "$WIKI_VAULT_PATH" --json
 grep "WIKI-FIRST" /var/log/yield-agent/agent.log | wc -l
 grep "enqueue_status" /var/log/yield-agent/agent.log | tail -50
 ```
 
-지표:
-- **wiki_first_hit_rate**: WIKI-FIRST 로그 수 / 전체 fail_history_agent 호출 수
-- **합성 큐 drain 시간**: 운영 트래픽에서 wiki_queue.stats() 또는 로그
-- **lint gap 추세**: 매주 lint_logs 비교
+persisted lint가 필요하면 maintenance window에 server/queue를 중지하고
+`python wiki_lint.py --vault $WIKI_VAULT_PATH --log`를 실행한 뒤 server를 다시 시작합니다.
+별도 CLI와 server가 동시에 Vault에 쓰도록 예약하지 않습니다.
 
-### 8-2. 임계 재조정 (데이터 증가 시)
-
-vault 데이터가 늘면 (예: docs > 1,000) `wiki_store.lookup_concept_body` 의 기본 임계를 다시 올릴 수 있음:
-- 코드 수정 또는 env 노출 추가
-- 예: `WIKI_FIRST_MIN_CONFIDENCE=0.7` 도입
-
-### 8-3. 롤백
-
-#### 빠른 차단 (코드 롤백 없이)
-```bash
-# .env
-WIKI_FIRST_ENABLED=false
-```
-→ wiki gate 우회, 모든 검색이 baseline 경로. 단 wiki_queue ingest는 계속 동작.
-
-#### 완전 롤백
-```bash
-git revert 1d41bde       # 임계 완화만 되돌림
-git revert 466ce1c       # wiki 도입 자체를 되돌림 (정말 위험할 때)
-git push origin main
-# 사내 서버에서 git pull + uvicorn 재기동
-```
+빠른 검색 경로 차단은 `.env`의 `WIKI_FIRST_ENABLED=false`로 수행하고 server를 재시작합니다.
+Vault rollback은 server를 중지한 뒤 이전 `WIKI_VAULT_PATH`를 복원하고, 그 경로에 대해
+validation을 통과한 다음 재시작합니다. Migration source나 충돌 사본은 삭제하지 않습니다.
 
 ---
 
-## 9. 트러블슈팅
+## 10. 트러블슈팅
 
-| 증상 | 원인 추정 | 대응 |
+| 증상 | 확인 | 대응 |
 |---|---|---|
-| warm-up 후에도 wiki-first 발동 X | concept 합성 실패 — `wiki/log.md` 또는 uvicorn stderr 확인 | LLM 응답 형식 오류 가능. `wiki_summarizer` 로그 확인 |
-| `enqueue_status=skipped` 만 나옴 | `WIKI_FIRST_ENABLED=false` 또는 wiki_queue 미시작 | env 확인 + uvicorn 재기동 |
-| `참고 자료` 링크가 비어 있음 | citations frontmatter doc_id 누락 | `migrate_v2_to_v3.py` 또는 episode 재 ingest |
-| confidence 모두 0.0 | LLM 합성 응답에서 confidence 미반환 | `wiki_summarizer.synthesize_concept` 프롬프트/스키마 확인 |
-| OpenSearch aggregation 실패 | 권한 또는 keyword 매핑 부재 | `fail_history_tools._search_opensearch` 와 동일 인증 확인 |
-| `pyyaml` import 오류 | 의존성 미설치 | `uv add pyyaml` |
-| `bootstrap_wiki_warmup.py` 타임아웃 | LLM 응답 지연 | `--drain-timeout 1200` 늘리거나 `--top` 줄여 재실행 |
+| startup이 `not writable`로 종료 | 오류에 표시된 managed directory 권한/ACL | 해당 mount 권한을 수정하고 validation 재실행 |
+| startup이 `log is not appendable`로 종료 | `$WIKI_VAULT_PATH/log.md` ACL/소유권 | 파일을 덮어쓰지 말고 append 권한만 복구 |
+| migration이 `symlink`로 종료 | source/target 파일 또는 경로 component | symlink를 따라가지 말고 실제 독립 Vault 경로와 regular file로 재준비 |
+| migration이 `different target file`로 종료 | source/target checksum 차이 | 양쪽 snapshot을 유지하고 diff/승인 reconciliation 수행 |
+| bootstrap 후 wiki-first 발동 안 함 | Concept 존재, confidence, bootstrap `save_fail` | `wiki_summarizer.synthesize_concept_from_docs`와 Vault log 확인 |
+| `참고 자료`가 비어 있음 | 합성 결과 citation의 `doc_id`/source metadata | v2 migration으로 값을 발명하지 말고 raw docs와 합성 결과를 조사 후 해당 triple 재합성 |
+| confidence가 0.0 | structured synthesis 결과 | `synthesize_concept_from_docs` prompt/schema와 LLM 응답 확인 |
+| OpenSearch aggregation 실패 | 인증, index, keyword mapping | bootstrap 출력과 `fail_history_tools`의 동일 client 설정 확인 |
+| bootstrap 응답 지연/중단 | 한 triple의 LLM 응답 지연 | server 중지 상태를 유지하고 `--top`, `--max-docs`를 줄여 `--skip-existing --no-lint`로 재실행 |
+| `pyyaml` import 오류 | 의존성 미설치 | 승인된 패키지 절차로 `pyyaml` 설치 |
 
 ---
 
-## 10. 사후 작업 (선택)
+## 11. 현재 bootstrap/운영 계약 요약
 
-- **lint 정기 실행**: cron 또는 sysd timer로 일/주 단위 `wiki_lint.py --log`
-- **foundations.yaml 갱신**: lint `gap` 결과를 보고 운영자가 catalog 보강
-- **Day 5 super_concept**: 충분한 concept 누적 후 PoC v3 plan Day 5로 진행
-- **Day 6 eval 4-way**: baseline / wiki-on / wiki-first / wiki-assisted 정량 비교
+| 파일 | 현재 역할 |
+|---|---|
+| `bootstrap_wiki_warmup.py` | foundations + OpenSearch aggregation → raw docs → triple당 직접 LLM 합성 1회 → Concept upsert |
+| `wiki_lint.py` | read-only scan; `--log`를 명시할 때만 persisted report 작성 |
+| `migrate_wiki_vault.py` | checksum 검증, no-clobber initial cutover; source/target symlink 거부 |
+| `migrate_v2_to_v3.py` | 누락 frontmatter 필드만 보강; `--dry-run` 생략 시 적용 |
+| `agent_server.py` | 모든 writer destination과 operation log 검증 후 queue 시작 |
 
----
-
-## 11. 핵심 변경 카탈로그 요약 (`1d41bde`)
-
-| 파일 | 종류 | 변경 |
-|---|---|---|
-| `wiki_store.py` | M | 임계 완화: unique_doc_ids·evidence_diversity 게이트 제거 |
-| `wiki_queue.py` | M | 합성 트리거 완화: episode≥2면 시도, diversity<0.3만 차단 |
-| `wiki_lint.py` | M | gap / low_confidence / stale_episode 룰 + `--log` 옵션 |
-| `fail_history_tools.py` | M | wiki-first 응답에 confidence 배지 (≥0.7 / 0.5~0.7 / <0.5) |
-| `wiki/foundations.yaml` | 신규 | 운영자 작성 prefill catalog |
-| `bootstrap_wiki_warmup.py` | 신규 1회성 | foundations + OpenSearch agg → query 변형 → drain → vault summary + lint |
-
-전체 변경 카탈로그(이전 `466ce1c` 포함)는 `wiki-migration-checklist.md` 참고.
+기존 전체 변경 카탈로그는 `wiki-migration-checklist.md`를 참고합니다.

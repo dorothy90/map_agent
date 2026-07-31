@@ -76,3 +76,79 @@ print(json.dumps({
     result = json.loads(completed.stdout.strip())
     assert result["bootstrap"] == str((tmp_path / vault_name).resolve())
     assert result["store"] == result["bootstrap"]
+
+
+def _vault_snapshot(vault: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(vault)): path.read_bytes()
+        for path in vault.rglob("*")
+        if path.is_file()
+    }
+
+
+def test_wiki_lint_cli_defaults_to_environment_vault_without_vault_option(tmp_path):
+    app_root = Path(__file__).resolve().parents[2]
+    repository_vault = app_root / "wiki"
+    repository_before = _vault_snapshot(repository_vault)
+    vault = tmp_path / "YieldWiki"
+    concepts = vault / "concepts"
+    concepts.mkdir(parents=True)
+    (concepts / "external-only.md").write_text(
+        "---\n"
+        "id: concept:EXTERNAL|ONLY|LOW\n"
+        "type: concept\n"
+        "product: EXTERNAL\n"
+        "cause_oper: ONLY\n"
+        "fail_type: LOW\n"
+        "confidence: 0.1\n"
+        "---\n"
+        "external\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "WIKI_VAULT_PATH": str(vault)}
+
+    completed = subprocess.run(
+        [sys.executable, "wiki_lint.py", "--json"],
+        cwd=app_root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    result = json.loads(completed.stdout)
+    assert result["issues"]["low_confidence"] == [
+        {"id": "concept:EXTERNAL|ONLY|LOW", "confidence": 0.1}
+    ]
+    assert _vault_snapshot(repository_vault) == repository_before
+
+
+def test_v2_to_v3_cli_defaults_to_environment_vault_without_vault_option(tmp_path):
+    app_root = Path(__file__).resolve().parents[2]
+    repository_vault = app_root / "wiki"
+    repository_before = _vault_snapshot(repository_vault)
+    vault = tmp_path / "YieldWiki"
+    episodes = vault / "episodes"
+    episodes.mkdir(parents=True)
+    external_note = episodes / "external-default-path.md"
+    external_note.write_text(
+        "---\nid: episode:external-default-path\ntype: episode\n---\nexternal\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "WIKI_VAULT_PATH": str(vault)}
+
+    completed = subprocess.run(
+        [sys.executable, "migrate_v2_to_v3.py"],
+        cwd=app_root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "[migrated] external-default-path.md" in completed.stdout
+    migrated = external_note.read_text(encoding="utf-8")
+    assert "status: active" in migrated
+    assert "stale_after_days:" in migrated
+    assert _vault_snapshot(repository_vault) == repository_before
