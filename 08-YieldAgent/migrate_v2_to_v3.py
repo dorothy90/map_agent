@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import frontmatter
+from wiki_config import resolve_wiki_paths
 
 _STALE_DEFAULT = int(os.getenv("WIKI_STALE_AFTER_DAYS", "30"))
 
@@ -86,7 +87,7 @@ def migrate_node(path: Path, dry_run: bool) -> dict:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="wiki vault v2 → v3 frontmatter migration")
-    default_vault = str(Path(__file__).parent / "wiki")
+    default_vault = str(resolve_wiki_paths().root)
     p.add_argument("--vault", default=default_vault)
     p.add_argument("--dry-run", action="store_true", help="변경 없이 보고만")
     args = p.parse_args()

@@ -38,10 +38,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from fail_history_tools import _get_opensearch_client  # noqa: E402
 import wiki_store  # noqa: E402
+from wiki_config import resolve_wiki_paths  # noqa: E402
 from wiki_summarizer import synthesize_concept_from_docs  # noqa: E402
 
 _OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "fail-history")
-_VAULT_PATH = Path(os.getenv("WIKI_VAULT_PATH", str(Path(__file__).parent / "wiki")))
+_VAULT_PATH = resolve_wiki_paths().root
 
 
 # ── seed 수집 ────────────────────────────────────────────

@@ -13,17 +13,19 @@ from pathlib import Path
 from typing import Any
 
 import frontmatter
+from wiki_config import initialize_wiki_vault, resolve_wiki_paths
 
 logger = logging.getLogger("yield_agent.wiki_store")
 
 # ── 경로 (env로 사내 vault 위치 변경 가능) ────────────────
-_VAULT = Path(os.getenv("WIKI_VAULT_PATH") or (Path(__file__).parent / "wiki"))
-_EPISODES = _VAULT / "episodes"
-_CONCEPTS = _VAULT / "concepts"
-_ALIASES = _VAULT / "aliases"
-_SUPER_CONCEPTS = _VAULT / "super_concepts"
-_LOG = _VAULT / "log.md"
-_INDEX = _VAULT / "index.md"
+_PATHS = resolve_wiki_paths()
+_VAULT = _PATHS.root
+_EPISODES = _PATHS.episodes
+_CONCEPTS = _PATHS.concepts
+_ALIASES = _PATHS.aliases
+_SUPER_CONCEPTS = _PATHS.super_concepts
+_LOG = _PATHS.log
+_INDEX = _PATHS.index
 
 # ── wiki-first 게이트 임계 (env로 운영 중 조정 가능, 재기동 후 반영) ──
 # 데이터 누적 후 보수적으로 올리려면 .env에 WIKI_FIRST_MIN_* 추가.
@@ -82,12 +84,7 @@ def _alias_key(canonical: str, variant: str) -> str:
 
 
 def _ensure_dirs() -> None:
-    for d in (_EPISODES, _CONCEPTS, _ALIASES, _SUPER_CONCEPTS):
-        d.mkdir(parents=True, exist_ok=True)
-    if not _LOG.exists():
-        _LOG.write_text("# Wiki Operation Log\n\n", encoding="utf-8")
-    if not _INDEX.exists():
-        _INDEX.write_text("# Wiki Index\n\n", encoding="utf-8")
+    initialize_wiki_vault(_PATHS)
 
 
 def _log(event: str, key: str, hits: int = 0) -> None:

@@ -21,6 +21,7 @@ from typing import Any
 
 import frontmatter
 import yaml
+from wiki_config import resolve_wiki_paths
 
 
 def scan(vault: Path) -> dict[str, list[Any]]:
@@ -169,7 +170,7 @@ def _age_days(md: dict, now: datetime.datetime) -> int | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="wiki vault lint")
-    default_vault = str(Path(__file__).parent / "wiki")
+    default_vault = str(resolve_wiki_paths().root)
     parser.add_argument("--vault", default=default_vault, help="vault directory")
     parser.add_argument("--json", action="store_true", help="JSON 출력")
     parser.add_argument("--quiet", action="store_true", help="exit code only")
