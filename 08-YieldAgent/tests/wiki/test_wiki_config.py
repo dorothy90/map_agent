@@ -51,22 +51,39 @@ def test_initialize_creates_complete_m1_layout(tmp_path):
     assert paths.log.read_text(encoding="utf-8") == "# Wiki Operation Log\n\n"
 
 
-def test_initialize_creates_index_and_log_with_same_directory_atomic_replace(
+def test_initialize_creates_index_and_log_with_same_directory_atomic_create(
     tmp_path, monkeypatch
 ):
     paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
-    original_replace = wiki_config.os.replace
-    replacements = []
+    original_link = wiki_config.os.link
+    promotions = []
 
-    def record_replace(source, destination):
-        replacements.append((Path(source), Path(destination)))
-        original_replace(source, destination)
+    def record_link(source, destination):
+        promotions.append((Path(source), Path(destination)))
+        original_link(source, destination)
 
-    monkeypatch.setattr(wiki_config.os, "replace", record_replace)
+    monkeypatch.setattr(wiki_config.os, "link", record_link)
     initialize_wiki_vault(paths)
 
-    assert {destination for _, destination in replacements} == {paths.index, paths.log}
-    assert all(source.parent == destination.parent for source, destination in replacements)
+    assert {destination for _, destination in promotions} == {paths.index, paths.log}
+    assert all(source.parent == destination.parent for source, destination in promotions)
+
+
+def test_initialize_preserves_file_created_during_promotion(tmp_path, monkeypatch):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    original_link = wiki_config.os.link
+
+    def create_winner(source, destination):
+        destination = Path(destination)
+        if destination == paths.log:
+            destination.write_text("winner", encoding="utf-8")
+            raise FileExistsError
+        original_link(source, destination)
+
+    monkeypatch.setattr(wiki_config.os, "link", create_winner)
+    initialize_wiki_vault(paths)
+
+    assert paths.log.read_text(encoding="utf-8") == "winner"
 
 
 def test_validate_reports_unwritable_vault(tmp_path, monkeypatch):

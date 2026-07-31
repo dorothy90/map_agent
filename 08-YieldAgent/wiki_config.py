@@ -73,7 +73,10 @@ def _initialize_file(path: Path, content: str) -> None:
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_text(content, encoding="utf-8")
-        os.replace(temporary, path)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            pass
     finally:
         temporary.unlink(missing_ok=True)
 
