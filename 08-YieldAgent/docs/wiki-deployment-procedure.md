@@ -100,6 +100,34 @@ python migrate_wiki_vault.py \
 마이그레이션은 source Vault 파일을 삭제하지 않습니다. 롤백이 필요하면 서버를 중지한
 다음, 이전 `WIKI_VAULT_PATH`로 복원하여 재기동합니다.
 
+### 운영 중 재실행과 충돌 조정
+
+이 명령은 **초기 cutover용 복사 도구**입니다. 외부 Vault가 실제로 운영된 뒤에는
+`log.md`처럼 서버가 생성·추가하는 파일이 기존 source Vault와 달라질 수 있습니다.
+그 상태에서 `--apply`를 다시 실행하면 `different target file: .../log.md`와 함께
+종료합니다. 이는 오류를 숨기거나 대상 파일을 덮어쓰지 않고, 기존 source와 운영 중인
+Vault 양쪽의 내용을 모두 보존하기 위한 의도된 안전 장치입니다.
+
+충돌이 나면 `--apply`를 반복하거나 source와 target 사이의 직접 `cp`, `rm`, 강제
+덮어쓰기로 해결하지 마세요.
+먼저 해당 Vault writer를 중지하거나 작업이 끝났음을 확인한 뒤, 두 파일을 별도의
+임시 검토 디렉터리에 보존하고 비교합니다. 아래 예시는 읽기·복사만 하며 어느 쪽도
+변경하지 않습니다.
+
+```bash
+REVIEW_DIR="$(mktemp -d "${TMPDIR:-/tmp}/wiki-migration-conflict.XXXXXX")"
+cp -p wiki/log.md "$REVIEW_DIR/log.md.source"
+cp -p "$WIKI_VAULT_PATH/log.md" "$REVIEW_DIR/log.md.target"
+diff -u "$REVIEW_DIR/log.md.source" "$REVIEW_DIR/log.md.target" || true
+```
+
+운영자는 두 사본을 검토하여 source에만 있는 초기 내용과 target에만 있는 운영 기록을
+포함하는 해법을 명시적으로 승인해야 합니다. 승인된 병합본은 Vault 백업·변경 관리
+절차에 따라 적용하고, 조정 근거와 파일 경로를 운영 기록에 남깁니다. 이미 운영 중인
+Vault는 과거 source Vault에서 재마이그레이션하지 않는 것이 기본입니다. 재마이그레이션이
+정말 필요하면, 승인된 병합 결과를 기준 source로 준비하고 별도 검증 대상에서 dry-run과
+checksum 검증을 다시 수행한 후에만 적용합니다.
+
 ---
 
 ## 3-2. M1 외부 Vault 검증 절차
