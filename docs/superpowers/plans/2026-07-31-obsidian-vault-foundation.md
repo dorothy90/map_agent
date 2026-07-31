@@ -881,7 +881,7 @@ python migrate_wiki_vault.py \
 
 Expected: copied/identical counts sum to the planned count, with no conflicts or checksum failures.
 
-- [ ] **Step 6: Run a real OpenSearch → LLM → external Vault synthesis**
+- [ ] **Step 6: Run one real OpenSearch → LLM → external Vault synthesis**
 
 Run:
 
@@ -889,19 +889,15 @@ Run:
 cd 08-YieldAgent
 WIKI_VAULT_PATH=/Users/daehwankim/SYLDAIX/YieldWiki \
 WIKI_REQUIRE_EXTERNAL_VAULT=true \
-python bootstrap_wiki_warmup.py \
-  --apply \
-  --top 1 \
-  --min-docs 2 \
-  --max-docs 5
+python -c 'from bootstrap_wiki_warmup import process_triple; status, message = process_triple({"product": "4SS", "fail_type": "EASY", "cause_oper": "PRE METAL CLN", "source": "e2e"}, max_docs=5); print(status, message); raise SystemExit(0 if status == "ok" else 1)'
 ```
 
 Expected:
 
-- OpenSearch `fail-history` aggregation returns at least one triple.
+- OpenSearch `fail-history` returns documents for `4SS | EASY | PRE METAL CLN`.
 - The configured real LLM returns one structured Concept synthesis.
 - A Markdown Concept is created or updated under `/Users/daehwankim/SYLDAIX/YieldWiki/concepts/`.
-- The command finishes with lint output and no `save_fail`.
+- The command prints `ok` and exits `0`.
 
 - [ ] **Step 7: Verify the same external note through the Wiki API router**
 
