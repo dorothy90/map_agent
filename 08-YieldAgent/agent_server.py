@@ -65,6 +65,11 @@ from local_trace import (  # noqa: E402
 )
 from supervisor import workflow, _resume_is_interrupt_answer  # noqa: E402
 from user_memory import update_profile_from_feedback  # noqa: E402
+from wiki_config import (  # noqa: E402
+    initialize_wiki_vault,
+    resolve_wiki_paths,
+    validate_wiki_vault,
+)
 
 # 사용자 선호 메모리 백그라운드 flush 태스크 보관 (GC로 조기 소멸 방지)
 _memory_tasks: set = set()
@@ -144,6 +149,12 @@ async def _wiki_lint_cron_loop(interval_hours: float) -> None:
 # ── FastAPI lifespan — MongoDB 연결 + wiki_queue 워커 관리 ─
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    wiki_paths = resolve_wiki_paths()
+    initialize_wiki_vault(wiki_paths)
+    validate_wiki_vault(wiki_paths)
+    app.state.wiki_vault_path = wiki_paths.root
+    logger.info("Wiki Vault ready: %s", wiki_paths.root)
+
     # motor (async) — 대화 이력 저장용
     motor_client = AsyncIOMotorClient(MONGO_URI)
     app.state.motor_db = motor_client[MONGO_DB]

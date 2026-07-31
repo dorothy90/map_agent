@@ -120,3 +120,23 @@ def test_validate_attempts_probe_cleanup_when_writing_fails(tmp_path, monkeypatc
     assert cleanup_attempts[0].name.startswith(".write-probe-")
     assert isinstance(exc_info.value.__cause__, PermissionError)
     assert str(exc_info.value.__cause__) == "write failed"
+
+
+def test_validate_removes_write_probe(tmp_path):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    validate_wiki_vault(paths)
+    assert list(paths.state_dir.glob(".write-probe-*")) == []
+
+
+def test_agent_server_prepares_vault_before_queue_start():
+    source = (Path(__file__).resolve().parents[2] / "agent_server.py").read_text(
+        encoding="utf-8"
+    )
+    lifespan = source.split("async def lifespan", 1)[1]
+    assert lifespan.index("initialize_wiki_vault") < lifespan.index(
+        "await wiki_queue.start()"
+    )
+    assert lifespan.index("validate_wiki_vault") < lifespan.index(
+        "await wiki_queue.start()"
+    )
