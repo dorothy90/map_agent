@@ -139,6 +139,27 @@ python -c 'from bootstrap_wiki_warmup import process_triple; status, message = p
 `/Users/daehwankim/SYLDAIX/YieldWiki/concepts/`에 생성 또는 갱신되며, 명령은 `ok`와
 exit `0`을 출력해야 합니다.
 
+### 3-2-3A. 선택 사항: 승인된 비민감 E2E용 임시 free-provider fallback
+
+운영 기본값은 계속 사내 로컬 LLM(`WIKI_SUMMARIZE_MODEL` 또는
+`RETRIEVE_CHAIN_MODEL`)입니다. 아래는 사내 LLM이 일시적으로 이용 불가하고, 승인된
+**비민감 테스트 데이터**만으로 E2E를 확인해야 할 때의 일회성 fallback입니다. 코드나
+`.env`의 provider 기본값을 변경하지 않고, 실행 프로세스 안에서만
+`wiki_summarizer.get_llm`을 monkeypatch합니다.
+
+```bash
+cd 08-YieldAgent
+WIKI_VAULT_PATH=/Users/daehwankim/SYLDAIX/YieldWiki \
+WIKI_REQUIRE_EXTERNAL_VAULT=true \
+python -c 'from langchain_openai import ChatOpenAI; import wiki_summarizer; wiki_summarizer.get_llm = lambda model=None, temperature=0: ChatOpenAI(model="kilo-auto/free", base_url="https://api.kilo.ai/api/gateway", api_key="anonymous", temperature=temperature); from bootstrap_wiki_warmup import process_triple; status, message = process_triple({"product": "4SS", "fail_type": "EASY", "cause_oper": "PRE METAL CLN", "source": "e2e"}, max_docs=5); print(status, message); raise SystemExit(0 if status == "ok" else 1)'
+```
+
+`anonymous`는 client가 요구하는 비밀값이 아닌 placeholder이며, 영구 환경 변수나
+secrets에 저장하지 않습니다. `kilo-auto/free`는 prompt와 output을 provider 서비스 개선에
+사용할 수 있으므로 개인·기밀·운영 데이터를 전송해서는 안 됩니다. Kilo의 anonymous free
+access는 IP당 시간당 200회로 제한되며, free model routing은 변경될 수 있습니다.
+자세한 현재 제한과 데이터 처리 주의사항은 Kilo의 [rate-limit 문서](https://kilo.ai/docs/getting-started/rate-limits-and-costs)와 [free usage 문서](https://kilo.ai/docs/getting-started/using-kilo-for-free)를 확인합니다.
+
 ### 3-2-4. production Wiki router로 같은 외부 Vault 검증
 
 현재 전역 환경에서는 기록된 `motor`/`pymongo` 호환성 문제로 전체 `agent_server`를
