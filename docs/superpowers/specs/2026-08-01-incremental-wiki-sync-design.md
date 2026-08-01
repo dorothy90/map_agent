@@ -427,7 +427,9 @@ Review 파일명은 removal event의 canonical triple과 이전/현재 doc ID �
 3. 실제 MongoDB에서 job upsert, atomic claim, lease, succeeded를 확인한다.
 4. 사용자 승인된 무료 LLM API로 doc count 상위 3개 triple을 실제 합성한다.
 5. Concept, manifest, MongoDB, M2 Markdown graph가 모두 갱신됐는지 확인한다.
-6. 같은 명령 재실행에서 완료 fingerprint가 skip되고 Markdown 변경이 0인지 확인한다.
+6. 같은 명령 재실행에서 이미 완료한 fingerprint가 다시 LLM 호출되지 않고,
+   `--limit`에 남은 queue가 있으면 다음 batch만 처리되는지 확인한다. 전체 queue가
+   소진된 뒤 재실행에서는 LLM 호출과 Markdown 변경이 모두 0인지 확인한다.
 7. Concept 저장 후 manifest 미기록 상태를 재현해 LLM 호출 없이 복구되는지 확인한다.
 8. 실제 Obsidian Graph에서 새 Product/Fail/Operation/Concept/Source 연결을 확인한다.
 
