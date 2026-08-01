@@ -13,6 +13,7 @@ APP_ROOT = Path(__file__).resolve().parents[2]
 RUNBOOK = APP_ROOT / "docs" / "wiki-deployment-procedure.md"
 LOCAL_CLIS = (
     "bootstrap_wiki_warmup.py",
+    "sync_wiki.py",
     "migrate_v2_to_v3.py",
     "migrate_wiki_vault.py",
     "wiki_lint.py",
@@ -99,3 +100,17 @@ def test_runbook_matches_current_single_writer_bootstrap_contract():
     assert "트리플당 LLM 호출 1회" in text
     assert "episode를 생성하지" in text
     assert "wiki_lint.py --vault $WIKI_VAULT_PATH --log" in text
+
+
+def test_runbook_documents_incremental_sync_operations():
+    text = RUNBOOK.read_text(encoding="utf-8")
+
+    assert "sync_wiki.py --check" in text
+    assert "sync_wiki.py --apply --limit 10" in text
+    assert "sync_wiki.py --resume --limit 10" in text
+    assert "bootstrap_wiki_warmup.py --apply" in text
+    assert "--product 4SS" in text
+    assert "--fail-type EASY" in text
+    assert '--cause-oper "PRE METAL CLN"' in text
+    assert "source_removal" in text
+    assert "Cron" in text

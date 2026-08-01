@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -346,6 +346,7 @@ class SyncRunResult:
     failed: int = 0
     materialized: bool = False
     errors: tuple[str, ...] = ()
+    targets: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def _now_iso() -> str:
@@ -398,6 +399,14 @@ class WikiSyncService:
             changed=len(plan.changed),
             source_removed=len(plan.source_removed),
             unchanged=len(plan.unchanged),
+            targets={
+                "new": tuple(change.triple_key for change in plan.new),
+                "changed": tuple(change.triple_key for change in plan.changed),
+                "source_removed": tuple(
+                    change.triple_key for change in plan.source_removed
+                ),
+                "unchanged": tuple(change.triple_key for change in plan.unchanged),
+            },
         )
 
     def apply(self, limit: int) -> SyncRunResult:

@@ -436,3 +436,61 @@ validation을 통과한 다음 재시작합니다. Migration source나 충돌 �
 | `agent_server.py` | 모든 writer destination과 operation log 검증 후 queue 시작 |
 
 기존 전체 변경 카탈로그는 `wiki-migration-checklist.md`를 참고합니다.
+
+---
+
+## M3. OpenSearch 증분 Wiki 동기화
+
+최초 프로젝트 구축 또는 Vault 전체 복구에는 기존 bootstrap을 사용합니다. 평상시에는
+`sync_wiki.py`가 OpenSearch의 source fingerprint를 manifest와 비교하고, 신규·변경
+triple만 기존 LLM 합성기에 전달합니다. `--limit`은 전체 한도가 아니라 이번 실행의
+batch 크기이므로 다음 실행은 남아 있는 다음 job을 이어서 처리합니다.
+
+먼저 읽기 전용으로 현재 차이를 확인합니다. 이 모드는 MongoDB job/lock과 Vault를
+변경하지 않습니다.
+
+```bash
+cd 08-YieldAgent
+python sync_wiki.py --check
+```
+
+일상 동기화와 중단된 queue 재개 명령은 다음과 같습니다.
+
+```bash
+python sync_wiki.py --apply --limit 10
+python sync_wiki.py --resume --limit 10
+```
+
+`--apply`는 scan 후 신규·변경 job을 추가하고 최대 10개를 처리합니다. `--resume`은
+OpenSearch 전체 scan이나 신규 job 등록 없이 retry 가능한 기존 job만 처리합니다.
+두 명령은 MongoDB의 전역 lease를 사용하므로 동시에 시작된 두 Cron 실행 중 하나만
+Vault writer가 됩니다. bootstrap과 수동 migration에는 이 lease가 적용되지 않으므로
+그 작업을 수행할 때는 Cron과 다른 Wiki writer를 먼저 중지해야 합니다.
+
+M3는 Cron을 자동 설치하지 않습니다. 운영 경로와 Python 환경을 확인한 뒤 운영자가
+다음 형식으로 등록합니다.
+
+```bash
+# crontab 예시 — 실제 절대 경로로 교체
+*/10 * * * * cd /path/to/08-YieldAgent && /path/to/python sync_wiki.py --apply --limit 10 >> /path/to/logs/wiki-sync.log 2>&1
+```
+
+근거 문서 ID가 사라지면 시스템은 Concept를 삭제하거나 자동 재합성하지 않습니다.
+Concept를 `stale`로 표시하고 `reviews/`에 `review_type: source_removal`,
+`status: pending`인 Review를 한 번만 생성합니다. 운영자가 Review의 누락 ID와 원본
+시스템 상태를 확인한 뒤 현재 근거로 재생성을 승인한 경우에만 exact bootstrap을
+실행합니다.
+
+```bash
+python bootstrap_wiki_warmup.py --apply \
+  --product 4SS \
+  --fail-type EASY \
+  --cause-oper "PRE METAL CLN" \
+  --no-lint
+```
+
+`--product`, `--fail-type`, `--cause-oper`는 세 옵션을 모두 함께 제공해야 합니다.
+bootstrap 성공 결과에도 동일한 source fingerprint가 기록되므로 이후 sync에서 같은
+근거를 다시 합성하지 않습니다. Concept 저장 후 manifest 저장 전에 중단된 경우에는
+다음 sync가 Concept frontmatter의 fingerprint를 확인하여 LLM을 다시 호출하지 않고
+manifest와 MongoDB job 상태만 복구합니다.
