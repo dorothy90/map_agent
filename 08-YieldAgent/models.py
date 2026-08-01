@@ -23,6 +23,16 @@ class ChatRequest(BaseModel):
     resume_value: str | dict[str, Any] | None = None
     # 로그인 신원: 멀티턴 '기억'이 아니라 매 요청에 프론트가 주입(없으면 ""). mining이 읽음.
     user_id: str = ""
+    # Internal-only structured Wiki note context. Existing clients may omit it.
+    wiki_context: dict[str, Any] | None = None
+
+
+class PluginChatRequest(BaseModel):
+    query: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    resume_value: str | dict[str, Any] | None = None
+    user_id: str = ""
+    current_note_id: str | None = None
 
 
 # ── SSE Event Types ──────────────────────────────────────
@@ -47,11 +57,19 @@ class NodeCompleteEvent(BaseModel):
     elapsed: float = 0.0
 
 
+class CitationData(BaseModel):
+    doc_id: str
+    label: str
+    source_path: str | None = None
+    download_url: str = ""
+
+
 class MessageEvent(BaseModel):
     type: Literal["message"] = "message"
     role: Literal["assistant"] = "assistant"
     agent: str
     content: str
+    citations: list[CitationData] = Field(default_factory=list)
     step: int = 0
 
 
@@ -133,6 +151,7 @@ class HistoryMessage(BaseModel):
     agent: str = ""
     content: str = ""
     artifacts: list[ArtifactData] = []
+    citations: list[CitationData] = Field(default_factory=list)
     suggestion: str = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

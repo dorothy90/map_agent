@@ -110,6 +110,7 @@ class YieldQueryState(TypedDict):
     step_count: int  # supervisor 루프 카운터
     trace_id: str  # local observability trace id (overwrite)
     turn_id: str  # local observability turn id (overwrite)
+    wiki_context: dict  # current Obsidian note envelope (overwrite per fresh turn)
 
     # 조회 파라미터
     lotcd: str

@@ -34,12 +34,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from models import (  # noqa: E402
-    ArtifactData,
     ArtifactEvent,
     ArtifactType,
     ChatRequest,
     ErrorEvent,
-    HistoryMessage,
     InterruptEvent,
     MessageEvent,
     NodeCompleteEvent,
@@ -51,6 +49,11 @@ from models import (  # noqa: E402
     SuggestionEvent,
     ThinkingEvent,
     TokenEvent,
+)
+from agent_sessions import (  # noqa: E402
+    citations_from_fail_history_results,
+    list_session_summaries,
+    load_session_history,
 )
 from common import to_user_message  # noqa: E402
 from local_trace import (  # noqa: E402
@@ -70,6 +73,7 @@ from wiki_config import (  # noqa: E402
     resolve_wiki_paths,
     validate_wiki_vault,
 )
+from wiki_plugin_notes import NoteNotFound, read_source  # noqa: E402
 
 # 사용자 선호 메모리 백그라운드 flush 태스크 보관 (GC로 조기 소멸 방지)
 _memory_tasks: set = set()
@@ -442,56 +446,13 @@ async def create_session():
 # ── 세션 목록 ─────────────────────────────────────────────
 @app.get("/sessions", response_model=list[SessionSummary])
 async def list_sessions(request: Request):
-    db = request.app.state.motor_db
-    pipeline = [
-        {"$sort": {"timestamp": -1}},
-        {"$group": {
-            "_id": "$session_id",
-            "last_query": {"$first": "$query"},
-            "turn_count": {"$sum": 1},
-            "updated_at": {"$first": "$timestamp"},
-        }},
-        {"$sort": {"updated_at": -1}},
-        {"$limit": 50},
-    ]
-    results = []
-    async for doc in db.chat_turns.aggregate(pipeline):
-        results.append(SessionSummary(
-            session_id=doc["_id"],
-            last_query=doc.get("last_query", ""),
-            turn_count=doc.get("turn_count", 0),
-            updated_at=doc.get("updated_at", datetime.now(timezone.utc)),
-        ))
-    return results
+    return await list_session_summaries(request.app.state.motor_db)
 
 
 # ── 세션 대화 이력 조회 ──────────────────────────────────
 @app.get("/session/{session_id}/history", response_model=SessionHistory)
 async def get_session_history(session_id: str, request: Request):
-    db = request.app.state.motor_db
-    turns: list[HistoryMessage] = []
-    async for doc in db.chat_turns.find(
-        {"session_id": session_id},
-        {"_id": 0},
-    ).sort("timestamp", 1):
-        # user turn
-        turns.append(HistoryMessage(
-            role="user",
-            content=doc.get("query", ""),
-            timestamp=doc.get("timestamp", datetime.now(timezone.utc)),
-        ))
-        # assistant turns
-        for msg in doc.get("messages", []):
-            artifacts = [ArtifactData(**a) for a in msg.get("artifacts", [])]
-            turns.append(HistoryMessage(
-                role="assistant",
-                agent=msg.get("agent", ""),
-                content=msg.get("content", ""),
-                artifacts=artifacts,
-                suggestion=msg.get("suggestion", ""),
-                timestamp=doc.get("timestamp", datetime.now(timezone.utc)),
-            ))
-    return SessionHistory(session_id=session_id, turns=turns)
+    return await load_session_history(request.app.state.motor_db, session_id)
 
 
 # ── SSE 스트리밍 ──────────────────────────────────────────
@@ -627,6 +588,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             "tech": "",
             "rank_limit": 10,
             "user_id": request.user_id,
+            "wiki_context": request.wiki_context or {},
             # lotcd/ref_date: 끈적한 god-state 앵커였음 → 매 턴 리셋(제품=재도출, 날짜=today 디폴트)로
             # cross-turn stale 차단. 같은 턴 내 god-state 공유(yield→ppt 라벨 등)는 dispatch persist가
             # 다시 채우므로 유지. cross-turn 제품 참조는 planner가 recent_results에서 재도출.
@@ -811,6 +773,27 @@ async def chat_stream(request: ChatRequest, req: Request):
                             },
                         )
 
+                        structured_results = node_state.get("fail_history_results") or []
+                        source_paths: dict[str, str] = {}
+                        if structured_results:
+                            wiki_paths = resolve_wiki_paths()
+                            for result in structured_results:
+                                if not isinstance(result, dict):
+                                    continue
+                                doc_id = str(result.get("doc_id") or "").strip()
+                                if not doc_id or doc_id in source_paths:
+                                    continue
+                                try:
+                                    source_paths[doc_id] = read_source(
+                                        wiki_paths, doc_id
+                                    ).source_path
+                                except NoteNotFound:
+                                    continue
+                        citations = citations_from_fail_history_results(
+                            structured_results,
+                            source_paths=source_paths,
+                        )
+
                         # 1) node_complete
                         yield _sse(NodeCompleteEvent(
                             node=node_name,
@@ -846,11 +829,15 @@ async def chat_stream(request: ChatRequest, req: Request):
                             yield _sse(MessageEvent(
                                 agent=agent_name,
                                 content=content,
+                                citations=citations,
                                 step=step_count,
                             ))
                             turn_messages.append({
                                 "agent": agent_name,
                                 "content": content,
+                                "citations": [
+                                    citation.model_dump() for citation in citations
+                                ],
                             })
 
                         # 3) artifacts → artifact 이벤트 (오른쪽 패널)
@@ -1067,3 +1054,6 @@ async def chat_stream(request: ChatRequest, req: Request):
             reset_trace_context(trace_tokens)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+app.state.chat_stream_handler = chat_stream

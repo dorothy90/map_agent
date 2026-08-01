@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -341,3 +344,113 @@ async def test_plugin_review_update_rejects_resolved_status(monkeypatch, app, tm
         )
 
     assert response.status_code == 422
+
+
+class _AsyncCursor:
+    def __init__(self, documents):
+        self._documents = iter(documents)
+
+    def sort(self, *args):
+        return self
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._documents)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
+@pytest.mark.anyio
+async def test_plugin_sessions_require_token_and_reuse_motor_data(monkeypatch, app):
+    timestamp = datetime(2026, 8, 1, tzinfo=timezone.utc)
+
+    class Turns:
+        def __init__(self):
+            self.pipeline = None
+
+        def aggregate(self, pipeline):
+            self.pipeline = pipeline
+            return _AsyncCursor(
+                [
+                    {
+                        "_id": "session-1",
+                        "last_query": "원인은?",
+                        "turn_count": 2,
+                        "updated_at": timestamp,
+                    }
+                ]
+            )
+
+    turns = Turns()
+    app.state.motor_db = SimpleNamespace(chat_turns=turns)
+    monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        unauthorized = await client.get("/api/wiki/plugin/sessions")
+        response = await client.get(
+            "/api/wiki/plugin/sessions",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    assert response.json()[0]["session_id"] == "session-1"
+    assert response.json()[0]["turn_count"] == 2
+    assert turns.pipeline[-1] == {"$limit": 50}
+
+
+@pytest.mark.anyio
+async def test_plugin_session_history_returns_existing_message_contract(
+    monkeypatch, app
+):
+    timestamp = datetime(2026, 8, 1, tzinfo=timezone.utc)
+
+    class Turns:
+        def find(self, query, projection):
+            assert query == {"session_id": "session-1"}
+            assert projection == {"_id": 0}
+            return _AsyncCursor(
+                [
+                    {
+                        "query": "원인은?",
+                        "timestamp": timestamp,
+                        "messages": [
+                            {
+                                "agent": "fail_history_agent",
+                                "content": "근거입니다.",
+                                "citations": [
+                                    {
+                                        "doc_id": "FH-1",
+                                        "label": "FH-1",
+                                        "source_path": "sources/FH-1.md",
+                                        "download_url": "",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            )
+
+    app.state.motor_db = SimpleNamespace(chat_turns=Turns())
+    monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/wiki/plugin/sessions/session-1",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+
+    assert response.status_code == 200
+    assert [turn["role"] for turn in response.json()["turns"]] == [
+        "user",
+        "assistant",
+    ]
+    assert response.json()["turns"][1]["citations"][0]["doc_id"] == "FH-1"

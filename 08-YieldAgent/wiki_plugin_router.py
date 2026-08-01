@@ -1,8 +1,11 @@
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from agent_sessions import list_session_summaries, load_session_history
 from models import (
+    ChatRequest,
+    PluginChatRequest,
     PluginRelatedResponse,
     PluginReview,
     PluginReviewCreate,
@@ -10,10 +13,12 @@ from models import (
     PluginSearchResponse,
     PluginSourceResponse,
     ReviewStatus,
+    SessionHistory,
+    SessionSummary,
 )
 from wiki_config import resolve_wiki_paths
 from wiki_plugin_auth import require_plugin_token
-from wiki_plugin_notes import NoteNotFound, read_source, related_notes
+from wiki_plugin_notes import NoteNotFound, load_note_context, read_source, related_notes
 from wiki_plugin_search import search_wiki
 from wiki_review_store import ReviewConflict, ReviewNotFound, WikiReviewStore
 
@@ -34,6 +39,46 @@ def plugin_dependency_status() -> dict[str, str]:
 @router.get("/health")
 def plugin_health() -> dict:
     return {"status": "ok", "dependencies": plugin_dependency_status()}
+
+
+@router.post("/chat")
+async def plugin_chat(body: PluginChatRequest, request: Request):
+    context = None
+    if body.current_note_id:
+        try:
+            note = load_note_context(resolve_wiki_paths(), body.current_note_id)
+        except NoteNotFound as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="현재 Wiki 노트를 찾을 수 없습니다.",
+            ) from exc
+        metadata = note.get("metadata") or {}
+        context = {
+            "id": metadata.get("id"),
+            "path": note["note_path"],
+            "metadata": metadata,
+            "body": note["body_markdown"],
+        }
+    chat_body = ChatRequest(
+        query=body.query,
+        session_id=body.session_id,
+        user_id=body.user_id,
+        resume_value=body.resume_value,
+        wiki_context=context,
+    )
+    return await request.app.state.chat_stream_handler(chat_body, request)
+
+
+@router.get("/sessions", response_model=list[SessionSummary])
+async def plugin_sessions(request: Request) -> list[SessionSummary]:
+    return await list_session_summaries(request.app.state.motor_db)
+
+
+@router.get("/sessions/{session_id}", response_model=SessionHistory)
+async def plugin_session_history(
+    session_id: str, request: Request
+) -> SessionHistory:
+    return await load_session_history(request.app.state.motor_db, session_id)
 
 
 @router.get("/search", response_model=PluginSearchResponse)

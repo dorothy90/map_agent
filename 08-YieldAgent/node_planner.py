@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 
+import json
 from datetime import date, timedelta
 from typing import Any, Dict
 
@@ -213,6 +214,17 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     )
 
     meta_parts: list[str] = []
+    wiki_context = state.get("wiki_context") or {}
+    if wiki_context:
+        meta_parts.append(
+            "Current Wiki note:\n"
+            + json.dumps(
+                wiki_context,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        )
     # Reference resolution is planner-owned (reference_resolver removed): build the
     # recent-results context here each turn so follow-up references resolve from the
     # displayed prior results. Also returned to state below for downstream chaining.
