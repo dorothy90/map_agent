@@ -190,29 +190,14 @@ def _normalize_fail_type(fail_type: str) -> str:
 
 
 # ── OpenSearch 하이브리드 검색 ────────────────────────────────
-@observe(name="fh_search_opensearch")
-def _search_opensearch(
+def _build_bm25_query(
     query: str,
     product: str = "",
     fail_type: str = "",
     cause_oper: str = "",
-    top_k: int = 5,
-) -> List[Dict[str, Any]]:
-    """BM25 + kNN 하이브리드 검색 실행"""
-    client = _get_opensearch_client()
-
+) -> tuple[str, list[Dict[str, Any]], Dict[str, Any]]:
     fail_type = _normalize_fail_type(fail_type)
-
-    # 약어 확장 후 임베딩 생성
     expanded_query = _expand_acronyms(query)
-    embedding = _get_embedding(expanded_query)
-
-    # 메타데이터 필터 구성
-    # product / fail_type은 text + .keyword 매핑 → 정확매칭 위해 .keyword 사용
-    # cause_oper는 keyword 단일 매핑 → 그대로 사용
-    # fail_type 값은 인덱스에 "EASY(W)" 또는 "pteidx_snc_n/o"처럼 접두/접미가 붙어
-    #   저장될 수 있음 → substring(wildcard) 매칭으로 사용자 입력("EASY","snc_no")이
-    #   인덱스 값 어디에 있든 잡히도록 처리. case_insensitive로 대소문자 차이도 수용.
     filters = []
     if product:
         filters.append({"term": {"product.keyword": product}})
@@ -237,6 +222,62 @@ def _search_opensearch(
     }
     if filters:
         bm25_query = {"bool": {"must": [bm25_query], "filter": filters}}
+    return expanded_query, filters, bm25_query
+
+
+def _format_search_results(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    results = []
+    for hit in response.get("hits", {}).get("hits", []):
+        src = hit.get("_source", {})
+        score = hit.get("_score", 0)
+        results.append({
+            "product": src.get("product", ""),
+            "cause_oper": src.get("cause_oper", ""),
+            "fail_type": src.get("fail_type", ""),
+            "cause": src.get("cause", ""),
+            "action": src.get("action", ""),
+            "comment": src.get("comment", ""),
+            "date": src.get("date", ""),
+            "source_file": src.get("source_file", ""),
+            "page_num": src.get("page_num", 0),
+            "doc_id": src.get("doc_id", ""),
+            "filenm": src.get("filenm", ""),
+            "download_url": src.get("download_url", ""),
+            "score": round(min(score * 100, 100.0), 1),
+            "content": src.get("content", "")[:200],
+        })
+    return results
+
+
+def _search_bm25(
+    query: str,
+    product: str = "",
+    fail_type: str = "",
+    cause_oper: str = "",
+    top_k: int = 5,
+) -> List[Dict[str, Any]]:
+    """Run the existing BM25 query without an embedding request."""
+    _, _, bm25_query = _build_bm25_query(query, product, fail_type, cause_oper)
+    response = _get_opensearch_client().search(
+        index=_OPENSEARCH_INDEX,
+        body={"size": top_k, "query": bm25_query},
+    )
+    return _format_search_results(response)
+
+
+def _search_opensearch_with_embedding(
+    query: str,
+    embedding: List[float],
+    product: str = "",
+    fail_type: str = "",
+    cause_oper: str = "",
+    top_k: int = 5,
+) -> tuple[List[Dict[str, Any]], str]:
+    """Run hybrid search, using BM25 only for known hybrid search-phase failures."""
+    _, filters, bm25_query = _build_bm25_query(
+        query, product, fail_type, cause_oper
+    )
+    client = _get_opensearch_client()
 
     # kNN 쿼리 (메타데이터 필터 포함)
     # ※ kNN + filter 조합에서 OpenSearch가 exact-kNN 경로로 떨어지면,
@@ -295,33 +336,70 @@ def _search_opensearch(
             logger.error("OpenSearch 검색 실패: %s", e, exc_info=True)
             raise
         logger.warning("[_search_opensearch] hybrid 실패 — BM25-only 폴백: %s", e)
-        bm25_only_body = {"size": top_k, "query": bm25_query}
         try:
-            response = client.search(index=_OPENSEARCH_INDEX, body=bm25_only_body)
+            return _search_bm25(
+                query=query,
+                product=product,
+                fail_type=fail_type,
+                cause_oper=cause_oper,
+                top_k=top_k,
+            ), "bm25_fallback"
         except Exception as e2:
             logger.error("OpenSearch BM25 폴백도 실패: %s", e2, exc_info=True)
             raise
 
-    results = []
-    for hit in response.get("hits", {}).get("hits", []):
-        src = hit.get("_source", {})
-        score = hit.get("_score", 0)
-        results.append({
-            "product": src.get("product", ""),
-            "cause_oper": src.get("cause_oper", ""),
-            "fail_type": src.get("fail_type", ""),
-            "cause": src.get("cause", ""),
-            "action": src.get("action", ""),
-            "comment": src.get("comment", ""),
-            "date": src.get("date", ""),
-            "source_file": src.get("source_file", ""),
-            "page_num": src.get("page_num", 0),
-            "doc_id": src.get("doc_id", ""),
-            "filenm": src.get("filenm", ""),
-            "score": round(min(score * 100, 100.0), 1),
-            "content": src.get("content", "")[:200],
-        })
+    return _format_search_results(response), "hybrid"
 
+
+def search_opensearch_with_mode(
+    query: str,
+    product: str = "",
+    fail_type: str = "",
+    cause_oper: str = "",
+    top_k: int = 5,
+    *,
+    allow_embedding_fallback: bool = False,
+) -> tuple[List[Dict[str, Any]], str]:
+    """Run OpenSearch and explicitly report hybrid or BM25 fallback retrieval."""
+    try:
+        embedding = _get_embedding(_expand_acronyms(query))
+    except Exception:
+        if not allow_embedding_fallback:
+            raise
+        return _search_bm25(
+            query=query,
+            product=product,
+            fail_type=fail_type,
+            cause_oper=cause_oper,
+            top_k=top_k,
+        ), "bm25_fallback"
+    return _search_opensearch_with_embedding(
+        query=query,
+        embedding=embedding,
+        product=product,
+        fail_type=fail_type,
+        cause_oper=cause_oper,
+        top_k=top_k,
+    )
+
+
+@observe(name="fh_search_opensearch")
+def _search_opensearch(
+    query: str,
+    product: str = "",
+    fail_type: str = "",
+    cause_oper: str = "",
+    top_k: int = 5,
+) -> List[Dict[str, Any]]:
+    """BM25 + kNN hybrid search preserving the legacy list-only contract."""
+    results, _ = search_opensearch_with_mode(
+        query,
+        product,
+        fail_type,
+        cause_oper,
+        top_k,
+        allow_embedding_fallback=False,
+    )
     return results
 
 
@@ -653,5 +731,3 @@ def _render_fail_history_html(
         total=len(results),
         download_base_url=download_base_url,
     )
-
-

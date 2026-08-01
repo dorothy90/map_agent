@@ -147,3 +147,34 @@ class SessionSummary(BaseModel):
     last_query: str = ""
     turn_count: int = 0
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class PluginEvidence(BaseModel):
+    doc_id: str = ""
+    content: str = ""
+    cause: str = ""
+    action: str = ""
+    comment: str = ""
+    source_file: str = ""
+    date: str = ""
+    score: float = 0.0
+    source_path: str | None = None
+    download_url: str = ""
+
+
+class PluginSearchResult(BaseModel):
+    concept_id: str | None = None
+    concept_path: str | None = None
+    concept_status: Literal["materialized", "source_only"]
+    product: str
+    fail_type: str
+    cause_oper: str
+    retrieval_mode: Literal["hybrid", "bm25_fallback"]
+    score: float
+    evidence: list[PluginEvidence] = Field(default_factory=list)
+
+
+class PluginSearchResponse(BaseModel):
+    query: str
+    retrieval_mode: Literal["hybrid", "bm25_fallback"]
+    results: list[PluginSearchResult] = Field(default_factory=list)
