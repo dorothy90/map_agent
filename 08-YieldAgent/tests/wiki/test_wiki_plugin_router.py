@@ -148,6 +148,33 @@ async def test_plugin_source_maps_missing_source_to_404(monkeypatch, app):
 
 
 @pytest.mark.anyio
+async def test_plugin_source_maps_invalid_source_metadata_to_404(monkeypatch, app, tmp_path):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    (paths.sources / "FH-1.md").write_text(
+        "---\n"
+        "doc_id: FH-other\n"
+        "type: source\n"
+        "---\n"
+        "# Source\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
+    monkeypatch.setattr(wiki_plugin_router, "resolve_wiki_paths", lambda: paths)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/wiki/plugin/sources/FH-1",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Source를 찾을 수 없습니다."
+
+
+@pytest.mark.anyio
 async def test_plugin_source_returns_metadata(monkeypatch, app):
     monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
     monkeypatch.setattr(

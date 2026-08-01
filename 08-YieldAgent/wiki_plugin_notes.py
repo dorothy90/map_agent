@@ -88,7 +88,9 @@ def related_notes(paths: WikiPaths, note_path: str) -> PluginRelatedResponse:
     _, body = _load_note(note)
     outgoing_paths = _resolve_wikilinks(paths, body)
     backlinks = []
-    for candidate in paths.root.rglob("*.md"):
+    for candidate in paths.root.rglob("*"):
+        if candidate.suffix.lower() != ".md":
+            continue
         try:
             resolved = resolve_markdown_path(paths, _relative(paths, candidate))
         except (NoteNotFound, ValueError):
@@ -115,9 +117,12 @@ def read_source(paths: WikiPaths, doc_id: str) -> PluginSourceResponse:
         raise NoteNotFound(doc_id)
     source = resolve_markdown_path(paths, f"sources/{_stable_filename(doc_id)}.md")
     metadata, _ = _load_note(source)
+    source_doc_id = str(metadata.get("doc_id") or "").strip()
+    if source_doc_id != doc_id or metadata.get("type") != "source":
+        raise NoteNotFound(doc_id)
     page_num = metadata.get("page_num")
     return PluginSourceResponse(
-        doc_id=doc_id,
+        doc_id=source_doc_id,
         source_path=_relative(paths, source),
         source_file=str(metadata.get("source_file") or ""),
         date=str(metadata.get("date") or ""),

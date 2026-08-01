@@ -80,6 +80,15 @@ def test_related_ignores_missing_and_plain_text_targets(paths):
     assert result.outgoing == []
 
 
+def test_related_finds_uppercase_markdown_backlink(paths):
+    write_note(paths.concepts / "A.md", "# A")
+    write_note(paths.operations / "UPPER.MD", "[[concepts/A|A]]")
+
+    result = related_notes(paths, "concepts/A.md")
+
+    assert [item.path for item in result.backlinks] == ["operations/UPPER.MD"]
+
+
 def test_source_returns_only_existing_values(paths):
     write_source(
         paths.sources / "FH-1.md",
@@ -98,6 +107,34 @@ def test_source_returns_only_existing_values(paths):
 def test_source_requires_existing_source_note(paths):
     with pytest.raises(NoteNotFound):
         read_source(paths, "FH-404")
+
+
+def test_source_requires_matching_frontmatter_doc_id(paths):
+    write_source(paths.sources / "FH-1.md", doc_id="FH-other")
+
+    with pytest.raises(NoteNotFound):
+        read_source(paths, "FH-1")
+
+
+def test_source_requires_frontmatter_doc_id(paths):
+    write_note(paths.sources / "FH-1.md", "# Source", type="source")
+
+    with pytest.raises(NoteNotFound):
+        read_source(paths, "FH-1")
+
+
+def test_source_requires_source_frontmatter_type(paths):
+    write_note(paths.sources / "FH-1.md", "# Source", doc_id="FH-1", type="concept")
+
+    with pytest.raises(NoteNotFound):
+        read_source(paths, "FH-1")
+
+
+def test_source_rejects_stable_filename_collision(paths):
+    write_source(paths.sources / "FH_1.md", doc_id="FH 1")
+
+    with pytest.raises(NoteNotFound):
+        read_source(paths, "FH/1")
 
 
 def test_source_rejects_traversal_shaped_identifier(paths):
