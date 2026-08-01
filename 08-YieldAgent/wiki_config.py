@@ -8,6 +8,17 @@ from pathlib import Path
 from typing import Mapping
 
 
+WIKI_PURPOSE_TEMPLATE = (
+    "# Wiki Purpose\n\n"
+    "Yield failure history를 검토하고 탐색하는 사내 Knowledge Wiki입니다.\n"
+)
+WIKI_SCHEMA_TEMPLATE = (
+    "# Wiki Schema\n\n"
+    "Product → Product Fail → Cause Operation → Concept → Source\n"
+)
+WIKI_OVERVIEW_TEMPLATE = "# Wiki Overview\n\n"
+
+
 class WikiConfigurationError(RuntimeError):
     """Raised when the configured Wiki Vault cannot be used safely."""
 
@@ -117,17 +128,9 @@ def initialize_wiki_vault(paths: WikiPaths) -> None:
         directory.mkdir(parents=True, exist_ok=True)
     _initialize_file(paths.log, "# Wiki Operation Log\n\n")
     _initialize_file(paths.index, "# Wiki Index\n\n")
-    _initialize_file(
-        paths.purpose,
-        "# Wiki Purpose\n\n"
-        "Yield failure history를 검토하고 탐색하는 사내 Knowledge Wiki입니다.\n",
-    )
-    _initialize_file(
-        paths.schema,
-        "# Wiki Schema\n\n"
-        "Product → Product Fail → Cause Operation → Concept → Source\n",
-    )
-    _initialize_file(paths.overview, "# Wiki Overview\n\n")
+    _initialize_file(paths.purpose, WIKI_PURPOSE_TEMPLATE)
+    _initialize_file(paths.schema, WIKI_SCHEMA_TEMPLATE)
+    _initialize_file(paths.overview, WIKI_OVERVIEW_TEMPLATE)
 
 
 def _managed_writer_directories(paths: WikiPaths) -> tuple[Path, ...]:

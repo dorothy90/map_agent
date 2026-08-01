@@ -63,6 +63,31 @@ def test_check_previews_changes_without_writing(tmp_path):
     assert _snapshot(paths.root) == before
 
 
+def test_check_previews_create_only_docs_before_apply_initializes_vault(tmp_path):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    paths.concepts.mkdir(parents=True)
+    post = frontmatter.Post(
+        content="body",
+        id="concept:4SS|PRE METAL CLN|EASY",
+        type="concept",
+        product="4SS",
+        fail_type="EASY",
+        cause_oper="PRE METAL CLN",
+        citations=[],
+    )
+    paths.concepts.joinpath("4SS_PRE_METAL_CLN_EASY.md").write_text(
+        frontmatter.dumps(post), encoding="utf-8"
+    )
+    before = _snapshot(paths.root)
+
+    completed = _run_cli(paths, "--check")
+
+    assert completed.returncode == 0
+    assert "created: purpose.md" in completed.stdout
+    assert "created: schema.md" in completed.stdout
+    assert _snapshot(paths.root) == before
+
+
 def test_apply_materializes_the_vault(tmp_path):
     paths = _prepare_vault(tmp_path)
 

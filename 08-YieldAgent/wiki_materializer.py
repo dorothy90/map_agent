@@ -11,7 +11,7 @@ from typing import Any
 
 import frontmatter
 
-from wiki_config import WikiPaths
+from wiki_config import WIKI_PURPOSE_TEMPLATE, WIKI_SCHEMA_TEMPLATE, WikiPaths
 
 
 _GENERATED_BY = "yield-wiki-materializer"
@@ -470,6 +470,10 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
             for key in sorted(product_paths)
         ),
     )
+    if not paths.purpose.exists():
+        targets[paths.purpose] = WIKI_PURPOSE_TEMPLATE
+    if not paths.schema.exists():
+        targets[paths.schema] = WIKI_SCHEMA_TEMPLATE
     if not paths.graph_config.exists():
         targets[paths.graph_config] = json.dumps(
             {
