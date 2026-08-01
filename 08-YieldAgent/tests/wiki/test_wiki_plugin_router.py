@@ -1,9 +1,10 @@
 import httpx
 import pytest
 from fastapi import FastAPI
+from wiki_config import initialize_wiki_vault, resolve_wiki_paths
 
 import wiki_plugin_router
-from models import PluginSearchResponse
+from models import PluginRelatedResponse, PluginSearchResponse, PluginSourceResponse
 
 pytestmark = pytest.mark.no_server
 
@@ -89,3 +90,114 @@ async def test_plugin_search_maps_backend_failure_to_502(monkeypatch, app):
 
     assert response.status_code == 502
     assert response.json()["detail"] == "OpenSearch 검색에 실패했습니다."
+
+
+@pytest.mark.anyio
+async def test_plugin_related_requires_token_and_maps_missing_note_to_404(monkeypatch, app):
+    monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        unauthorized = await client.get("/api/wiki/plugin/related/concepts/A.md")
+        response = await client.get(
+            "/api/wiki/plugin/related/concepts/A.md",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Wiki 노트를 찾을 수 없습니다."
+
+
+@pytest.mark.anyio
+async def test_plugin_related_returns_navigation(monkeypatch, app):
+    monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
+    monkeypatch.setattr(
+        wiki_plugin_router,
+        "related_notes",
+        lambda *args: PluginRelatedResponse(note_path="concepts/A.md"),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/wiki/plugin/related/concepts/A.md",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["note_path"] == "concepts/A.md"
+
+
+@pytest.mark.anyio
+async def test_plugin_source_maps_missing_source_to_404(monkeypatch, app):
+    monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/wiki/plugin/sources/FH-404",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Source를 찾을 수 없습니다."
+
+
+@pytest.mark.anyio
+async def test_plugin_source_returns_metadata(monkeypatch, app):
+    monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
+    monkeypatch.setattr(
+        wiki_plugin_router,
+        "read_source",
+        lambda *args: PluginSourceResponse(doc_id="FH-1", source_path="sources/FH-1.md"),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/wiki/plugin/sources/FH-1",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["source_path"] == "sources/FH-1.md"
+
+
+@pytest.mark.anyio
+async def test_plugin_navigation_routes_read_the_configured_vault(monkeypatch, app, tmp_path):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    (paths.concepts / "A.md").write_text("[[sources/FH-1|FH-1]]", encoding="utf-8")
+    (paths.sources / "FH-1.md").write_text(
+        "---\n"
+        "doc_id: FH-1\n"
+        "type: source\n"
+        "download_url: https://internal/FH-1.pptx\n"
+        "---\n"
+        "# Source\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
+    monkeypatch.setattr(wiki_plugin_router, "resolve_wiki_paths", lambda: paths)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        related = await client.get(
+            "/api/wiki/plugin/related/concepts/A.md",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+        source = await client.get(
+            "/api/wiki/plugin/sources/FH-1",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+
+    assert related.status_code == 200
+    assert related.json()["outgoing"][0]["path"] == "sources/FH-1.md"
+    assert source.status_code == 200
+    assert source.json()["download_url"] == "https://internal/FH-1.pptx"

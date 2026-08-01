@@ -178,3 +178,25 @@ class PluginSearchResponse(BaseModel):
     query: str
     retrieval_mode: Literal["hybrid", "bm25_fallback"]
     results: list[PluginSearchResult] = Field(default_factory=list)
+
+
+class PluginNoteLink(BaseModel):
+    path: str
+    label: str
+    node_type: str = ""
+
+
+class PluginRelatedResponse(BaseModel):
+    note_path: str
+    outgoing: list[PluginNoteLink] = Field(default_factory=list)
+    backlinks: list[PluginNoteLink] = Field(default_factory=list)
+
+
+class PluginSourceResponse(BaseModel):
+    doc_id: str
+    source_path: str
+    source_file: str = ""
+    date: str = ""
+    page_num: int | None = None
+    download_url: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)

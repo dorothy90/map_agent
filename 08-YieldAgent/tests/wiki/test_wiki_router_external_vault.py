@@ -1,15 +1,21 @@
 import importlib
 
 import frontmatter
+import httpx
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 
 pytestmark = pytest.mark.no_server
 
 
-def test_node_endpoint_reads_explicit_external_vault(tmp_path, monkeypatch):
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_node_endpoint_reads_explicit_external_vault(tmp_path, monkeypatch):
     vault = tmp_path / "YieldWiki"
     concepts = vault / "concepts"
     concepts.mkdir(parents=True)
@@ -32,9 +38,12 @@ def test_node_endpoint_reads_explicit_external_vault(tmp_path, monkeypatch):
     wiki_router = importlib.reload(wiki_router)
     app = FastAPI()
     app.include_router(wiki_router.router, prefix="/api/wiki")
-    response = TestClient(app).get(
-        "/api/wiki/node/concept:4SS%7CPRE%20METAL%20CLN%7CEASY"
-    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/wiki/node/concept:4SS%7CPRE%20METAL%20CLN%7CEASY"
+        )
 
     assert response.status_code == 200
     assert response.json()["body_markdown"] == "## 외부 Vault 본문"
