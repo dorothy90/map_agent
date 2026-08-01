@@ -1,6 +1,7 @@
 """Deterministically materialize Wiki metadata as Obsidian Markdown links."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import uuid
@@ -202,10 +203,31 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         for citation in concept.citations:
             doc_id = str(citation.get("doc_id") or "").strip()
             if not doc_id:
+                errors.append(
+                    f"{_relative(paths, concept.path)}: citation missing doc_id"
+                )
                 continue
-            source = sources.setdefault(doc_id, dict(citation))
-            source.setdefault("concepts", [])
+            source = sources.get(doc_id)
+            if source is None:
+                source = dict(citation)
+                source["concepts"] = []
+                sources[doc_id] = source
+            else:
+                for key in ("source_file", "date", "page_num", "download_url"):
+                    current = source.get(key)
+                    incoming = citation.get(key)
+                    if current not in (None, "") and incoming not in (None, ""):
+                        if current != incoming:
+                            errors.append(
+                                f"source:{doc_id}: conflicting {key}: "
+                                f"{current!r} != {incoming!r}"
+                            )
+                    elif incoming not in (None, ""):
+                        source[key] = incoming
             source["concepts"].append(concept)
+
+    if errors:
+        return _MaterializationPlan({}, (), tuple(sorted(set(errors))))
 
     product_paths = {
         product: paths.products / f"{_stable_filename(product)}.md"
@@ -224,6 +246,24 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         doc_id: paths.sources / f"{_stable_filename(doc_id)}.md"
         for doc_id in sources
     }
+
+    for path_map in (
+        product_paths,
+        product_fail_paths,
+        operation_paths,
+        source_paths,
+    ):
+        owners: dict[Path, object] = {}
+        for owner, path in path_map.items():
+            previous = owners.setdefault(path, owner)
+            if previous != owner:
+                errors.append(
+                    f"generated path collision: {previous!r} and {owner!r} "
+                    f"both resolve to {_relative(paths, path)}"
+                )
+
+    if errors:
+        return _MaterializationPlan({}, (), tuple(sorted(set(errors))))
 
     for product in sorted(products):
         links = [
@@ -430,7 +470,57 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
             for key in sorted(product_paths)
         ),
     )
-    return _MaterializationPlan(targets, (), tuple(errors))
+    if not paths.graph_config.exists():
+        targets[paths.graph_config] = json.dumps(
+            {
+                "collapse-filter": True,
+                "search": "-file:index -file:log -path:lint_logs",
+                "showTags": False,
+                "showAttachments": False,
+                "hideUnresolved": False,
+                "showOrphans": True,
+                "collapse-color-groups": True,
+                "colorGroups": [],
+                "collapse-display": True,
+                "showArrow": False,
+                "textFadeMultiplier": 0,
+                "nodeSizeMultiplier": 1,
+                "lineSizeMultiplier": 1,
+                "collapse-forces": True,
+                "centerStrength": 0.518713248970312,
+                "repelStrength": 10,
+                "linkStrength": 1,
+                "linkDistance": 250,
+                "scale": 1,
+                "close": True,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
+
+    deletions: list[Path] = []
+    target_paths = set(targets)
+    for directory in (
+        paths.products,
+        paths.product_fails,
+        paths.operations,
+        paths.sources,
+    ):
+        for path in sorted(directory.glob("*.md")):
+            if path in target_paths:
+                continue
+            try:
+                generated_by = frontmatter.load(path).metadata.get("generated_by")
+            except Exception:
+                continue
+            if generated_by == _GENERATED_BY:
+                deletions.append(path)
+
+    return _MaterializationPlan(
+        targets,
+        tuple(sorted(deletions)),
+        tuple(sorted(set(errors))),
+    )
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -451,6 +541,7 @@ def _execute_plan(
 ) -> MaterializationReport:
     created: list[str] = []
     modified: list[str] = []
+    deleted: list[str] = []
     unchanged: list[str] = []
     for path, content in sorted(plan.targets.items(), key=lambda item: str(item[0])):
         relative = _relative(paths, path)
@@ -464,9 +555,15 @@ def _execute_plan(
             modified.append(relative)
             if apply:
                 _atomic_write(path, content)
+    for path in plan.deletions:
+        relative = _relative(paths, path)
+        deleted.append(relative)
+        if apply:
+            path.unlink()
     return MaterializationReport(
         created=tuple(created),
         modified=tuple(modified),
+        deleted=tuple(deleted),
         unchanged=tuple(unchanged),
     )
 
