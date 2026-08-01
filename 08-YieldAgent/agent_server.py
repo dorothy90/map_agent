@@ -219,8 +219,10 @@ app.include_router(repl_router, prefix="/repl", tags=["repl"])
 
 # ── Wiki vault graph endpoint (Day 5) ────────────────────
 from wiki_router import router as wiki_router  # noqa: E402
+from wiki_plugin_router import router as wiki_plugin_router  # noqa: E402
 
 app.include_router(wiki_router, prefix="/api/wiki", tags=["wiki"])
+app.include_router(wiki_plugin_router, prefix="/api/wiki/plugin", tags=["wiki-plugin"])
 
 
 _AGENT_META: dict[str, tuple[str, int, int]] = {
