@@ -109,6 +109,13 @@ def _write(path: Path, post: frontmatter.Post) -> None:
     _os.replace(tmp, path)
 
 
+def materialize_obsidian_wiki() -> Any:
+    """Refresh deterministic Obsidian links after the primary Wiki write."""
+    from wiki_materializer import materialize_wiki
+
+    return materialize_wiki(_PATHS, apply=True)
+
+
 # ── lifecycle 기본값 ───────────────────────────────────
 _STALE_AFTER_DAYS = int(os.getenv("WIKI_STALE_AFTER_DAYS", "30"))
 
@@ -209,6 +216,7 @@ def upsert_concept(
     confidence: float | None = None,
     citations: list[dict] | None = None,
     evidence: dict | None = None,
+    materialize: bool = True,
 ) -> tuple[str, str]:
     """Concept rollup. 같은 (product, fail_type, cause_oper)는 누적.
 
@@ -259,6 +267,8 @@ def upsert_concept(
         post = frontmatter.Post(content=body, **fm)
         _write(path, post)
         _log("concept_create", cid)
+        if materialize:
+            materialize_obsidian_wiki()
         return cid, "created"
 
     md = dict(existing.metadata)
@@ -305,6 +315,8 @@ def upsert_concept(
 
     _write(path, frontmatter.Post(content=body_content, **md))
     _log("concept_update", cid)
+    if materialize:
+        materialize_obsidian_wiki()
     return cid, "updated"
 
 
@@ -577,6 +589,8 @@ def upsert_super_concept(
     source_concept_ids: list[str],
     synthesized_body: str,
     confidence: float,
+    *,
+    materialize: bool = True,
 ) -> tuple[str, Path]:
     """super_concept 노드 생성/갱신. 자동 답변 근거 사용 금지 (status: reference_only).
 
@@ -617,6 +631,8 @@ def upsert_super_concept(
     post = frontmatter.Post(content=synthesized_body, **md)
     _write(path, post)
     _log("super_upsert", super_id, hits=len(source_concept_ids))
+    if materialize:
+        materialize_obsidian_wiki()
     return super_id, path
 
 

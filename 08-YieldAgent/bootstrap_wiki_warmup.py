@@ -177,6 +177,7 @@ def process_triple(t: dict[str, Any], max_docs: int) -> tuple[str, str]:
                 "n_episodes": 0,
                 "n_dates": len({d.get("date") for d in docs if d.get("date")}),
             },
+            materialize=False,
         )
     except Exception as e:
         return ("save_fail", f"  ✗ upsert: {e}")
@@ -255,6 +256,13 @@ def main() -> int:
     elapsed = time.time() - t0
     print(f"\n  완료: {elapsed:.1f}s ({elapsed/60:.1f}분)")
     print(f"  결과: {counts}")
+
+    materialization = wiki_store.materialize_obsidian_wiki()
+    if materialization.errors:
+        print("\n  ✗ Obsidian graph materialization 실패:")
+        for error in materialization.errors:
+            print(f"    - {error}")
+        return 1
 
     # ── 5) vault 요약 + lint ───────────────────────────
     vc = wiki_store.counts()
