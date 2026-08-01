@@ -3,7 +3,15 @@ import * as https from "node:https";
 
 import type {
   ChatRequest,
+  HealthResponse,
+  PluginReview,
+  PluginReviewUpdate,
+  PluginSearchRequest,
+  PluginSearchResponse,
+  PluginSessionHistory,
+  PluginSessionSummary,
   PluginSettings,
+  ReviewStatus,
   RestInit,
   RestResponse,
   RestTransport,
@@ -98,8 +106,39 @@ export class YieldWikiApi {
     return response.json as T;
   }
 
-  health(): Promise<{ status: string }> {
+  health(): Promise<HealthResponse> {
     return this.rest("/health");
+  }
+
+  listSessions(): Promise<PluginSessionSummary[]> {
+    return this.rest("/sessions");
+  }
+
+  getSession(sessionId: string): Promise<PluginSessionHistory> {
+    return this.rest(`/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  search(request: PluginSearchRequest): Promise<PluginSearchResponse> {
+    const params = new URLSearchParams({ q: request.query });
+    if (request.product) params.set("product", request.product);
+    if (request.failType) params.set("fail_type", request.failType);
+    if (request.causeOper) params.set("cause_oper", request.causeOper);
+    params.set("limit", String(request.limit ?? 20));
+    return this.rest(`/search?${params.toString()}`);
+  }
+
+  listReviews(status: ReviewStatus = "pending"): Promise<PluginReview[]> {
+    return this.rest(`/reviews?status=${encodeURIComponent(status)}`);
+  }
+
+  updateReview(
+    reviewId: string,
+    update: PluginReviewUpdate,
+  ): Promise<PluginReview> {
+    return this.rest(`/reviews/${encodeURIComponent(reviewId)}`, {
+      method: "PATCH",
+      body: update,
+    });
   }
 
   streamChat(

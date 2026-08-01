@@ -90,6 +90,68 @@ describe("YieldWikiApi REST", () => {
     );
   });
 
+  it("encodes Concept search filters through the Plugin search endpoint", async () => {
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      json: { query: "oxide", retrieval_mode: "hybrid", results: [] },
+    });
+    const api = new YieldWikiApi(
+      { serverUrl: "http://localhost:8001", apiToken: DUMMY_TOKEN },
+      request,
+      unusedStream,
+    );
+
+    await api.search({
+      query: "oxide & clean",
+      product: "4SS",
+      failType: "EASY(W)",
+      causeOper: "PRE METAL CLN",
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url:
+          "http://localhost:8001/api/wiki/plugin/search" +
+          "?q=oxide+%26+clean&product=4SS&fail_type=EASY%28W%29&cause_oper=PRE+METAL+CLN&limit=20",
+      }),
+    );
+  });
+
+  it("sends versioned Review decisions exactly once", async () => {
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      json: { id: "review-1", status: "approved", version: 3 },
+    });
+    const api = new YieldWikiApi(
+      { serverUrl: "http://localhost:8001", apiToken: DUMMY_TOKEN },
+      request,
+      unusedStream,
+    );
+
+    await api.updateReview("review:source-removal:1", {
+      status: "approved",
+      reviewer: "operator-1",
+      comment: "근거 확인",
+      expected_version: 2,
+    });
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url:
+          "http://localhost:8001/api/wiki/plugin/reviews/" +
+          "review%3Asource-removal%3A1",
+        method: "PATCH",
+        body: JSON.stringify({
+          status: "approved",
+          reviewer: "operator-1",
+          comment: "근거 확인",
+          expected_version: 2,
+        }),
+      }),
+    );
+  });
+
   it.each([
     [401, "unauthorized"],
     [404, "not_found"],
