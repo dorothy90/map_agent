@@ -1,0 +1,9 @@
+{
+  "id": "yield-wiki",
+  "name": "Yield Wiki",
+  "version": "0.1.0",
+  "minAppVersion": "1.8.7",
+  "description": "Search, chat, and review the Yield failure-history Wiki.",
+  "author": "Yield Agent",
+  "isDesktopOnly": true
+}
