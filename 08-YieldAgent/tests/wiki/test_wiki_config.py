@@ -27,6 +27,45 @@ def test_resolve_paths_from_explicit_environment(tmp_path):
     assert paths.configured is True
 
 
+def test_resolve_paths_includes_m2_materialized_graph(tmp_path):
+    root = (tmp_path / "YieldWiki").resolve()
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(root)})
+
+    assert paths.products == root / "products"
+    assert paths.product_fails == root / "product_fails"
+    assert paths.operations == root / "operations"
+    assert paths.purpose == root / "purpose.md"
+    assert paths.schema == root / "schema.md"
+    assert paths.overview == root / "overview.md"
+    assert paths.obsidian == root / ".obsidian"
+    assert paths.graph_config == root / ".obsidian" / "graph.json"
+
+
+def test_initialize_creates_m2_directories_without_overwriting_operator_docs(
+    tmp_path,
+):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    paths.root.mkdir(parents=True)
+    paths.root.joinpath("purpose.md").write_text(
+        "operator purpose\n", encoding="utf-8"
+    )
+
+    initialize_wiki_vault(paths)
+
+    assert paths.purpose.read_text(encoding="utf-8") == "operator purpose\n"
+    assert paths.schema.exists()
+    assert paths.overview.exists()
+    assert all(
+        path.is_dir()
+        for path in (
+            paths.products,
+            paths.product_fails,
+            paths.operations,
+            paths.obsidian,
+        )
+    )
+
+
 def test_require_external_rejects_missing_path(tmp_path):
     with pytest.raises(WikiConfigurationError, match="WIKI_VAULT_PATH"):
         resolve_wiki_paths(
@@ -68,7 +107,13 @@ def test_initialize_creates_index_and_log_with_same_directory_atomic_create(
     monkeypatch.setattr(wiki_config.os, "link", record_link)
     initialize_wiki_vault(paths)
 
-    assert {destination for _, destination in promotions} == {paths.index, paths.log}
+    assert {destination for _, destination in promotions} == {
+        paths.index,
+        paths.log,
+        paths.purpose,
+        paths.schema,
+        paths.overview,
+    }
     assert all(source.parent == destination.parent for source, destination in promotions)
 
 
@@ -126,11 +171,15 @@ def test_validate_probes_every_managed_writer_directory(tmp_path, monkeypatch):
             paths.concepts,
             paths.aliases,
             paths.super_concepts,
+            paths.products,
+            paths.product_fails,
+            paths.operations,
             paths.sources,
             paths.reviews,
             paths.attachments,
             paths.lint_logs,
             paths.state_dir,
+            paths.obsidian,
         )
     }
     assert set(probed) == {
@@ -264,11 +313,15 @@ def test_validate_removes_write_probe(tmp_path):
         paths.concepts,
         paths.aliases,
         paths.super_concepts,
+        paths.products,
+        paths.product_fails,
+        paths.operations,
         paths.sources,
         paths.reviews,
         paths.attachments,
         paths.lint_logs,
         paths.state_dir,
+        paths.obsidian,
     ):
         assert list(directory.glob(".write-probe-*")) == []
 

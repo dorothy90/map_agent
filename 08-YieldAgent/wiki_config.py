@@ -20,6 +20,9 @@ class WikiPaths:
     concepts: Path
     aliases: Path
     super_concepts: Path
+    products: Path
+    product_fails: Path
+    operations: Path
     sources: Path
     reviews: Path
     attachments: Path
@@ -27,6 +30,11 @@ class WikiPaths:
     state_dir: Path
     log: Path
     index: Path
+    purpose: Path
+    schema: Path
+    overview: Path
+    obsidian: Path
+    graph_config: Path
     manifest: Path
 
 
@@ -57,6 +65,9 @@ def resolve_wiki_paths(
         concepts=root / "concepts",
         aliases=root / "aliases",
         super_concepts=root / "super_concepts",
+        products=root / "products",
+        product_fails=root / "product_fails",
+        operations=root / "operations",
         sources=root / "sources",
         reviews=root / "reviews",
         attachments=root / "attachments",
@@ -64,6 +75,11 @@ def resolve_wiki_paths(
         state_dir=state_dir,
         log=root / "log.md",
         index=root / "index.md",
+        purpose=root / "purpose.md",
+        schema=root / "schema.md",
+        overview=root / "overview.md",
+        obsidian=root / ".obsidian",
+        graph_config=root / ".obsidian" / "graph.json",
         manifest=state_dir / "manifest.json",
     )
 
@@ -88,15 +104,30 @@ def initialize_wiki_vault(paths: WikiPaths) -> None:
         paths.concepts,
         paths.aliases,
         paths.super_concepts,
+        paths.products,
+        paths.product_fails,
+        paths.operations,
         paths.sources,
         paths.reviews,
         paths.attachments,
         paths.lint_logs,
         paths.state_dir,
+        paths.obsidian,
     ):
         directory.mkdir(parents=True, exist_ok=True)
     _initialize_file(paths.log, "# Wiki Operation Log\n\n")
     _initialize_file(paths.index, "# Wiki Index\n\n")
+    _initialize_file(
+        paths.purpose,
+        "# Wiki Purpose\n\n"
+        "Yield failure history를 검토하고 탐색하는 사내 Knowledge Wiki입니다.\n",
+    )
+    _initialize_file(
+        paths.schema,
+        "# Wiki Schema\n\n"
+        "Product → Product Fail → Cause Operation → Concept → Source\n",
+    )
+    _initialize_file(paths.overview, "# Wiki Overview\n\n")
 
 
 def _managed_writer_directories(paths: WikiPaths) -> tuple[Path, ...]:
@@ -105,11 +136,15 @@ def _managed_writer_directories(paths: WikiPaths) -> tuple[Path, ...]:
         paths.concepts,
         paths.aliases,
         paths.super_concepts,
+        paths.products,
+        paths.product_fails,
+        paths.operations,
         paths.sources,
         paths.reviews,
         paths.attachments,
         paths.lint_logs,
         paths.state_dir,
+        paths.obsidian,
     )
 
 
