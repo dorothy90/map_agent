@@ -177,6 +177,23 @@ def test_retryable_failed_job_has_priority_over_new_pending_job(mongo_store):
     assert store.claim_next("worker", lease_seconds=30)["_id"] == failed_id
 
 
+def test_expired_third_crash_becomes_terminal_without_a_fourth_claim(mongo_store):
+    store, clock = mongo_store
+    job_id, _ = store.enqueue(_snapshot(product="CRASH"), "new")
+
+    for attempt in range(1, 4):
+        claimed = store.claim_next(f"worker-{attempt}", lease_seconds=30)
+        assert claimed["attempts"] == attempt
+        clock.advance(31)
+
+    assert store.claim_next("worker-4", lease_seconds=30) is None
+    saved = store.jobs.find_one({"_id": job_id})
+    assert saved["status"] == "terminal_failed"
+    assert saved["lease_owner"] is None
+    assert saved["lease_until"] is None
+    assert saved["last_error"] == "lease expired after maximum attempts"
+
+
 def test_global_lock_is_owned_renewed_and_reclaimed_after_expiry(mongo_store):
     store, clock = mongo_store
 

@@ -109,11 +109,34 @@ class WikiJobStore:
         )
         return job_id, result.upserted_id is not None
 
-    def claim_next(self, owner: str, lease_seconds: int = 900) -> dict[str, Any] | None:
+    def claim_next(
+        self,
+        owner: str,
+        lease_seconds: int = 900,
+        max_attempts: int = 3,
+    ) -> dict[str, Any] | None:
         now = self._now()
         lease_until = now + timedelta(seconds=lease_seconds)
+        self.jobs.update_many(
+            {
+                "status": "running",
+                "lease_until": {"$lte": now},
+                "attempts": {"$gte": max_attempts},
+            },
+            {
+                "$set": {
+                    "status": "terminal_failed",
+                    "lease_owner": None,
+                    "lease_until": None,
+                    "next_retry_at": None,
+                    "last_error": "lease expired after maximum attempts",
+                    "updated_at": now,
+                }
+            },
+        )
         return self.jobs.find_one_and_update(
             {
+                "attempts": {"$lt": max_attempts},
                 "$or": [
                     {"status": "pending"},
                     {
