@@ -2,7 +2,7 @@
 
 ## 실행 정보
 
-- 실행 시각: 2026-08-01 21:00–21:24 KST
+- 실행 시각: 2026-08-01 21:00–2026-08-02 01:16 KST
 - 검증 기준: `ac2a9fb93ee1514274a3ab64315028cbb986bff8`
 - Obsidian Desktop: `1.9.14` (`/Applications/Obsidian.app`)
 - Vault: `/Users/daehwankim/SYLDAIX/YieldWiki`
@@ -81,31 +81,24 @@ Task 8 review에서 provider invocation 예외가 JSON parse fallback에 함께 
 - `.obsidian/plugins/yield-wiki/manifest.json`
 - `.obsidian/plugins/yield-wiki/styles.css`
 
-설치 전후 모두 `data.json`은 존재하지 않았다. 따라서 보존할 기존 checksum은 없었고, 설치기가 `data.json`을 새로 만들거나 덮어쓰지 않은 것은 확인했다.
+설치 전후 모두 `data.json`은 존재하지 않았다. 따라서 보존할 기존 checksum은 없었고, 설치기가 `data.json`을 새로 만들거나 덮어쓰지 않은 것은 확인했다. 이후 실제 Plugin 설정에서 서버 URL과 로컬 토큰을 저장하자 `data.json`이 생성됐으며, 추적 파일에는 포함되지 않았다.
 
 ## Obsidian Desktop UI
 
-결과: **BLOCKED**
+결과: **PARTIAL (주요 Desktop UI PASS, 실제 LLM 답변/Citation 미완료)**
 
-Computer Use가 `Obsidian`/bundle id `md.obsidian`을 실행 중인 앱으로 찾았지만, 두 식별자와 앱 경로 모두에서 접근 가능한 창을 얻지 못하고 `cgWindowNotFound (-10005)`를 반환했다. 같은 문제가 독립적인 재시도에서도 재현됐다. Vault에는 `community-plugins.json`, Plugin `data.json`, workspace의 Yield Wiki view 기록이 없으므로 UI에서 Plugin을 활성화하거나 설정한 상태도 아니다.
+초기에는 접근 가능한 창이 없어 `cgWindowNotFound (-10005)`가 발생했지만, 사용자가 `YieldWiki` Vault 창을 연 뒤 Computer Use로 다음 실제 Desktop 흐름을 완료했다.
 
-따라서 다음 UI 항목은 미완료다.
+- Restricted Mode를 해제하고 로컬 `Yield Wiki` Plugin `0.1.0`을 활성화했다.
+- Plugin 설정에 `http://localhost:8001`과 로컬 토큰을 저장하고 `연결됨`을 확인했다.
+- `세정` + `4SS / EASY / PRE METAL CLN` 검색에서 `bm25_fallback` 안내, Concept 1건, Source 3건을 확인했다.
+- Concept 결과를 눌러 `concepts/4SS_PRE_METAL_CLN_EASY.md`를 열고 10 backlinks를 확인했다.
+- `FH-000238`의 `Source 노트` 버튼을 눌러 `sources/FH-000238.md`와 `Cited By` backlink를 열었다.
+- 앱을 reload한 뒤 토큰, `연결됨` 상태, 이전 Chat 세션이 복원되는 것을 확인했다.
+- 현재 Markdown 노트 전송을 끈 비민감 질문 `연결 테스트`로 실제 402를 재현했고, 성공 답변 대신 오류 내용과 `다시 시도` 버튼이 표시됐다.
+- 테스트 pending Review `review:operator_feedback:6a926e4c4c41482ab39bea9dfb5e6927`을 UI에서 승인했다. Markdown은 `approved`, version 2, append-only history 1건으로 갱신됐다.
 
-- Community plugin 활성화 및 서버 URL/토큰 저장
-- UI Search 결과 클릭과 Concept 열기
-- Related UI 표시
-- current-note context Chat/Citation 클릭
-- Review UI 승인
-- Obsidian 재시작 후 설정/마지막 세션 복원
-- 잘못된 토큰, Backend/Embedding/OpenSearch/LLM 장애의 각 UI 상태
-
-사용자가 Obsidian에서 `/Users/daehwankim/SYLDAIX/YieldWiki` Vault 창을 연 뒤에는 다음 최소 순서로 이어서 검증할 수 있다.
-
-1. Settings → Community plugins에서 `Yield Wiki`를 활성화한다.
-2. Plugin 설정에 `http://localhost:8001`과 현재 Backend 프로세스에 설정한 로컬 토큰을 입력하고 연결을 확인한다.
-3. `세정` + `4SS / EASY / PRE METAL CLN`으로 검색해 `concepts/4SS_PRE_METAL_CLN_EASY.md`를 연다. `oxide`는 임베딩 서비스가 정상화된 뒤 다시 확인한다.
-4. 실제 LLM quota를 해결한 뒤 현재 노트 사용을 켜고 질문하여 Citation까지 확인한다.
-5. Review 탭에서 pending 항목을 승인하고, Obsidian 재시작 후 설정/세션 복원을 확인한다.
+외부 LLM quota가 남아 있지 않아 현재 노트 기반의 실제 답변, structured Citation 생성과 Citation 버튼 클릭은 여전히 미완료다. 회사 문서 내용을 불필요하게 외부 provider로 재전송하지 않도록 402 UI 검증에서는 현재 노트 전송을 껐다. `oxide` 질의의 Concept open도 embedding dependency가 정상화된 뒤 다시 확인해야 한다.
 
 ## 장애 경로
 
@@ -116,10 +109,10 @@ Computer Use가 `Obsidian`/bundle id `md.obsidian`을 실행 중인 앱으로 �
 | OpenSearch 중지 | PASS (API 수준) | health는 `opensearch=unavailable`, Search HTTP 502 |
 | OpenSearch 복구 | PASS | `opensearch-node1` 재시작 후 12초 내 HTTP 200 |
 | Embedding 장애 | PASS (API 수준) | Search가 `bm25_fallback`으로 명시적으로 강등 |
-| LLM 장애 | PASS (API 수준) | 실제 402가 structured SSE `error`로 반환되고 `stream_end`는 발생하지 않음 |
+| LLM 장애 | PASS (API+UI) | 실제 402가 structured SSE `error`로 반환되고 `stream_end` 없이 Plugin에 오류와 `다시 시도`가 표시됨 |
 
 OpenSearch 컨테이너는 검증 후 다시 시작해 최종 HTTP 200을 확인했다. 임시 Backend 프로세스는 검증 후 정상 종료했다.
 
 ## 최종 판정
 
-M4의 자동 회귀, clean frozen Backend의 OpenSearch dependency, 실제 Backend 인증, OpenSearch BM25 검색, Related/Source, Review 동시성 저장 경로, MongoDB 세션, 실제 Vault artifact 설치와 LLM provider 오류 전달은 검증됐다. 전체 E2E 완료 판정은 하지 않는다. 실제 LLM 답변 생성은 quota로 실패했고 Obsidian Desktop 창 자동화가 막혀 UI 시나리오를 수행하지 못했기 때문이다.
+M4의 자동 회귀, clean frozen Backend의 OpenSearch dependency, 실제 Backend 인증, OpenSearch BM25 검색, Concept/Source 탐색, Related API, Review 저장과 Desktop 승인, MongoDB 세션 및 Desktop 복원, 실제 Vault artifact 설치와 LLM provider 오류 UI는 검증됐다. 전체 E2E 완료 판정은 하지 않는다. 실제 LLM 답변과 structured Citation 생성은 quota로 실패했고, 지정 `oxide` 질의는 embedding 실패 후 BM25에서 0건이었기 때문이다.
