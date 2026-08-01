@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from agent_sessions import list_session_summaries, load_session_history
 from models import (
-    ChatRequest,
+    InternalChatRequest,
     PluginChatRequest,
     PluginRelatedResponse,
     PluginReview,
@@ -59,7 +59,7 @@ async def plugin_chat(body: PluginChatRequest, request: Request):
             "metadata": metadata,
             "body": note["body_markdown"],
         }
-    chat_body = ChatRequest(
+    chat_body = InternalChatRequest(
         query=body.query,
         session_id=body.session_id,
         user_id=body.user_id,

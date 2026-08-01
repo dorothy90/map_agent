@@ -37,6 +37,7 @@ from models import (  # noqa: E402
     ArtifactEvent,
     ArtifactType,
     ChatRequest,
+    InternalChatRequest,
     ErrorEvent,
     InterruptEvent,
     MessageEvent,
@@ -456,8 +457,7 @@ async def get_session_history(session_id: str, request: Request):
 
 
 # ── SSE 스트리밍 ──────────────────────────────────────────
-@app.post("/chat/stream")
-async def chat_stream(request: ChatRequest, req: Request):
+async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request):
     graph = req.app.state.graph
     db = req.app.state.motor_db
     # #23 fix: 5-task plan 처리 시 노드 호출 횟수가 ~12회 (rewrite + planner + supervisor×6 + agents×5)
@@ -588,7 +588,11 @@ async def chat_stream(request: ChatRequest, req: Request):
             "tech": "",
             "rank_limit": 10,
             "user_id": request.user_id,
-            "wiki_context": request.wiki_context or {},
+            "wiki_context": (
+                request.wiki_context.model_dump()
+                if isinstance(request, InternalChatRequest) and request.wiki_context
+                else {}
+            ),
             # lotcd/ref_date: 끈적한 god-state 앵커였음 → 매 턴 리셋(제품=재도출, 날짜=today 디폴트)로
             # cross-turn stale 차단. 같은 턴 내 god-state 공유(yield→ppt 라벨 등)는 dispatch persist가
             # 다시 채우므로 유지. cross-turn 제품 참조는 planner가 recent_results에서 재도출.
@@ -1056,4 +1060,13 @@ async def chat_stream(request: ChatRequest, req: Request):
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
-app.state.chat_stream_handler = chat_stream
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest, req: Request):
+    return await _chat_stream(request, req)
+
+
+async def plugin_chat_stream(request: InternalChatRequest, req: Request):
+    return await _chat_stream(request, req)
+
+
+app.state.chat_stream_handler = plugin_chat_stream

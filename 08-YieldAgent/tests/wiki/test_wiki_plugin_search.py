@@ -152,7 +152,9 @@ def test_search_without_concept_is_read_only(tmp_path, monkeypatch):
 
 def test_evidence_source_path_requires_materialized_source(tmp_path, monkeypatch):
     paths = make_empty_vault(tmp_path)
-    (paths.sources / "FH-1.md").write_text("# Source\n", encoding="utf-8")
+    (paths.sources / "FH-1.md").write_text(
+        "---\ntype: source\ndoc_id: FH-1\n---\n# Source\n", encoding="utf-8"
+    )
     monkeypatch.setattr(
         wiki_plugin_search,
         "search_opensearch_with_mode",
@@ -187,7 +189,9 @@ def test_evidence_source_path_requires_materialized_source(tmp_path, monkeypatch
 
 def test_evidence_source_path_uses_materializer_filename(tmp_path, monkeypatch):
     paths = make_empty_vault(tmp_path)
-    (paths.sources / "FH_1.md").write_text("# Source\n", encoding="utf-8")
+    (paths.sources / "FH_1.md").write_text(
+        "---\ntype: source\ndoc_id: FH:1\n---\n# Source\n", encoding="utf-8"
+    )
     monkeypatch.setattr(
         wiki_plugin_search,
         "search_opensearch_with_mode",
@@ -210,3 +214,33 @@ def test_evidence_source_path_uses_materializer_filename(tmp_path, monkeypatch):
     )
 
     assert result.results[0].evidence[0].source_path == "sources/FH_1.md"
+
+
+def test_evidence_source_path_rejects_sanitized_doc_id_collision(tmp_path, monkeypatch):
+    paths = make_empty_vault(tmp_path)
+    (paths.sources / "A_B.md").write_text(
+        "---\ntype: source\ndoc_id: A_B\n---\n# Different source\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        wiki_plugin_search,
+        "search_opensearch_with_mode",
+        lambda *args, **kwargs: (
+            [
+                {
+                    "doc_id": "A/B",
+                    "product": "4SS",
+                    "fail_type": "EASY",
+                    "cause_oper": "PRE METAL CLN",
+                    "score": 50.0,
+                }
+            ],
+            "hybrid",
+        ),
+    )
+
+    result = wiki_plugin_search.search_wiki(
+        "source", "4SS", "EASY", "PRE METAL CLN", 20, paths
+    )
+
+    assert result.results[0].evidence[0].source_path is None

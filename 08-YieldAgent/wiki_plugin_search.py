@@ -47,6 +47,12 @@ def _source_path(paths: WikiPaths, doc_id: str) -> str | None:
     path = paths.sources / f"{_stable_filename(doc_id)}.md"
     if path.parent != paths.sources or not path.is_file():
         return None
+    try:
+        metadata = frontmatter.load(path).metadata
+    except Exception:
+        return None
+    if metadata.get("type") != "source" or str(metadata.get("doc_id") or "") != doc_id:
+        return None
     return path.relative_to(paths.root).as_posix()
 
 

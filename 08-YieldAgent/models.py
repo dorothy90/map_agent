@@ -10,12 +10,12 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ── Request ──────────────────────────────────────────────
 
-class ChatRequest(BaseModel):
+class _ChatEnvelope(BaseModel):
     query: str
     session_id: str
     # interrupt resume — structured HITL contract: a {slot: value} dict (React form /
@@ -23,8 +23,25 @@ class ChatRequest(BaseModel):
     resume_value: str | dict[str, Any] | None = None
     # 로그인 신원: 멀티턴 '기억'이 아니라 매 요청에 프론트가 주입(없으면 ""). mining이 읽음.
     user_id: str = ""
-    # Internal-only structured Wiki note context. Existing clients may omit it.
-    wiki_context: dict[str, Any] | None = None
+
+
+class ChatRequest(_ChatEnvelope):
+    """Public chat contract. Internal context must never be accepted from clients."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WikiNoteContext(BaseModel):
+    id: str | None = None
+    path: str
+    metadata: dict[str, Any]
+    body: str
+
+
+class InternalChatRequest(_ChatEnvelope):
+    """Private envelope constructed only after the Plugin adapter reads the Vault."""
+
+    wiki_context: WikiNoteContext | None = None
 
 
 class PluginChatRequest(BaseModel):
