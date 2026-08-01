@@ -377,15 +377,15 @@ git commit -m "docs: verify incremental Wiki sync"
 
 ## Final acceptance checklist
 
-- [ ] Existing bootstrap remains the initial/recovery path.
-- [ ] Sync scans all OpenSearch triples through composite pagination.
-- [ ] Only new/changed fingerprints use the existing LLM synthesizer.
-- [ ] Embedding-only updates do not schedule synthesis.
-- [ ] Removed evidence creates stale status and a non-overwritten Review.
-- [ ] Mongo job leases, retry, resume, and global writer lock work against real MongoDB.
-- [ ] Concept fingerprint repairs manifest crash gaps without LLM.
-- [ ] Materialization occurs once per changed batch.
-- [ ] `--check` is demonstrably read-only.
-- [ ] Existing frontends, API shapes, mappings, and embeddings are unchanged.
-- [ ] Full Wiki test suite passes.
-- [ ] Actual top-three OpenSearch → MongoDB → free LLM → Vault → Markdown graph flow passes.
+- [x] Existing bootstrap remains the initial/recovery path.
+- [x] Sync scans all OpenSearch triples through composite pagination.
+- [x] Only new/changed fingerprints use the existing LLM synthesizer.
+- [x] Embedding-only updates do not schedule synthesis.
+- [x] Removed evidence creates stale status and a non-overwritten Review.
+- [x] Mongo job leases, retry, resume, and global writer lock work against real MongoDB.
+- [x] Concept fingerprint repairs manifest crash gaps without LLM.
+- [x] Materialization occurs once per changed batch.
+- [x] `--check` is demonstrably read-only.
+- [x] Existing frontends, API shapes, mappings, and embeddings are unchanged.
+- [x] Full Wiki test suite passes.
+- [x] Actual top-three OpenSearch → MongoDB → free LLM → Vault → Markdown graph flow passes.
