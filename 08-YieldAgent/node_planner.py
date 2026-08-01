@@ -46,35 +46,30 @@ planner가 실행할 agent task를 만들지 못한 상황에서 사용자에게
 def _llm_empty_plan_response(user_text: str, *, planner_text: str = "") -> str:
     """Ask the LLM for a natural answer when no executable task exists."""
 
-    try:
-        response = _model.invoke(
-            [
-                {"role": "system", "content": _EMPTY_PLAN_RESPONSE_SYSTEM},
-                {
-                    "role": "user",
-                    "content": (
-                        f"사용자 입력:\n{str(user_text or '').strip()}\n\n"
-                        f"planner 원문 응답 참고:\n{str(planner_text or '').strip()[:800]}"
-                    ),
-                },
-            ],
-            config={"callbacks": _lf_callbacks()},
+    response = _model.invoke(
+        [
+            {"role": "system", "content": _EMPTY_PLAN_RESPONSE_SYSTEM},
+            {
+                "role": "user",
+                "content": (
+                    f"사용자 입력:\n{str(user_text or '').strip()}\n\n"
+                    f"planner 원문 응답 참고:\n{str(planner_text or '').strip()[:800]}"
+                ),
+            },
+        ],
+        config={"callbacks": _lf_callbacks()},
+    )
+    content = (getattr(response, "content", "") or "").strip()
+    if content:
+        emit_runtime_detail(
+            "planner.empty_response",
+            {
+                "user_text": user_text,
+                "planner_text": planner_text,
+                "response": content,
+            },
         )
-        content = (getattr(response, "content", "") or "").strip()
-        if content:
-            emit_runtime_detail(
-                "planner.empty_response",
-                {
-                    "user_text": user_text,
-                    "planner_text": planner_text,
-                    "response": content,
-                },
-            )
-            return content
-    except Exception as exc:
-        logger.warning(
-            "[Planner] empty-plan natural response generation failed: %s", exc
-        )
+        return content
 
     return "지금 요청은 바로 실행할 분석 작업으로 이어지지는 않았습니다. 확인할 제품코드, LOT ID, WADS, 맵, 이력 같은 대상을 알려주시면 이어서 도와드릴게요."
 
@@ -168,7 +163,11 @@ def _planner_empty_canonical_retry(
         config={"callbacks": _lf_callbacks()},
     )
     raw_retry = (response.content or "").strip()
-    retry_plan = extract_json_from_llm(raw_retry, CanonicalPlanResponse)
+    try:
+        retry_plan = extract_json_from_llm(raw_retry, CanonicalPlanResponse)
+    except Exception as exc:
+        logger.warning("[Planner] empty canonical retry JSON 파싱 실패: %s", exc)
+        return [], raw_retry
     if retry_plan.answer.strip():
         return [], raw_retry
     return [
@@ -289,17 +288,16 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     )
 
     # 수동 JSON 파싱 (with_structured_output은 OpenRouter 호환성 문제)
-    raw_text = ""
+    response = _model.invoke(
+        invoke_messages,
+        config={"callbacks": _lf_callbacks()},
+    )
+    raw_text = response.content.strip()
+    emit_runtime_detail("planner.raw", {"raw_text": raw_text})
     try:
-        response = _model.invoke(
-            invoke_messages,
-            config={"callbacks": _lf_callbacks()},
-        )
-        raw_text = response.content.strip()
-        emit_runtime_detail("planner.raw", {"raw_text": raw_text})
         plan = extract_json_from_llm(raw_text, CanonicalPlanResponse)
     except Exception as e:
-        logger.error("[Planner] canonical 파싱 실패: %s", e)
+        logger.error("[Planner] canonical JSON 파싱 실패: %s", e)
         emit_trace_event(
             "planner_output",
             source="planner",
@@ -377,16 +375,11 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "response": direct_answer,
         }
     if not canonical_requests:
-        try:
-            retry_requests, retry_raw = _planner_empty_canonical_retry(
-                invoke_messages,
-                user_text=str(last_human.content),
-                previous_output=raw_text,
-            )
-        except Exception as exc:
-            retry_requests = []
-            retry_raw = ""
-            logger.warning("[Planner] empty canonical retry failed: %s", exc)
+        retry_requests, retry_raw = _planner_empty_canonical_retry(
+            invoke_messages,
+            user_text=str(last_human.content),
+            previous_output=raw_text,
+        )
         if retry_requests:
             canonical_requests = retry_requests
             emit_runtime_detail(

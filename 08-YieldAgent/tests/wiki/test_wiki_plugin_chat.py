@@ -179,6 +179,102 @@ def test_planner_receives_wiki_context_as_structured_system_context(monkeypatch)
     )
 
 
+def test_planner_propagates_model_invocation_failure(monkeypatch):
+    import node_planner
+
+    provider_error = RuntimeError("provider unavailable")
+
+    class FailingModel:
+        def invoke(self, messages, **kwargs):
+            raise provider_error
+
+    monkeypatch.setattr(node_planner, "_model", FailingModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+
+    with pytest.raises(RuntimeError) as raised:
+        node_planner.planner_node(
+            {"messages": [HumanMessage(content="원인은?")]},
+            {},
+        )
+
+    assert raised.value is provider_error
+
+
+def test_planner_keeps_natural_fallback_for_invalid_json(monkeypatch):
+    import node_planner
+
+    class InvalidJsonThenFallbackModel:
+        def __init__(self):
+            self.responses = iter(("not json", "자연어 안내"))
+
+        def invoke(self, messages, **kwargs):
+            return SimpleNamespace(content=next(self.responses))
+
+    monkeypatch.setattr(node_planner, "_model", InvalidJsonThenFallbackModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+
+    result = node_planner.planner_node(
+        {"messages": [HumanMessage(content="안녕하세요")]},
+        {},
+    )
+
+    assert result["messages"][0].content == "자연어 안내"
+
+
+def test_planner_propagates_fallback_model_invocation_failure(monkeypatch):
+    import node_planner
+
+    provider_error = RuntimeError("fallback provider unavailable")
+
+    class InvalidJsonThenFailureModel:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(content="not json")
+            raise provider_error
+
+    monkeypatch.setattr(node_planner, "_model", InvalidJsonThenFailureModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+
+    with pytest.raises(RuntimeError) as raised:
+        node_planner.planner_node(
+            {"messages": [HumanMessage(content="안녕하세요")]},
+            {},
+        )
+
+    assert raised.value is provider_error
+
+
+def test_planner_propagates_empty_retry_model_invocation_failure(monkeypatch):
+    import node_planner
+
+    provider_error = RuntimeError("retry provider unavailable")
+
+    class EmptyPlanThenFailureModel:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(content='{"requests": [], "answer": ""}')
+            raise provider_error
+
+    monkeypatch.setattr(node_planner, "_model", EmptyPlanThenFailureModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+
+    with pytest.raises(RuntimeError) as raised:
+        node_planner.planner_node(
+            {"messages": [HumanMessage(content="분석해줘")]},
+            {},
+        )
+
+    assert raised.value is provider_error
+
+
 def test_message_event_carries_citations_from_structured_results():
     from agent_sessions import citations_from_fail_history_results
 
