@@ -91,6 +91,7 @@ class WikiJobStore:
                     "cause_oper": snapshot.key.cause_oper,
                     "source_fingerprint": snapshot.source_fingerprint,
                     "source_doc_ids": list(snapshot.source_doc_ids),
+                    "raw_fail_types": list(snapshot.raw_fail_types),
                     "doc_count": snapshot.evidence_count,
                     "change_type": change_type,
                     "status": "pending",
