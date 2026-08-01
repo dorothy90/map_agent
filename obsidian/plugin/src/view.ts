@@ -139,18 +139,26 @@ function recordArray(value: unknown): Record<string, unknown>[] {
     : [];
 }
 
-function safeExternalUrl(value: string): string | undefined {
-  if (!value) return undefined;
+function safeExternalUrl(value: string, serverUrl?: string): string | undefined {
+  const normalized = value.trim();
+  if (!normalized || /^[\\/]{2}/.test(normalized) || normalized.startsWith("\\")) {
+    return undefined;
+  }
   try {
-    const url = new URL(value);
+    const hasScheme = /^[A-Za-z][A-Za-z\d+.-]*:/.test(normalized);
+    const url = hasScheme ? new URL(normalized) : new URL(normalized, serverUrl);
     return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
   } catch {
     return undefined;
   }
 }
 
-function createExternalLink(label: string, url: string): HTMLAnchorElement | undefined {
-  const safeUrl = safeExternalUrl(url);
+function createExternalLink(
+  label: string,
+  url: string,
+  serverUrl?: string,
+): HTMLAnchorElement | undefined {
+  const safeUrl = safeExternalUrl(url, serverUrl);
   if (!safeUrl) return undefined;
   const link = createElement("a", "yield-wiki-link", label);
   link.href = safeUrl;
@@ -181,7 +189,10 @@ function newestSession(sessions: PluginSessionSummary[]): PluginSessionSummary |
   })[0];
 }
 
-function citationsFromEvent(event: Record<string, unknown>): CitationView[] {
+function citationsFromEvent(
+  event: Record<string, unknown>,
+  serverUrl: string,
+): CitationView[] {
   const citations = Array.isArray(event.citations) ? event.citations : [];
   return citations.flatMap((value): CitationView[] => {
     const citation = recordValue(value);
@@ -195,7 +206,7 @@ function citationsFromEvent(event: Record<string, unknown>): CitationView[] {
         docId,
         label: stringValue(citation, "label") || docId,
         sourcePath: sourcePath || undefined,
-        downloadUrl: safeExternalUrl(downloadUrl),
+        downloadUrl: safeExternalUrl(downloadUrl, serverUrl),
       },
     ];
   });
@@ -220,6 +231,7 @@ export async function openVaultPath(app: App, path: string): Promise<void> {
 export class YieldWikiView extends ItemView {
   private activeTab: ActiveTab = "chat";
   private chatAbort?: AbortController;
+  private chatGeneration = 0;
   private chatEvents: SseEvent[] = [];
   private searchResults: PluginSearchResult[] = [];
   private reviews: PluginReview[] = [];
@@ -243,6 +255,7 @@ export class YieldWikiView extends ItemView {
   private searchError = "";
   private reviewsLoading = false;
   private reviewError = "";
+  private reviewInFlight = new Set<string>();
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -273,7 +286,11 @@ export class YieldWikiView extends ItemView {
 
   async onClose(): Promise<void> {
     this.viewOpen = false;
-    this.chatAbort?.abort();
+    this.chatGeneration += 1;
+    const controller = this.chatAbort;
+    this.chatAbort = undefined;
+    controller?.abort();
+    this.isStreaming = false;
     this.contentEl.replaceChildren();
   }
 
@@ -314,7 +331,10 @@ export class YieldWikiView extends ItemView {
           docId: citation.doc_id,
           label: citation.label || citation.doc_id,
           sourcePath: citation.source_path || undefined,
-          downloadUrl: safeExternalUrl(citation.download_url ?? ""),
+          downloadUrl: safeExternalUrl(
+            citation.download_url ?? "",
+            this.yieldWikiPlugin.settings.serverUrl,
+          ),
         })),
       });
       for (const artifact of turn.artifacts ?? []) {
@@ -345,6 +365,14 @@ export class YieldWikiView extends ItemView {
     if (this.activeTab === "review") this.renderReviews(panel);
     sidebar.append(panel);
     this.contentEl.append(sidebar);
+  }
+
+  private renderChatRegion(): void {
+    if (!this.viewOpen || this.activeTab !== "chat") return;
+    const panel = this.contentEl.querySelector<HTMLElement>(".yield-wiki-panel");
+    if (!panel) return;
+    panel.replaceChildren();
+    this.renderChat(panel);
   }
 
   private renderHeader(): HTMLElement {
@@ -485,7 +513,13 @@ export class YieldWikiView extends ItemView {
       );
       artifact.append(summary);
       const artifactLink =
-        entry.artifactType === "pptx" ? createExternalLink("원본 열기", entry.data) : undefined;
+        entry.artifactType === "pptx"
+          ? createExternalLink(
+              "원본 열기",
+              entry.data,
+              this.yieldWikiPlugin.settings.serverUrl,
+            )
+          : undefined;
       if (artifactLink) artifact.append(artifactLink);
       else if (entry.data) artifact.append(createElement("pre", "yield-wiki-artifact-data", entry.data));
       return artifact;
@@ -521,7 +555,11 @@ export class YieldWikiView extends ItemView {
       item.append(createElement("span", "yield-wiki-mono", citation.label));
     }
     if (citation.downloadUrl) {
-      const external = createExternalLink("원본", citation.downloadUrl);
+      const external = createExternalLink(
+        "원본",
+        citation.downloadUrl,
+        this.yieldWikiPlugin.settings.serverUrl,
+      );
       if (external) item.append(external);
     }
     return item;
@@ -563,12 +601,19 @@ export class YieldWikiView extends ItemView {
           createElement("span", "yield-wiki-field-label", stringValue(field, "label") || slot),
         );
         const fieldOptions = Array.isArray(field.options) ? field.options : [];
+        const requiredAnyGroup = stringValue(field, "required_any_group");
         if (fieldOptions.length) {
           const select = createElement("select", "yield-wiki-select");
           select.name = slot;
-          select.append(createElement("option", undefined, "선택"));
+          select.required = !requiredAnyGroup;
+          const placeholder = createElement("option", undefined, "선택");
+          placeholder.value = "";
+          placeholder.disabled = true;
+          placeholder.selected = true;
+          select.append(placeholder);
           for (const rawOption of fieldOptions) {
             const option = optionParts(rawOption);
+            if (!option.value) continue;
             const element = createElement("option", undefined, option.label);
             element.value = option.value;
             select.append(element);
@@ -577,6 +622,7 @@ export class YieldWikiView extends ItemView {
         } else {
           const input = createElement("input", "yield-wiki-input");
           input.name = slot;
+          input.required = !requiredAnyGroup;
           input.placeholder = stringValue(field, "validation_hint") || slot;
           label.append(input);
         }
@@ -587,11 +633,25 @@ export class YieldWikiView extends ItemView {
       if (submitButton) submitButton.type = "submit";
       form.addEventListener("submit", (event) => {
         event.preventDefault();
+        if (!form.reportValidity()) return;
         const values: Record<string, string> = {};
         new FormData(form).forEach((value, key) => {
           const normalized = String(value).trim();
           if (normalized) values[key] = normalized;
         });
+        const requiredGroups = new Set(
+          entry.fields
+            .map((field) => stringValue(field, "required_any_group"))
+            .filter(Boolean),
+        );
+        for (const group of requiredGroups) {
+          const hasGroupValue = entry.fields.some(
+            (field) =>
+              stringValue(field, "required_any_group") === group &&
+              !!values[stringValue(field, "slot")],
+          );
+          if (!hasGroupValue) return;
+        }
         if (!Object.keys(values).length) return;
         const label = Object.entries(values)
           .map(([key, value]) => `${key}=${value}`)
@@ -671,7 +731,10 @@ export class YieldWikiView extends ItemView {
   }
 
   private startNewSession(): void {
-    this.chatAbort?.abort();
+    this.chatGeneration += 1;
+    const controller = this.chatAbort;
+    this.chatAbort = undefined;
+    controller?.abort();
     this.sessionId = createSessionId();
     this.chatEntries = [];
     this.chatEvents = [];
@@ -714,6 +777,9 @@ export class YieldWikiView extends ItemView {
 
   private async runChat(request: ChatRequest, appendUser: boolean): Promise<void> {
     if (this.isStreaming) return;
+    const generation = ++this.chatGeneration;
+    const controller = new AbortController();
+    this.chatAbort = controller;
     this.isStreaming = true;
     this.lastChatRequest = { ...request };
     this.transportError = "";
@@ -721,28 +787,38 @@ export class YieldWikiView extends ItemView {
     this.thinkingText = "";
     this.streamSummary = "";
     if (appendUser) this.chatEntries.push({ kind: "user", text: request.query });
-    this.chatAbort = new AbortController();
-    this.render();
+    this.renderChatRegion();
 
     try {
       await this.api.streamChat(
         request,
-        (event) => this.handleChatEvent(event),
-        this.chatAbort.signal,
+        (event) => {
+          if (this.ownsChatRun(generation, controller)) {
+            this.handleChatEvent(event);
+          }
+        },
+        controller.signal,
       );
     } catch (error) {
+      if (!this.ownsChatRun(generation, controller)) return;
       if (!(error instanceof Error && error.name === "AbortError")) {
         const message = formattedError(error);
         this.transportError = message;
         this.chatEntries.push({ kind: "error", text: message });
       }
     } finally {
+      if (!this.ownsChatRun(generation, controller)) return;
+      this.chatAbort = undefined;
       this.isStreaming = false;
       for (const entry of this.chatEntries) {
         if (entry.kind === "assistant") entry.streaming = false;
       }
-      this.render();
+      this.renderChatRegion();
     }
+  }
+
+  private ownsChatRun(generation: number, controller: AbortController): boolean {
+    return this.chatGeneration === generation && this.chatAbort === controller;
   }
 
   private handleChatEvent(event: SseEvent): void {
@@ -765,7 +841,7 @@ export class YieldWikiView extends ItemView {
         this.finalizeMessage(
           stringValue(record, "content"),
           stringValue(record, "agent"),
-          citationsFromEvent(record),
+          citationsFromEvent(record, this.yieldWikiPlugin.settings.serverUrl),
         );
         this.thinkingText = "";
         break;
@@ -816,7 +892,7 @@ export class YieldWikiView extends ItemView {
         break;
       }
     }
-    this.render();
+    this.renderChatRegion();
   }
 
   private appendToken(content: string, agent: string): void {
@@ -980,7 +1056,11 @@ export class YieldWikiView extends ItemView {
           }),
         );
       }
-      const external = createExternalLink("원본", evidence.download_url ?? "");
+      const external = createExternalLink(
+        "원본",
+        evidence.download_url ?? "",
+        this.yieldWikiPlugin.settings.serverUrl,
+      );
       if (external) links.append(external);
       header.append(links);
       evidenceEl.append(header);
@@ -1082,35 +1162,53 @@ export class YieldWikiView extends ItemView {
     card.append(fields);
 
     const actions = createElement("div", "yield-wiki-review-actions");
+    let approveButton: HTMLButtonElement;
+    let rejectButton: HTMLButtonElement;
     const decide = (status: "approved" | "rejected") => {
+      if (this.reviewInFlight.has(review.id)) return;
       const reviewerValue = reviewer.value.trim();
       if (!reviewerValue) {
         reviewer.reportValidity();
         return;
       }
+      approveButton.disabled = true;
+      rejectButton.disabled = true;
       void this.updateReview(review, status, reviewerValue, comment.value.trim());
     };
-    actions.append(
-      createButton("반려", "yield-wiki-secondary-button yield-wiki-danger-button", () => {
+    rejectButton = createButton(
+      "반려",
+      "yield-wiki-secondary-button yield-wiki-danger-button",
+      () => {
         decide("rejected");
-      }),
-      createButton("승인", "yield-wiki-primary-button", () => {
-        decide("approved");
-      }),
+      },
     );
+    approveButton = createButton("승인", "yield-wiki-primary-button", () => {
+      decide("approved");
+    });
+    const reviewBusy = this.reviewInFlight.has(review.id);
+    rejectButton.disabled = reviewBusy;
+    approveButton.disabled = reviewBusy;
+    actions.append(rejectButton, approveButton);
     card.append(actions);
     return card;
   }
 
-  private async loadReviews(preserveMessage = ""): Promise<void> {
+  private async loadReviews(
+    messages: { success?: string; failurePrefix?: string } = {},
+  ): Promise<boolean> {
     this.reviewsLoading = true;
-    if (!preserveMessage) this.reviewError = "";
+    this.reviewError = "";
     this.render();
     try {
       this.reviews = await this.api.listReviews("pending");
-      this.reviewError = preserveMessage;
+      this.reviewError = messages.success ?? "";
+      return true;
     } catch (error) {
-      this.reviewError = preserveMessage || formattedError(error);
+      const detail = formattedError(error);
+      this.reviewError = messages.failurePrefix
+        ? `${messages.failurePrefix} · ${detail}`
+        : detail;
+      return false;
     } finally {
       this.reviewsLoading = false;
       this.render();
@@ -1123,6 +1221,8 @@ export class YieldWikiView extends ItemView {
     reviewer: string,
     comment: string,
   ): Promise<void> {
+    if (this.reviewInFlight.has(review.id)) return;
+    this.reviewInFlight.add(review.id);
     this.reviewError = "";
     try {
       await this.api.updateReview(review.id, {
@@ -1134,9 +1234,15 @@ export class YieldWikiView extends ItemView {
       await this.loadReviews();
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
-        await this.loadReviews("다른 사용자가 먼저 변경했습니다 · 최신 Review를 불러왔습니다.");
+        this.reviewInFlight.delete(review.id);
+        await this.loadReviews({
+          success: "다른 사용자가 먼저 변경했습니다 · 최신 Review를 불러왔습니다.",
+          failurePrefix:
+            "다른 사용자가 먼저 변경했습니다 · 최신 Review 새로고침 실패",
+        });
         return;
       }
+      this.reviewInFlight.delete(review.id);
       this.reviewError = formattedError(error);
       this.render();
     }

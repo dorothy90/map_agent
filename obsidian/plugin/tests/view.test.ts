@@ -207,6 +207,7 @@ function createTestView(options: {
     plugin,
     api,
   );
+  document.body.append(view.containerEl);
   return { view, api, workspace };
 }
 
@@ -217,11 +218,15 @@ function tabLabels(view: YieldWikiView): string[] {
 }
 
 function clickButton(container: HTMLElement, label: string): void {
+  findButton(container, label).click();
+}
+
+function findButton(container: HTMLElement, label: string): HTMLButtonElement {
   const button = Array.from(container.querySelectorAll("button")).find(
     (candidate) => candidate.textContent?.trim() === label,
   );
   if (!button) throw new Error(`Button not found: ${label}`);
-  button.click();
+  return button;
 }
 
 async function submitForm(form: HTMLFormElement): Promise<void> {
@@ -424,6 +429,41 @@ describe("YieldWikiView", () => {
     expect(external).toMatchObject({ target: "_blank", rel: "noopener noreferrer" });
   });
 
+  it("resolves a Backend-relative PPT artifact and rejects unsafe relative schemes", async () => {
+    const api = fakeApi();
+    vi.mocked(api.streamChat).mockImplementationOnce(async (_request, onEvent) => {
+      for (const [artifactId, data] of [
+        ["safe", "/download/pptx/yield-report.pptx"],
+        ["protocol-relative", "//attacker.example/report.pptx"],
+        ["javascript", "javascript:alert(1)"],
+        ["data", "data:text/html,unsafe"],
+      ]) {
+        onEvent({
+          type: "artifact",
+          artifact_id: artifactId,
+          artifact_type: "pptx",
+          title: artifactId,
+          data,
+        });
+      }
+    });
+    const { view } = createTestView({ api });
+    await view.onOpen();
+
+    await submitChat(view, "PPT를 만들어줘");
+
+    const artifactLinks = Array.from(
+      view.containerEl.querySelectorAll<HTMLAnchorElement>(".yield-wiki-artifact a"),
+    );
+    expect(artifactLinks.map((link) => link.href)).toEqual([
+      "http://localhost:8001/download/pptx/yield-report.pptx",
+    ]);
+    expect(artifactLinks[0]).toMatchObject({
+      target: "_blank",
+      rel: "noopener noreferrer",
+    });
+  });
+
   it("waits for an explicit action before resuming an interrupt", async () => {
     const api = fakeApi();
     vi.mocked(api.streamChat).mockImplementationOnce(async (_request, onEvent) => {
@@ -481,6 +521,57 @@ describe("YieldWikiView", () => {
     });
   });
 
+  it("does not resume structured interrupts until every required field is valid", async () => {
+    const api = fakeApi();
+    vi.mocked(api.streamChat).mockImplementationOnce(async (_request, onEvent) => {
+      onEvent({
+        type: "interrupt",
+        interrupt_type: "missing_param",
+        param: "product",
+        message: "제품과 공정을 입력하세요.",
+        options: [],
+        fields: [
+          {
+            slot: "product",
+            label: "Product",
+            type: "choice",
+            options: [{ value: "4SS", label: "4SS" }],
+          },
+          {
+            slot: "cause_oper",
+            label: "Operation",
+            validation_hint: "PRE METAL CLN",
+          },
+        ],
+      });
+    });
+    const { view } = createTestView({ api });
+    await view.onOpen();
+    await submitChat(view, "원인은?");
+
+    const form = view.containerEl.querySelector<HTMLFormElement>(
+      ".yield-wiki-interrupt-form",
+    );
+    const select = form?.querySelector<HTMLSelectElement>('select[name="product"]');
+    const operation = form?.querySelector<HTMLInputElement>('input[name="cause_oper"]');
+    if (!form || !select || !operation) throw new Error("Structured interrupt form not found");
+    expect(select.options[0]).toMatchObject({ value: "", disabled: true, selected: true });
+
+    await submitForm(form);
+    expect(api.streamChat).toHaveBeenCalledTimes(1);
+
+    select.value = "4SS";
+    await submitForm(form);
+    expect(api.streamChat).toHaveBeenCalledTimes(1);
+
+    operation.value = "PRE METAL CLN";
+    await submitForm(form);
+    await vi.waitFor(() => expect(api.streamChat).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.streamChat).mock.calls[1][0]).toMatchObject({
+      resume_value: { product: "4SS", cause_oper: "PRE METAL CLN" },
+    });
+  });
+
   it("keeps partial output after transport failure and retries only on click", async () => {
     const api = fakeApi();
     vi.mocked(api.streamChat)
@@ -529,6 +620,145 @@ describe("YieldWikiView", () => {
 
     await view.onClose();
     await vi.waitFor(() => expect(view.contentEl.childElementCount).toBe(0));
+    expect((view as never as { isStreaming: boolean }).isStreaming).toBe(false);
+  });
+
+  it("preserves inactive Search and Review DOM while Chat streams in the background", async () => {
+    const api = fakeApi();
+    let emit: ((event: SseEvent) => void) | undefined;
+    let finish: (() => void) | undefined;
+    vi.mocked(api.streamChat).mockImplementation((_request, onEvent) => {
+      emit = onEvent;
+      return new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    });
+    const { view } = createTestView({ api });
+    await view.onOpen();
+    const chatInput = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="chat-input"]',
+    );
+    const chatForm = chatInput?.closest("form");
+    if (!chatInput || !chatForm) throw new Error("Chat form not found");
+    chatInput.value = "원인은?";
+    await submitForm(chatForm);
+    await vi.waitFor(() => expect(api.streamChat).toHaveBeenCalledTimes(1));
+
+    clickButton(view.containerEl, "Search");
+    const searchPanel = view.containerEl.querySelector<HTMLElement>(".yield-wiki-panel");
+    const searchInput = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="search-input"]',
+    );
+    const product = view.containerEl.querySelector<HTMLInputElement>('input[name="product"]');
+    const failType = view.containerEl.querySelector<HTMLInputElement>('input[name="failType"]');
+    const causeOper = view.containerEl.querySelector<HTMLInputElement>('input[name="causeOper"]');
+    if (!searchPanel || !searchInput || !product || !failType || !causeOper) {
+      throw new Error("Search fields not found");
+    }
+    searchInput.value = "oxide";
+    product.value = "4SS";
+    failType.value = "EASY";
+    causeOper.value = "PRE METAL CLN";
+    causeOper.focus();
+    searchPanel.scrollTop = 37;
+    emit?.({ type: "status", message: "검색 중" });
+    emit?.({ type: "token", content: "background", agent: "planner" });
+
+    expect(view.containerEl.querySelector('input[name="causeOper"]')).toBe(causeOper);
+    expect(searchInput.value).toBe("oxide");
+    expect(product.value).toBe("4SS");
+    expect(failType.value).toBe("EASY");
+    expect(causeOper.value).toBe("PRE METAL CLN");
+    expect(document.activeElement).toBe(causeOper);
+    expect(searchPanel.scrollTop).toBe(37);
+    expect(
+      view.containerEl.querySelector('[role="tab"][aria-selected="true"]')?.textContent,
+    ).toBe("Search");
+
+    clickButton(view.containerEl, "Review");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(1));
+    const reviewPanel = view.containerEl.querySelector<HTMLElement>(".yield-wiki-panel");
+    const comment = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-comment"]',
+    );
+    if (!reviewPanel || !comment) throw new Error("Review comment not found");
+    comment.value = "검토 중인 메모";
+    comment.focus();
+    reviewPanel.scrollTop = 29;
+    emit?.({ type: "token", content: " token", agent: "planner" });
+
+    expect(view.containerEl.querySelector('[data-testid="review-comment"]')).toBe(comment);
+    expect(comment.value).toBe("검토 중인 메모");
+    expect(document.activeElement).toBe(comment);
+    expect(reviewPanel.scrollTop).toBe(29);
+    expect(
+      view.containerEl.querySelector('[role="tab"][aria-selected="true"]')?.textContent,
+    ).toBe("Review");
+
+    finish?.();
+    await vi.waitFor(() => {
+      expect((view as never as { isStreaming: boolean }).isStreaming).toBe(false);
+    });
+  });
+
+  it("ignores stale events and finalization after starting a new session and stream", async () => {
+    const api = fakeApi();
+    const emitters: Array<(event: SseEvent) => void> = [];
+    const completions: Array<{
+      resolve: () => void;
+      reject: (error: Error) => void;
+    }> = [];
+    vi.mocked(api.streamChat).mockImplementation((_request, onEvent) => {
+      emitters.push(onEvent);
+      return new Promise<void>((resolve, reject) => {
+        completions.push({ resolve, reject });
+      });
+    });
+    const { view } = createTestView({ api });
+    await view.onOpen();
+    const firstInput = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="chat-input"]',
+    );
+    const firstForm = firstInput?.closest("form");
+    if (!firstInput || !firstForm) throw new Error("First Chat form not found");
+    firstInput.value = "첫 요청";
+    await submitForm(firstForm);
+    await vi.waitFor(() => expect(api.streamChat).toHaveBeenCalledTimes(1));
+
+    clickButton(view.containerEl, "새 대화");
+    const secondInput = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="chat-input"]',
+    );
+    const secondForm = secondInput?.closest("form");
+    if (!secondInput || !secondForm) throw new Error("Second Chat form not found");
+    secondInput.value = "새 요청";
+    await submitForm(secondForm);
+    await vi.waitFor(() => expect(api.streamChat).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.streamChat).mock.calls[0][2]?.aborted).toBe(true);
+
+    emitters[1]({ type: "token", content: "새 답변", agent: "planner" });
+    emitters[0]({ type: "token", content: "오래된 답변", agent: "planner" });
+    completions[0].reject(new Error("오래된 스트림 실패"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(view.containerEl.textContent).toContain("새 답변");
+    expect(view.containerEl.textContent).not.toContain("오래된 답변");
+    expect(view.containerEl.textContent).not.toContain("오래된 스트림 실패");
+    expect((view as never as { isStreaming: boolean }).isStreaming).toBe(true);
+
+    emitters[1]({
+      type: "message",
+      content: "새 답변 완료",
+      agent: "planner",
+      citations: [],
+    });
+    emitters[1]({ type: "stream_end", total_steps: 1, elapsed: 0.4 });
+    completions[1].resolve();
+    await vi.waitFor(() => {
+      expect((view as never as { isStreaming: boolean }).isStreaming).toBe(false);
+    });
+    expect(view.containerEl.textContent).toContain("새 답변 완료");
   });
 
   it("labels keyword fallback and opens a Concept result", async () => {
@@ -629,6 +859,69 @@ describe("YieldWikiView", () => {
     expect(view.containerEl.textContent).toContain("pending → rejected");
     expect(view.containerEl.textContent).toContain("operator-0");
     expect(view.containerEl.textContent).toContain("원본 재확인");
+  });
+
+  it("guards both Review decisions against repeated clicks while one PATCH is active", async () => {
+    const api = fakeApi();
+    let finishUpdate: ((review: PluginReview) => void) | undefined;
+    vi.mocked(api.updateReview).mockImplementation(
+      () =>
+        new Promise<PluginReview>((resolve) => {
+          finishUpdate = resolve;
+        }),
+    );
+    const { view } = createTestView({ api });
+    await view.onOpen();
+    clickButton(view.containerEl, "Review");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(1));
+    const reviewer = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="reviewer-input"]',
+    );
+    const comment = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-comment"]',
+    );
+    if (!reviewer || !comment) throw new Error("Review inputs not found");
+    reviewer.value = "operator-1";
+    comment.value = "근거 확인";
+    const approve = findButton(view.containerEl, "승인");
+    const reject = findButton(view.containerEl, "반려");
+
+    approve.click();
+    reject.click();
+    approve.click();
+
+    expect(api.updateReview).toHaveBeenCalledTimes(1);
+    expect(approve.disabled).toBe(true);
+    expect(reject.disabled).toBe(true);
+    finishUpdate?.({ ...pendingReview, status: "approved", version: 3 });
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps stale Review data and reports refresh failure after a 409 conflict", async () => {
+    const api = fakeApi();
+    vi.mocked(api.listReviews)
+      .mockResolvedValueOnce([pendingReview])
+      .mockRejectedValueOnce(new Error("refresh offline"));
+    vi.mocked(api.updateReview).mockRejectedValue(new ApiError(409, "conflict"));
+    const { view } = createTestView({ api });
+    await view.onOpen();
+    clickButton(view.containerEl, "Review");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(1));
+    const reviewer = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="reviewer-input"]',
+    );
+    if (!reviewer) throw new Error("Reviewer input not found");
+    reviewer.value = "operator-1";
+
+    clickButton(view.containerEl, "승인");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(2));
+
+    expect(api.updateReview).toHaveBeenCalledTimes(1);
+    expect(view.containerEl.textContent).toContain("다른 사용자가 먼저 변경했습니다");
+    expect(view.containerEl.textContent).toContain("새로고침 실패");
+    expect(view.containerEl.textContent).toContain("refresh offline");
+    expect(view.containerEl.textContent).not.toContain("최신 Review를 불러왔습니다");
+    expect(view.containerEl.textContent).toContain("FH-1 근거를 검토하세요.");
   });
 });
 
