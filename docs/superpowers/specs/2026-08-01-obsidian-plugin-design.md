@@ -30,6 +30,7 @@ Plugin은 새로운 Knowledge Base를 만들지 않는다. 기존 Wiki Store, Op
 
 ### 제외
 
+- Obsidian Mobile 지원
 - Plugin 내부 embedding, vector store 또는 `kb.json`
 - 검색 시점의 Wiki 합성 또는 Markdown 갱신
 - Plugin에서 Concept·Source Markdown 직접 수정
@@ -116,6 +117,8 @@ obsidian/plugin/
 ```
 
 `data.json`은 Obsidian이 관리하는 로컬 설정이며 repository에 복사하거나 커밋하지 않는다. 설치 작업은 `main.js`, `manifest.json`, `styles.css`만 갱신하고 기존 `data.json`을 보존한다.
+
+대상은 사내 PC의 Obsidian Desktop이다. `manifest.json`은 `isDesktopOnly: true`, `minAppVersion: 1.8.7`로 고정한다. 현재 검증 대상 Obsidian은 `1.9.14`다.
 
 ## 6. Backend 구성
 
@@ -297,7 +300,9 @@ Plugin 설정은 다음 두 값만 저장한다.
 - token 비교에는 timing-safe comparison을 사용한다.
 - token을 request/exception log에 기록하지 않는다.
 - token을 Markdown, shared setting, build artifact에 포함하지 않는다.
-- Obsidian desktop의 `requestUrl`을 사용하여 browser CORS 우회 설정을 Backend에 추가하지 않는다.
+- Health, Search, Related, Source, Session, Review는 Obsidian `requestUrl`을 사용한다.
+- `requestUrl`은 완료된 response만 반환하므로 Chat SSE에는 사용하지 않는다. Chat은 desktop Node `http`/`https` stream을 사용해 SSE chunk를 즉시 소비한다.
+- 두 전송 경로 모두 browser CORS 대상이 아니므로 Plugin을 위한 CORS origin을 Backend에 추가하지 않는다.
 - server URL은 기본적으로 localhost지만 사용자가 설정 화면에서 변경할 수 있다.
 
 ## 12. 오류 처리
@@ -359,6 +364,7 @@ Plugin이 직접 쓸 수 있는 것은 자신의 local `data.json`뿐이다.
 
 - 설정 저장과 Authorization header
 - Chat SSE event parsing
+- Node HTTP stream에서 SSE chunk를 수신 즉시 전달
 - partial stream과 reconnect 상태
 - Concept, Source, external citation 열기
 - Review conflict 표시
