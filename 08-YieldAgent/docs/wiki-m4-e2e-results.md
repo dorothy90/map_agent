@@ -3,7 +3,7 @@
 ## 실행 정보
 
 - 실행 시각: 2026-08-01 21:00–21:24 KST
-- 검증 기준: `cd0f30a` 및 Task 8 review 수정 worktree
+- 검증 기준: `ac2a9fb93ee1514274a3ab64315028cbb986bff8`
 - Obsidian Desktop: `1.9.14` (`/Applications/Obsidian.app`)
 - Vault: `/Users/daehwankim/SYLDAIX/YieldWiki`
 - Backend: `http://127.0.0.1:8001`
