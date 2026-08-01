@@ -216,6 +216,7 @@ def upsert_concept(
     confidence: float | None = None,
     citations: list[dict] | None = None,
     evidence: dict | None = None,
+    sync_metadata: dict[str, Any] | None = None,
     materialize: bool = True,
 ) -> tuple[str, str]:
     """Concept rollup. 같은 (product, fail_type, cause_oper)는 누적.
@@ -253,6 +254,9 @@ def upsert_concept(
             "unique_doc_ids": int((evidence or {}).get("unique_doc_ids", 0)),
             "body_versions": [],
         }
+        fm.update(_approved_sync_metadata(sync_metadata))
+        if sync_metadata:
+            fm["status"] = "active"
         body = ""
         if synthesized_body:
             fm["body_versions"].append({
@@ -289,6 +293,9 @@ def upsert_concept(
     md.setdefault("evidence_diversity_score", 0.0)
     md.setdefault("unique_doc_ids", 0)
     md.setdefault("confidence", 0.0)
+    md.update(_approved_sync_metadata(sync_metadata))
+    if sync_metadata:
+        md["status"] = "active"
 
     body_content = existing.content or ""
     if synthesized_body:
@@ -318,6 +325,88 @@ def upsert_concept(
     if materialize:
         materialize_obsidian_wiki()
     return cid, "updated"
+
+
+def _approved_sync_metadata(values: dict[str, Any] | None) -> dict[str, Any]:
+    if not values:
+        return {}
+    approved = {
+        "source_fingerprint",
+        "source_doc_ids",
+        "evidence_count",
+        "evidence_scope",
+        "sync_job_id",
+    }
+    return {key: values[key] for key in approved if key in values}
+
+
+def mark_concept_stale(
+    filters: dict[str, Any],
+    missing_doc_ids: list[str] | tuple[str, ...],
+    detected_at: str,
+) -> tuple[str, bool]:
+    """Mark an existing Concept stale without deleting or re-synthesizing it."""
+    _ensure_dirs()
+    cid = _concept_key(filters)
+    path = _CONCEPTS / f"{_safe_filename(cid)}.md"
+    post = _read(path)
+    if post is None:
+        return cid, False
+    missing = sorted({str(value) for value in missing_doc_ids if value})
+    metadata = dict(post.metadata)
+    if (
+        metadata.get("status") == "stale"
+        and list(metadata.get("missing_source_doc_ids", []) or []) == missing
+    ):
+        return cid, False
+    metadata["status"] = "stale"
+    metadata["missing_source_doc_ids"] = missing
+    metadata["stale_detected_at"] = detected_at
+    metadata["updated"] = detected_at
+    _write(path, frontmatter.Post(content=post.content or "", **metadata))
+    _log("concept_stale", cid, hits=len(missing))
+    return cid, True
+
+
+def create_source_removal_review(
+    filters: dict[str, Any],
+    previous_doc_ids: list[str] | tuple[str, ...],
+    current_doc_ids: list[str] | tuple[str, ...],
+    detected_at: str,
+) -> tuple[str, bool]:
+    """Create a deterministic operator-owned source-removal Review once."""
+    _ensure_dirs()
+    cid = _concept_key(filters)
+    previous = sorted({str(value) for value in previous_doc_ids if value})
+    current = sorted({str(value) for value in current_doc_ids if value})
+    missing = sorted(set(previous) - set(current))
+    identity = "|".join((cid, ",".join(previous), ",".join(current)))
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    review_id = f"review:source-removal:{digest}"
+    path = _PATHS.reviews / f"source_removal_{digest}.md"
+    if path.exists():
+        return review_id, False
+    metadata = {
+        "id": review_id,
+        "type": "review",
+        "review_type": "source_removal",
+        "status": "pending",
+        "target_concept_id": f"concept:{cid}",
+        "previous_doc_ids": previous,
+        "current_doc_ids": current,
+        "missing_doc_ids": missing,
+        "detected_at": detected_at,
+        "created": detected_at,
+        "updated": detected_at,
+    }
+    body = (
+        "# Source Removal Review\n\n"
+        "근거 문서가 제거되어 자동 재합성을 보류했습니다. "
+        "운영자 검토 후 exact bootstrap 복구 여부를 결정하세요.\n"
+    )
+    _write(path, frontmatter.Post(content=body, **metadata))
+    _log("source_removal_review", review_id, hits=len(missing))
+    return review_id, True
 
 
 def _ttl_iso(days: int) -> str:

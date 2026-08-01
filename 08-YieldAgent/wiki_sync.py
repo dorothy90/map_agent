@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 
@@ -328,3 +331,266 @@ class OpenSearchWikiScanner:
             make_triple_key(product, fail_type, cause_oper),
             self._deduplicate(documents),
         )
+
+
+@dataclass(frozen=True)
+class SyncRunResult:
+    status: str
+    new: int = 0
+    changed: int = 0
+    source_removed: int = 0
+    unchanged: int = 0
+    enqueued: int = 0
+    succeeded: int = 0
+    recovered: int = 0
+    failed: int = 0
+    materialized: bool = False
+    errors: tuple[str, ...] = ()
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _filters_from_key(triple_key: str) -> dict[str, str]:
+    product, cause_oper, fail_type = triple_key.split("|", 2)
+    return {
+        "product": product,
+        "fail_type": fail_type,
+        "cause_oper": cause_oper,
+    }
+
+
+class WikiSyncService:
+    """Coordinate scanner, Mongo jobs, existing synthesis, and Vault writes."""
+
+    def __init__(
+        self,
+        *,
+        scanner: Any,
+        job_store: Any,
+        manifest_path: Path,
+        index: str,
+        synthesize: Any,
+        wiki_store: Any,
+        materialize: Any,
+        now: Any = _now_iso,
+        owner_factory: Any = lambda: uuid.uuid4().hex,
+    ) -> None:
+        self.scanner = scanner
+        self.job_store = job_store
+        self.manifest_path = manifest_path
+        self.index = index
+        self.synthesize = synthesize
+        self.wiki_store = wiki_store
+        self.materialize = materialize
+        self.now = now
+        self.owner_factory = owner_factory
+
+    def check(self) -> SyncRunResult:
+        from wiki_manifest import load_manifest
+
+        manifest = load_manifest(self.manifest_path, self.index)
+        plan = plan_sync(self.scanner.scan(), manifest)
+        return SyncRunResult(
+            status="checked",
+            new=len(plan.new),
+            changed=len(plan.changed),
+            source_removed=len(plan.source_removed),
+            unchanged=len(plan.unchanged),
+        )
+
+    def apply(self, limit: int) -> SyncRunResult:
+        return self._run(limit=limit, scan=True)
+
+    def resume(self, limit: int) -> SyncRunResult:
+        return self._run(limit=limit, scan=False)
+
+    def _run(self, *, limit: int, scan: bool) -> SyncRunResult:
+        from wiki_manifest import load_manifest
+
+        owner = self.owner_factory()
+        if not self.job_store.acquire_global_lock(owner):
+            return SyncRunResult(status="already_running")
+        counts = {
+            "new": 0,
+            "changed": 0,
+            "source_removed": 0,
+            "unchanged": 0,
+            "enqueued": 0,
+            "succeeded": 0,
+            "recovered": 0,
+            "failed": 0,
+        }
+        errors: list[str] = []
+        vault_changed = False
+        materialized = False
+        try:
+            manifest = load_manifest(self.manifest_path, self.index)
+            if scan:
+                plan = plan_sync(self.scanner.scan(), manifest)
+                counts.update(
+                    new=len(plan.new),
+                    changed=len(plan.changed),
+                    source_removed=len(plan.source_removed),
+                    unchanged=len(plan.unchanged),
+                )
+                detected_at = self.now()
+                for change in plan.source_removed:
+                    filters = _filters_from_key(change.triple_key)
+                    previous_ids = list((change.previous or {}).get("source_doc_ids", []))
+                    current_ids = list(change.snapshot.source_doc_ids) if change.snapshot else []
+                    _, stale_changed = self.wiki_store.mark_concept_stale(
+                        filters, change.missing_doc_ids, detected_at
+                    )
+                    _, review_created = self.wiki_store.create_source_removal_review(
+                        filters, previous_ids, current_ids, detected_at
+                    )
+                    vault_changed = vault_changed or stale_changed or review_created
+                for change in (*plan.changed, *plan.new):
+                    _, created = self.job_store.enqueue(
+                        change.snapshot, change.change_type
+                    )
+                    counts["enqueued"] += int(created)
+
+            for _ in range(limit):
+                if not self.job_store.renew_global_lock(owner):
+                    raise RuntimeError("Wiki sync global lock was lost")
+                job = self.job_store.claim_next(owner)
+                if job is None:
+                    break
+                try:
+                    outcome, concept_changed = self._process_job(
+                        job, owner, manifest
+                    )
+                    counts[outcome] += 1
+                    vault_changed = vault_changed or concept_changed
+                except Exception as exc:
+                    self.job_store.mark_failed(job["_id"], owner, exc)
+                    counts["failed"] += 1
+                    errors.append(" ".join(str(exc).split())[:500])
+
+            if vault_changed:
+                report = self.materialize()
+                report_errors = tuple(getattr(report, "errors", ()) or ())
+                if report_errors:
+                    errors.extend(str(error) for error in report_errors)
+                else:
+                    materialized = True
+            status = "completed" if not errors else "completed_with_errors"
+            return SyncRunResult(
+                status=status,
+                materialized=materialized,
+                errors=tuple(errors),
+                **counts,
+            )
+        finally:
+            self.job_store.release_global_lock(owner)
+
+    def _process_job(
+        self,
+        job: dict[str, Any],
+        owner: str,
+        manifest: dict[str, Any],
+    ) -> tuple[Literal["succeeded", "recovered"], bool]:
+        from wiki_manifest import record_success, save_manifest
+
+        snapshot = self.scanner.fetch_snapshot(
+            job["product"],
+            job["fail_type"],
+            job["cause_oper"],
+            raw_fail_types=job.get("raw_fail_types"),
+        )
+        if snapshot.source_fingerprint != job["source_fingerprint"]:
+            raise RuntimeError(
+                "OpenSearch source fingerprint changed after planning; run apply to replan"
+            )
+        concept_id = f"concept:{snapshot.key.canonical}"
+        existing = self.wiki_store.read_node(concept_id)
+        if (
+            existing
+            and existing.get("frontmatter", {}).get("source_fingerprint")
+            == snapshot.source_fingerprint
+        ):
+            version = int(existing["frontmatter"].get("version", 1))
+            success_at = self.now()
+            record_success(
+                manifest,
+                snapshot,
+                concept_id=concept_id,
+                concept_version=version,
+                success_at=success_at,
+            )
+            save_manifest(self.manifest_path, manifest)
+            if not self.job_store.mark_succeeded(
+                job["_id"],
+                owner,
+                concept_id=concept_id,
+                concept_version=version,
+            ):
+                raise RuntimeError("Wiki sync job ownership was lost before recovery")
+            return "recovered", False
+
+        synthesis = self.synthesize(concept_id, list(snapshot.documents))
+        if synthesis is None:
+            raise RuntimeError("Wiki synthesis returned no result")
+        citations = [
+            citation.model_dump() if hasattr(citation, "model_dump") else dict(citation)
+            for citation in synthesis.citations
+        ]
+        filters = {
+            "product": snapshot.key.product,
+            "fail_type": snapshot.key.fail_type,
+            "cause_oper": snapshot.key.cause_oper,
+        }
+        stored_id, _ = self.wiki_store.upsert_concept(
+            filters=filters,
+            source_episode_id=None,
+            synthesized_body=synthesis.body_markdown,
+            confidence=synthesis.confidence,
+            citations=citations,
+            evidence={
+                "score": 1.0
+                if snapshot.evidence_count >= 5
+                else snapshot.evidence_count / 5.0,
+                "unique_doc_ids": len(snapshot.source_doc_ids),
+                "n_episodes": 0,
+                "n_dates": len(
+                    {
+                        document.get("date")
+                        for document in snapshot.documents
+                        if document.get("date")
+                    }
+                ),
+            },
+            sync_metadata={
+                "source_fingerprint": snapshot.source_fingerprint,
+                "source_doc_ids": list(snapshot.source_doc_ids),
+                "evidence_count": snapshot.evidence_count,
+                "evidence_scope": snapshot.evidence_scope,
+                "sync_job_id": job["_id"],
+            },
+            materialize=False,
+        )
+        concept_id = stored_id if stored_id.startswith("concept:") else f"concept:{stored_id}"
+        stored = self.wiki_store.read_node(concept_id)
+        if stored is None:
+            raise RuntimeError("Stored Wiki Concept could not be read back")
+        version = int(stored["frontmatter"].get("version", 1))
+        success_at = self.now()
+        record_success(
+            manifest,
+            snapshot,
+            concept_id=concept_id,
+            concept_version=version,
+            success_at=success_at,
+        )
+        save_manifest(self.manifest_path, manifest)
+        if not self.job_store.mark_succeeded(
+            job["_id"],
+            owner,
+            concept_id=concept_id,
+            concept_version=version,
+        ):
+            raise RuntimeError("Wiki sync job ownership was lost before success")
+        return "succeeded", True
