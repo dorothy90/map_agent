@@ -200,3 +200,41 @@ class PluginSourceResponse(BaseModel):
     page_num: int | None = None
     download_url: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+ReviewStatus = Literal["pending", "approved", "rejected", "resolved"]
+
+
+class PluginReviewHistory(BaseModel):
+    changed_at: str
+    from_status: ReviewStatus
+    to_status: ReviewStatus
+    reviewer: str
+    comment: str = ""
+
+
+class PluginReview(BaseModel):
+    id: str
+    review_type: str
+    status: ReviewStatus
+    target_concept_id: str
+    version: int
+    created: str
+    updated: str
+    body_markdown: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    history: list[PluginReviewHistory] = Field(default_factory=list)
+
+
+class PluginReviewCreate(BaseModel):
+    target_concept_id: str
+    reviewer: str
+    comment: str
+    review_type: str = "operator_feedback"
+
+
+class PluginReviewUpdate(BaseModel):
+    status: Literal["approved", "rejected"]
+    reviewer: str
+    comment: str = ""
+    expected_version: int = Field(ge=1)

@@ -228,3 +228,116 @@ async def test_plugin_navigation_routes_read_the_configured_vault(monkeypatch, a
     assert related.json()["outgoing"][0]["path"] == "sources/FH-1.md"
     assert source.status_code == 200
     assert source.json()["download_url"] == "https://internal/FH-1.pptx"
+
+
+@pytest.mark.anyio
+async def test_plugin_review_routes_persist_to_configured_vault(
+    monkeypatch, app, tmp_path
+):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
+    monkeypatch.setattr(wiki_plugin_router, "resolve_wiki_paths", lambda: paths)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/wiki/plugin/reviews",
+            headers={"Authorization": "Bearer correct-token"},
+            json={
+                "target_concept_id": "concept:A",
+                "reviewer": "operator-1",
+                "comment": "확인 필요",
+            },
+        )
+        listed = await client.get(
+            "/api/wiki/plugin/reviews?status=pending",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+        updated = await client.patch(
+            f"/api/wiki/plugin/reviews/{created.json()['id']}",
+            headers={"Authorization": "Bearer correct-token"},
+            json={
+                "status": "approved",
+                "reviewer": "operator-2",
+                "comment": "근거 확인",
+                "expected_version": 1,
+            },
+        )
+
+    assert created.status_code == 201
+    assert listed.status_code == 200
+    assert [review["id"] for review in listed.json()] == [created.json()["id"]]
+    assert updated.status_code == 200
+    assert updated.json()["status"] == "approved"
+    assert updated.json()["version"] == 2
+
+
+@pytest.mark.anyio
+async def test_plugin_review_update_maps_missing_and_conflict(
+    monkeypatch, app, tmp_path
+):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
+    monkeypatch.setattr(wiki_plugin_router, "resolve_wiki_paths", lambda: paths)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        missing = await client.patch(
+            "/api/wiki/plugin/reviews/review:missing",
+            headers={"Authorization": "Bearer correct-token"},
+            json={
+                "status": "approved",
+                "reviewer": "operator-1",
+                "expected_version": 1,
+            },
+        )
+        created = await client.post(
+            "/api/wiki/plugin/reviews",
+            headers={"Authorization": "Bearer correct-token"},
+            json={
+                "target_concept_id": "concept:A",
+                "reviewer": "operator-1",
+                "comment": "확인 필요",
+            },
+        )
+        conflict = await client.patch(
+            f"/api/wiki/plugin/reviews/{created.json()['id']}",
+            headers={"Authorization": "Bearer correct-token"},
+            json={
+                "status": "rejected",
+                "reviewer": "operator-2",
+                "expected_version": 7,
+            },
+        )
+
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Review를 찾을 수 없습니다."
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "Review가 다른 사용자에 의해 변경되었습니다."
+
+
+@pytest.mark.anyio
+async def test_plugin_review_update_rejects_resolved_status(monkeypatch, app, tmp_path):
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    monkeypatch.setenv("OBSIDIAN_PLUGIN_API_TOKEN", "correct-token")
+    monkeypatch.setattr(wiki_plugin_router, "resolve_wiki_paths", lambda: paths)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.patch(
+            "/api/wiki/plugin/reviews/review:any",
+            headers={"Authorization": "Bearer correct-token"},
+            json={
+                "status": "resolved",
+                "reviewer": "operator-1",
+                "expected_version": 1,
+            },
+        )
+
+    assert response.status_code == 422

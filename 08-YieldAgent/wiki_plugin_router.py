@@ -2,11 +2,20 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from models import PluginRelatedResponse, PluginSearchResponse, PluginSourceResponse
+from models import (
+    PluginRelatedResponse,
+    PluginReview,
+    PluginReviewCreate,
+    PluginReviewUpdate,
+    PluginSearchResponse,
+    PluginSourceResponse,
+    ReviewStatus,
+)
 from wiki_config import resolve_wiki_paths
 from wiki_plugin_auth import require_plugin_token
 from wiki_plugin_notes import NoteNotFound, read_source, related_notes
 from wiki_plugin_search import search_wiki
+from wiki_review_store import ReviewConflict, ReviewNotFound, WikiReviewStore
 
 router = APIRouter(dependencies=[Depends(require_plugin_token)])
 
@@ -55,3 +64,26 @@ def plugin_source(doc_id: str) -> PluginSourceResponse:
         return read_source(resolve_wiki_paths(), doc_id)
     except NoteNotFound as exc:
         raise HTTPException(status_code=404, detail="Source를 찾을 수 없습니다.") from exc
+
+
+@router.get("/reviews", response_model=list[PluginReview])
+def plugin_reviews(status: ReviewStatus | None = None) -> list[PluginReview]:
+    return WikiReviewStore(resolve_wiki_paths()).list(status=status)
+
+
+@router.post("/reviews", response_model=PluginReview, status_code=201)
+def create_plugin_review(body: PluginReviewCreate) -> PluginReview:
+    return WikiReviewStore(resolve_wiki_paths()).create(body)
+
+
+@router.patch("/reviews/{review_id:path}", response_model=PluginReview)
+def update_plugin_review(review_id: str, body: PluginReviewUpdate) -> PluginReview:
+    try:
+        return WikiReviewStore(resolve_wiki_paths()).update(review_id, body)
+    except ReviewNotFound as exc:
+        raise HTTPException(status_code=404, detail="Review를 찾을 수 없습니다.") from exc
+    except ReviewConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Review가 다른 사용자에 의해 변경되었습니다.",
+        ) from exc
