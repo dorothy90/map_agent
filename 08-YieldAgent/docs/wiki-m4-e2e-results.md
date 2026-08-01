@@ -1,0 +1,118 @@
+# M4 Obsidian Plugin E2E Results
+
+## 실행 정보
+
+- 실행 시각: 2026-08-01 21:00–21:10 KST
+- 검증 기준 커밋: `f1208b6e5a56a38909bb670cb9bd5a4c4cb4b413`
+- Obsidian Desktop: `1.9.14` (`/Applications/Obsidian.app`)
+- Vault: `/Users/daehwankim/SYLDAIX/YieldWiki`
+- Backend: `http://127.0.0.1:8001`
+- OpenSearch: `http://127.0.0.1:9200`, index `fail-history`, 505 documents
+- 실제 질의: `oxide`, `product=4SS`, `fail_type=EASY`, `cause_oper=PRE METAL CLN`
+- 대조 질의: `세정`, 동일 필터
+- Chat 세션: `task8-obsidian-e2e-20260801`, `task8-obsidian-free-20260801`
+- Review: `review:operator_feedback:9634d6b6f4424c96a9ccb9adb816a115`
+
+로컬 인증 토큰은 Backend 프로세스 환경에서만 임시로 사용했다. 토큰 값과 기존 `.env` 값은 추적 파일에 기록하지 않았다.
+
+## 자동 회귀
+
+| 검증 | 결과 | 증거 |
+| --- | --- | --- |
+| Wiki suite | PASS | `172 passed in 6.91s` |
+| Confirm edit/user memory | PASS | `18 passed in 1.40s` |
+| Plugin tests | PASS | `36 passed` (Vitest) |
+| Plugin production build | PASS | TypeScript 검사 및 esbuild, `main.js` 28.8 kB |
+
+Python 검증은 시스템 Anaconda가 아니라 저장소의 `uv run --frozen --with pytest`로 수행했다. 현재 `pyproject.toml`에는 `pytest`와 `opensearch-py`가 선언되어 있지 않아, 테스트와 실제 OpenSearch E2E에서 각각 `--with pytest`, `--with opensearch-py`를 사용했다. `opensearch-py` 없이 기동한 첫 시도에서는 Plugin health가 `opensearch=unavailable`, Search가 HTTP 502였다. 이는 서비스 장애가 아니라 실행 환경의 미선언 의존성 때문이었다.
+
+## 실제 Backend 및 API
+
+| 시나리오 | 결과 | 실제 관찰 |
+| --- | --- | --- |
+| Public health | PASS | HTTP 200 |
+| 올바른 Plugin 인증 | PASS | Plugin health HTTP 200 |
+| 잘못된 Plugin 인증 | PASS | HTTP 401 |
+| Plugin dependency health | PASS | `backend=ok`, `opensearch=ok`, `llm=configured` |
+| `oxide` Search | PARTIAL | HTTP 200, `bm25_fallback`, 0 results |
+| `세정` 대조 Search | PASS | HTTP 200, `bm25_fallback`, materialized Concept 1건 및 Source evidence 3건 |
+| Related | PASS | Concept에서 Operation, Source 7건, Super Concept outgoing 및 backlinks 반환 |
+| Source | PASS | `sources/FH-000238.md`의 실제 metadata 반환 |
+| Review | PASS | pending v1 생성 후 approved v2, reload 및 append-only history 1건 확인 |
+| Session 저장/복원 API | PASS | 두 Chat 세션이 MongoDB 목록/이력에서 다시 조회됨 |
+
+`oxide`는 실제 임베딩 호출이 실패하여 BM25로 정직하게 강등되었고, 동일 필터의 7개 실제 OpenSearch 문서에는 영문 `oxide`가 없어 0건이었다. 따라서 요구한 `oxide` 질의로 Concept를 여는 시나리오는 완료하지 못했다. 대조 질의 `세정`은 다음 결과를 반환했다.
+
+- Concept ID: `concept:4SS|PRE METAL CLN|EASY`
+- Concept path: `concepts/4SS_PRE_METAL_CLN_EASY.md`
+- Source IDs: `FH-9001-EXTRA`, `FH-000243`, `FH-000238`
+- retrieval mode: `bm25_fallback`
+
+검색 호출 전후로 Wiki sync/materialize 작업은 실행하지 않았다. 검색 자체가 새 Wiki 파일이나 sync job을 만들지 않았고, 외부 Vault에 추가된 파일은 명시적인 Review E2E가 만든 Review Markdown 한 건뿐이다.
+
+## 실제 LLM 및 Chat SSE
+
+결과: **FAIL (외부 LLM quota)**
+
+두 번 모두 HTTP 200 SSE 연결에서 `stream_start`, 여러 `token`, `message`, `stream_end` 순서를 관찰했다. 그러나 Backend 로그의 실제 planner 호출은 OpenRouter HTTP 402 `Insufficient credits`로 실패했다. 첫 시도는 기존 모델 설정, 두 번째 시도는 추적 파일이나 `.env`를 변경하지 않고 프로세스 환경에서 `openai/gpt-oss-20b:free`로 override했다. 무료 모델 재시도도 동일한 402였다.
+
+서버는 이 실패를 SSE 오류로 내보내지 않고 일반 안내 fallback message와 `stream_end`를 반환했다. 따라서 다음 항목은 성공으로 판정하지 않았다.
+
+- 현재 Concept 내용에 근거한 원인/조치 답변
+- 실제 검색 결과에서 만든 structured Citation
+- Citation으로 `sources/FH-000238.md` 열기
+
+두 세션 모두 MongoDB에 저장되었지만 Citation 수는 0이다. Plugin health의 `llm=configured`는 키 존재만 뜻하며 실제 호출 가능 여부를 보장하지 않는다는 점도 확인했다.
+
+## 실제 Vault 설치
+
+결과: **PASS**
+
+`npm run install:vault -- --vault /Users/daehwankim/SYLDAIX/YieldWiki`를 실행해 다음 세 파일만 설치했다.
+
+- `.obsidian/plugins/yield-wiki/main.js`
+- `.obsidian/plugins/yield-wiki/manifest.json`
+- `.obsidian/plugins/yield-wiki/styles.css`
+
+설치 전후 모두 `data.json`은 존재하지 않았다. 따라서 보존할 기존 checksum은 없었고, 설치기가 `data.json`을 새로 만들거나 덮어쓰지 않은 것은 확인했다.
+
+## Obsidian Desktop UI
+
+결과: **BLOCKED**
+
+Computer Use가 `Obsidian`/bundle id `md.obsidian`을 실행 중인 앱으로 찾았지만, 두 식별자와 앱 경로 모두에서 접근 가능한 창을 얻지 못하고 `cgWindowNotFound (-10005)`를 반환했다. 같은 문제가 독립적인 재시도에서도 재현됐다. Vault에는 `community-plugins.json`, Plugin `data.json`, workspace의 Yield Wiki view 기록이 없으므로 UI에서 Plugin을 활성화하거나 설정한 상태도 아니다.
+
+따라서 다음 UI 항목은 미완료다.
+
+- Community plugin 활성화 및 서버 URL/토큰 저장
+- UI Search 결과 클릭과 Concept 열기
+- Related UI 표시
+- current-note context Chat/Citation 클릭
+- Review UI 승인
+- Obsidian 재시작 후 설정/마지막 세션 복원
+- 잘못된 토큰, Backend/Embedding/OpenSearch/LLM 장애의 각 UI 상태
+
+사용자가 Obsidian에서 `/Users/daehwankim/SYLDAIX/YieldWiki` Vault 창을 연 뒤에는 다음 최소 순서로 이어서 검증할 수 있다.
+
+1. Settings → Community plugins에서 `Yield Wiki`를 활성화한다.
+2. Plugin 설정에 `http://localhost:8001`과 현재 Backend 프로세스에 설정한 로컬 토큰을 입력하고 연결을 확인한다.
+3. `세정` + `4SS / EASY / PRE METAL CLN`으로 검색해 `concepts/4SS_PRE_METAL_CLN_EASY.md`를 연다. `oxide`는 임베딩 서비스가 정상화된 뒤 다시 확인한다.
+4. 실제 LLM quota를 해결한 뒤 현재 노트 사용을 켜고 질문하여 Citation까지 확인한다.
+5. Review 탭에서 pending 항목을 승인하고, Obsidian 재시작 후 설정/세션 복원을 확인한다.
+
+## 장애 경로
+
+| 장애 | 결과 | 실제 관찰 |
+| --- | --- | --- |
+| 잘못된 토큰 | PASS | HTTP 401 |
+| Backend 중지 | PASS (API 수준) | 종료 후 8001 연결 거부 |
+| OpenSearch 중지 | PASS (API 수준) | health는 `opensearch=unavailable`, Search HTTP 502 |
+| OpenSearch 복구 | PASS | `opensearch-node1` 재시작 후 12초 내 HTTP 200 |
+| Embedding 장애 | PASS (API 수준) | Search가 `bm25_fallback`으로 명시적으로 강등 |
+| LLM 장애 | PARTIAL | 실제 402 확인, 그러나 SSE/UI는 일반 fallback을 반환하여 장애를 명확히 표시하지 않음 |
+
+OpenSearch 컨테이너는 검증 후 다시 시작해 최종 HTTP 200을 확인했다. 임시 Backend 프로세스는 검증 후 정상 종료했다.
+
+## 최종 판정
+
+M4의 자동 회귀, 실제 Backend 인증, OpenSearch BM25 검색, Related/Source, Review 동시성 저장 경로, MongoDB 세션, 실제 Vault artifact 설치는 검증됐다. 전체 E2E 완료 판정은 하지 않는다. 실제 LLM 호출은 quota로 실패했고 Obsidian Desktop 창 자동화가 막혀 UI 시나리오를 수행하지 못했기 때문이다.
