@@ -11,12 +11,28 @@ from langfuse import observe
 
 from canonical_request import canonical_requests_from_tasks
 from task_normalizer_validator import normalize_task_fields, validate_tasks
-from local_trace import emit_runtime_detail, emit_trace_event
+from local_trace import emit_runtime_detail, emit_trace_event, summarize_trace_value
 
 load_dotenv(override=True)
 
 from orch_utils import logger
 from wads_context import _apply_recent_wads_to_map_tasks
+
+
+def _trace_tasks(tasks: list[dict[str, Any]], *, redact: bool) -> list[dict[str, Any]]:
+    if not redact:
+        return tasks
+    return [
+        {
+            "task_id": str(task.get("task_id") or ""),
+            "agent": str(task.get("agent") or ""),
+            "param_keys": sorted(str(key) for key in (task.get("params") or {})),
+            "params": summarize_trace_value(task.get("params") or {}),
+            "goal": summarize_trace_value(task.get("goal") or ""),
+        }
+        for task in tasks
+        if isinstance(task, dict)
+    ]
 
 
 
@@ -38,6 +54,7 @@ def task_normalizer_validator_node(
     tasks = state.get("task_plan", []) or []
     if not tasks:
         return {}
+    redact_trace = bool(state.get("wiki_context"))
 
     normalized_tasks, normalization_trace = normalize_task_fields(tasks)
     normalized_tasks, recent_wads_trace = _apply_recent_wads_to_map_tasks(
@@ -45,36 +62,55 @@ def task_normalizer_validator_node(
         state,
     )
     normalization_trace.extend(recent_wads_trace)
-    emit_runtime_detail("normalizer.input", {"tasks": tasks})
+    trace_tasks = _trace_tasks(tasks, redact=redact_trace)
+    emit_runtime_detail("normalizer.input", {"tasks": trace_tasks})
     validation = validate_tasks(normalized_tasks)
+    trace_normalized_tasks = _trace_tasks(
+        normalized_tasks, redact=redact_trace
+    )
+    trace_normalization = (
+        [summarize_trace_value(event) for event in normalization_trace]
+        if redact_trace
+        else normalization_trace
+    )
+    trace_validation = (
+        [summarize_trace_value(event) for event in validation.get("trace", [])]
+        if redact_trace
+        else validation.get("trace", [])
+    )
+    trace_issues = (
+        [summarize_trace_value(issue) for issue in validation.get("issues", [])]
+        if redact_trace
+        else validation.get("issues", [])
+    )
     emit_runtime_detail(
         "normalizer.output",
         {
-            "normalized_tasks": normalized_tasks,
-            "normalization_trace": normalization_trace,
-            "validation_trace": validation.get("trace", []),
-            "issues": validation.get("issues", []),
+            "normalized_tasks": trace_normalized_tasks,
+            "normalization_trace": trace_normalization,
+            "validation_trace": trace_validation,
+            "issues": trace_issues,
         },
     )
     trace = list(state.get("task_normalization_trace", []) or [])
     trace.extend(normalization_trace)
     trace.extend(validation.get("trace", []))
 
-    for event in normalization_trace:
-        logger.info("[TaskNormalizer] %s", event)
+    for event, trace_event in zip(normalization_trace, trace_normalization):
+        logger.info("[TaskNormalizer] %s", trace_event)
         emit_trace_event(
             "normalization_applied",
             source="task_normalizer",
             task_id=str(event.get("task_id") or ""),
-            payload=event,
+            payload=trace_event,
         )
-    for event in validation.get("trace", []):
-        logger.info("[TaskValidator] %s", event)
+    for event, trace_event in zip(validation.get("trace", []), trace_validation):
+        logger.info("[TaskValidator] %s", trace_event)
         emit_trace_event(
             "normalization_applied",
             source="task_validator",
             task_id=str(event.get("task_id") or ""),
-            payload=event,
+            payload=trace_event,
         )
 
     seen_issue_keys = set()
@@ -85,14 +121,17 @@ def task_normalizer_validator_node(
             seen_issue_keys.add(key)
             issues.append(issue)
     if issues:
-        logger.info("[TaskValidator] issues=%s", issues)
+        logger.info(
+            "[TaskValidator] issues=%s",
+            summarize_trace_value(issues) if redact_trace else issues,
+        )
     for issue in issues:
         emit_trace_event(
             "validation_issue",
             source="task_validator",
             severity=str(issue.get("severity") or "warning"),
             task_id=str(issue.get("task_id") or ""),
-            payload=issue,
+            payload=(summarize_trace_value(issue) if redact_trace else issue),
         )
 
     validated_tasks = validation.get("tasks", [])

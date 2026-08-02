@@ -524,6 +524,32 @@ class _PlannerSupervisorStreamTraceGraph:
         yield "updates", {"supervisor": self.supervisor_command.update}
 
 
+class _PlannerNormalizerSupervisorStreamTraceGraph(_PlannerSupervisorStreamTraceGraph):
+    def __init__(self):
+        super().__init__()
+        self.normalizer_update = {}
+
+    async def astream(self, stream_input, config, stream_mode):
+        import node_normalizer
+        import node_planner
+        import node_supervisor
+
+        self.planner_update = node_planner.planner_node(stream_input, config)
+        yield "updates", {"planner": self.planner_update}
+
+        state = {**stream_input, **self.planner_update}
+        self.normalizer_update = node_normalizer.task_normalizer_validator_node(
+            state, config
+        )
+        yield "updates", {"task_normalizer_validator": self.normalizer_update}
+
+        state = {**state, **self.normalizer_update}
+        self.supervisor_command = node_supervisor.supervisor_node(state, config)
+        for event in self.custom_events:
+            yield "custom", dict(event)
+        yield "updates", {"supervisor": self.supervisor_command.update}
+
+
 class _PlannerSupervisorAgentStreamTraceGraph(_PlannerSupervisorStreamTraceGraph):
     def __init__(self):
         super().__init__()
@@ -554,6 +580,28 @@ class _StreamTraceTurns:
 
     async def insert_one(self, document):
         self.documents.append(document)
+
+
+class _CitationStreamGraph:
+    def __init__(self, structured_results):
+        self.structured_results = structured_results
+
+    async def aget_state(self, config):
+        return SimpleNamespace(values={}, tasks=[])
+
+    async def astream(self, stream_input, config, stream_mode):
+        yield "updates", {
+            "fail_history_agent": {
+                "messages": [
+                    SimpleNamespace(
+                        content="근거가 확인되었습니다.",
+                        name="fail_history_agent",
+                        additional_kwargs={},
+                    )
+                ],
+                "fail_history_results": self.structured_results,
+            }
+        }
 
 
 class _StreamTraceClient:
@@ -755,7 +803,7 @@ async def test_wiki_planner_supervisor_stream_diagnostics_omit_provider_echo(
     monkeypatch.setattr(agent_server, "get_client", lambda: _StreamTraceClient())
     monkeypatch.setattr(agent_server, "SIMULATED_STREAM_DELAY", 0)
 
-    graph = _PlannerSupervisorStreamTraceGraph()
+    graph = _PlannerNormalizerSupervisorStreamTraceGraph()
 
     def capture_custom(kind, event):
         payload = event.model_dump() if hasattr(event, "model_dump") else event
@@ -790,6 +838,8 @@ async def test_wiki_planner_supervisor_stream_diagnostics_omit_provider_echo(
     persisted = json.loads(persisted_trace)
     details = {detail["label"]: detail["payload"] for detail in persisted[0]["details"]}
     assert {
+        "normalizer.input",
+        "normalizer.output",
         "supervisor.current_task",
         "supervisor.dispatch_state",
         "stream.custom",
@@ -805,6 +855,7 @@ async def test_wiki_planner_supervisor_stream_diagnostics_omit_provider_echo(
     current_task = graph.supervisor_command.update["current_task"]
     assert current_task["params"]["dh_query"] == slot_sentinel
     assert current_task["goal"] == f"분석 목표 {goal_sentinel}"
+    assert graph.normalizer_update["task_plan"][0] == current_task
     assert goal_sentinel in sse_text
     assert any(
         goal_sentinel in json.dumps(event, ensure_ascii=False)
@@ -853,7 +904,7 @@ async def test_non_wiki_planner_supervisor_stream_preserves_task_diagnostics(
     monkeypatch.setattr(agent_server, "get_client", lambda: _StreamTraceClient())
     monkeypatch.setattr(agent_server, "SIMULATED_STREAM_DELAY", 0)
 
-    graph = _PlannerSupervisorStreamTraceGraph()
+    graph = _PlannerNormalizerSupervisorStreamTraceGraph()
 
     def capture_custom(kind, event):
         payload = event.model_dump() if hasattr(event, "model_dump") else event
@@ -884,6 +935,17 @@ async def test_non_wiki_planner_supervisor_stream_preserves_task_diagnostics(
         graph.supervisor_command.update["current_task"]["params"]["dh_query"]
         == slot_sentinel
     )
+    assert goal_sentinel in persisted_trace
+
+
+def test_normalizer_langfuse_observation_disables_payload_capture():
+    import node_normalizer
+
+    decorator = inspect.getsource(
+        node_normalizer.task_normalizer_validator_node
+    ).split("def task_normalizer_validator_node", 1)[0]
+    assert "capture_input=False" in decorator
+    assert "capture_output=False" in decorator
 
 
 def test_planner_langfuse_observation_disables_output_capture():
@@ -1238,6 +1300,69 @@ def test_graph_only_result_can_emit_canonical_structured_source_citation(tmp_pat
             "download_url": "https://internal/FH-GRAPH",
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_stream_and_session_citations_require_canonical_source_notes(
+    monkeypatch, paths
+):
+    import agent_server
+
+    valid_source = paths.sources / "FH-VALID.md"
+    valid_source.write_text(
+        "---\ntype: source\ndoc_id: FH-VALID\n---\n# Valid Source\n",
+        encoding="utf-8",
+    )
+    (paths.sources / "FH-INVALID.md").write_text(
+        "---\ntype: concept\ndoc_id: FH-INVALID\n---\n# Wrong type\n",
+        encoding="utf-8",
+    )
+    (paths.sources / "FH-LINK.md").symlink_to(valid_source)
+    results = [
+        {
+            "doc_id": "FH-VALID",
+            "download_url": "https://internal/FH-VALID.pptx",
+        },
+        {"doc_id": "FH-MISSING"},
+        {"doc_id": "FH-INVALID"},
+        {"doc_id": "../FH-VALID"},
+        {"doc_id": "FH-LINK"},
+    ]
+    turns = _StreamTraceTurns()
+    req = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                graph=_CitationStreamGraph(results),
+                motor_db=SimpleNamespace(chat_turns=turns),
+            )
+        )
+    )
+    monkeypatch.setattr(agent_server, "resolve_wiki_paths", lambda: paths)
+    monkeypatch.setattr(agent_server, "get_client", lambda: _StreamTraceClient())
+    monkeypatch.setattr(agent_server, "SIMULATED_STREAM_DELAY", 0)
+
+    response = await agent_server._chat_stream(
+        models.ChatRequest(query="근거는?", session_id="canonical-citations"),
+        req,
+    )
+    sse_text = await _consume_stream_response(response)
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in sse_text.splitlines()
+        if line.startswith("data: ")
+    ]
+    message = next(event for event in events if event.get("type") == "message")
+    expected = [
+        {
+            "doc_id": "FH-VALID",
+            "label": "FH-VALID",
+            "source_path": "sources/FH-VALID.md",
+            "download_url": "https://internal/FH-VALID.pptx",
+        }
+    ]
+    assert message["citations"] == expected
+    assert turns.documents[0]["messages"][0]["citations"] == expected
+    assert all(citation["source_path"] for citation in message["citations"])
 
 
 def test_additive_chat_and_event_models_keep_existing_clients_valid():

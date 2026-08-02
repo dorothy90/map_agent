@@ -853,8 +853,15 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                                     ).source_path
                                 except NoteNotFound:
                                     continue
+                        citation_results = [
+                            result
+                            for result in structured_results
+                            if isinstance(result, dict)
+                            and str(result.get("doc_id") or "").strip()
+                            in source_paths
+                        ]
                         citations = citations_from_fail_history_results(
-                            structured_results,
+                            citation_results,
                             source_paths=source_paths,
                         )
 
