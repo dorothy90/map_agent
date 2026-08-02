@@ -177,13 +177,18 @@ def test_episode_privacy_is_explicit_and_sticky_on_dedup(monkeypatch, tmp_path):
             "cause_oper": "PT1H",
         },
         "doc_ids": ["FH-1"],
+        "source_files": ["FH-1.pptx"],
+        "source_files_aligned": True,
         "body": "body",
     }
 
     episode_id, status = wiki_store.upsert_episode({**payload, "private": False})
     assert status == "created"
     path = paths.episodes / f"{episode_id}.md"
-    assert frontmatter.load(path).metadata["private"] is False
+    created = frontmatter.load(path)
+    assert created.metadata["private"] is False
+    assert created.metadata["source_files"] == ["FH-1.pptx"]
+    assert created.metadata["source_files_aligned"] is True
 
     duplicate_id, status = wiki_store.upsert_episode({**payload, "private": True})
     assert (duplicate_id, status) == (episode_id, "skipped")

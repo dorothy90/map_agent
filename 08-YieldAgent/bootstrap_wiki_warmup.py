@@ -176,14 +176,14 @@ def process_triple(t: dict[str, Any], max_docs: int) -> tuple[str, str]:
         return ("manifest_fail", f"  ✗ manifest: {e}")
     try:
         result = synthesize_concept_from_docs(cid, docs[:max_docs])
+        if result is None:
+            return ("synth_none", "  ✗ synth None (LLM 실패 또는 응답 빈 채)")
+        result = restrict_concept_synthesis_sources(
+            result,
+            authoritative_citations_from_documents(snapshot.documents),
+        )
     except Exception as e:
-        return ("synth_fail", f"  ✗ synth: {e}")
-    if result is None:
-        return ("synth_none", "  ✗ synth None (LLM 실패 또는 응답 빈 채)")
-    result = restrict_concept_synthesis_sources(
-        result,
-        authoritative_citations_from_documents(snapshot.documents),
-    )
+        return ("synth_fail", f"  ✗ synth: {type(e).__name__}")
     try:
         stored = wiki_store.upsert_concept(
             filters={

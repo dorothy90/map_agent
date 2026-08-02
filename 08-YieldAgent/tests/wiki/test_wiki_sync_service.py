@@ -316,6 +316,70 @@ def test_sync_restricts_provider_sources_to_actual_snapshot_before_persistence(s
     assert metadata["source_fingerprint"] == snapshot.source_fingerprint
 
 
+def test_sync_rejects_unsupported_body_source_and_preserves_existing_concept(store):
+    snapshot = _snapshot(_doc("FH-REAL"))
+    store.upsert_concept(
+        filters={
+            "product": snapshot.key.product,
+            "fail_type": snapshot.key.fail_type,
+            "cause_oper": snapshot.key.cause_oper,
+        },
+        synthesized_body="approved body [FH-REAL]",
+        citations=[{"doc_id": "FH-REAL"}],
+        materialize=False,
+    )
+    synthesis = SimpleNamespace(
+        body_markdown="unsupported sync claim [FH-FORGED]",
+        confidence=0.8,
+        citations=[SimpleNamespace(doc_id="FH-REAL")],
+        entities=[],
+        relations=[],
+    )
+    service, jobs = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        synthesize=lambda *args: synthesis,
+    )
+
+    result = service.apply(limit=10)
+
+    concept = store.read_node("concept:4SS|PRE METAL CLN|EASY")
+    assert result.failed == 1
+    assert concept["body"] == "approved body [FH-REAL]"
+    assert "FH-FORGED" not in concept["body"]
+    assert concept["frontmatter"]["version"] == 1
+    job = next(iter(jobs.jobs.values()))
+    assert job["status"] == "failed"
+
+
+def test_store_rejects_unsupported_body_source_before_mutation(store):
+    from wiki_summarizer import UnsupportedSourceCitationError
+
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+    store.upsert_concept(
+        filters=filters,
+        synthesized_body="approved body [FH-REAL]",
+        citations=[{"doc_id": "FH-REAL"}],
+        materialize=False,
+    )
+
+    with pytest.raises(UnsupportedSourceCitationError):
+        store.upsert_concept(
+            filters=filters,
+            synthesized_body="unsupported direct claim [FH-FORGED]",
+            citations=[{"doc_id": "FH-REAL"}],
+            materialize=False,
+        )
+
+    concept = store.read_node("concept:4SS|PRE METAL CLN|EASY")
+    assert concept["body"] == "approved body [FH-REAL]"
+    assert concept["frontmatter"]["version"] == 1
+
+
 def test_matching_concept_fingerprint_repairs_manifest_without_llm(store):
     snapshot = _snapshot()
     store.upsert_concept(

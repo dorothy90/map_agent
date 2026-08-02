@@ -49,11 +49,23 @@ def _placeholder_summarize(payload: dict[str, Any]) -> SummarizeResult | None:
     cause = (first.get("cause", "") or "")[:200]
     action = (first.get("action", "") or "")[:200]
     summary = (cause or first.get("comment", "") or "")[:120]
+    source_rows = [
+        result
+        for result in raw
+        if result.get("doc_id") or result.get("filenm")
+    ]
     return {
         "episode": {
             "query": payload.get("query", ""),
             "filters": filters,
-            "doc_ids": [r.get("doc_id") or r.get("filenm") or "" for r in raw if (r.get("doc_id") or r.get("filenm"))],
+            "doc_ids": [
+                result.get("doc_id") or result.get("filenm") or ""
+                for result in source_rows
+            ],
+            "source_files": [
+                str(result.get("source_file") or "") for result in source_rows
+            ],
+            "source_files_aligned": True,
             "body": f"## Placeholder Summary\n\n**원인**: {cause}\n\n**조치**: {action}\n",
             "summary": summary,
             "links": [],
@@ -229,17 +241,35 @@ class WikiQueue:
         filters = item["filters"]
         episodes = item["episodes"]
         evidence = item["evidence"]
+        attempt = int(item.get("attempt", 0))
 
         try:
             result = await self._run_sync(synthesize_concept, concept_id, episodes)
+            if result is None:
+                raise RuntimeError("Wiki synthesis returned no result")
+            authoritative_sources = authoritative_citations_from_episodes(episodes)
+            result = restrict_concept_synthesis_sources(
+                result, authoritative_sources
+            )
         except Exception as e:
-            logger.warning("[wiki_queue] synthesize_concept failed: %s", e)
-            result = None
-        self._synth_in_flight.discard(concept_id)
-        if result is None:
+            logger.warning(
+                "[wiki_queue] concept synthesis rejected (attempt=%d, error=%s)",
+                attempt,
+                type(e).__name__,
+            )
+            if attempt + 1 < self._max_retry:
+                await asyncio.sleep(2 ** attempt)
+                retry_item = {**item, "attempt": attempt + 1}
+                assert self._summarize_q is not None
+                try:
+                    self._summarize_q.put_nowait(retry_item)
+                    return
+                except asyncio.QueueFull:
+                    self.drops["queue_full"] += 1
+            self._synth_in_flight.discard(concept_id)
             self.drops["synthesis"] = self.drops.get("synthesis", 0) + 1
             return
-        authoritative_sources = authoritative_citations_from_episodes(episodes)
+        self._synth_in_flight.discard(concept_id)
         source_doc_ids = sorted(authoritative_sources)
         snapshot = build_triple_snapshot(
             make_triple_key(
@@ -248,9 +278,6 @@ class WikiQueue:
                 str(filters.get("cause_oper") or ""),
             ),
             [{"doc_id": doc_id} for doc_id in source_doc_ids],
-        )
-        result = restrict_concept_synthesis_sources(
-            result, authoritative_sources
         )
         synth_payload = {
             "body_markdown": result.body_markdown,

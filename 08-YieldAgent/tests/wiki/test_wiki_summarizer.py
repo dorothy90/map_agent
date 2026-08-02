@@ -180,6 +180,18 @@ def test_episode_authority_maps_source_files_only_for_equal_length_lists():
                 "frontmatter": {
                     "doc_ids": ["FH-A", "FH-B"],
                     "source_files": ["A.pptx", "B.pptx"],
+                    "source_files_aligned": True,
+                },
+            }
+        ]
+    )
+    legacy_equal_length = wiki_summarizer.authoritative_citations_from_episodes(
+        [
+            {
+                "id": "episode:legacy",
+                "frontmatter": {
+                    "doc_ids": ["FH-A", "FH-B"],
+                    "source_files": ["A.pptx", "B.pptx"],
                 },
             }
         ]
@@ -189,3 +201,88 @@ def test_episode_authority_maps_source_files_only_for_equal_length_lists():
     assert ambiguous["FH-B"]["source_file"] == ""
     assert aligned["FH-A"]["source_file"] == "A.pptx"
     assert aligned["FH-B"]["source_file"] == "B.pptx"
+    assert legacy_equal_length["FH-A"]["source_file"] == ""
+    assert legacy_equal_length["FH-B"]["source_file"] == ""
+
+
+def test_summarize_preserves_row_alignment_for_sparse_source_files(monkeypatch):
+    import wiki_summarizer
+
+    output = wiki_summarizer.SummarizeOut(
+        episode_summary="summary",
+        episode_body_md="body",
+    )
+
+    class FakeChain:
+        def invoke(self, messages, config):
+            return output
+
+    class FakeModel:
+        def with_structured_output(self, schema, method):
+            return FakeChain()
+
+    monkeypatch.setattr(wiki_summarizer, "_model", lambda: FakeModel())
+    monkeypatch.setattr(wiki_summarizer, "_lf_callbacks", lambda: [])
+
+    result = wiki_summarizer.summarize(
+        {
+            "query": "query",
+            "raw_results": [
+                {"doc_id": "FH-A"},
+                {"doc_id": "FH-B", "source_file": "B.pptx"},
+            ],
+        }
+    )
+
+    assert result["episode"]["doc_ids"] == ["FH-A", "FH-B"]
+    assert result["episode"]["source_files"] == ["", "B.pptx"]
+    assert result["episode"]["source_files_aligned"] is True
+
+
+def test_source_restriction_rejects_unsupported_inline_source_claims_only():
+    import wiki_summarizer
+
+    safe_body = "allowed [FH-REAL]\n\n[Source guide](https://example.test/FH-FORGED)"
+    safe = wiki_summarizer.ConceptSynthesis(
+        body_markdown=safe_body,
+        confidence=0.5,
+        citations=[EpisodeRef(episode_id="", doc_id="FH-REAL")],
+    )
+    unsafe = wiki_summarizer.ConceptSynthesis(
+        body_markdown="unsupported [FH-FORGED]",
+        confidence=0.5,
+        citations=[EpisodeRef(episode_id="", doc_id="FH-REAL")],
+    )
+
+    wiki_summarizer.restrict_concept_synthesis_sources(safe, ["FH-REAL"])
+
+    assert safe.body_markdown == safe_body
+    with pytest.raises(wiki_summarizer.UnsupportedSourceCitationError):
+        wiki_summarizer.restrict_concept_synthesis_sources(unsafe, ["FH-REAL"])
+
+
+def test_synthesize_from_docs_rejects_unsupported_body_source(monkeypatch):
+    import wiki_summarizer
+
+    output = wiki_summarizer.ConceptSynthesis(
+        body_markdown="unsupported claim [FH-FORGED]",
+        confidence=0.5,
+        citations=[EpisodeRef(episode_id="", doc_id="FH-REAL")],
+    )
+
+    class FakeChain:
+        def invoke(self, messages, config):
+            return output
+
+    class FakeModel:
+        def with_structured_output(self, schema, method):
+            return FakeChain()
+
+    monkeypatch.setattr(wiki_summarizer, "_model", lambda: FakeModel())
+    monkeypatch.setattr(wiki_summarizer, "_lf_callbacks", lambda: [])
+
+    with pytest.raises(wiki_summarizer.UnsupportedSourceCitationError):
+        wiki_summarizer.synthesize_concept_from_docs(
+            "concept:4SS|PRE METAL CLN|EASY",
+            [{"doc_id": "FH-REAL", "content": "source"}],
+        )

@@ -202,6 +202,7 @@ def upsert_episode(payload: dict) -> tuple[str, str]:
         "query_normalized": _normalize_query(payload["query"]),
         "doc_ids": list(payload.get("doc_ids", []) or []),
         "source_files": list(payload.get("source_files", []) or []),
+        "source_files_aligned": payload.get("source_files_aligned") is True,
         "filters": dict(payload.get("filters", {}) or {}),
         "summary": payload.get("summary", ""),
         "private": bool(payload.get("private", False)),
@@ -239,6 +240,19 @@ def upsert_concept(
 
     Returns (concept_id, status) — status in {"created", "updated"}.
     """
+    if synthesized_body is not None:
+        from wiki_summarizer import validate_body_source_citations
+
+        authoritative_ids = (
+            list((sync_metadata or {}).get("source_doc_ids", []) or [])
+            if sync_metadata and "source_doc_ids" in sync_metadata
+            else [
+                citation.get("doc_id")
+                for citation in (citations or [])
+                if isinstance(citation, dict)
+            ]
+        )
+        validate_body_source_citations(synthesized_body, authoritative_ids)
     _ensure_dirs()
     cid = _concept_key(filters)
     path = _CONCEPTS / f"{_safe_filename(cid)}.md"

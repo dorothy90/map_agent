@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Iterable
 from typing import Any, Mapping
 
@@ -20,6 +21,15 @@ from lf_utils import lf_callbacks as _lf_callbacks, observe_with_privacy
 from wiki_graph_models import EntityCandidate, RelationCandidate
 
 logger = logging.getLogger("yield_agent.wiki_summarizer")
+
+
+class UnsupportedSourceCitationError(ValueError):
+    """A synthesis body cites a Source outside its authoritative input set."""
+
+
+_INLINE_SOURCE_CITATION = re.compile(
+    r"(?<![!\\])\[((?:FH[-:])[A-Za-z0-9][A-Za-z0-9._:-]*)\](?![ \t]*\()"
+)
 
 
 class AliasPair(BaseModel):
@@ -87,6 +97,24 @@ def canonical_source_doc_ids(values: Iterable[Any]) -> list[str]:
     return result
 
 
+def validate_body_source_citations(
+    body_markdown: str,
+    authoritative_source_ids: Iterable[Any],
+) -> None:
+    """Reject standalone canonical Source citations outside the trusted set.
+
+    Markdown links are excluded structurally; this validator does not inspect
+    natural-language claims or link labels.
+    """
+    allowed = set(canonical_source_doc_ids(authoritative_source_ids))
+    cited = set(_INLINE_SOURCE_CITATION.findall(str(body_markdown or "")))
+    unsupported = cited - allowed
+    if unsupported:
+        raise UnsupportedSourceCitationError(
+            f"unsupported inline Source citations: {len(unsupported)}"
+        )
+
+
 _AUTHORITATIVE_CITATION_FIELDS = (
     "episode_id",
     "source_file",
@@ -133,7 +161,11 @@ def authoritative_citations_from_episodes(
             if isinstance(raw_source_files, (list, tuple))
             else []
         )
-        source_files_aligned = bool(doc_ids) and len(doc_ids) == len(source_files)
+        source_files_aligned = (
+            frontmatter.get("source_files_aligned") is True
+            and bool(doc_ids)
+            and len(doc_ids) == len(source_files)
+        )
         date = str(frontmatter.get("created") or "")[:10]
         for index, doc_id in enumerate(doc_ids):
             documents.append(
@@ -181,6 +213,10 @@ def restrict_concept_synthesis_sources(
             for doc_id in canonical_source_doc_ids(authoritative_sources)
         )
     allowed = set(authoritative)
+    validate_body_source_citations(
+        str(getattr(synthesis, "body_markdown", "") or ""),
+        allowed,
+    )
     provider_citations = list(getattr(synthesis, "citations", []) or [])
     provider_relations = list(getattr(synthesis, "relations", []) or [])
     citations: list[EpisodeRef] = []
@@ -291,14 +327,16 @@ def summarize(payload: dict[str, Any]) -> dict[str, Any] | None:
         logger.warning("[wiki_summarize] structured output None")
         return None
 
-    doc_ids = [r.get("doc_id") for r in raw if r.get("doc_id")]
-    source_files = [r.get("source_file") for r in raw if r.get("source_file")]
+    source_rows = [r for r in raw if r.get("doc_id")]
+    doc_ids = [r.get("doc_id") for r in source_rows]
+    source_files = [str(r.get("source_file") or "") for r in source_rows]
     return {
         "episode": {
             "query": query,
             "filters": filters,
             "doc_ids": doc_ids,
             "source_files": source_files,
+            "source_files_aligned": True,
             "body": out.episode_body_md,
             "summary": out.episode_summary,
             "links": [],

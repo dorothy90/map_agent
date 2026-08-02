@@ -85,7 +85,7 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
     def synthesize_concept(concept_id, episodes):
         synthesis_contexts.append(lf_utils.lf_capture_disabled())
         return SimpleNamespace(
-            body_markdown="current synthesis",
+            body_markdown="current synthesis [FH-1]",
             confidence=0.9,
             citations=[
                 EpisodeRef(
@@ -150,6 +150,7 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
                     "frontmatter": {
                         "doc_ids": ["FH-1", "FH-1"],
                         "source_files": ["FH-1-AUTH.pptx", "FH-1-AUTH.pptx"],
+                        "source_files_aligned": True,
                         "created": "2026-08-01T00:00:00+00:00",
                     },
             },
@@ -161,7 +162,8 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
                 "id": "episode:ambiguous",
                 "frontmatter": {
                     "doc_ids": ["FH-A", "FH-B"],
-                    "source_files": ["B.pptx"],
+                    "source_files": ["", "B.pptx"],
+                    "source_files_aligned": True,
                 },
             },
         ]
@@ -194,6 +196,7 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
     assert citation["date"] == "2026-08-01"
     assert citation["natural_label"] == ""
     assert citation["download_url"] == ""
+    assert concept_post.content.startswith("current synthesis [FH-1]\n")
     assert concept_post.metadata["relations"] == relations
     assert concept_post.metadata["body_versions"][-1]["entities"] == entities
     assert concept_post.metadata["body_versions"][-1]["relations"] == relations
@@ -227,9 +230,83 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
     assert "download_url" not in source_post.metadata
     assert "FORGED" not in source_post.content
     assert "evil.example" not in source_post.content
-    for doc_id in ("FH-A", "FH-B"):
-        ambiguous_source = frontmatter.load(paths.sources / f"{doc_id}.md")
-        assert "source_file" not in ambiguous_source.metadata
-        assert "B.pptx" not in ambiguous_source.content
+    sparse_a_source = frontmatter.load(paths.sources / "FH-A.md")
+    sparse_b_source = frontmatter.load(paths.sources / "FH-B.md")
+    assert "source_file" not in sparse_a_source.metadata
+    assert "B.pptx" not in sparse_a_source.content
+    assert sparse_b_source.metadata["source_file"] == "B.pptx"
     assert synthesis_contexts == [True]
     assert persist_contexts == [True, True]
+
+
+@pytest.mark.anyio
+async def test_background_synthesis_rejects_unsupported_body_and_preserves_concept(
+    monkeypatch, tmp_path
+):
+    import wiki_queue
+    import wiki_summarizer
+
+    paths = _configure_test_vault(monkeypatch, tmp_path, wiki_queue.wiki_store)
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+    wiki_queue.wiki_store.upsert_concept(
+        filters,
+        synthesized_body="approved body [FH-REAL]",
+        citations=[{"doc_id": "FH-REAL"}],
+    )
+
+    synthesis_calls = []
+
+    def invalid_synthesis(*args):
+        synthesis_calls.append(args)
+        return SimpleNamespace(
+            body_markdown="unsupported queue claim [FH-FORGED]",
+            confidence=0.9,
+            citations=[EpisodeRef(episode_id="episode:one", doc_id="FH-REAL")],
+            entities=[],
+            relations=[],
+        )
+
+    async def no_retry_delay(_delay):
+        return None
+
+    monkeypatch.setattr(wiki_summarizer, "synthesize_concept", invalid_synthesis)
+    monkeypatch.setattr(wiki_queue.asyncio, "sleep", no_retry_delay)
+
+    queue = wiki_queue.WikiQueue(max_retry=2)
+    await queue.start()
+    try:
+        assert queue._summarize_q is not None
+        queue._summarize_q.put_nowait(
+            {
+                "task_type": "concept_synthesis",
+                "concept_id": "concept:4SS|PRE METAL CLN|EASY",
+                "filters": filters,
+                "episodes": [
+                    {
+                        "id": "episode:one",
+                        "frontmatter": {
+                            "doc_ids": ["FH-REAL"],
+                            "source_files": ["real.pptx"],
+                            "source_files_aligned": True,
+                        },
+                    }
+                ],
+                "evidence": {"score": 0.8, "unique_doc_ids": 1},
+            }
+        )
+        await queue._summarize_q.join()
+        assert queue._persist_q is not None
+        await queue._persist_q.join()
+    finally:
+        await queue.stop(timeout=2)
+
+    concept_post = frontmatter.load(next(paths.concepts.glob("*.md")))
+    assert concept_post.content.startswith("approved body [FH-REAL]\n")
+    assert "FH-FORGED" not in concept_post.content
+    assert concept_post.metadata["version"] == 1
+    assert queue.drops["synthesis"] == 1
+    assert len(synthesis_calls) == 2

@@ -197,3 +197,44 @@ def test_successful_bootstrap_records_shared_fingerprint_metadata_and_manifest(
     assert manifest["triples"]["4SS|PRE METAL CLN|EASY"][
         "source_fingerprint"
     ] == metadata["source_fingerprint"]
+
+
+def test_bootstrap_rejects_unsupported_body_source_before_persistence(
+    tmp_path, monkeypatch
+):
+    documents = [
+        {
+            "doc_id": "FH-REAL",
+            "content": "source",
+            "product": "4SS",
+            "fail_type": "EASY(W)",
+            "cause_oper": "PRE METAL CLN",
+        }
+    ]
+    monkeypatch.setattr(
+        bootstrap, "_MANIFEST_PATH", tmp_path / ".yield-wiki" / "manifest.json"
+    )
+    monkeypatch.setattr(
+        bootstrap, "fetch_docs_for_triple", lambda *args, **kwargs: documents
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "synthesize_concept_from_docs",
+        lambda *args: SimpleNamespace(
+            body_markdown="unsupported bootstrap claim [FH-FORGED]",
+            confidence=0.8,
+            citations=[EpisodeRef(episode_id="", doc_id="FH-REAL")],
+            entities=[],
+            relations=[],
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap.wiki_store,
+        "upsert_concept",
+        lambda *args, **kwargs: pytest.fail("invalid synthesis must not persist"),
+    )
+
+    status, message = bootstrap.process_triple(_triple(), max_docs=15)
+
+    assert status == "synth_fail"
+    assert "UnsupportedSourceCitationError" in message
