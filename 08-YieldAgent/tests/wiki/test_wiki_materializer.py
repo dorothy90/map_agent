@@ -950,7 +950,7 @@ def test_replace_recovers_interruption_immediately_after_quarantine(
         encoding="utf-8",
     )
     before = target.read_bytes()
-    original_rename = wiki_safe_mutation.os.rename
+    original_rename = wiki_safe_mutation._rename_noreplace
     original_fsync = wiki_safe_mutation.os.fsync
     crashed = False
     directory_fsyncs = []
@@ -972,7 +972,11 @@ def test_replace_recovers_interruption_immediately_after_quarantine(
             directory_fsyncs.append(descriptor)
         return original_fsync(descriptor)
 
-    monkeypatch.setattr(wiki_safe_mutation.os, "rename", crash_after_quarantine)
+    monkeypatch.setattr(
+        wiki_safe_mutation,
+        "_rename_noreplace",
+        crash_after_quarantine,
+    )
     monkeypatch.setattr(wiki_safe_mutation.os, "fsync", observe_fsync)
 
     with PinnedWikiMutation(paths) as mutation:
@@ -1048,7 +1052,7 @@ def test_quarantine_cleanup_rejects_concurrent_replacement_and_preserves_data(
 
     with PinnedWikiMutation(paths) as mutation:
         expected = mutation.snapshot(target)
-        with pytest.raises(RuntimeError, match="changed before cleanup"):
+        with pytest.raises(RuntimeError, match="changed before tombstoning"):
             mutation.replace_text(
                 target,
                 "new generated content\n",
@@ -1061,3 +1065,286 @@ def test_quarantine_cleanup_rejects_concurrent_replacement_and_preserves_data(
     assert replacement_path is not None
     assert replacement_path.read_bytes() == operator_bytes
     assert len(list(paths.products.glob(".*.yield-wiki-transaction"))) == 1
+
+
+class _SimulatedMutationCrash(BaseException):
+    pass
+
+
+def _owned_target(paths):
+    from wiki_safe_mutation import GeneratedOwner
+
+    target = paths.products / "TARGET.md"
+    owner = GeneratedOwner(
+        "yield-wiki-materializer", "product", "product:TARGET"
+    )
+    target.write_text(
+        frontmatter.dumps(
+            frontmatter.Post(
+                content="generated original",
+                id=owner.node_id,
+                type=owner.node_type,
+                generated_by=owner.generated_by,
+                product="TARGET",
+            )
+        ),
+        encoding="utf-8",
+    )
+    return target, owner, target.read_bytes()
+
+
+def _crash_after_transaction_state(monkeypatch, state):
+    from wiki_safe_mutation import PinnedWikiMutation
+
+    original = getattr(PinnedWikiMutation, "_record_transaction_state", None)
+
+    def crash(self, *args, **kwargs):
+        if original is not None:
+            original(self, *args, **kwargs)
+        if kwargs["state"] == state:
+            raise _SimulatedMutationCrash(f"interrupted after {state}")
+
+    monkeypatch.setattr(
+        PinnedWikiMutation,
+        "_record_transaction_state",
+        crash,
+        raising=False,
+    )
+
+
+def _assert_retained_transaction_tombstones(directory, original_bytes):
+    data_tombstones = list(directory.glob(".*.yield-wiki-tombstone"))
+    record_tombstones = list(
+        directory.glob(".*.yield-wiki-transaction-tombstone")
+    )
+    assert any(path.read_bytes() == original_bytes for path in data_tombstones)
+    assert record_tombstones
+    assert any(
+        tombstone.name in record.read_text(encoding="utf-8")
+        for tombstone in data_tombstones
+        for record in record_tombstones
+    )
+    assert list(directory.glob(".*.cleanup")) == []
+    assert list(directory.glob(".*.quarantine")) == []
+    assert list(directory.glob(".*.yield-wiki-transaction")) == []
+
+
+def test_replacement_recovers_interruption_after_durable_publish_intent(
+    tmp_path, monkeypatch
+):
+    from wiki_safe_mutation import PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target, owner, original_bytes = _owned_target(paths)
+    _crash_after_transaction_state(monkeypatch, "publishing")
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(
+            _SimulatedMutationCrash, match="interrupted after publishing"
+        ):
+            mutation.replace_text(
+                target,
+                "new generated content\n",
+                expected=expected,
+                owner=owner,
+            )
+
+    assert not target.exists()
+    with PinnedWikiMutation(paths) as recovery:
+        recovered = recovery.snapshot(target)
+
+    assert recovered == expected
+    assert target.read_bytes() == original_bytes
+    _assert_retained_transaction_tombstones(paths.products, original_bytes)
+
+
+def test_deletion_recovers_interruption_after_durable_delete_intent(
+    tmp_path, monkeypatch
+):
+    from wiki_safe_mutation import PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target, owner, original_bytes = _owned_target(paths)
+    _crash_after_transaction_state(monkeypatch, "deleting")
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(
+            _SimulatedMutationCrash, match="interrupted after deleting"
+        ):
+            mutation.delete(target, expected=expected, owner=owner)
+
+    assert not target.exists()
+    with PinnedWikiMutation(paths) as recovery:
+        recovered = recovery.snapshot(target)
+
+    assert not recovered.exists
+    assert not target.exists()
+    _assert_retained_transaction_tombstones(paths.products, original_bytes)
+
+
+def test_restoration_recovers_interruption_after_durable_restore_intent(
+    tmp_path, monkeypatch
+):
+    import wiki_safe_mutation
+    from wiki_safe_mutation import PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target, owner, original_bytes = _owned_target(paths)
+    original_link = wiki_safe_mutation.os.link
+    original_move = getattr(wiki_safe_mutation, "_rename_noreplace", None)
+    publication_failed = False
+
+    def fail_link_publication(source, destination, **kwargs):
+        nonlocal publication_failed
+        if (
+            not publication_failed
+            and str(source).endswith(".tmp")
+            and destination == target.name
+        ):
+            publication_failed = True
+            raise OSError(wiki_safe_mutation.errno.EIO, "simulated publication failure")
+        return original_link(source, destination, **kwargs)
+
+    def fail_move_publication(source, destination, **kwargs):
+        nonlocal publication_failed
+        if (
+            not publication_failed
+            and str(source).endswith(".tmp")
+            and destination == target.name
+        ):
+            publication_failed = True
+            raise OSError(wiki_safe_mutation.errno.EIO, "simulated publication failure")
+        assert original_move is not None
+        return original_move(source, destination, **kwargs)
+
+    monkeypatch.setattr(wiki_safe_mutation.os, "link", fail_link_publication)
+    monkeypatch.setattr(
+        wiki_safe_mutation,
+        "_rename_noreplace",
+        fail_move_publication,
+        raising=False,
+    )
+    _crash_after_transaction_state(monkeypatch, "restoring")
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(
+            _SimulatedMutationCrash, match="interrupted after restoring"
+        ):
+            mutation.replace_text(
+                target,
+                "new generated content\n",
+                expected=expected,
+                owner=owner,
+            )
+
+    assert publication_failed
+    assert not target.exists()
+    with PinnedWikiMutation(paths) as recovery:
+        recovered = recovery.snapshot(target)
+
+    assert recovered == expected
+    assert target.read_bytes() == original_bytes
+    _assert_retained_transaction_tombstones(paths.products, original_bytes)
+
+
+def test_record_cleanup_recovers_interruption_after_durable_tombstone_intent(
+    tmp_path, monkeypatch
+):
+    from wiki_safe_mutation import PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target, owner, original_bytes = _owned_target(paths)
+    replacement_bytes = b"new generated content\n"
+    _crash_after_transaction_state(monkeypatch, "record_tombstoning")
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(
+            _SimulatedMutationCrash,
+            match="interrupted after record_tombstoning",
+        ):
+            mutation.replace_text(
+                target,
+                replacement_bytes.decode(),
+                expected=expected,
+                owner=owner,
+            )
+
+    assert target.read_bytes() == replacement_bytes
+    assert len(list(paths.products.glob(".*.yield-wiki-transaction"))) == 1
+    with PinnedWikiMutation(paths) as recovery:
+        recovered = recovery.snapshot(target)
+
+    assert recovered.content == replacement_bytes
+    _assert_retained_transaction_tombstones(paths.products, original_bytes)
+
+
+def test_tombstone_finalization_has_no_destructive_pathname_unlink(
+    tmp_path, monkeypatch
+):
+    import wiki_safe_mutation
+    from wiki_safe_mutation import PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target, owner, original_bytes = _owned_target(paths)
+    original_unlink = wiki_safe_mutation.os.unlink
+    cleanup_unlinks = []
+    operator_bytes = b"operator-final-cleanup-replacement\n"
+    operator_path = None
+    parked_path = paths.products / "parked-final-cleanup-original"
+
+    def replace_immediately_before_unlink(name, **kwargs):
+        nonlocal operator_path
+        if not cleanup_unlinks and str(name).endswith(".cleanup"):
+            cleanup_unlinks.append(str(name))
+            directory_fd = kwargs["dir_fd"]
+            wiki_safe_mutation.os.rename(
+                name,
+                parked_path.name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+            descriptor = wiki_safe_mutation.os.open(
+                name,
+                wiki_safe_mutation.os.O_WRONLY
+                | wiki_safe_mutation.os.O_CREAT
+                | wiki_safe_mutation.os.O_EXCL
+                | wiki_safe_mutation.os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            try:
+                wiki_safe_mutation.os.write(descriptor, operator_bytes)
+                wiki_safe_mutation.os.fsync(descriptor)
+            finally:
+                wiki_safe_mutation.os.close(descriptor)
+            operator_path = paths.products / str(name)
+        return original_unlink(name, **kwargs)
+
+    monkeypatch.setattr(
+        wiki_safe_mutation.os,
+        "unlink",
+        replace_immediately_before_unlink,
+    )
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        mutation.replace_text(
+            target,
+            "new generated content\n",
+            expected=expected,
+            owner=owner,
+        )
+
+    assert cleanup_unlinks == []
+    assert operator_path is None
+    assert not parked_path.exists()
+    _assert_retained_transaction_tombstones(paths.products, original_bytes)

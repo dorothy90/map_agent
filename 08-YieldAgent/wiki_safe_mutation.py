@@ -1,12 +1,14 @@
 """Descriptor-relative Wiki writes that resist symlink and directory-swap races."""
 from __future__ import annotations
 
+import ctypes
 import errno
 import fcntl
 import hashlib
 import json
 import os
 import stat
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,19 +38,80 @@ class GeneratedOwner:
     node_id: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class _MutationTransaction:
     record_name: str
     record_snapshot: FileSnapshot
     target_name: str
     quarantine_name: str
+    tombstone_name: str
+    record_tombstone_name: str
+    proposal_name: str
     operation: str
     expected: dict[str, int | str]
     proposed_sha256: str
+    state: str
+    outcome: str
     descriptor: int
 
 
 _TRANSACTION_SUFFIX = ".yield-wiki-transaction"
+_TOMBSTONE_SUFFIX = ".yield-wiki-tombstone"
+_TRANSACTION_TOMBSTONE_SUFFIX = ".yield-wiki-transaction-tombstone"
+
+
+def _rename_noreplace(
+    source: str,
+    destination: str,
+    *,
+    src_dir_fd: int,
+    dst_dir_fd: int,
+) -> None:
+    """Atomically move one directory entry without replacing another."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if sys.platform == "darwin":
+        rename = libc.renameatx_np
+        rename.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        rename.restype = ctypes.c_int
+        result = rename(
+            src_dir_fd,
+            source_bytes,
+            dst_dir_fd,
+            destination_bytes,
+            0x00000004,  # RENAME_EXCL from sys/stdio.h.
+        )
+    elif sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+        rename = libc.renameat2
+        rename.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        rename.restype = ctypes.c_int
+        result = rename(
+            src_dir_fd,
+            source_bytes,
+            dst_dir_fd,
+            destination_bytes,
+            0x00000001,  # RENAME_NOREPLACE from linux/fs.h.
+        )
+    else:
+        raise WikiConfigurationError(
+            "Atomic no-replace rename is required for Wiki mutations"
+        )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), destination)
 
 
 def _noop_before_commit(operation: str, path: Path) -> None:
@@ -318,23 +381,33 @@ class PinnedWikiMutation:
         operation: str,
         expected: FileSnapshot,
         proposed_sha256: str,
+        proposal_name: str,
     ) -> _MutationTransaction:
         record_name = self._transaction_record_name(name)
         temporary_name = f".{record_name}.{uuid.uuid4().hex}.tmp"
+        transaction_id = uuid.uuid4().hex
+        tombstone_name = f".{name}.{transaction_id}{_TOMBSTONE_SUFFIX}"
+        record_tombstone_name = (
+            f".{name}.{transaction_id}{_TRANSACTION_TOMBSTONE_SUFFIX}"
+        )
         payload = json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "operation": operation,
                 "target": name,
                 "quarantine": quarantine_name,
+                "tombstone": tombstone_name,
+                "record_tombstone": record_tombstone_name,
+                "proposal": proposal_name,
                 "expected": self._snapshot_fingerprint(expected),
                 "proposed_sha256": proposed_sha256,
+                "state": "quarantining",
+                "outcome": "",
             },
             sort_keys=True,
             separators=(",", ":"),
-        ).encode("utf-8")
+        ).encode("utf-8") + b"\n"
         descriptor = -1
-        published = False
         record_snapshot = FileSnapshot(exists=False)
         try:
             descriptor = os.open(
@@ -352,18 +425,16 @@ class PinnedWikiMutation:
                 offset += written
             os.fsync(descriptor)
             try:
-                os.link(
+                _rename_noreplace(
                     temporary_name,
                     record_name,
                     src_dir_fd=directory_fd,
                     dst_dir_fd=directory_fd,
-                    follow_symlinks=False,
                 )
             except FileExistsError as exc:
                 raise WikiConfigurationError(
                     f"Wiki mutation transaction already exists: {path}"
                 ) from exc
-            published = True
             self._fsync_directory(directory_fd)
             record_path = path.with_name(record_name)
             record_snapshot = self._snapshot_at(
@@ -375,42 +446,25 @@ class PinnedWikiMutation:
                 raise WikiConfigurationError(
                     f"Wiki mutation transaction changed while publishing: {path}"
                 )
-            os.unlink(temporary_name, dir_fd=directory_fd)
-            self._fsync_directory(directory_fd)
-            temporary_name = ""
             return _MutationTransaction(
                 record_name=record_name,
                 record_snapshot=record_snapshot,
                 target_name=name,
                 quarantine_name=quarantine_name,
+                tombstone_name=tombstone_name,
+                record_tombstone_name=record_tombstone_name,
+                proposal_name=proposal_name,
                 operation=operation,
                 expected=self._snapshot_fingerprint(expected),
                 proposed_sha256=proposed_sha256,
+                state="quarantining",
+                outcome="",
                 descriptor=descriptor,
             )
         except BaseException:
-            if published and record_snapshot.exists:
-                try:
-                    self._remove_bound_entry(
-                        path.with_name(record_name),
-                        directory_fd=directory_fd,
-                        name=record_name,
-                        expected=record_snapshot,
-                        bound_descriptor=descriptor,
-                    )
-                except Exception:
-                    pass
             if descriptor >= 0:
                 os.close(descriptor)
             raise
-        finally:
-            if temporary_name:
-                try:
-                    os.unlink(temporary_name, dir_fd=directory_fd)
-                    self._fsync_directory(directory_fd)
-                except OSError as exc:
-                    if exc.errno != errno.ENOENT:
-                        raise
 
     def _load_transaction(
         self,
@@ -458,22 +512,86 @@ class PinnedWikiMutation:
                     f"Wiki mutation transaction changed: {record_path}"
                 )
             try:
-                data = json.loads(opened.content.decode("utf-8"))
+                content = opened.content
+                if b"\n" in content:
+                    complete = content
+                    if not complete.endswith(b"\n"):
+                        complete = complete[: complete.rfind(b"\n") + 1]
+                    entries = [
+                        json.loads(line.decode("utf-8"))
+                        for line in complete.splitlines()
+                        if line
+                    ]
+                else:
+                    entries = [json.loads(content.decode("utf-8"))]
+                data = entries[0]
                 target_name = self._safe_entry_name(data["target"])
                 quarantine_name = self._safe_entry_name(data["quarantine"])
                 operation = str(data["operation"])
                 expected = dict(data["expected"])
                 proposed_sha256 = str(data.get("proposed_sha256") or "")
+                version = int(data["version"])
+                if version == 1:
+                    transaction_id = hashlib.sha256(
+                        quarantine_name.encode("utf-8")
+                    ).hexdigest()[:32]
+                    tombstone_name = self._safe_entry_name(
+                        f"{quarantine_name.removesuffix('.quarantine')}"
+                        f"{_TOMBSTONE_SUFFIX}"
+                    )
+                    record_tombstone_name = self._safe_entry_name(
+                        f".{target_name}.{transaction_id}"
+                        f"{_TRANSACTION_TOMBSTONE_SUFFIX}"
+                    )
+                    state = "legacy"
+                    outcome = ""
+                    proposal_name = ""
+                elif version == 2:
+                    tombstone_name = self._safe_entry_name(data["tombstone"])
+                    record_tombstone_name = self._safe_entry_name(
+                        data["record_tombstone"]
+                    )
+                    state = str(data["state"])
+                    outcome = str(data.get("outcome") or "")
+                    proposal_name = str(data.get("proposal") or "")
+                else:
+                    raise ValueError("unsupported transaction version")
+                for event in entries[1:]:
+                    if event.get("event") != "state":
+                        raise ValueError("unsupported transaction event")
+                    state = str(event["state"])
+                    outcome = str(event.get("outcome") or "")
             except Exception as exc:
                 raise WikiConfigurationError(
                     f"Wiki mutation transaction is invalid: {record_path}"
                 ) from exc
             if (
-                data.get("version") != 1
-                or operation not in {"replacement", "deletion"}
+                operation not in {"replacement", "deletion"}
                 or record_name != self._transaction_record_name(target_name)
                 or (expected_target is not None and target_name != expected_target)
                 or not quarantine_name.endswith(".quarantine")
+                or not tombstone_name.endswith(_TOMBSTONE_SUFFIX)
+                or not record_tombstone_name.endswith(
+                    _TRANSACTION_TOMBSTONE_SUFFIX
+                )
+                or state
+                not in {
+                    "legacy",
+                    "quarantining",
+                    "publishing",
+                    "restoring",
+                    "deleting",
+                    "tombstoning",
+                    "record_tombstoning",
+                }
+                or outcome not in {"", "replacement", "restoration", "deletion"}
+                or (
+                    proposal_name
+                    and (
+                        Path(proposal_name).name != proposal_name
+                        or not proposal_name.endswith(".tmp")
+                    )
+                )
                 or set(expected)
                 != {"device", "inode", "mode", "size", "mtime_ns", "sha256"}
             ):
@@ -485,9 +603,14 @@ class PinnedWikiMutation:
                 record_snapshot=record_snapshot,
                 target_name=target_name,
                 quarantine_name=quarantine_name,
+                tombstone_name=tombstone_name,
+                record_tombstone_name=record_tombstone_name,
+                proposal_name=proposal_name,
                 operation=operation,
                 expected=expected,
                 proposed_sha256=proposed_sha256,
+                state=state,
+                outcome=outcome,
                 descriptor=descriptor,
             )
         except BaseException:
@@ -523,6 +646,62 @@ class PinnedWikiMutation:
             )
         finally:
             os.close(transaction.descriptor)
+
+    def _record_transaction_state(
+        self,
+        path: Path,
+        *,
+        directory_fd: int,
+        transaction: _MutationTransaction,
+        state: str,
+        outcome: str = "",
+    ) -> None:
+        opened = self._snapshot_from_descriptor(transaction.descriptor)
+        current = self._snapshot_at(
+            path.with_name(transaction.record_name),
+            directory_fd=directory_fd,
+            name=transaction.record_name,
+        )
+        if opened != current:
+            raise WikiConfigurationError(
+                f"Wiki mutation transaction changed: {path}"
+            )
+        if b"\n" in opened.content and not opened.content.endswith(b"\n"):
+            durable_length = opened.content.rfind(b"\n") + 1
+            os.ftruncate(transaction.descriptor, durable_length)
+            os.fsync(transaction.descriptor)
+            opened = self._snapshot_from_descriptor(transaction.descriptor)
+            transaction.record_snapshot = opened
+        event = json.dumps(
+            {"event": "state", "state": state, "outcome": outcome},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if opened.content and not opened.content.endswith(b"\n"):
+            event = b"\n" + event
+        event += b"\n"
+        os.lseek(transaction.descriptor, 0, os.SEEK_END)
+        offset = 0
+        while offset < len(event):
+            written = os.write(transaction.descriptor, event[offset:])
+            if written <= 0:
+                raise OSError("Wiki transaction update made no progress")
+            offset += written
+        os.fsync(transaction.descriptor)
+        transaction.state = state
+        transaction.outcome = outcome
+        transaction.record_snapshot = self._snapshot_from_descriptor(
+            transaction.descriptor
+        )
+        current = self._snapshot_at(
+            path.with_name(transaction.record_name),
+            directory_fd=directory_fd,
+            name=transaction.record_name,
+        )
+        if current != transaction.record_snapshot:
+            raise WikiConfigurationError(
+                f"Wiki mutation transaction changed: {path}"
+            )
 
     def _recover_record(
         self,
@@ -563,9 +742,17 @@ class PinnedWikiMutation:
             directory_fd=directory_fd,
             name=transaction.quarantine_name,
         )
+        tombstone = self._snapshot_at(
+            path.with_name(transaction.tombstone_name),
+            directory_fd=directory_fd,
+            name=transaction.tombstone_name,
+        )
         target_is_expected = self._matches_fingerprint(target, transaction.expected)
         quarantine_is_expected = self._matches_fingerprint(
             quarantine, transaction.expected
+        )
+        tombstone_is_expected = self._matches_fingerprint(
+            tombstone, transaction.expected
         )
         target_is_proposed = (
             transaction.operation == "replacement"
@@ -573,32 +760,142 @@ class PinnedWikiMutation:
             and target.sha256 == transaction.proposed_sha256
         )
 
-        if not target.exists and quarantine_is_expected:
-            self._restore_quarantine(
-                path,
-                directory_fd=directory_fd,
-                name=transaction.target_name,
-                quarantine_name=transaction.quarantine_name,
-                expected=quarantine,
-            )
-            self._finish_transaction(path, directory_fd, transaction)
-            return
-        if not quarantine.exists and (
-            target_is_expected
-            or target_is_proposed
-            or (transaction.operation == "deletion" and not target.exists)
+        if transaction.state in {"legacy", "quarantining"}:
+            if target_is_expected and not quarantine.exists and not tombstone.exists:
+                self._finish_transaction(
+                    path, directory_fd, transaction, outcome="restoration"
+                )
+                return
+            if not target.exists and quarantine_is_expected:
+                self._restore_quarantine(
+                    path,
+                    directory_fd=directory_fd,
+                    transaction=transaction,
+                    expected=quarantine,
+                )
+                self._finish_transaction(
+                    path, directory_fd, transaction, outcome="restoration"
+                )
+                return
+            if transaction.state == "legacy" and not quarantine.exists:
+                if target_is_expected:
+                    outcome = "restoration"
+                elif target_is_proposed:
+                    outcome = "replacement"
+                elif transaction.operation == "deletion" and not target.exists:
+                    outcome = "deletion"
+                else:
+                    outcome = ""
+                if outcome:
+                    self._finish_transaction(
+                        path, directory_fd, transaction, outcome=outcome
+                    )
+                    return
+            if transaction.state == "legacy" and quarantine_is_expected:
+                if target_is_expected:
+                    outcome = "restoration"
+                elif target_is_proposed:
+                    outcome = "replacement"
+                else:
+                    outcome = ""
+                if outcome:
+                    self._tombstone_quarantine(
+                        path,
+                        directory_fd=directory_fd,
+                        transaction=transaction,
+                        expected=quarantine,
+                        outcome=outcome,
+                    )
+                    self._finish_transaction(
+                        path, directory_fd, transaction, outcome=outcome
+                    )
+                    return
+
+        if transaction.state == "publishing":
+            if target_is_proposed and (quarantine_is_expected or tombstone_is_expected):
+                expected = quarantine if quarantine_is_expected else tombstone
+                self._tombstone_quarantine(
+                    path,
+                    directory_fd=directory_fd,
+                    transaction=transaction,
+                    expected=expected,
+                    outcome="replacement",
+                )
+                self._finish_transaction(
+                    path, directory_fd, transaction, outcome="replacement"
+                )
+                return
+            if (not target.exists or target_is_expected) and (
+                quarantine_is_expected or tombstone_is_expected
+            ):
+                expected = quarantine if quarantine_is_expected else tombstone
+                self._restore_quarantine(
+                    path,
+                    directory_fd=directory_fd,
+                    transaction=transaction,
+                    expected=expected,
+                )
+                self._finish_transaction(
+                    path, directory_fd, transaction, outcome="restoration"
+                )
+                return
+
+        if transaction.state == "restoring" and (
+            quarantine_is_expected or tombstone_is_expected
         ):
-            self._finish_transaction(path, directory_fd, transaction)
-            return
-        if quarantine_is_expected and (target_is_expected or target_is_proposed):
-            self._remove_quarantine(
+            if not target.exists or target_is_expected:
+                expected = quarantine if quarantine_is_expected else tombstone
+                self._restore_quarantine(
+                    path,
+                    directory_fd=directory_fd,
+                    transaction=transaction,
+                    expected=expected,
+                )
+                self._finish_transaction(
+                    path, directory_fd, transaction, outcome="restoration"
+                )
+                return
+
+        if (
+            transaction.state == "deleting"
+            and not target.exists
+            and (quarantine_is_expected or tombstone_is_expected)
+        ):
+            expected = quarantine if quarantine_is_expected else tombstone
+            self._tombstone_quarantine(
                 path,
                 directory_fd=directory_fd,
-                quarantine_name=transaction.quarantine_name,
-                expected=quarantine,
+                transaction=transaction,
+                expected=expected,
+                outcome="deletion",
             )
-            self._finish_transaction(path, directory_fd, transaction)
+            self._finish_transaction(
+                path, directory_fd, transaction, outcome="deletion"
+            )
             return
+
+        if transaction.state in {"tombstoning", "record_tombstoning"}:
+            outcome_matches = (
+                (transaction.outcome == "replacement" and target_is_proposed)
+                or (transaction.outcome == "restoration" and target_is_expected)
+                or (transaction.outcome == "deletion" and not target.exists)
+            )
+            if outcome_matches and (quarantine_is_expected or tombstone_is_expected):
+                expected = quarantine if quarantine_is_expected else tombstone
+                self._tombstone_quarantine(
+                    path,
+                    directory_fd=directory_fd,
+                    transaction=transaction,
+                    expected=expected,
+                    outcome=transaction.outcome,
+                )
+                self._finish_transaction(
+                    path,
+                    directory_fd,
+                    transaction,
+                    outcome=transaction.outcome,
+                )
+                return
         raise WikiConfigurationError(
             f"Wiki mutation recovery conflict: {path}; operator data preserved"
         )
@@ -608,14 +905,62 @@ class PinnedWikiMutation:
         path: Path,
         directory_fd: int,
         transaction: _MutationTransaction,
+        *,
+        outcome: str,
     ) -> None:
-        self._remove_bound_entry(
-            path.with_name(transaction.record_name),
+        if (
+            transaction.state != "record_tombstoning"
+            or transaction.outcome != outcome
+        ):
+            self._record_transaction_state(
+                path,
+                directory_fd=directory_fd,
+                transaction=transaction,
+                state="record_tombstoning",
+                outcome=outcome,
+            )
+        opened = self._snapshot_from_descriptor(transaction.descriptor)
+        record_path = path.with_name(transaction.record_name)
+        current = self._snapshot_at(
+            record_path,
             directory_fd=directory_fd,
             name=transaction.record_name,
-            expected=transaction.record_snapshot,
-            bound_descriptor=transaction.descriptor,
         )
+        tombstone_path = path.with_name(transaction.record_tombstone_name)
+        tombstone = self._snapshot_at(
+            tombstone_path,
+            directory_fd=directory_fd,
+            name=transaction.record_tombstone_name,
+        )
+        if not current.exists:
+            if tombstone == opened:
+                return
+            raise WikiConfigurationError(
+                f"Wiki transaction record changed before tombstoning: {path}; "
+                "operator data preserved"
+            )
+        if current != opened or tombstone.exists:
+            raise WikiConfigurationError(
+                f"Wiki transaction record changed before tombstoning: {path}; "
+                "operator data preserved"
+            )
+        _rename_noreplace(
+            transaction.record_name,
+            transaction.record_tombstone_name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        self._fsync_directory(directory_fd)
+        moved = self._snapshot_at(
+            tombstone_path,
+            directory_fd=directory_fd,
+            name=transaction.record_tombstone_name,
+        )
+        if moved != opened:
+            raise WikiConfigurationError(
+                f"Wiki transaction record changed while tombstoning: {path}; "
+                "operator data preserved"
+            )
 
     def open_lock_file(self, path: Path) -> int:
         """Open or create a regular lock file relative to a pinned directory."""
@@ -731,26 +1076,37 @@ class PinnedWikiMutation:
                     owner=owner,
                     operation="replacement",
                     proposed_sha256=hashlib.sha256(payload).hexdigest(),
+                    proposal_name=temporary_name,
+                )
+                self._record_transaction_state(
+                    path,
+                    directory_fd=directory_fd,
+                    transaction=transaction,
+                    state="publishing",
                 )
             try:
-                os.link(
+                _rename_noreplace(
                     temporary_name,
                     name,
                     src_dir_fd=directory_fd,
                     dst_dir_fd=directory_fd,
-                    follow_symlinks=False,
                 )
                 self._fsync_directory(directory_fd)
+                temporary_name = ""
             except FileExistsError as exc:
                 if transaction is not None and quarantine_snapshot is not None:
                     self._restore_quarantine(
                         path,
                         directory_fd=directory_fd,
-                        name=name,
-                        quarantine_name=transaction.quarantine_name,
+                        transaction=transaction,
                         expected=quarantine_snapshot,
                     )
-                    self._finish_transaction(path, directory_fd, transaction)
+                    self._finish_transaction(
+                        path,
+                        directory_fd,
+                        transaction,
+                        outcome="restoration",
+                    )
                 raise WikiConfigurationError(
                     f"Wiki file appeared before replacement: {path}"
                 ) from exc
@@ -759,32 +1115,36 @@ class PinnedWikiMutation:
                     self._restore_quarantine(
                         path,
                         directory_fd=directory_fd,
-                        name=name,
-                        quarantine_name=transaction.quarantine_name,
+                        transaction=transaction,
                         expected=quarantine_snapshot,
                     )
-                    self._finish_transaction(path, directory_fd, transaction)
+                    self._finish_transaction(
+                        path,
+                        directory_fd,
+                        transaction,
+                        outcome="restoration",
+                    )
                 raise
             if transaction is not None and quarantine_snapshot is not None:
-                self._remove_quarantine(
+                self._tombstone_quarantine(
                     path,
                     directory_fd=directory_fd,
-                    quarantine_name=transaction.quarantine_name,
+                    transaction=transaction,
                     expected=quarantine_snapshot,
+                    outcome="replacement",
                 )
-                self._finish_transaction(path, directory_fd, transaction)
+                self._finish_transaction(
+                    path,
+                    directory_fd,
+                    transaction,
+                    outcome="replacement",
+                )
             self._directory(path)
         finally:
             if transaction is not None:
                 os.close(transaction.descriptor)
             if descriptor >= 0:
                 os.close(descriptor)
-            try:
-                os.unlink(temporary_name, dir_fd=directory_fd)
-                self._fsync_directory(directory_fd)
-            except OSError as exc:
-                if exc.errno != errno.ENOENT:
-                    raise
 
     def _quarantine(
         self,
@@ -796,6 +1156,7 @@ class PinnedWikiMutation:
         owner: GeneratedOwner | None,
         operation: str,
         proposed_sha256: str,
+        proposal_name: str,
     ) -> tuple[_MutationTransaction, FileSnapshot]:
         quarantine_name = f".{name}.{uuid.uuid4().hex}.quarantine"
         transaction = self._start_transaction(
@@ -806,9 +1167,10 @@ class PinnedWikiMutation:
             operation=operation,
             expected=expected,
             proposed_sha256=proposed_sha256,
+            proposal_name=proposal_name,
         )
         try:
-            os.rename(
+            _rename_noreplace(
                 name,
                 quarantine_name,
                 src_dir_fd=directory_fd,
@@ -835,11 +1197,15 @@ class PinnedWikiMutation:
                 self._restore_quarantine(
                     path,
                     directory_fd=directory_fd,
-                    name=name,
-                    quarantine_name=quarantine_name,
+                    transaction=transaction,
                     expected=moved,
                 )
-                self._finish_transaction(path, directory_fd, transaction)
+                self._finish_transaction(
+                    path,
+                    directory_fd,
+                    transaction,
+                    outcome="restoration",
+                )
             finally:
                 os.close(transaction.descriptor)
             raise WikiConfigurationError(
@@ -852,135 +1218,172 @@ class PinnedWikiMutation:
                 self._restore_quarantine(
                     path,
                     directory_fd=directory_fd,
-                    name=name,
-                    quarantine_name=quarantine_name,
+                    transaction=transaction,
                     expected=moved,
                 )
-                self._finish_transaction(path, directory_fd, transaction)
+                self._finish_transaction(
+                    path,
+                    directory_fd,
+                    transaction,
+                    outcome="restoration",
+                )
             finally:
                 os.close(transaction.descriptor)
             raise
         return transaction, moved
-
-    def _remove_bound_entry(
-        self,
-        path: Path,
-        *,
-        directory_fd: int,
-        name: str,
-        expected: FileSnapshot,
-        bound_descriptor: int | None = None,
-    ) -> None:
-        if self.snapshot(path) != expected:
-            raise WikiConfigurationError(f"Wiki file changed before cleanup: {path}")
-        descriptor = bound_descriptor
-        close_descriptor = descriptor is None
-        if descriptor is None:
-            try:
-                descriptor = os.open(
-                    name,
-                    os.O_RDONLY | os.O_NOFOLLOW,
-                    dir_fd=directory_fd,
-                )
-            except OSError as exc:
-                raise WikiConfigurationError(
-                    f"Wiki file changed before cleanup: {path}"
-                ) from exc
-        try:
-            if self._snapshot_from_descriptor(descriptor) != expected:
-                raise WikiConfigurationError(
-                    f"Wiki file changed before cleanup: {path}"
-                )
-            cleanup_name = f".{name}.{uuid.uuid4().hex}.cleanup"
-            os.rename(
-                name,
-                cleanup_name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-            )
-            self._fsync_directory(directory_fd)
-            try:
-                entry = os.stat(
-                    cleanup_name,
-                    dir_fd=directory_fd,
-                    follow_symlinks=False,
-                )
-                opened = os.fstat(descriptor)
-                moved = self._snapshot_at(
-                    path.with_name(cleanup_name),
-                    directory_fd=directory_fd,
-                    name=cleanup_name,
-                )
-            except OSError as exc:
-                raise WikiConfigurationError(
-                    f"Wiki file changed before cleanup: {path}"
-                ) from exc
-            if _identity(entry) != _identity(opened) or moved != expected:
-                try:
-                    os.link(
-                        cleanup_name,
-                        name,
-                        src_dir_fd=directory_fd,
-                        dst_dir_fd=directory_fd,
-                        follow_symlinks=False,
-                    )
-                    self._fsync_directory(directory_fd)
-                except FileExistsError:
-                    pass
-                raise WikiConfigurationError(
-                    f"Wiki file changed before cleanup: {path}; data preserved"
-                )
-            os.unlink(cleanup_name, dir_fd=directory_fd)
-            self._fsync_directory(directory_fd)
-        finally:
-            if close_descriptor:
-                os.close(descriptor)
 
     def _restore_quarantine(
         self,
         path: Path,
         *,
         directory_fd: int,
-        name: str,
-        quarantine_name: str,
+        transaction: _MutationTransaction,
         expected: FileSnapshot,
     ) -> None:
-        try:
-            os.link(
-                quarantine_name,
-                name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-                follow_symlinks=False,
+        if transaction.state != "restoring":
+            self._record_transaction_state(
+                path,
+                directory_fd=directory_fd,
+                transaction=transaction,
+                state="restoring",
+                outcome="restoration",
             )
-            self._fsync_directory(directory_fd)
-        except FileExistsError as exc:
+        quarantine = self._snapshot_at(
+            path.with_name(transaction.quarantine_name),
+            directory_fd=directory_fd,
+            name=transaction.quarantine_name,
+        )
+        tombstone = self._snapshot_at(
+            path.with_name(transaction.tombstone_name),
+            directory_fd=directory_fd,
+            name=transaction.tombstone_name,
+        )
+        if quarantine == expected:
+            source_name = transaction.quarantine_name
+        elif tombstone == expected:
+            source_name = transaction.tombstone_name
+        else:
             raise WikiConfigurationError(
                 f"Wiki file changed while restoring quarantine: {path}; "
-                f"preserved as {quarantine_name}"
-            ) from exc
-        self._remove_bound_entry(
-            path.with_name(quarantine_name),
+                "operator data preserved"
+            )
+        target = self._snapshot_at(
+            path,
             directory_fd=directory_fd,
-            name=quarantine_name,
+            name=transaction.target_name,
+        )
+        if not target.exists:
+            try:
+                os.link(
+                    source_name,
+                    transaction.target_name,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                self._fsync_directory(directory_fd)
+            except FileExistsError as exc:
+                raise WikiConfigurationError(
+                    f"Wiki file changed while restoring quarantine: {path}; "
+                    f"preserved as {source_name}"
+                ) from exc
+            target = self._snapshot_at(
+                path,
+                directory_fd=directory_fd,
+                name=transaction.target_name,
+            )
+        if target != expected:
+            raise WikiConfigurationError(
+                f"Wiki file changed while restoring quarantine: {path}; "
+                f"preserved as {source_name}"
+            )
+        self._tombstone_quarantine(
+            path,
+            directory_fd=directory_fd,
+            transaction=transaction,
             expected=expected,
+            outcome="restoration",
         )
 
-    def _remove_quarantine(
+    def _tombstone_quarantine(
         self,
         path: Path,
         *,
         directory_fd: int,
-        quarantine_name: str,
+        transaction: _MutationTransaction,
         expected: FileSnapshot,
+        outcome: str,
     ) -> None:
-        quarantine_path = path.with_name(quarantine_name)
-        self._remove_bound_entry(
-            quarantine_path,
+        if transaction.state not in {"tombstoning", "record_tombstoning"}:
+            self._record_transaction_state(
+                path,
+                directory_fd=directory_fd,
+                transaction=transaction,
+                state="tombstoning",
+                outcome=outcome,
+            )
+        elif transaction.outcome != outcome:
+            raise WikiConfigurationError(
+                f"Wiki mutation outcome changed while tombstoning: {path}; "
+                "operator data preserved"
+            )
+        quarantine_path = path.with_name(transaction.quarantine_name)
+        quarantine = self.snapshot(quarantine_path)
+        tombstone_path = path.with_name(transaction.tombstone_name)
+        tombstone = self._snapshot_at(
+            tombstone_path,
             directory_fd=directory_fd,
-            name=quarantine_name,
-            expected=expected,
+            name=transaction.tombstone_name,
         )
+        if not quarantine.exists:
+            if tombstone == expected:
+                return
+            raise WikiConfigurationError(
+                f"Wiki tombstone changed during finalization: {path}; "
+                "operator data preserved"
+            )
+        if quarantine != expected or tombstone.exists:
+            raise WikiConfigurationError(
+                f"Wiki file changed before tombstoning: {path}; "
+                "operator data preserved"
+            )
+        try:
+            descriptor = os.open(
+                transaction.quarantine_name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=directory_fd,
+            )
+        except OSError as exc:
+            raise WikiConfigurationError(
+                f"Wiki file changed before tombstoning: {path}; "
+                "operator data preserved"
+            ) from exc
+        try:
+            opened = self._snapshot_from_descriptor(descriptor)
+            if opened != expected:
+                raise WikiConfigurationError(
+                    f"Wiki file changed before tombstoning: {path}; "
+                    "operator data preserved"
+                )
+            _rename_noreplace(
+                transaction.quarantine_name,
+                transaction.tombstone_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+            self._fsync_directory(directory_fd)
+            moved = self._snapshot_at(
+                tombstone_path,
+                directory_fd=directory_fd,
+                name=transaction.tombstone_name,
+            )
+            if moved != opened or moved != expected:
+                raise WikiConfigurationError(
+                    f"Wiki file changed while tombstoning: {path}; "
+                    "operator data preserved"
+                )
+        finally:
+            os.close(descriptor)
 
     def delete(
         self,
@@ -1006,14 +1409,28 @@ class PinnedWikiMutation:
                 owner=owner,
                 operation="deletion",
                 proposed_sha256="",
+                proposal_name="",
             )
-            self._remove_quarantine(
+            self._record_transaction_state(
                 path,
                 directory_fd=directory_fd,
-                quarantine_name=transaction.quarantine_name,
-                expected=quarantine_snapshot,
+                transaction=transaction,
+                state="deleting",
+                outcome="deletion",
             )
-            self._finish_transaction(path, directory_fd, transaction)
+            self._tombstone_quarantine(
+                path,
+                directory_fd=directory_fd,
+                transaction=transaction,
+                expected=quarantine_snapshot,
+                outcome="deletion",
+            )
+            self._finish_transaction(
+                path,
+                directory_fd,
+                transaction,
+                outcome="deletion",
+            )
             self._directory(path)
         finally:
             if transaction is not None:

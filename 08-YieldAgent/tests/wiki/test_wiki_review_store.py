@@ -264,34 +264,26 @@ def test_simultaneous_updates_allow_one_writer(store, paths):
     assert len(persisted.history) == 1
 
 
-def test_replace_failure_leaves_original_review_and_cleans_temp(
+def test_replace_failure_leaves_original_review_and_retains_failed_proposal(
     store, paths, monkeypatch
 ):
     import wiki_safe_mutation
 
     path = write_existing_source_removal_review(paths.reviews / "source_removal_a.md")
     before = path.read_bytes()
-    original_link = wiki_safe_mutation.os.link
+    original_move = wiki_safe_mutation._rename_noreplace
 
-    def fail_publication(
-        source,
-        target,
-        *,
-        src_dir_fd=None,
-        dst_dir_fd=None,
-        follow_symlinks=True,
-    ):
+    def fail_publication(source, target, *, src_dir_fd, dst_dir_fd):
         if target == path.name and str(source).endswith(".tmp"):
             raise OSError("publish failed")
-        return original_link(
+        return original_move(
             source,
             target,
             src_dir_fd=src_dir_fd,
             dst_dir_fd=dst_dir_fd,
-            follow_symlinks=follow_symlinks,
         )
 
-    monkeypatch.setattr(wiki_safe_mutation.os, "link", fail_publication)
+    monkeypatch.setattr(wiki_safe_mutation, "_rename_noreplace", fail_publication)
 
     with pytest.raises(OSError, match="publish failed"):
         store.update(
@@ -304,8 +296,15 @@ def test_replace_failure_leaves_original_review_and_cleans_temp(
         )
 
     assert path.read_bytes() == before
-    assert list(paths.reviews.glob(".*.tmp")) == []
+    retained_proposals = list(paths.reviews.glob(".*.tmp"))
+    assert len(retained_proposals) == 1
     assert list(paths.reviews.glob(".*.quarantine")) == []
+    transaction_tombstone = next(
+        paths.reviews.glob(".*.yield-wiki-transaction-tombstone")
+    )
+    assert retained_proposals[0].name in transaction_tombstone.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_missing_review_raises_not_found(store):
