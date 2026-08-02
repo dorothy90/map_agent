@@ -34,6 +34,7 @@ TRACE_EVENT_TYPES = frozenset({
     "hitl_triggered",
     "workflow_node",
     "supervisor_dispatch",
+    "postwads_reselection",
     "agent_started",
     "agent_result_enveloped",
     "result_consistency_warning",

@@ -38,13 +38,16 @@ _MAX_CHECKPOINT_MESSAGES = 30
 
 
 _RESUME_INTENT_SYSTEM = (
-    "아래 JSON은 시스템이 사용자에게 띄운 HITL 질문(message)과 선택지(options), "
-    "그리고 사용자의 다음 입력(input)이다. 입력이 그 질문에 대한 '답'(예/아니오·제시된 선택지·"
-    "요청한 값 제공)인지, 아니면 그 질문과 무관한 '새로운 요청/질문'인지 판정해라. "
-    "조건이나 수정을 달아 승인/선택하는 응답(예: \"응 근데 PT1C만 봐줘\", \"좋아, 대신 기간을 "
-    "바꿔서\", \"1번으로 하되 ~로\")도 그 질문에 대한 '답'이다 — 제안된 작업을 조정해서 "
-    "진행하라는 뜻이지 새로운 요청이 아니다. 질문이 제안한 작업과 무관한 주제로 화제를 "
-    "바꿀 때만 'new'다. 오직 'answer' 또는 'new' 한 단어만 출력해라."
+    "아래 JSON은 현재 HITL의 message/options/fields와 사용자의 입력이다. "
+    "입력이 현재 HITL이 허용하는 선택, 필드 제공, 승인 또는 현재 작업의 지원 슬롯 수정이면 "
+    "'answer'를 반환한다. 입력이 현재 HITL로 표현할 수 없는 상위 분석 대상 변경, 이전 선택 "
+    "단계로의 이동, 또는 별도 작업 요청이면 'new'를 반환한다. 표현의 키워드가 아니라 현재 "
+    "HITL 계약으로 그 요청을 실제 반영할 수 있는지를 의미적으로 판단한다. fields의 slot/type은 "
+    "허용된 값의 의미 영역을 엄격히 나타내며, 다른 의미 영역의 값을 현재 field 값으로 강제 변환하지 "
+    "않는다. 이 시스템에서 fail_type은 WADS가 검출한 전기적 검사 파라미터 또는 불량 분류이고, "
+    "cause_oper는 원인 분석의 기준이 되는 제조 공정이며, wads_category는 검사 단계다. 사용자의 "
+    "요청 대상과 현재 fields/options의 의미 영역이 같은지 판단한다. "
+    "오직 'answer' 또는 'new' 한 단어만 출력한다."
 )
 
 
@@ -64,8 +67,33 @@ def _resume_is_interrupt_answer(resume_value: Any, pending_interrupt: dict) -> b
         if text in (str(opt.get("value", "")), str(opt.get("label", ""))):
             return True
     payload = {
+        "interrupt_type": pending_interrupt.get(
+            "interrupt_type", pending_interrupt.get("type", "")
+        ),
+        "route": pending_interrupt.get("route", ""),
+        "representative_param": pending_interrupt.get("param", ""),
         "message": pending_interrupt.get("message", ""),
-        "options": [{"label": o.get("label"), "value": o.get("value")} for o in options],
+        "options": [
+            {
+                "label": option.get("label"),
+                "value": option.get("value"),
+                "slot_keys": sorted(
+                    str(key)
+                    for key in (option.get("slots") or {})
+                    if str(key).strip()
+                ),
+            }
+            for option in options
+        ],
+        "fields": [
+            {
+                "slot": field.get("slot"),
+                "label": field.get("label"),
+                "type": field.get("type"),
+            }
+            for field in (pending_interrupt.get("fields") or [])
+            if isinstance(field, dict)
+        ],
         "input": text,
     }
     try:

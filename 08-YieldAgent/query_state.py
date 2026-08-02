@@ -21,7 +21,11 @@ class CanonicalRequestItem(BaseModel):
     """LLM canonicalizer output before deterministic task building."""
 
     intent: str = Field(
-        default="", description="정규화된 intent (예: wads_report, map)"
+        default="",
+        description=(
+            "정규화된 intent. WADS에서 선택한 분석 대상 자체를 바꾸는 요청은 "
+            "postwads_failtype_reselect이며, 특정 분석 실행을 명시한 요청만 해당 worker intent다."
+        ),
     )
     agent: Literal[
         "",
@@ -33,10 +37,21 @@ class CanonicalRequestItem(BaseModel):
         "lot_history_agent",
         "relation_tree_agent",
         "mining_agent",
-    ] = Field(default="", description="실행 대상 agent")
+        "postwads_selector",
+    ] = Field(
+        default="",
+        description=(
+            "실행 대상 agent. 최신 WADS 기반 분석 대상 자체의 재선택은 "
+            "postwads_selector를 사용하고, 직전 worker를 관성적으로 재사용하지 않는다."
+        ),
+    )
     slots: dict = Field(
         default_factory=dict,
-        description="agent slot schema에 맞춘 structured parameters",
+        description=(
+            "agent slot schema에 맞춘 structured parameters. active_wads_target을 의미상 "
+            "가리키는 downstream 요청은 selected_fail_type을 fail_type에 명시하고 backend "
+            "상속을 기대해 생략하지 않는다."
+        ),
     )
     goal: str = Field(default="", description="사용자에게 표시할 한국어 목표")
     answer: str = Field(default="", description="잘못 중첩된 direct answer 보정용")

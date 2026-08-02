@@ -121,6 +121,59 @@ def _wads_parameters_from_rows(rows: list[dict]) -> list[str]:
     return extract_parameter_values(rows)
 
 
+def _postwads_report_rows(rows: list[dict]) -> list[dict]:
+    """Group query-tool wafer rows into the report shape used by post-WADS HITL."""
+    grouped: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        lotcd = str(row.get("lotcd") or "").strip()
+        category = str(row.get("category") or "").strip()
+        parameter = str(row.get("parameter") or "").strip()
+        end_tm = str(row.get("end_tm") or "").strip()
+        map_oper = _norm_map_oper(
+            str(row.get("map_oper") or "")
+        ) or _category_to_map_oper(category)
+        if not parameter:
+            continue
+        key = (lotcd, category or map_oper, parameter, end_tm)
+        report = grouped.setdefault(
+            key,
+            {
+                "lotcd": lotcd,
+                "category": category,
+                "end_tm": end_tm,
+                "parameter": parameter,
+                "map_oper": map_oper,
+                "groupkeys": [],
+                "lot_ids": [],
+                "wf_ids": [],
+            },
+        )
+        groupkeys = row.get("groupkeys")
+        if not isinstance(groupkeys, list):
+            groupkeys = [_row_groupkey(row)]
+        for groupkey in groupkeys:
+            _append_unique_text(report["groupkeys"], groupkey)
+
+        lot_ids = row.get("lot_ids")
+        if not isinstance(lot_ids, list):
+            lot_ids = [row.get("lotid")]
+        has_lot_id = any(str(lot_id or "").strip() for lot_id in lot_ids)
+        for lot_id in lot_ids:
+            _append_unique_text(report["lot_ids"], lot_id)
+        if not has_lot_id:
+            for groupkey in groupkeys:
+                _append_unique_text(report["lot_ids"], _lotid_from_groupkey(groupkey))
+
+        wf_ids = row.get("wf_ids")
+        if not isinstance(wf_ids, list):
+            wf_ids = [row.get("wf_id")]
+        for wf_id in wf_ids:
+            _append_unique_text(report["wf_ids"], wf_id)
+    return list(grouped.values())
+
+
 def _norm_map_oper(raw: str) -> str:
     """map_oper 포맷 정규화('1h'→'PT1H', 'pt1c'→'PT1C'). 의미 판단 아님 — 형식만."""
     v = str(raw or "").strip().upper()
@@ -829,15 +882,18 @@ def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     # `result_rows` is per-wafer (sql_result-driven). Order by END_TM DESC so the
     # channel matches the displayed table (SQL ORDER BY END_TM DESC) — i.e. "첫번째
     # 리포트" == the first report the user sees — instead of get_html_report call order.
-    report_index_rows = sorted(
-        (
-            {k: v for k, v in report.items() if k != "html"}
-            for report in (reports_payload or [])
-            if isinstance(report, dict)
-        ),
-        key=lambda rep: str(rep.get("end_tm") or ""),
-        reverse=True,
-    )
+    if reports_payload:
+        report_index_rows = sorted(
+            (
+                {k: v for k, v in report.items() if k != "html"}
+                for report in reports_payload
+                if isinstance(report, dict)
+            ),
+            key=lambda rep: str(rep.get("end_tm") or ""),
+            reverse=True,
+        )
+    else:
+        report_index_rows = _postwads_report_rows(result_rows)
     # S2: 검출(groupkey/lot) 발생 시 후속 선택(map/불량이력/연계분석)을 envelope에 선언한다.
     # 트리거+옵션+per-report 데이터를 결과 생성 에이전트가 소유 — 2-step 선택(fail_type→분석종류)과
     # per-report 그룹(map_groups/fail_groups/rt_groups)을 followup 스펙에 prebuilt로 싣고,

@@ -25,6 +25,7 @@ load_dotenv(override=True)
 
 from orch_utils import _AGENT_NAMES, _model, _normalize_map_oper, logger
 from query_state import TimeRange
+from recent_results import _latest_wads_choice_followup
 from user_memory import make_feedback_event
 from wads_context import _resolve_chained_params
 
@@ -622,6 +623,46 @@ def _require_agent_params(
     return None
 
 
+def _build_restored_postwads_choice_task(
+    control_task: dict,
+    state: dict,
+) -> tuple[dict, str] | None:
+    source = _latest_wads_choice_followup(state.get("messages") or [])
+    if source is None:
+        return None
+    requested = str(
+        (control_task.get("params") or {}).get("requested_fail_type") or ""
+    ).strip()
+    followup = source["followup"]
+    task = {
+        "task_id": str(control_task.get("task_id") or "task_postwads_reselect"),
+        "agent": "__choice__",
+        "goal": str(followup.get("goal") or "WADS fail_type 재선택"),
+        "params": {"followup": followup},
+    }
+    if requested:
+        task["params"]["requested_fail_type"] = requested
+    return task, str(source["result_id"])
+
+
+def _report_scope_summary(params: dict) -> dict:
+    out = {"fail_type": str(params.get("fail_type") or "")}
+    for key, prefix in (
+        ("map_groups", "map"),
+        ("fail_groups", "fail"),
+        ("rt_groups", "rt"),
+    ):
+        groups = [group for group in (params.get(key) or []) if isinstance(group, dict)]
+        parameters = []
+        for group in groups:
+            parameter = str(group.get("parameter") or "").strip()
+            if parameter and parameter not in parameters:
+                parameters.append(parameter)
+        out[f"{prefix}_group_count"] = len(groups)
+        out[f"{prefix}_parameters"] = parameters
+    return out
+
+
 def supervisor_node(
     state: Dict[str, Any], config: RunnableConfig
 ) -> Command[
@@ -694,6 +735,55 @@ def supervisor_node(
     if pending:
         current_task = pending[0]
         remaining = pending[1:]
+        if current_task.get("agent") == "postwads_selector":
+            restored = _build_restored_postwads_choice_task(current_task, state)
+            if restored is None:
+                emit_trace_event(
+                    "postwads_reselection",
+                    source="supervisor",
+                    severity="warning",
+                    task_id=str(current_task.get("task_id") or ""),
+                    payload={"status": "failed", "reason": "wads_followup_not_found"},
+                )
+                return Command(
+                    update={
+                        "step_count": step_count,
+                        "pending_tasks": remaining,
+                        "response": (
+                            "재선택할 WADS 결과가 현재 대화 기록에 남아 있지 않습니다. "
+                            "같은 조건으로 WADS를 다시 조회해주세요."
+                        ),
+                    },
+                    goto=END,
+                )
+            restored_task, result_id = restored
+            task_plan = [
+                restored_task if task.get("task_id") == current_task.get("task_id") else task
+                for task in (state.get("task_plan") or [])
+            ]
+            emit_trace_event(
+                "postwads_reselection",
+                source="supervisor",
+                task_id=str(current_task.get("task_id") or ""),
+                payload={
+                    "status": "restored",
+                    "result_id": result_id,
+                    "requested_fail_type": str(
+                        (current_task.get("params") or {}).get("requested_fail_type") or ""
+                    ),
+                    "option_count": len(
+                        (restored_task["params"]["followup"].get("prefilter_options") or [])
+                    ),
+                },
+            )
+            return Command(
+                update={
+                    "step_count": step_count,
+                    "pending_tasks": [restored_task] + remaining,
+                    "task_plan": task_plan,
+                },
+                goto="supervisor",
+            )
         # ── S2: 선언적 __choice__ sentinel → dispatch 직전 택1 interrupt로 해소(택1 후속의 일반 경로) ──
         # 1-step/2-step(postwads 등) 모두 generic _resolve_followup_or_drop가 옵션 스펙으로 해소.
         if current_task.get("agent") == "__choice__":
@@ -841,6 +931,7 @@ def supervisor_node(
                 "remaining_tasks": len(remaining),
                 "step_count": step_count,
                 "params": dispatched_params,
+                "report_scope": _report_scope_summary(current_params),
             },
         )
         emit_trace_event(
@@ -1206,18 +1297,27 @@ def _resolve_single_choice(
     prefilter = [o for o in (fu.get("prefilter_options") or []) if isinstance(o, dict)]
     if prefilter and selected_idx is None:
         options = prefilter + [{"label": "안 함", "value": "none"}]
+        requested = str(params.get("requested_fail_type") or "").strip()
+        base_message = str(
+            fu.get("prefilter_message") or "어느 항목의 후속을 분석할까요?"
+        )
+        message = (
+            f"{base_message} 요청한 변경값: {requested}"
+            if requested
+            else base_message
+        )
         answer = interrupt({
             "type": "confirm",
             "interrupt_type": "postwads_choice",  # agent_server 가드/resume 호환 타입 재사용
             "param": "followup_choice",
-            "message": str(fu.get("prefilter_message") or "어느 항목의 후속을 분석할까요?"),
+            "message": message,
             "options": options,
             "route": "",
         })
         chosen = _interpret_single_choice(answer, options)
         _ans = _answer_text(answer, "followup_choice")
         _opts = [{"label": o.get("label"), "value": o.get("value")} for o in options]
-        _msg = str(fu.get("prefilter_message") or "어느 항목의 후속을 분석할까요?")
+        _msg = message
         if chosen is None:
             ev = (
                 make_feedback_event(

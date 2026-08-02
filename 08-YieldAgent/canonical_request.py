@@ -54,6 +54,10 @@ AGENT_SLOT_RULES: dict[str, dict[str, Any]] = {
         "allowed": set(),
         "required": (),
     },
+    "postwads_selector": {
+        "allowed": {"requested_fail_type"},
+        "required": (),
+    },
 }
 AGENT_SLOT_SCHEMAS: dict[str, set[str]] = {
     agent: set(rules["allowed"])
@@ -145,6 +149,8 @@ def _default_intent_for_agent(agent: str) -> str:
         return "wt_resp"
     if agent == "ppt_export":
         return "ppt_export"
+    if agent == "postwads_selector":
+        return "postwads_failtype_reselect"
     return ""
 
 
@@ -207,4 +213,6 @@ def _canonical_goal(intent: str, agent: str, slots: dict[str, Any]) -> str:
         return f"{product} {parameter} 마이닝 분석".strip()
     if agent == "ppt_export":
         return "분석 결과 PPT 생성"
+    if agent == "postwads_selector":
+        return "WADS fail_type 재선택"
     return f"{intent} 실행"

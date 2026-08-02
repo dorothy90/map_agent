@@ -48,11 +48,13 @@ def to_user_message(exc: Exception) -> str:
                 "이력 검색 서비스에 일시적 문제가 있습니다. 잠시 후 다시 시도해 주세요."
             )
         return "서버 연결에 실패했습니다. 네트워크 상태를 확인하거나 잠시 후 다시 시도해 주세요."
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
-        if exc.response.status_code == 429:
-            return "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요."
-        if 500 <= exc.response.status_code < 600:
-            return "LLM 서비스에 일시적 문제가 있습니다. 잠시 후 다시 시도해 주세요."
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None and isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+    if status_code == 429:
+        return "LLM 서비스 요청 한도에 도달했습니다. 할당량이 갱신된 후 다시 시도해 주세요."
+    if isinstance(status_code, int) and 500 <= status_code < 600:
+        return "LLM 서비스에 일시적 문제가 있습니다. 잠시 후 다시 시도해 주세요."
     if "json" in msg and ("parse" in msg or "decode" in msg):
         return "응답 파싱에 실패했습니다. 다시 시도해 주세요."
     return f"오류가 발생했습니다: {exc}"
@@ -61,14 +63,20 @@ def to_user_message(exc: Exception) -> str:
 def is_transient_error(exc: Exception) -> bool:
     """LangGraph RetryPolicy가 재시도해야 할 일시 장애 분류.
 
-    OpenRouter LLM 호출과 Oracle/OpenSearch 연결에서 흔한 socket/timeout 및
-    HTTP 5xx를 transient로 표시. ValueError·TypeError 등 코드 버그는 False.
+    LLM 호출과 Oracle/OpenSearch 연결에서 흔한 socket/timeout 및
+    HTTP 429/5xx를 transient로 표시. ValueError·TypeError 등 코드 버그는 False.
     supervisor RetryPolicy(retry_on=...)와 worker try/except 양쪽에서 공유한다.
     """
     if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
         return True
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code == 429 or 500 <= status_code < 600
     if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
-        return 500 <= exc.response.status_code < 600
+        return (
+            exc.response.status_code == 429
+            or 500 <= exc.response.status_code < 600
+        )
     return False
 
 
@@ -219,15 +227,19 @@ CATEGORY_TO_BIN: dict[str, str] = {
 # timed 데코레이터
 # ============================================================
 def get_llm(model: str | None = None, temperature: float = 0) -> "ChatOpenAI":
-    """LLM 팩토리 — 모든 에이전트에서 동일 설정으로 ChatOpenAI 생성"""
+    """OpenRouter Nemotron 3 Super free 전용 ChatOpenAI 팩토리."""
     from langchain_openai import ChatOpenAI
 
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OpenRouter LLM 설정 누락: OPENROUTER_API_KEY")
+
     return ChatOpenAI(
-        model="openai/gpt-oss-120b",
-        # model="z-ai/glm-5.1",
-        base_url=os.getenv("OPENROUTER_BASE_URL"),
-        api_key=os.getenv("OPENROUTER_API_KEY"),
+        model="nvidia/nemotron-3-super-120b-a12b:free",
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
         temperature=temperature,
+        max_tokens=4096,
     )
 
 

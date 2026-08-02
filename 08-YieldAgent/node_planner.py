@@ -6,11 +6,13 @@ from datetime import date, timedelta
 from typing import Any, Dict
 
 from dotenv import load_dotenv
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langfuse import observe
+from pydantic import ValidationError
 
-from common import stream_event, extract_json_from_llm
+from common import is_transient_error, stream_event
 from canonical_request import build_tasks_from_canonical_requests, normalize_canonical_request
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import StatusEvent
@@ -22,7 +24,12 @@ load_dotenv(override=True)
 
 from orch_utils import _model, logger
 from query_state import CanonicalPlanResponse
-from recent_results import _accumulate_recent_results, _get_recent_turns, _recent_results_prompt_context
+from recent_results import (
+    _accumulate_recent_results,
+    _get_recent_turns,
+    _latest_wads_choice_followup,
+    _recent_results_prompt_context,
+)
 from user_memory import get_profile
 
 
@@ -85,6 +92,39 @@ def _llm_empty_plan_response(user_text: str, *, planner_text: str = "") -> str:
 _PLANNER_REFERENT_TURNS = 3
 
 
+def _active_wads_target_context(messages: list, selected_fail_type: str) -> str:
+    """Expose WADS target-selection capability without deciding user intent."""
+    selected = str(selected_fail_type or "").strip()
+    restored = _latest_wads_choice_followup(messages)
+    if not selected or not restored:
+        return ""
+
+    available: list[str] = []
+    followup = restored.get("followup") or {}
+    for option in followup.get("prefilter_options") or []:
+        if not isinstance(option, dict):
+            continue
+        fail_type = str(option.get("fail_type") or "").strip()
+        if fail_type and fail_type not in available:
+            available.append(fail_type)
+
+    return "\n".join(
+        [
+            "active_wads_target:",
+            "  source: latest_wads_result",
+            "  selection_authority: restored_wads_hitl",
+            f"  selected_fail_type: {selected}",
+            f"  available_fail_types: [{', '.join(available)}]",
+            (
+                "  worker_fail_type_contract: "
+                "semantically_current_target_requires_selected_fail_type"
+            ),
+            "  reselection_intent: postwads_failtype_reselect",
+            "  reselection_agent: postwads_selector",
+        ]
+    )
+
+
 def _build_tasks_update(canonical_requests: list[dict]) -> dict:
     """Build the task contract from canonical request(s) and emit plan status.
 
@@ -131,6 +171,34 @@ def _build_tasks_update(canonical_requests: list[dict]) -> dict:
 _MAX_TASKS = 5
 
 
+def _invoke_canonical_plan(
+    invoke_messages: list[dict],
+) -> tuple[CanonicalPlanResponse, str]:
+    """Invoke the Planner through its Pydantic tool-calling contract."""
+    structured_model = _model.with_structured_output(
+        CanonicalPlanResponse,
+        method="function_calling",
+    )
+    parse_error: ValidationError | OutputParserException | None = None
+    for attempt in range(2):
+        try:
+            plan = structured_model.invoke(
+                invoke_messages,
+                config={"callbacks": _lf_callbacks()},
+            )
+            if not isinstance(plan, CanonicalPlanResponse):
+                plan = CanonicalPlanResponse.model_validate(plan)
+            return plan, plan.model_dump_json()
+        except (ValidationError, OutputParserException) as exc:
+            parse_error = exc
+            if attempt == 0:
+                logger.warning(
+                    "[Planner] invalid structured response; retrying shared model"
+                )
+    assert parse_error is not None
+    raise parse_error
+
+
 def _planner_empty_canonical_retry(
     invoke_messages: list[dict],
     *,
@@ -162,12 +230,7 @@ def _planner_empty_canonical_retry(
             ),
         }
     )
-    response = _model.invoke(
-        retry_messages,
-        config={"callbacks": _lf_callbacks()},
-    )
-    raw_retry = (response.content or "").strip()
-    retry_plan = extract_json_from_llm(raw_retry, CanonicalPlanResponse)
+    retry_plan, raw_retry = _invoke_canonical_plan(retry_messages)
     if retry_plan.answer.strip():
         return [], raw_retry
     return [
@@ -236,6 +299,11 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         meta_parts.append(f"이전 main_oper: {state['cause_oper']}")
     if state.get("selected_fail_type"):
         meta_parts.append(f"직전 선택 파라미터(fail_type): {state['selected_fail_type']}")
+        active_wads_target = _active_wads_target_context(
+            messages, state["selected_fail_type"]
+        )
+        if active_wads_target:
+            meta_parts.append(active_wads_target)
     if state.get("agent_suggestion"):
         meta_parts.append(f"이전 에이전트 제안: {state['agent_suggestion']}")
     # 사용자 선호 프로필(정성 참고) — 부재/실패 시 조용히 생략. 메모리 오류가 planner를 죽이면 안 됨.
@@ -276,17 +344,15 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         },
     )
 
-    # 수동 JSON 파싱 (with_structured_output은 OpenRouter 호환성 문제)
+    # Shared model tool-calling으로 Pydantic canonical contract를 직접 강제한다.
     raw_text = ""
     try:
-        response = _model.invoke(
-            invoke_messages,
-            config={"callbacks": _lf_callbacks()},
-        )
-        raw_text = response.content.strip()
+        plan, raw_text = _invoke_canonical_plan(invoke_messages)
         emit_runtime_detail("planner.raw", {"raw_text": raw_text})
-        plan = extract_json_from_llm(raw_text, CanonicalPlanResponse)
     except Exception as e:
+        if is_transient_error(e):
+            logger.warning("[Planner] transient 오류, retry 위임: %s", e)
+            raise
         logger.error("[Planner] canonical 파싱 실패: %s", e)
         emit_trace_event(
             "planner_output",

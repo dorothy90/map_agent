@@ -146,6 +146,16 @@ present there, leave that slot empty or omit it.
        없으면 비워두면 backend가 채운다.
      - tech: 기술/공정 세대 코드. user_id: 요청 사용자 ID. rank_limit: 상위 N개(미지정 10).
 
+9. postwads_selector
+   capability: reopen the latest WADS report's fail_type selector when the user
+   semantically wants to change or reselect the analysis target used by downstream work
+   intents: postwads_failtype_reselect
+   slots:
+     - requested_fail_type: the new parameter explicitly requested by the user; omit it
+       when no concrete parameter was named. This is only a hint for the restored HITL.
+   Use this control route for target reselection after map, fail history, relation tree,
+   WT Resp, or mining. Do not use it for a request to query fresh WADS data.
+
 === DECISION PRINCIPLES ===
 - Output zero requests for greetings, help, out-of-scope questions, or meaningless input.
 - If the latest request can be answered entirely from Structured context or the immediately
@@ -157,6 +167,19 @@ present there, leave that slot empty or omit it.
   mining_agent로 라우팅하라. 전체 gini 표는 mining_agent가 머금고 있고 context엔 일부만 있다.
   이때 slots는 비워둔다(상류/머금은 값 상속).
 - A simple executable request becomes one canonical request.
+- A request to change the target parameter of an analysis derived from a prior WADS
+  result is a postwads_failtype_reselect control request. Preserve an explicitly named
+  target only in requested_fail_type; the restored WADS HITL remains authoritative.
+- When the requested action is target replacement itself and no worker action is
+  explicitly requested, postwads_selector takes precedence over the most recently used
+  worker. Do not infer a worker action solely from the previous map, fail-history,
+  relation-tree, WT Resp, or mining result. If the user explicitly requests a named
+  analysis action with a different target, route to that worker instead.
+- When Structured context contains active_wads_target and the latest request semantically
+  refers to that current analysis target, a downstream map, fail-history, relation-tree,
+  WT Resp, or mining request must emit selected_fail_type in the worker's fail_type slot.
+  Do not omit it expecting the backend to inherit it. Do not apply it when the user
+  semantically asks for a broader, unrelated, or newly specified target.
 - A true multi-agent or explicitly separated request may become multiple canonical requests.
 - A request for multiple prior items may become multiple canonical requests for the same
   agent when the worker slot accepts a single item.

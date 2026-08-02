@@ -39,7 +39,7 @@ action 필드는 반드시 아래 영문 문자열 중 하나여야 한다:
 - request는 intent, agent, slots, goal 필드를 사용한다. task_id/params/tasks를 출력하지 마라.
 - agent는 반드시 다음 중 하나만 사용한다: yield_agent(수율), wads_agent(열화 리포트),
   map_agent(웨이퍼 맵), fail_history_agent(불량이력), lot_history_agent(lot 이력),
-  relation_tree_agent(연관 분석), ppt_export. 그 외 이름(defect_agent 등) 금지.
+  relation_tree_agent(연관 분석), ppt_export, postwads_selector. 그 외 이름(defect_agent 등) 금지.
 - approve면 현재 요청 그대로 requests에 넣는다.
 - cancel이면 requests는 []로 둔다.
 - modify면 사용자 응답을 반영한 수정된 전체 요청 목록을 requests에 넣는다

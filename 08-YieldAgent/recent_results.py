@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 
+from copy import deepcopy
 import json
 from typing import Any
 
@@ -17,6 +18,7 @@ from result_contracts import (
     ResultContractError,
     build_recent_result_index_entry,
     prune_recent_results,
+    validate_result_envelope,
 )
 from local_trace import emit_runtime_detail, preview_text
 
@@ -216,6 +218,50 @@ def _extract_result_payloads(message: Any) -> list[Any]:
     if isinstance(result_payload, list):
         return result_payload
     return [result_payload]
+
+
+def _latest_wads_choice_followup(messages: list) -> dict[str, Any] | None:
+    """Return the latest coherent WADS two-step choice followup from full messages."""
+    for message in reversed(messages or []):
+        for payload in reversed(_extract_result_payloads(message)):
+            try:
+                envelope = validate_result_envelope(payload)
+            except (ResultContractError, ValueError, TypeError):
+                continue
+            if envelope.source_agent != "wads_agent":
+                continue
+            for followup in reversed(envelope.followups):
+                if not isinstance(followup, dict):
+                    continue
+                if followup.get("agent") != "__choice__":
+                    continue
+                prefilter = followup.get("prefilter_options")
+                option_sets = followup.get("choice_option_sets")
+                if (
+                    not isinstance(prefilter, list)
+                    or not prefilter
+                    or not all(isinstance(option, dict) for option in prefilter)
+                    or not isinstance(option_sets, list)
+                    or not option_sets
+                    or not all(
+                        isinstance(option_set, list)
+                        and option_set
+                        and all(isinstance(option, dict) for option in option_set)
+                        for option_set in option_sets
+                    )
+                ):
+                    continue
+                try:
+                    indexes = [int(str(option.get("value"))) for option in prefilter]
+                except (TypeError, ValueError):
+                    continue
+                if any(index < 0 or index >= len(option_sets) for index in indexes):
+                    continue
+                return {
+                    "result_id": envelope.result_id,
+                    "followup": deepcopy(followup),
+                }
+    return None
 
 
 def _build_recent_results_index(messages: list) -> list[dict]:
