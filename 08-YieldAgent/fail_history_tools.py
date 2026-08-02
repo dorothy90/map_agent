@@ -568,7 +568,12 @@ def do_search(
     wiki-first 시 rendered_answer(markdown) 포함 → 추가 합성 불요.
     """
     if not query or not query.strip():
-        return {"total": 0, "results": [], "retrieval_mode": "empty_query"}
+        return {
+            "total": 0,
+            "results": [],
+            "retrieval_mode": "empty_query",
+            "evidence_sensitive": False,
+        }
     top_k = max(1, min(top_k, 20))
 
     if not product and not fail_type and not cause_oper:
@@ -663,6 +668,7 @@ def do_search(
             "wiki_citations": citations,
             "rendered_answer": rendered_answer,
             "super_reference_body": _lookup_super_reference(product, fail_type, cause_oper),
+            "evidence_sensitive": True,
         }
         if grounded_graph_context is not None:
             output["graph_context"] = grounded_graph_context
@@ -730,11 +736,17 @@ def do_search(
         grounded_graph_context = None
 
     if not results:
+        super_reference_body = _lookup_super_reference(
+            product, fail_type, cause_oper
+        )
         return {
             "total": 0,
             "results": [],
             "retrieval_mode": "baseline",
-            "super_reference_body": _lookup_super_reference(product, fail_type, cause_oper),
+            "super_reference_body": super_reference_body,
+            "evidence_sensitive": bool(
+                grounded_graph_context is not None or super_reference_body
+            ),
         }
 
     wiki_mem: Dict[str, Any] = {"concepts": [], "aliases": [], "recent_episodes": []}
@@ -753,6 +765,14 @@ def do_search(
     except Exception as e:
         logger.warning("[do_search] wiki lookup 실패: %s", e)
 
+    super_reference_body = _lookup_super_reference(product, fail_type, cause_oper)
+    evidence_sensitive = bool(
+        grounded_graph_context is not None
+        or any(wiki_mem.get(key) for key in ("concepts", "aliases", "recent_episodes"))
+        or (gate_result and gate_result.get("body"))
+        or super_reference_body
+    )
+
     enqueue_status = "skipped"
     try:
         from wiki_queue import wiki_queue
@@ -766,7 +786,7 @@ def do_search(
                 },
                 "raw_results": opensearch_results,
             },
-            private=lf_capture_disabled(),
+            private=lf_capture_disabled() or evidence_sensitive,
         )
     except Exception as e:
         logger.warning("[do_search] wiki enqueue 실패: %s", e)
@@ -780,6 +800,7 @@ def do_search(
         "wiki_memory": wiki_mem,
         "retrieval_mode": "baseline",
         "fail_type_filter_dropped": fail_type_filter_dropped,
+        "evidence_sensitive": evidence_sensitive,
     }
 
     if gate_result and gate_result.get("gate") == "wiki-assisted":
@@ -795,7 +816,7 @@ def do_search(
         output["retrieval_mode"] = "graph-assisted"
         output["graph_context"] = grounded_graph_context
 
-    output["super_reference_body"] = _lookup_super_reference(product, fail_type, cause_oper)
+    output["super_reference_body"] = super_reference_body
     return output
 
 

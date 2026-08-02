@@ -1121,6 +1121,126 @@ async def test_wiki_stream_disables_callbacks_through_reachable_agent(
     assert lf_utils.lf_callbacks() == ["local-callback", "remote-callback"]
 
 
+@pytest.mark.anyio
+async def test_retrieved_graph_evidence_disables_callbacks_and_runtime_payloads(
+    monkeypatch, tmp_path
+):
+    import agent_server
+    import fail_history_agent
+    import lf_utils
+    import local_trace
+    import node_planner
+    import node_supervisor
+
+    evidence_sentinel = "RETRIEVED_GRAPH_EVIDENCE_MUST_NOT_ENTER_TRACES"
+
+    class PlannerModel:
+        def invoke(self, messages, **kwargs):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "requests": [
+                            {
+                                "intent": "fail_history_search",
+                                "agent": "fail_history_agent",
+                                "slots": {"dh_query": "failure cause"},
+                                "goal": "Inspect failure evidence",
+                            }
+                        ],
+                        "answer": "",
+                    }
+                )
+            )
+
+    class AgentModel:
+        def __init__(self):
+            self.callback_lists = []
+            self.inputs = []
+
+        def invoke(self, messages, config):
+            self.callback_lists.append(config.get("callbacks"))
+            self.inputs.append(str(messages))
+            return SimpleNamespace(content="Grounded response without a citation marker")
+
+    class LangfuseClient:
+        def get_current_trace_id(self):
+            return "trace-id"
+
+        def get_current_observation_id(self):
+            return "observation-id"
+
+    agent_model = AgentModel()
+    trace_json = tmp_path / "retrieved-graph-evidence.json"
+    monkeypatch.setattr(local_trace, "_TURNS", [])
+    monkeypatch.setattr(local_trace, "_TURNS_LOADED", True)
+    monkeypatch.setattr(local_trace, "_last_turns_json_path", lambda: trace_json)
+    monkeypatch.setattr(local_trace, "_last_turn_path", lambda: tmp_path / "trace.html")
+    monkeypatch.setattr(node_planner, "_model", PlannerModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+    monkeypatch.setattr(fail_history_agent, "_fh_model", agent_model)
+    monkeypatch.setattr(
+        fail_history_agent,
+        "do_search",
+        lambda **kwargs: {
+            "retrieval_mode": "graph-assisted",
+            "evidence_sensitive": True,
+            "results": [
+                {
+                    "doc_id": "FH-GRAPH",
+                    "product": "4SS",
+                    "fail_type": "EASY",
+                    "cause_oper": "PRE METAL CLN",
+                    "cause": evidence_sentinel,
+                    "action": "grounded action",
+                }
+            ],
+            "graph_context": {
+                "primary_concept_id": "concept:4SS|PRE METAL CLN|EASY",
+                "concept_ids": ["concept:4SS|PRE METAL CLN|EASY"],
+                "relations": [],
+                "source_doc_ids": ["FH-GRAPH"],
+            },
+        },
+    )
+    monkeypatch.setattr(lf_utils, "get_client", lambda: LangfuseClient())
+    monkeypatch.setattr(lf_utils, "llm_trace_handler", lambda: "local-callback")
+    monkeypatch.setattr(lf_utils, "_LFHandler", lambda **kwargs: "remote-callback")
+    monkeypatch.setattr(agent_server, "get_client", lambda: _StreamTraceClient())
+    monkeypatch.setattr(agent_server, "SIMULATED_STREAM_DELAY", 0)
+
+    graph = _PlannerSupervisorAgentStreamTraceGraph()
+
+    def capture_custom(kind, event):
+        payload = event.model_dump() if hasattr(event, "model_dump") else event
+        graph.custom_events.append({"kind": kind, **payload})
+
+    monkeypatch.setattr(node_supervisor, "stream_event", capture_custom)
+    turns = _StreamTraceTurns()
+    req = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                graph=graph,
+                motor_db=SimpleNamespace(chat_turns=turns),
+            )
+        )
+    )
+
+    response = await agent_server._chat_stream(
+        models.ChatRequest(query="What caused the failure?", session_id="public-graph"),
+        req,
+    )
+    sse_text = await _consume_stream_response(response)
+    local_trace._persist_turns()
+
+    persisted_trace = trace_json.read_text(encoding="utf-8")
+    assert agent_model.callback_lists == [[]]
+    assert evidence_sentinel in agent_model.inputs[0]
+    assert evidence_sentinel not in persisted_trace
+    assert hashlib.sha256(evidence_sentinel.encode()).hexdigest() in persisted_trace
+    assert "Grounded response without a citation marker" in sse_text
+    assert lf_utils.lf_callbacks() == ["local-callback", "remote-callback"]
+
+
 def test_planner_propagates_model_invocation_failure(monkeypatch):
     import node_planner
 

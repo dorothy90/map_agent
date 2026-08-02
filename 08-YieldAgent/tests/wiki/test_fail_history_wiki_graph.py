@@ -305,6 +305,45 @@ def test_exact_triple_expands_canonical_concept_before_opensearch(
     assert queued_payloads[0]["__private"] is True
 
 
+def test_graph_retrieval_marks_envelope_and_queue_private_without_request_context(
+    tmp_path, monkeypatch
+):
+    queued_payloads = _stub_existing_wiki_paths(monkeypatch, tmp_path)
+
+    class Projection:
+        def expand_concepts(self, concept_ids):
+            return _graph_context(source_doc_ids=["FH-GRAPH"])
+
+    monkeypatch.setattr(
+        fail_history_tools,
+        "build_graph_projection",
+        lambda paths: Projection(),
+    )
+    monkeypatch.setattr(
+        fail_history_tools,
+        "_search_opensearch",
+        lambda **kwargs: [
+            {
+                "doc_id": "FH-GRAPH",
+                "product": "4SS",
+                "fail_type": "EASY",
+                "cause_oper": "PRE METAL CLN",
+            }
+        ],
+    )
+
+    result = fail_history_tools.do_search(
+        query="What caused the failure?",
+        product="4SS",
+        fail_type="EASY",
+        cause_oper="PRE METAL CLN",
+    )
+
+    assert result["retrieval_mode"] == "graph-assisted"
+    assert result["evidence_sensitive"] is True
+    assert queued_payloads[0]["__private"] is True
+
+
 def test_search_metadata_seeds_graph_when_request_has_no_exact_triple(
     tmp_path, monkeypatch
 ):

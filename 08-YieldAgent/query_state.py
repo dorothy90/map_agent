@@ -169,6 +169,7 @@ class YieldQueryState(TypedDict):
     wiki_update_status: (
         str  # "queued" | "summarized" | "persisted" | "dropped" | "skipped"
     )
+    evidence_sensitive: bool  # retrieved Wiki/Graph evidence requires trace redaction
 
     # Lot History 결과
     lot_history_artifacts: Annotated[list, operator.add]

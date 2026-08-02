@@ -61,6 +61,7 @@ from local_trace import (  # noqa: E402
     configure_runtime_terminal_logger,
     emit_runtime_detail,
     emit_trace_event,
+    fingerprint_trace_value,
     make_trace_id,
     new_turn_id,
     preview_text,
@@ -567,6 +568,7 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
             # Day 4: wiki state는 turn별 overwrite (reducer 없음). 명시적 reset.
             "wiki_hit_ids": [],
             "wiki_update_status": "skipped",
+            "evidence_sensitive": False,
             # 다음-턴 번호 선택 라우팅용 raw results (reducer 없음, turn별 overwrite)
             "fail_history_results": [],
             # anomaly_params는 매 새 사용자 turn 시 리셋 (#11 fix).
@@ -681,6 +683,8 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
         # Wiki evidence stays in functional graph state, so suppress every nested
         # payload-bearing LLM callback for this async stream execution.
         capture_token = set_lf_capture_disabled(wiki_context_turn)
+        dynamic_capture_token = None
+        sensitive_turn = wiki_context_turn
         start = time.time()
         step_count = 0
         turn_messages: list[dict] = []
@@ -745,7 +749,7 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                                 "kind": kind,
                                 "data": (
                                     summarize_trace_value(data)
-                                    if wiki_context_turn
+                                    if sensitive_turn
                                     else data
                                 ),
                             },
@@ -775,6 +779,12 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                         # node_state가 dict가 아닌 경우 (interrupt 등) 스킵
                         if not isinstance(node_state, dict):
                             continue
+                        if (
+                            node_state.get("evidence_sensitive") is True
+                            and not sensitive_turn
+                        ):
+                            dynamic_capture_token = set_lf_capture_disabled(True)
+                            sensitive_turn = True
                         emit_runtime_detail(
                             "graph.update",
                             {
@@ -785,28 +795,28 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                                     summarize_trace_value(
                                         node_state.get("current_task_goal", "")
                                     )
-                                    if wiki_context_turn
+                                    if sensitive_turn
                                     else node_state.get("current_task_goal", "")
                                 ),
                                 "pending_tasks": (
                                     summarize_trace_value(
                                         node_state.get("pending_tasks", [])
                                     )
-                                    if wiki_context_turn
+                                    if sensitive_turn
                                     else node_state.get("pending_tasks", [])
                                 ),
                                 "task_plan": (
                                     summarize_trace_value(
                                         node_state.get("task_plan", [])
                                     )
-                                    if wiki_context_turn
+                                    if sensitive_turn
                                     else node_state.get("task_plan", [])
                                 ),
                                 "validation_issues": (
                                     summarize_trace_value(
                                         node_state.get("task_validation_issues", [])
                                     )
-                                    if wiki_context_turn
+                                    if sensitive_turn
                                     else node_state.get("task_validation_issues", [])
                                 ),
                             },
@@ -829,7 +839,7 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                                     summarize_trace_value(
                                         node_state.get("current_task_goal", "")
                                     )
-                                    if wiki_context_turn
+                                    if sensitive_turn
                                     else node_state.get("current_task_goal", "")
                                 ),
                                 "task_plan_count": len(node_state.get("task_plan", []) or []),
@@ -838,6 +848,12 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                         )
 
                         structured_results = node_state.get("fail_history_results") or []
+                        if structured_results and sensitive_turn:
+                            emit_runtime_detail(
+                                "evidence.fingerprint",
+                                fingerprint_trace_value(structured_results),
+                                task_id=str(node_state.get("current_task_id", "")),
+                            )
                         source_paths: dict[str, str] = {}
                         if structured_results:
                             wiki_paths = resolve_wiki_paths()
@@ -881,12 +897,12 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                             additional_kwargs = getattr(msg, "additional_kwargs", {}) or {}
                             trace_content = (
                                 summarize_trace_value(content)
-                                if wiki_context_turn
+                                if sensitive_turn
                                 else content
                             )
                             trace_additional_kwargs = (
-                                summarize_trace_value(additional_kwargs)
-                                if wiki_context_turn
+                                fingerprint_trace_value(additional_kwargs)
+                                if sensitive_turn
                                 else additional_kwargs
                             )
                             emit_runtime_detail(
@@ -946,7 +962,11 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                                         "agent": art.get("agent", default_agent),
                                         "type": art.get("type", ""),
                                         "mime": art.get("mime", ""),
-                                        "data": art_data,
+                                        "data": (
+                                            summarize_trace_value(art_data)
+                                            if sensitive_turn
+                                            else art_data
+                                        ),
                                     },
                                     task_id=str(node_state.get("current_task_id", "")),
                                 )
@@ -987,7 +1007,11 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                                         "key": key,
                                         "title": art.get("title", key.replace("_artifacts", "")),
                                         "agent": art.get("agent", default_agent),
-                                        "data": art_data,
+                                        "data": (
+                                            summarize_trace_value(art_data)
+                                            if sensitive_turn
+                                            else art_data
+                                        ),
                                     },
                                     task_id=str(node_state.get("current_task_id", "")),
                                 )
@@ -1017,7 +1041,14 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                         if analysis:
                             emit_runtime_detail(
                                 "analysis_result",
-                                {"node": node_name, "analysis": analysis},
+                                {
+                                    "node": node_name,
+                                    "analysis": (
+                                        summarize_trace_value(analysis)
+                                        if sensitive_turn
+                                        else analysis
+                                    ),
+                                },
                                 task_id=str(node_state.get("current_task_id", "")),
                             )
                             evt = ArtifactEvent(
@@ -1036,7 +1067,14 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                         if suggestion:
                             emit_runtime_detail(
                                 "suggestion",
-                                {"node": node_name, "suggestion": suggestion},
+                                {
+                                    "node": node_name,
+                                    "suggestion": (
+                                        summarize_trace_value(suggestion)
+                                        if sensitive_turn
+                                        else suggestion
+                                    ),
+                                },
                                 task_id=str(node_state.get("current_task_id", "")),
                             )
                             yield _sse(SuggestionEvent(
@@ -1053,8 +1091,14 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                     severity="error",
                     payload={
                         "error_type": type(e).__name__,
-                        "error_message": str(e),
-                        "traceback": traceback.format_exc(),
+                        "error_message": (
+                            summarize_trace_value(str(e)) if sensitive_turn else str(e)
+                        ),
+                        "traceback": (
+                            summarize_trace_value(traceback.format_exc())
+                            if sensitive_turn
+                            else traceback.format_exc()
+                        ),
                     },
                 )
                 yield _sse(ErrorEvent(message=to_user_message(e)))
@@ -1074,7 +1118,12 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                             if hasattr(task, "interrupts") and task.interrupts:
                                 for intr in task.interrupts:
                                     interrupt_data = intr.value
-                                    emit_runtime_detail("interrupt", interrupt_data)
+                                    emit_runtime_detail(
+                                        "interrupt",
+                                        summarize_trace_value(interrupt_data)
+                                        if sensitive_turn
+                                        else interrupt_data,
+                                    )
                                     for sse_line in _interrupt_sse_events(interrupt_data):
                                         yield sse_line
                                     interrupt_emitted = True
@@ -1132,6 +1181,8 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
             except Exception:
                 pass
         finally:
+            if dynamic_capture_token is not None:
+                reset_lf_capture_disabled(dynamic_capture_token)
             reset_lf_capture_disabled(capture_token)
             reset_trace_context(trace_tokens)
 

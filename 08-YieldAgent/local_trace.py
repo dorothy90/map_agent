@@ -154,6 +154,46 @@ def summarize_trace_value(value: Any) -> dict[str, Any]:
     }
 
 
+def fingerprint_trace_value(
+    value: Any, *, max_depth: int = 6, max_items: int = 24
+) -> Any:
+    """Fingerprint nested evidence without retaining any string payloads."""
+
+    if isinstance(value, str):
+        return summarize_trace_value(value)
+    if isinstance(value, dict):
+        if max_depth <= 0:
+            return summarize_trace_value(value)
+        items = list(value.items())
+        return {
+            "redacted": True,
+            "count": len(items),
+            "items": {
+                str(key): fingerprint_trace_value(
+                    item, max_depth=max_depth - 1, max_items=max_items
+                )
+                for key, item in items[:max_items]
+            },
+            "sha256": _stable_hash(value),
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        if max_depth <= 0:
+            return summarize_trace_value(value)
+        items = list(value)
+        return {
+            "redacted": True,
+            "count": len(items),
+            "items": [
+                fingerprint_trace_value(
+                    item, max_depth=max_depth - 1, max_items=max_items
+                )
+                for item in items[:max_items]
+            ],
+            "sha256": _stable_hash(value),
+        }
+    return value
+
+
 def make_trace_id(seed: str | None = None) -> str:
     if seed:
         return f"trace_{_sha256_text(seed)[:16]}"

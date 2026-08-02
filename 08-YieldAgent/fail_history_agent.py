@@ -20,7 +20,11 @@ from langchain_core.runnables import RunnableConfig
 from langfuse import observe
 
 from common import timed, get_llm, extract_suggestion, is_transient_error
-from lf_utils import lf_callbacks as _lf_callbacks
+from lf_utils import (
+    lf_callbacks as _lf_callbacks,
+    reset_lf_capture_disabled,
+    set_lf_capture_disabled,
+)
 from prompts import FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE
 from result_contracts import attach_result_envelope, derive_summary_from_rows
 from wiki_source_citations import (
@@ -212,11 +216,18 @@ def _synthesize_answer(
             )
     human_msg = "\n\n".join(input_parts)
 
-    sub_config = {**config, "callbacks": _lf_callbacks()}
-    ai = _fh_model.invoke(
-        [SystemMessage(content=system_prompt), HumanMessage(content=human_msg)],
-        config=sub_config,
-    )
+    capture_token = None
+    if raw.get("evidence_sensitive") is True:
+        capture_token = set_lf_capture_disabled(True)
+    try:
+        sub_config = {**config, "callbacks": _lf_callbacks()}
+        ai = _fh_model.invoke(
+            [SystemMessage(content=system_prompt), HumanMessage(content=human_msg)],
+            config=sub_config,
+        )
+    finally:
+        if capture_token is not None:
+            reset_lf_capture_disabled(capture_token)
     return ai.content if hasattr(ai, "content") else str(ai)
 
 
@@ -237,6 +248,7 @@ def _fail_history_per_report(state: dict, config: RunnableConfig, fail_groups: l
     wiki_hits: list[str] = []
     params_seen: list[str] = []
     wiki_status = "skipped"
+    evidence_sensitive = False
 
     for g in fail_groups:
         param = str(g.get("parameter") or "").strip()
@@ -262,6 +274,7 @@ def _fail_history_per_report(state: dict, config: RunnableConfig, fail_groups: l
             continue
 
         results = raw.get("results", [])
+        evidence_sensitive = evidence_sensitive or bool(raw.get("evidence_sensitive"))
         retrieval_mode = raw.get("retrieval_mode", "baseline")
         if retrieval_mode == "wiki-first":
             answer = _render_wiki_first_answer(raw)
@@ -322,6 +335,7 @@ def _fail_history_per_report(state: dict, config: RunnableConfig, fail_groups: l
         "past_steps": [(state.get("current_task_id", ""), message_content[:300])],
         "wiki_hit_ids": list(dict.fromkeys(wiki_hits)),
         "wiki_update_status": wiki_status,
+        "evidence_sensitive": evidence_sensitive,
     }
 
 
@@ -418,6 +432,7 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
             "messages": [error_message],
             "fail_history_artifacts": [],
             "fail_history_results": [],
+            "evidence_sensitive": False,
             "past_steps": [
                 (state.get("current_task_id", ""), f"불량이력 영구 오류: {e}")
             ],
@@ -513,4 +528,5 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
         "past_steps": [(state.get("current_task_id", ""), message_content[:300])],
         "wiki_hit_ids": wiki_hit_ids,
         "wiki_update_status": wiki_update_status,
+        "evidence_sensitive": bool(raw.get("evidence_sensitive")),
     }
