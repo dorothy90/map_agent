@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import logging
 import sys
 from types import SimpleNamespace
 
@@ -999,3 +1001,72 @@ def test_fanout_markdown_link_labels_keep_no_citation_fallback(monkeypatch):
     assert "EASY second evidence" in content
     assert "IOFF first evidence" in content
     assert "IOFF second evidence" in content
+
+
+def test_sensitive_fail_history_replanner_fingerprints_logs_and_disables_callbacks(
+    monkeypatch, caplog
+):
+    import node_replanner
+
+    evidence = "PRIVATE-WIKI-EVIDENCE-REPLANNER-SENTINEL"
+    monkeypatch.setattr(
+        fail_history_agent,
+        "do_search",
+        lambda **kwargs: {
+            "retrieval_mode": "wiki-first",
+            "rendered_answer": evidence,
+            "results": [],
+            "evidence_sensitive": True,
+        },
+    )
+    callback_calls = []
+    monkeypatch.setattr(
+        node_replanner,
+        "_lf_callbacks",
+        lambda: callback_calls.append(True) or ["payload-capturing-callback"],
+    )
+
+    class ReplannerModel:
+        def __init__(self):
+            self.configs = []
+
+        def invoke(self, messages, config):
+            self.configs.append(config)
+            return SimpleNamespace(content='{"requests": [], "answer": ""}')
+
+    model = ReplannerModel()
+    monkeypatch.setattr(node_replanner, "_model", model)
+    human = HumanMessage(content="continue with a dependent map task")
+    fail_history_update = fail_history_agent.fail_history_agent_node(
+        {
+            "messages": [human],
+            "current_task_id": "task_history",
+            "current_task_goal": "retrieve grounded history",
+        },
+        {},
+    )
+    pending = {
+        "task_id": "task_map",
+        "agent": "map_agent",
+        "goal": "render the dependent map",
+        "params": {"map_oper": "", "lot_ids": ""},
+    }
+
+    with caplog.at_level(logging.INFO, logger="yield_agent.supervisor"):
+        node_replanner.replanner_node(
+            {
+                "messages": [human, *fail_history_update["messages"]],
+                "past_steps": fail_history_update["past_steps"],
+                "pending_tasks": [pending],
+                "task_plan": [pending],
+                "evidence_sensitive": fail_history_update["evidence_sensitive"],
+            },
+            {},
+        )
+
+    sensitive_summary = fail_history_update["past_steps"][0][1]
+    assert evidence in sensitive_summary
+    assert evidence not in caplog.text
+    assert hashlib.sha256(sensitive_summary.encode()).hexdigest() in caplog.text
+    assert callback_calls == []
+    assert model.configs == [{"callbacks": []}]

@@ -16,7 +16,7 @@ from canonical_request import build_task_from_canonical_request, build_tasks_fro
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import StatusEvent
 from prompts import REPLANNER_SYSTEM_PROMPT
-from local_trace import emit_trace_event, summarize_result_envelope
+from local_trace import emit_trace_event, summarize_result_envelope, summarize_trace_value
 
 load_dotenv(override=True)
 
@@ -220,11 +220,16 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     # 항상 마지막 task 결과 로깅 (관측성)
     if past:
         last_task_id, last_summary = past[-1]
+        logged_summary = (
+            summarize_trace_value(last_summary)
+            if state.get("evidence_sensitive") is True
+            else str(last_summary)[:120]
+        )
         logger.info(
             "[Replanner] last_task=%s pending=%d summary=%s",
             last_task_id,
             len(pending),
-            str(last_summary)[:120],
+            logged_summary,
         )
         stream_event(
             "status",
@@ -336,7 +341,13 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": user_msg},
             ],
-            config={"callbacks": _lf_callbacks()},
+            config={
+                "callbacks": (
+                    []
+                    if state.get("evidence_sensitive") is True
+                    else _lf_callbacks()
+                )
+            },
         )
         raw = (response.content or "").strip()
         plan = extract_json_from_llm(raw, CanonicalPlanResponse)
