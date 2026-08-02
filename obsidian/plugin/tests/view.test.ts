@@ -196,20 +196,34 @@ function createTestView(options: {
   workspace: {
     getActiveFile: ReturnType<typeof vi.fn>;
     openLinkText: ReturnType<typeof vi.fn>;
+    on: ReturnType<typeof vi.fn>;
+    offref: ReturnType<typeof vi.fn>;
   };
+  setActiveConcept: (path: string, conceptId: string) => void;
+  emitFileOpen: () => void;
 } {
   const api = options.api ?? fakeApi();
-  const activeFile = options.activeFile
-    ? { path: options.activeFile, extension: options.activeFile.split(".").pop() }
+  let activeFile = options.activeFile
+    ? { path: options.activeFile, extension: options.activeFile.split(".").pop() ?? "" }
     : null;
+  let activeConceptId = options.activeConceptId;
+  const fileOpenListeners = new Set<{ callback: () => void }>();
   const workspace = {
     getActiveFile: vi.fn(() => activeFile),
     openLinkText: vi.fn().mockResolvedValue(undefined),
+    on: vi.fn((_event: string, callback: () => void) => {
+      const eventRef = { callback };
+      fileOpenListeners.add(eventRef);
+      return eventRef;
+    }),
+    offref: vi.fn((eventRef: { callback: () => void }) => {
+      fileOpenListeners.delete(eventRef);
+    }),
   };
   const metadataCache = {
     getFileCache: vi.fn(() =>
-      options.activeConceptId
-        ? { frontmatter: { id: options.activeConceptId, type: "concept" } }
+      activeConceptId
+        ? { frontmatter: { id: activeConceptId, type: "concept" } }
         : null,
     ),
   };
@@ -223,7 +237,18 @@ function createTestView(options: {
     api,
   );
   document.body.append(view.containerEl);
-  return { view, api, workspace };
+  return {
+    view,
+    api,
+    workspace,
+    setActiveConcept: (path: string, conceptId: string) => {
+      activeFile = { path, extension: path.split(".").pop() ?? "" };
+      activeConceptId = conceptId;
+    },
+    emitFileOpen: () => {
+      for (const eventRef of [...fileOpenListeners]) eventRef.callback();
+    },
+  };
 }
 
 function tabLabels(view: YieldWikiView): string[] {
@@ -910,6 +935,72 @@ describe("YieldWikiView", () => {
       review_type: "operator_feedback",
     });
     await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(2));
+  });
+
+  it("refreshes Concept tools on file-open and unregisters the listener", async () => {
+    const api = fakeApi();
+    vi.mocked(api.related).mockResolvedValue({
+      note_path: "concepts/A.md",
+      outgoing: [
+        { path: "sources/A.md", label: "A-only source", node_type: "source" },
+      ],
+      backlinks: [],
+    });
+    const { view, workspace, setActiveConcept, emitFileOpen } = createTestView({
+      api,
+      activeFile: "concepts/A.md",
+      activeConceptId: "concept:A",
+    });
+    await view.onOpen();
+    clickButton(view.containerEl, "Review");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(1));
+    clickButton(view.containerEl, "Related Notes");
+    await vi.waitFor(() => expect(view.containerEl.textContent).toContain("A-only source"));
+
+    const reviewerA = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="review-create-reviewer"]',
+    );
+    const commentA = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-create-comment"]',
+    );
+    if (!reviewerA || !commentA) throw new Error("Concept A Review form not found");
+    reviewerA.value = "operator-a";
+    commentA.value = "A-only draft";
+
+    setActiveConcept("concepts/B.md", "concept:B");
+    emitFileOpen();
+
+    expect(workspace.on).toHaveBeenCalledWith("file-open", expect.any(Function));
+    expect(view.containerEl.textContent).toContain("concept:B");
+    expect(view.containerEl.textContent).not.toContain("concept:A");
+    expect(view.containerEl.textContent).not.toContain("A-only source");
+    const reviewerB = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="review-create-reviewer"]',
+    );
+    const commentB = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-create-comment"]',
+    );
+    if (!reviewerB || !commentB) throw new Error("Concept B Review form not found");
+    expect(reviewerB.value).toBe("");
+    expect(commentB.value).toBe("");
+    reviewerB.value = "operator-b";
+    commentB.value = "B review";
+    clickButton(view.containerEl, "Review 생성");
+    await vi.waitFor(() => expect(api.createReview).toHaveBeenCalledTimes(1));
+    expect(api.createReview).toHaveBeenCalledWith({
+      target_concept_id: "concept:B",
+      reviewer: "operator-b",
+      comment: "B review",
+      review_type: "operator_feedback",
+    });
+
+    const eventRef = workspace.on.mock.results[0]?.value as
+      | { callback: () => void }
+      | undefined;
+    await view.onClose();
+    expect(workspace.offref).toHaveBeenCalledWith(eventRef);
+    eventRef?.callback();
+    expect(view.contentEl.childElementCount).toBe(0);
   });
 
   it("reloads a Review after a version conflict without resending the update", async () => {

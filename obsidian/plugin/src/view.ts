@@ -1,4 +1,4 @@
-import { App, ItemView, WorkspaceLeaf } from "obsidian";
+import { App, ItemView, WorkspaceLeaf, type EventRef } from "obsidian";
 
 import { ApiError, YieldWikiApi } from "./api";
 import type { YieldWikiSettings } from "./settings";
@@ -264,6 +264,8 @@ export class YieldWikiView extends ItemView {
   private relatedLoading = false;
   private relatedError = "";
   private reviewCreateInFlight = false;
+  private activeFileEvent?: EventRef;
+  private conceptGeneration = 0;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -288,6 +290,12 @@ export class YieldWikiView extends ItemView {
 
   async onOpen(): Promise<void> {
     this.viewOpen = true;
+    if (!this.activeFileEvent) {
+      this.activeFileEvent = this.yieldWikiPlugin.app.workspace.on(
+        "file-open",
+        this.handleActiveFileChange,
+      );
+    }
     this.render();
     await this.restoreSession();
   }
@@ -295,12 +303,27 @@ export class YieldWikiView extends ItemView {
   async onClose(): Promise<void> {
     this.viewOpen = false;
     this.chatGeneration += 1;
+    this.conceptGeneration += 1;
+    const activeFileEvent = this.activeFileEvent;
+    this.activeFileEvent = undefined;
+    if (activeFileEvent) {
+      this.yieldWikiPlugin.app.workspace.offref(activeFileEvent);
+    }
     const controller = this.chatAbort;
     this.chatAbort = undefined;
     controller?.abort();
     this.isStreaming = false;
     this.contentEl.replaceChildren();
   }
+
+  private readonly handleActiveFileChange = (): void => {
+    this.conceptGeneration += 1;
+    this.related = undefined;
+    this.relatedLoading = false;
+    this.relatedError = "";
+    this.reviewError = "";
+    this.render();
+  };
 
   private async restoreSession(): Promise<void> {
     this.connectionState = "checking";
@@ -1207,17 +1230,23 @@ export class YieldWikiView extends ItemView {
   }
 
   private async loadRelated(notePath: string): Promise<void> {
+    const generation = this.conceptGeneration;
     this.relatedLoading = true;
     this.relatedError = "";
     this.render();
     try {
-      this.related = await this.api.related(notePath);
+      const related = await this.api.related(notePath);
+      if (generation === this.conceptGeneration) this.related = related;
     } catch (error) {
-      this.related = undefined;
-      this.relatedError = formattedError(error);
+      if (generation === this.conceptGeneration) {
+        this.related = undefined;
+        this.relatedError = formattedError(error);
+      }
     } finally {
-      this.relatedLoading = false;
-      this.render();
+      if (generation === this.conceptGeneration) {
+        this.relatedLoading = false;
+        this.render();
+      }
     }
   }
 
