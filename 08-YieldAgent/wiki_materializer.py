@@ -27,6 +27,8 @@ from wiki_graph_models import EntityCandidate, RelationCandidate
 _GENERATED_BY = "yield-wiki-materializer"
 _BLOCK_START = "<!-- yield-wiki:knowledge-links:start -->"
 _BLOCK_END = "<!-- yield-wiki:knowledge-links:end -->"
+_GRAPH_FILENAME_MAX_BYTES = 179
+_UNSAFE_GRAPH_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 @dataclass(frozen=True)
@@ -88,8 +90,29 @@ def _stable_graph_id(kind: str, payload: dict[str, Any]) -> str:
     return f"{kind}:sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def _graph_path(directory: Path, node_id: str) -> Path:
-    return directory / f"{node_id.rsplit(':', 1)[-1]}.md"
+def _relation_label(subject: str, predicate: str, object_name: str) -> str:
+    return f"{subject} {predicate} {object_name}"
+
+
+def _truncate_utf8(value: str, byte_limit: int) -> str:
+    while len(value.encode("utf-8")) > byte_limit:
+        value = value[:-1]
+    return value
+
+
+def _readable_graph_path(
+    directory: Path,
+    node_id: str,
+    label: str,
+) -> Path:
+    digest = node_id.rsplit(":", 1)[-1]
+    suffix = f"--{digest[:8]}.md"
+    readable = _UNSAFE_GRAPH_FILENAME.sub("_", label)
+    readable = re.sub(r"_+", "_", readable).strip(" .")
+    fallback = node_id.split(":", 1)[0]
+    byte_limit = _GRAPH_FILENAME_MAX_BYTES - len(suffix.encode("utf-8"))
+    readable = _truncate_utf8(readable or fallback, byte_limit).rstrip(" .")
+    return directory / f"{readable or fallback}{suffix}"
 
 
 def _relative(paths: WikiPaths, path: Path) -> str:
@@ -376,6 +399,7 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
                 "predicate": predicate,
                 "object": object_name,
                 "object_entity_id": entity_records[object_name]["entity_id"],
+                "display_label": _relation_label(subject, predicate, object_name),
                 "confidence": confidence,
                 "source_doc_ids": source_doc_ids,
             }
@@ -384,11 +408,17 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
             entity_records[object_name]["relation_ids"].add(relation_id)
 
     entity_paths = {
-        record["entity_id"]: _graph_path(paths.entities, record["entity_id"])
+        record["entity_id"]: _readable_graph_path(
+            paths.entities, record["entity_id"], record["canonical_name"]
+        )
         for record in entity_records.values()
     }
     relation_paths = {
-        relation_id: _graph_path(paths.relations, relation_id)
+        relation_id: _readable_graph_path(
+            paths.relations,
+            relation_id,
+            relation_records[relation_id]["display_label"],
+        )
         for relation_id in relation_records
     }
 
@@ -493,7 +523,7 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
             for concept in sorted(record["concepts"], key=lambda item: item.concept_id)
         ]
         relation_links = [
-            f"- {_wikilink(paths, relation_paths[relation_id], relation_id)}"
+            f"- {_wikilink(paths, relation_paths[relation_id], relation_records[relation_id]['display_label'])}"
             for relation_id in sorted(record["relation_ids"])
         ]
         body = (
@@ -582,7 +612,11 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
             lines.append("- Entities:")
             lines.extend(f"  - {link}" for link in entity_links)
         relation_links = [
-            _wikilink(paths, relation_paths[relation_id], relation_id)
+            _wikilink(
+                paths,
+                relation_paths[relation_id],
+                relation_records[relation_id]["display_label"],
+            )
             for relation_id in sorted(concept_relation_ids.get(concept.concept_id, []))
         ]
         if relation_links:
@@ -725,7 +759,7 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         ),
         "## Relations\n\n"
         + "\n".join(
-            f"- {_wikilink(paths, relation_paths[relation_id], relation_id)}"
+            f"- {_wikilink(paths, relation_paths[relation_id], relation_records[relation_id]['display_label'])}"
             for relation_id in sorted(relation_records)
         ),
         "## Sources\n\n"

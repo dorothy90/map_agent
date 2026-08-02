@@ -124,9 +124,31 @@ def test_materializes_product_to_source_topology_and_preserves_concept_body(
         "자연 산화",
     }
     assert all(post.metadata["status"] == "active" for post in entity_posts)
-    assert all(re.fullmatch(r"[0-9a-f]{64}\.md", path.name) for path in paths.entities.glob("*.md"))
+    entity_paths = {
+        frontmatter.load(path).metadata["canonical_name"]: path
+        for path in paths.entities.glob("*.md")
+    }
+    assert re.fullmatch(
+        r"Queue time 초과--[0-9a-f]{8}\.md",
+        entity_paths["Queue time 초과"].name,
+    )
+    assert re.fullmatch(
+        r"자연 산화--[0-9a-f]{8}\.md",
+        entity_paths["자연 산화"].name,
+    )
     relation_path = next(paths.relations.glob("*.md"))
-    assert re.fullmatch(r"[0-9a-f]{64}\.md", relation_path.name)
+    assert re.fullmatch(
+        r"Queue time 초과 causes 자연 산화--[0-9a-f]{8}\.md",
+        relation_path.name,
+    )
+    assert (
+        f"[[relations/{relation_path.stem}|Queue time 초과 causes 자연 산화]]"
+        in concept_text
+    )
+    assert (
+        f"[[relations/{relation_path.stem}|Queue time 초과 causes 자연 산화]]"
+        in index
+    )
     relation_post = frontmatter.load(relation_path)
     assert relation_post.metadata["predicate"] == "causes"
     assert relation_post.metadata["status"] == "active"
@@ -135,6 +157,53 @@ def test_materializes_product_to_source_topology_and_preserves_concept_body(
     assert "[[sources/FH-000238|FH-000238]]" in relation_body
     assert "[[concepts/4SS_PRE_METAL_CLN_EASY|4SS EASY]]" in relation_body
     assert "[[entities/" in relation_body
+
+
+def test_graph_filenames_preserve_unicode_and_bound_unsafe_long_labels(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(
+        paths,
+        entities=[
+            {"canonical_name": 'Plasma/Damage:*?"<>|', "entity_type": "condition"},
+            {"canonical_name": "가" * 200, "entity_type": "condition"},
+        ],
+        relations=[],
+    )
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert report.errors == ()
+    names = sorted(path.name for path in paths.entities.glob("*.md"))
+    assert any(name.startswith("Plasma_Damage_") for name in names)
+    assert all(not set('/\\:*?"<>|').intersection(name) for name in names)
+    assert all(len(name.encode("utf-8")) < 180 for name in names)
+    assert all(re.search(r"--[0-9a-f]{8}\.md$", name) for name in names)
+
+
+def test_same_sanitized_graph_prefix_keeps_distinct_hash_paths(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(
+        paths,
+        entities=[
+            {"canonical_name": "A/B", "entity_type": "condition"},
+            {"canonical_name": "A:B", "entity_type": "condition"},
+        ],
+        relations=[],
+    )
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert report.errors == ()
+    names = sorted(path.name for path in paths.entities.glob("*.md"))
+    assert len(names) == 2
+    assert all(name.startswith("A_B--") for name in names)
+    assert names[0] != names[1]
 
 
 def test_materializes_super_concept_links_and_marks_missing_references_stale(
