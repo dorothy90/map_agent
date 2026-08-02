@@ -282,17 +282,36 @@ def test_matching_concept_fingerprint_repairs_manifest_without_llm(store):
 def test_resume_repairs_materialization_after_concept_persistence_without_synthesis(
     store,
 ):
+    from wiki_materializer import materialize_wiki
+
     snapshot = _snapshot()
     jobs = InMemoryJobStore()
     synthesis_calls = []
+    synthesis = _synthesis()
+    synthesis.entities.append(
+        EntityCandidate(
+            canonical_name="자연 산화",
+            entity_type="failure_mechanism",
+        )
+    )
+
+    def crash_after_partial_materialization():
+        report = materialize_wiki(store._PATHS, apply=True)
+        assert report.errors == ()
+        projection_paths = (
+            *store._PATHS.entities.glob("*.md"),
+            *store._PATHS.relations.glob("*.md"),
+        )
+        for path in projection_paths:
+            path.unlink()
+        raise RuntimeError("crash after Concept persistence")
+
     first_service, _ = _service(
         store,
         {snapshot.key.canonical: snapshot},
         jobs=jobs,
-        synthesize=lambda *args: synthesis_calls.append(args) or _synthesis(),
-        materialize=lambda: (_ for _ in ()).throw(
-            RuntimeError("crash after Concept persistence")
-        ),
+        synthesize=lambda *args: synthesis_calls.append(args) or synthesis,
+        materialize=crash_after_partial_materialization,
     )
 
     with pytest.raises(RuntimeError, match="crash after Concept persistence"):
@@ -302,8 +321,9 @@ def test_resume_repairs_materialization_after_concept_persistence_without_synthe
     assert concept is not None
     assert next(iter(jobs.jobs.values()))["status"] == "succeeded"
     assert len(synthesis_calls) == 1
+    assert list(store._PATHS.entities.glob("*.md")) == []
+    assert list(store._PATHS.relations.glob("*.md")) == []
 
-    materialize_calls = []
     resumed_service, _ = _service(
         store,
         {snapshot.key.canonical: snapshot},
@@ -311,8 +331,7 @@ def test_resume_repairs_materialization_after_concept_persistence_without_synthe
         synthesize=lambda *args: (_ for _ in ()).throw(
             AssertionError("resume must not synthesize")
         ),
-        materialize=lambda: materialize_calls.append(True)
-        or SimpleNamespace(errors=()),
+        materialize=lambda: materialize_wiki(store._PATHS, apply=True),
     )
 
     resumed = resumed_service.resume(limit=10)
@@ -320,8 +339,19 @@ def test_resume_repairs_materialization_after_concept_persistence_without_synthe
     assert resumed.status == "completed"
     assert resumed.materialized is True
     assert resumed.failed == 0
-    assert materialize_calls == [True]
     assert len(synthesis_calls) == 1
+    entity_posts = [
+        frontmatter.load(path) for path in store._PATHS.entities.glob("*.md")
+    ]
+    assert {post.metadata["canonical_name"] for post in entity_posts} == {
+        "Queue time 초과",
+        "자연 산화",
+    }
+    relation_path = next(store._PATHS.relations.glob("*.md"))
+    relation_post = frontmatter.load(relation_path)
+    assert relation_post.metadata["predicate"] == "causes"
+    assert relation_post.metadata["source_doc_ids"] == ["FH-1"]
+    assert "[[sources/FH-1|FH-1]]" in relation_post.content
 
 
 def test_changed_source_resynthesizes_existing_concept_and_restores_active(store):

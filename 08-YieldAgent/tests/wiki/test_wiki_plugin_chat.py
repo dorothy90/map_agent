@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import frontmatter
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -283,10 +284,14 @@ def test_wiki_graph_bodies_are_fingerprinted_not_persisted_in_default_trace(
         def invoke(self, messages, **kwargs):
             self.calls += 1
             serialized_messages = json.dumps(messages, ensure_ascii=False)
-            assert sentinels[self.calls - 1] in serialized_messages
+            sentinel = sentinels[self.calls - 1]
+            assert sentinel in serialized_messages
             assert kwargs["config"]["callbacks"] == []
             return SimpleNamespace(
-                content='{"requests": [], "answer": "확인했습니다."}'
+                content=json.dumps(
+                    {"requests": [], "answer": f"echo: {sentinel}"},
+                    ensure_ascii=False,
+                )
             )
 
     callbacks = [object()]
@@ -328,11 +333,155 @@ def test_wiki_graph_bodies_are_fingerprinted_not_persisted_in_default_trace(
     for context in contexts:
         assert context["id"] in serialized
         assert hashlib.sha256(context["body"].encode()).hexdigest() in serialized
+        provider_output = json.dumps(
+            {"requests": [], "answer": f'echo: {context["body"]}'},
+            ensure_ascii=False,
+        )
+        assert hashlib.sha256(provider_output.encode()).hexdigest() in serialized
+        assert hashlib.sha256(f'echo: {context["body"]}'.encode()).hexdigest() in serialized
     assert len(planner_inputs) == 4
     assert '"relation_count": 1' in planner_inputs[0]["meta"]
     assert '"predicate": "causes"' in planner_inputs[2]["meta"]
     assert '"source_doc_ids": ["FH-TRACE-1"]' in planner_inputs[2]["meta"]
     assert '"doc_id": "FH-TRACE-1"' in planner_inputs[3]["meta"]
+
+
+def test_non_wiki_planner_trace_preserves_provider_output(monkeypatch, tmp_path):
+    import local_trace
+    import node_planner
+
+    provider_output = "NON_WIKI_PROVIDER_OUTPUT_SENTINEL"
+    trace_json = tmp_path / "last_turns.json"
+    monkeypatch.setattr(local_trace, "_TURNS", [])
+    monkeypatch.setattr(local_trace, "_TURNS_LOADED", True)
+    monkeypatch.setattr(local_trace, "_last_turns_json_path", lambda: trace_json)
+    monkeypatch.setattr(local_trace, "_last_turn_path", lambda: tmp_path / "trace.html")
+
+    class FakeModel:
+        def invoke(self, messages, **kwargs):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {"requests": [], "answer": provider_output},
+                    ensure_ascii=False,
+                )
+            )
+
+    monkeypatch.setattr(node_planner, "_model", FakeModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+    tokens = local_trace.set_trace_context("trace-test", "turn-test")
+    try:
+        local_trace.emit_trace_event(
+            "user_turn_started",
+            source="test",
+            payload={"question_preview": "원인은?"},
+        )
+        node_planner.planner_node(
+            {"messages": [HumanMessage(content="원인은?")]},
+            {},
+        )
+    finally:
+        local_trace.reset_trace_context(tokens)
+    local_trace._persist_turns()
+
+    assert provider_output in trace_json.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("source_doc_ids", "first_source_id"),
+    [
+        (None, "FH-CITATION-0"),
+        ("FH-STRING", "FH-STRING"),
+        (["FH-LIST", "FH-LIST"], "FH-LIST"),
+    ],
+)
+def test_wiki_trace_metadata_from_malformed_oversized_yaml_is_bounded(
+    monkeypatch, tmp_path, paths, source_doc_ids, first_source_id
+):
+    import local_trace
+    import node_planner
+    from wiki_plugin_notes import load_note_context
+
+    long_id = "entity:" + "X" * 500
+    unsafe_nested = "NESTED_METADATA_SENTINEL_MUST_NOT_PERSIST"
+    citation_ids = [f"FH-CITATION-{index}" for index in range(30)]
+    note_path = paths.entities / f"malformed-{first_source_id}.md"
+    note_path.write_text(
+        frontmatter.dumps(
+            frontmatter.Post(
+                content="MALFORMED_YAML_BODY_SENTINEL",
+                id=long_id,
+                type={"nested": unsafe_nested},
+                predicate=[unsafe_nested],
+                origin_concept_id=123,
+                source_doc_ids=source_doc_ids,
+                citations=[
+                    None,
+                    *({"doc_id": doc_id} for doc_id in citation_ids),
+                    {"doc_id": citation_ids[0]},
+                    {"doc_id": "Y" * 500},
+                ],
+            )
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_note_context(paths, f"entities/{note_path.name}")
+    context = {
+        "id": loaded["metadata"].get("id"),
+        "path": loaded["note_path"],
+        "metadata": loaded["metadata"],
+        "body": loaded["body_markdown"],
+    }
+    trace_json = tmp_path / f"{first_source_id}.json"
+    monkeypatch.setattr(local_trace, "_TURNS", [])
+    monkeypatch.setattr(local_trace, "_TURNS_LOADED", True)
+    monkeypatch.setattr(local_trace, "_last_turns_json_path", lambda: trace_json)
+    monkeypatch.setattr(local_trace, "_last_turn_path", lambda: tmp_path / "trace.html")
+
+    class FakeModel:
+        def invoke(self, messages, **kwargs):
+            return SimpleNamespace(
+                content='{"requests": [], "answer": "확인했습니다."}'
+            )
+
+    monkeypatch.setattr(node_planner, "_model", FakeModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+    tokens = local_trace.set_trace_context("trace-test", "turn-test")
+    try:
+        local_trace.emit_trace_event(
+            "user_turn_started",
+            source="test",
+            payload={"question_preview": "원인은?"},
+        )
+        node_planner.planner_node(
+            {
+                "messages": [HumanMessage(content="원인은?")],
+                "wiki_context": context,
+            },
+            {},
+        )
+    finally:
+        local_trace.reset_trace_context(tokens)
+    local_trace._persist_turns()
+
+    persisted = json.loads(trace_json.read_text(encoding="utf-8"))
+    planner_input = next(
+        detail["payload"]
+        for detail in persisted[0]["details"]
+        if detail["label"] == "planner.input"
+    )
+    trace_context = json.loads(planner_input["meta"].split("\n", 1)[1])
+    trace_metadata = trace_context["metadata"]
+    serialized = json.dumps(persisted, ensure_ascii=False)
+    assert unsafe_nested not in serialized
+    assert "MALFORMED_YAML_BODY_SENTINEL" not in serialized
+    assert trace_metadata["id"] == long_id[:160]
+    assert trace_metadata["origin_concept_id"] == "123"
+    assert "type" not in trace_metadata
+    assert "predicate" not in trace_metadata
+    assert trace_metadata["source_doc_ids"][0] == first_source_id
+    assert len(trace_metadata["source_doc_ids"]) == 20
+    assert len(set(trace_metadata["source_doc_ids"])) == 20
+    assert all(len(doc_id) <= 160 for doc_id in trace_metadata["source_doc_ids"])
 
 
 def test_planner_propagates_model_invocation_failure(monkeypatch):

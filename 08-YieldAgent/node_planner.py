@@ -44,7 +44,21 @@ planner가 실행할 agent task를 만들지 못한 상황에서 사용자에게
 """.strip()
 
 
-def _llm_empty_plan_response(user_text: str, *, planner_text: str = "") -> str:
+def _trace_provider_text(value: str, *, redact: bool) -> str | dict[str, Any]:
+    if not redact:
+        return value
+    return {
+        "length": len(value),
+        "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+    }
+
+
+def _llm_empty_plan_response(
+    user_text: str,
+    *,
+    planner_text: str = "",
+    redact_trace: bool = False,
+) -> str:
     """Ask the LLM for a natural answer when no executable task exists."""
 
     response = _model.invoke(
@@ -58,7 +72,7 @@ def _llm_empty_plan_response(user_text: str, *, planner_text: str = "") -> str:
                 ),
             },
         ],
-        config={"callbacks": _lf_callbacks()},
+        config={"callbacks": [] if redact_trace else _lf_callbacks()},
     )
     content = (getattr(response, "content", "") or "").strip()
     if content:
@@ -66,8 +80,10 @@ def _llm_empty_plan_response(user_text: str, *, planner_text: str = "") -> str:
             "planner.empty_response",
             {
                 "user_text": user_text,
-                "planner_text": planner_text,
-                "response": content,
+                "planner_text": _trace_provider_text(
+                    planner_text, redact=redact_trace
+                ),
+                "response": _trace_provider_text(content, redact=redact_trace),
             },
         )
         return content
@@ -126,6 +142,73 @@ def _build_tasks_update(canonical_requests: list[dict]) -> dict:
 
 # ── Planner 노드 ────────────────────────────────────────────
 _MAX_TASKS = 5
+_MAX_WIKI_TRACE_STRING_CHARS = 160
+_MAX_WIKI_TRACE_IDS = 20
+
+
+def _bounded_wiki_trace_string(value: Any) -> str | None:
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return None
+    return str(value)[:_MAX_WIKI_TRACE_STRING_CHARS]
+
+
+def _bounded_wiki_trace_ids(value: Any) -> list[str]:
+    values = value if isinstance(value, (list, tuple)) else [value]
+    result: list[str] = []
+    for item in values:
+        normalized = _bounded_wiki_trace_string(item)
+        if normalized and normalized not in result:
+            result.append(normalized)
+        if len(result) >= _MAX_WIKI_TRACE_IDS:
+            break
+    return result
+
+
+def _wiki_trace_metadata(value: Any) -> dict[str, Any]:
+    metadata = value if isinstance(value, dict) else {}
+    result: dict[str, Any] = {}
+    for key in (
+        "id",
+        "type",
+        "product",
+        "fail_type",
+        "cause_oper",
+        "doc_id",
+        "predicate",
+        "origin_concept_id",
+        "subject_entity_id",
+        "object_entity_id",
+    ):
+        normalized = _bounded_wiki_trace_string(metadata.get(key))
+        if normalized is not None:
+            result[key] = normalized
+
+    source_concept_ids = _bounded_wiki_trace_ids(
+        metadata.get("source_concept_ids")
+    )
+    if source_concept_ids:
+        result["source_concept_ids"] = source_concept_ids
+
+    source_doc_ids = _bounded_wiki_trace_ids(metadata.get("source_doc_ids"))
+    citations = metadata.get("citations")
+    if isinstance(citations, list):
+        for citation in citations:
+            if not isinstance(citation, dict):
+                continue
+            for doc_id in _bounded_wiki_trace_ids(citation.get("doc_id")):
+                if doc_id not in source_doc_ids:
+                    source_doc_ids.append(doc_id)
+                if len(source_doc_ids) >= _MAX_WIKI_TRACE_IDS:
+                    break
+            if len(source_doc_ids) >= _MAX_WIKI_TRACE_IDS:
+                break
+    if source_doc_ids:
+        result["source_doc_ids"] = source_doc_ids
+
+    relations = metadata.get("relations")
+    if isinstance(relations, list):
+        result["relation_count"] = len(relations)
+    return result
 
 
 def _planner_empty_canonical_retry(
@@ -226,43 +309,11 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             default=str,
         )
         body = str(wiki_context.get("body") or "")
-        metadata = wiki_context.get("metadata") or {}
-        trace_metadata = {
-            key: metadata[key]
-            for key in (
-                "id",
-                "type",
-                "product",
-                "fail_type",
-                "cause_oper",
-                "doc_id",
-                "predicate",
-                "origin_concept_id",
-                "subject_entity_id",
-                "object_entity_id",
-                "source_concept_ids",
-                "source_doc_ids",
-            )
-            if key in metadata
-        }
-        relations = metadata.get("relations")
-        if isinstance(relations, list):
-            trace_metadata["relation_count"] = len(relations)
-        citation_doc_ids = [
-            citation.get("doc_id")
-            for citation in metadata.get("citations", [])
-            if isinstance(citation, dict) and citation.get("doc_id")
-        ]
-        if citation_doc_ids:
-            trace_metadata["source_doc_ids"] = list(
-                dict.fromkeys(
-                    [*trace_metadata.get("source_doc_ids", []), *citation_doc_ids]
-                )
-            )
+        trace_metadata = _wiki_trace_metadata(wiki_context.get("metadata"))
         trace_wiki_context_json = json.dumps(
             {
-                "id": wiki_context.get("id"),
-                "path": wiki_context.get("path"),
+                "id": _bounded_wiki_trace_string(wiki_context.get("id")),
+                "path": _bounded_wiki_trace_string(wiki_context.get("path")),
                 "metadata": trace_metadata,
                 "body": {
                     "length": len(body),
@@ -355,7 +406,8 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         config={"callbacks": [] if wiki_context else _lf_callbacks()},
     )
     raw_text = response.content.strip()
-    emit_runtime_detail("planner.raw", {"raw_text": raw_text})
+    trace_raw_text = _trace_provider_text(raw_text, redact=bool(wiki_context))
+    emit_runtime_detail("planner.raw", {"raw_text": trace_raw_text})
     try:
         plan = extract_json_from_llm(raw_text, CanonicalPlanResponse)
     except Exception as e:
@@ -370,7 +422,7 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                 "error_type": type(e).__name__,
                 "raw_length": len(raw_text or ""),
                 "question_preview": preview_text(last_human.content),
-                "raw_preview": preview_text(raw_text),
+                "raw_preview": preview_text(trace_raw_text),
             },
         )
         # JSON 파싱 실패 = 실행할 task 없음(대화형 설명/거절/해명 등). planner 원문을 참고로
@@ -378,7 +430,9 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         # 되던 문제 수정. supervisor fallback으로 넘겨 pending_tasks_empty로 죽지 않게 한다.
         result: dict = {"canonical_request": {}, "canonical_requests": []}
         content = _llm_empty_plan_response(
-            str(last_human.content), planner_text=raw_text or ""
+            str(last_human.content),
+            planner_text=raw_text or "",
+            redact_trace=bool(wiki_context),
         )
         result["messages"] = [AIMessage(content=content, name="planner")]
         return result
@@ -416,8 +470,10 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "planner.direct_answer",
             {
                 "question": last_human.content,
-                "answer": direct_answer,
-                "raw_text": raw_text,
+                "answer": _trace_provider_text(
+                    direct_answer, redact=bool(wiki_context)
+                ),
+                "raw_text": trace_raw_text,
             },
         )
         emit_trace_event(
@@ -427,7 +483,7 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                 "status": "direct_answer",
                 "request_count": 0,
                 "question_preview": preview_text(last_human.content),
-                "raw_preview": preview_text(raw_text),
+                "raw_preview": preview_text(trace_raw_text),
             },
         )
         return {
@@ -445,12 +501,15 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         )
         if retry_requests:
             canonical_requests = retry_requests
+            trace_retry_raw = _trace_provider_text(
+                retry_raw, redact=bool(wiki_context)
+            )
             emit_runtime_detail(
                 "planner.empty_retried",
                 {
                     "question": last_human.content,
-                    "raw_text": raw_text,
-                    "retry_raw": retry_raw,
+                    "raw_text": trace_raw_text,
+                    "retry_raw": trace_retry_raw,
                     "canonical_requests": canonical_requests,
                 },
             )
@@ -462,8 +521,8 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                     "status": "empty_retried",
                     "request_count": len(canonical_requests),
                     "question_preview": preview_text(last_human.content),
-                    "raw_preview": preview_text(raw_text),
-                    "retry_raw_preview": preview_text(retry_raw),
+                    "raw_preview": preview_text(trace_raw_text),
+                    "retry_raw_preview": preview_text(trace_retry_raw),
                     "canonical_requests": canonical_requests,
                 },
             )
@@ -485,7 +544,7 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                 "status": "empty",
                 "request_count": 0,
                 "question_preview": preview_text(last_human.content),
-                "raw_preview": preview_text(raw_text),
+                "raw_preview": preview_text(trace_raw_text),
                 "canonical_requests": [],
             },
         )
@@ -497,7 +556,9 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "messages": [
                 AIMessage(
                     content=_llm_empty_plan_response(
-                        str(last_human.content), planner_text=raw_text
+                        str(last_human.content),
+                        planner_text=raw_text,
+                        redact_trace=bool(wiki_context),
                     ),
                     name="planner",
                 )
