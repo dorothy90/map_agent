@@ -1340,6 +1340,7 @@ class PinnedWikiMutation:
                 offset += written
             os.fchmod(proposal_descriptor, 0o644)
             os.fsync(proposal_descriptor)
+            self._fsync_directory(directory_fd)
             proposal_snapshot = self._snapshot_from_descriptor(proposal_descriptor)
             if proposal_snapshot.sha256 != proposed_sha256:
                 raise WikiConfigurationError(

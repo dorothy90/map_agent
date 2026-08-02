@@ -1599,3 +1599,105 @@ def test_competing_transaction_retains_durable_proposal_inventory(
             wiki_safe_mutation.os.close(competing)
 
     _assert_retained_temps_are_attributed(paths.products)
+
+
+@pytest.mark.parametrize(
+    ("conflict_kind", "conflict_state"),
+    [
+        pytest.param("snapshot", "snapshot_conflict", id="snapshot-conflict"),
+        pytest.param("owner", "owner_conflict", id="owner-conflict"),
+    ],
+)
+def test_proposal_directory_entry_is_durable_before_early_conflict(
+    tmp_path, monkeypatch, conflict_kind, conflict_state
+):
+    import wiki_safe_mutation
+    from wiki_safe_mutation import GeneratedOwner, PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target, owner, _ = _owned_target(paths)
+    if conflict_kind == "owner":
+        owner = GeneratedOwner(
+            owner.generated_by,
+            owner.node_type,
+            "product:DIFFERENT",
+        )
+    else:
+
+        def collide_before_commit(operation, path):
+            assert operation == "replace"
+            path.write_text("operator collision\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            wiki_safe_mutation,
+            "_before_commit",
+            collide_before_commit,
+        )
+
+    original_open = wiki_safe_mutation.os.open
+    original_fsync = wiki_safe_mutation.os.fsync
+    original_record_state = PinnedWikiMutation._record_attempt_state
+    proposal_descriptor = -1
+    fsync_order = []
+    proposal_ready_order = None
+
+    def track_open(path, *args, **kwargs):
+        nonlocal proposal_descriptor
+        descriptor = original_open(path, *args, **kwargs)
+        flags = args[0] if args else kwargs["flags"]
+        if str(path).endswith(".tmp") and flags & wiki_safe_mutation.os.O_CREAT:
+            proposal_descriptor = descriptor
+        return descriptor
+
+    def track_fsync(descriptor):
+        original_fsync(descriptor)
+        if descriptor == proposal_descriptor:
+            fsync_order.append("proposal_file")
+        elif wiki_safe_mutation.stat.S_ISDIR(
+            wiki_safe_mutation.os.fstat(descriptor).st_mode
+        ):
+            fsync_order.append("directory")
+        else:
+            fsync_order.append("other_file")
+
+    def interrupt_after_conflict(self, *args, **kwargs):
+        nonlocal proposal_ready_order
+        state = kwargs["state"]
+        if state == "proposal_ready":
+            proposal_ready_order = tuple(fsync_order[-2:])
+        original_record_state(self, *args, **kwargs)
+        if state == conflict_state:
+            raise _SimulatedMutationCrash(f"interrupted after {conflict_state}")
+
+    monkeypatch.setattr(wiki_safe_mutation.os, "open", track_open)
+    monkeypatch.setattr(wiki_safe_mutation.os, "fsync", track_fsync)
+    monkeypatch.setattr(
+        PinnedWikiMutation,
+        "_record_attempt_state",
+        interrupt_after_conflict,
+    )
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(
+            _SimulatedMutationCrash,
+            match=f"interrupted after {conflict_state}",
+        ):
+            mutation.replace_text(
+                target,
+                "durable proposal sentinel\n",
+                expected=expected,
+                owner=owner,
+            )
+
+    assert proposal_ready_order == ("proposal_file", "directory")
+    attempts = list(paths.products.glob(".*.yield-wiki-attempt"))
+    assert len(attempts) == 1
+    events = [
+        json.loads(line)
+        for line in attempts[0].read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-1] == {"event": "state", "state": conflict_state}
+    _assert_retained_temps_are_attributed(paths.products)
+    assert list(paths.products.glob(".*.yield-wiki-transaction")) == []
