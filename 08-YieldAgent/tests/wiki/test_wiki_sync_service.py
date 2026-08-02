@@ -279,6 +279,51 @@ def test_matching_concept_fingerprint_repairs_manifest_without_llm(store):
     assert next(iter(jobs.jobs.values()))["status"] == "succeeded"
 
 
+def test_resume_repairs_materialization_after_concept_persistence_without_synthesis(
+    store,
+):
+    snapshot = _snapshot()
+    jobs = InMemoryJobStore()
+    synthesis_calls = []
+    first_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: synthesis_calls.append(args) or _synthesis(),
+        materialize=lambda: (_ for _ in ()).throw(
+            RuntimeError("crash after Concept persistence")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="crash after Concept persistence"):
+        first_service.apply(limit=10)
+
+    concept = store.read_node("concept:4SS|PRE METAL CLN|EASY")
+    assert concept is not None
+    assert next(iter(jobs.jobs.values()))["status"] == "succeeded"
+    assert len(synthesis_calls) == 1
+
+    materialize_calls = []
+    resumed_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: (_ for _ in ()).throw(
+            AssertionError("resume must not synthesize")
+        ),
+        materialize=lambda: materialize_calls.append(True)
+        or SimpleNamespace(errors=()),
+    )
+
+    resumed = resumed_service.resume(limit=10)
+
+    assert resumed.status == "completed"
+    assert resumed.materialized is True
+    assert resumed.failed == 0
+    assert materialize_calls == [True]
+    assert len(synthesis_calls) == 1
+
+
 def test_changed_source_resynthesizes_existing_concept_and_restores_active(store):
     previous = _snapshot(_doc(content="old"))
     current = _snapshot(_doc(content="new"))

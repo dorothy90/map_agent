@@ -206,17 +206,75 @@ def test_planner_receives_wiki_context_as_structured_system_context(monkeypatch)
     )
 
 
-def test_wiki_body_is_fingerprinted_not_persisted_in_default_trace(monkeypatch, tmp_path):
+def test_wiki_graph_bodies_are_fingerprinted_not_persisted_in_default_trace(
+    monkeypatch, tmp_path
+):
     import local_trace
     import node_planner
 
-    sentinel = "RAW_WIKI_SENTINEL_DO_NOT_PERSIST"
+    contexts = [
+        {
+            "id": "concept:4SS|PRE METAL CLN|EASY",
+            "path": "concepts/4SS-PRE-METAL-CLN-EASY.md",
+            "metadata": {
+                "id": "concept:4SS|PRE METAL CLN|EASY",
+                "type": "concept",
+                "product": "4SS",
+                "relations": [
+                    {
+                        "predicate": "causes",
+                        "source_doc_ids": ["FH-TRACE-1"],
+                        "evidence_excerpt": "CONCEPT_RELATION_EXCERPT_SENTINEL",
+                    }
+                ],
+                "citations": [{"doc_id": "FH-TRACE-1"}],
+            },
+            "body": "RAW_CONCEPT_BODY_SENTINEL_DO_NOT_PERSIST",
+        },
+        {
+            "id": "entity:queue-time",
+            "path": "entities/queue-time.md",
+            "metadata": {
+                "id": "entity:queue-time",
+                "type": "entity",
+                "source_concept_ids": ["concept:4SS|PRE METAL CLN|EASY"],
+            },
+            "body": "RAW_ENTITY_BODY_SENTINEL_DO_NOT_PERSIST",
+        },
+        {
+            "id": "relation:queue-time-causes-oxide",
+            "path": "relations/queue-time-causes-oxide.md",
+            "metadata": {
+                "id": "relation:queue-time-causes-oxide",
+                "type": "relation",
+                "origin_concept_id": "concept:4SS|PRE METAL CLN|EASY",
+                "subject_entity_id": "entity:queue-time",
+                "predicate": "causes",
+                "object_entity_id": "entity:oxide",
+                "source_doc_ids": ["FH-TRACE-1"],
+                "evidence_excerpt": "RELATION_EVIDENCE_EXCERPT_SENTINEL",
+            },
+            "body": "RAW_RELATION_BODY_SENTINEL_DO_NOT_PERSIST",
+        },
+        {
+            "id": "source:FH-TRACE-1",
+            "path": "sources/FH-TRACE-1.md",
+            "metadata": {
+                "id": "source:FH-TRACE-1",
+                "type": "source",
+                "doc_id": "FH-TRACE-1",
+            },
+            "body": "RAW_SOURCE_BODY_SENTINEL_DO_NOT_PERSIST",
+        },
+    ]
+    sentinels = [context["body"] for context in contexts]
     trace_json = tmp_path / "last_turns.json"
     trace_html = tmp_path / "last_turns.html"
     monkeypatch.setattr(local_trace, "_TURNS", [])
     monkeypatch.setattr(local_trace, "_TURNS_LOADED", True)
     monkeypatch.setattr(local_trace, "_last_turns_json_path", lambda: trace_json)
     monkeypatch.setattr(local_trace, "_last_turn_path", lambda: trace_html)
+    monkeypatch.setattr(local_trace, "_last_turn_keep", lambda: 4)
 
     class FakeModel:
         def __init__(self):
@@ -225,55 +283,56 @@ def test_wiki_body_is_fingerprinted_not_persisted_in_default_trace(monkeypatch, 
         def invoke(self, messages, **kwargs):
             self.calls += 1
             serialized_messages = json.dumps(messages, ensure_ascii=False)
-            if self.calls <= 2:
-                assert sentinel in serialized_messages
-                assert kwargs["config"]["callbacks"] == []
-            else:
-                assert sentinel not in serialized_messages
-            answer = "" if self.calls == 1 else "확인했습니다."
-            content = (
-                f'{{"requests": [], "answer": "{answer}"}}'
-                if self.calls <= 2
-                else "확인했습니다."
+            assert sentinels[self.calls - 1] in serialized_messages
+            assert kwargs["config"]["callbacks"] == []
+            return SimpleNamespace(
+                content='{"requests": [], "answer": "확인했습니다."}'
             )
-            return SimpleNamespace(content=content)
 
     callbacks = [object()]
     monkeypatch.setattr(node_planner, "_model", FakeModel())
     monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: callbacks)
-    local_trace.emit_trace_event(
-        "user_turn_started",
-        source="test",
-        payload={"question_preview": "원인은?"},
-        trace_id="trace-test",
-        turn_id="turn-test",
-    )
-
-    node_planner.planner_node(
-        {
-            "messages": [HumanMessage(content="원인은?")],
-            "wiki_context": {
-                "id": "concept:A",
-                "path": "concepts/A.md",
-                "metadata": {"type": "concept", "product": "4SS"},
-                "body": sentinel,
-            },
-        },
-        {},
-    )
+    for index, context in enumerate(contexts):
+        tokens = local_trace.set_trace_context("trace-test", f"turn-test-{index}")
+        try:
+            local_trace.emit_trace_event(
+                "user_turn_started",
+                source="test",
+                payload={"question_preview": "원인은?"},
+            )
+            node_planner.planner_node(
+                {
+                    "messages": [HumanMessage(content="원인은?")],
+                    "wiki_context": context,
+                },
+                {},
+            )
+        finally:
+            local_trace.reset_trace_context(tokens)
     local_trace._persist_turns()
 
     persisted = json.loads(trace_json.read_text(encoding="utf-8"))
     serialized = json.dumps(persisted, ensure_ascii=False)
-    planner_input = next(
+    planner_inputs = [
         detail["payload"]
         for turn in persisted
         for detail in turn["details"]
         if detail["label"] == "planner.input"
-    )
-    assert sentinel not in serialized
-    assert hashlib.sha256(sentinel.encode()).hexdigest() in serialized
-    assert f'"length": {len(sentinel)}' in planner_input["meta"]
+    ]
+    for sentinel in (
+        *sentinels,
+        "CONCEPT_RELATION_EXCERPT_SENTINEL",
+        "RELATION_EVIDENCE_EXCERPT_SENTINEL",
+    ):
+        assert sentinel not in serialized
+    for context in contexts:
+        assert context["id"] in serialized
+        assert hashlib.sha256(context["body"].encode()).hexdigest() in serialized
+    assert len(planner_inputs) == 4
+    assert '"relation_count": 1' in planner_inputs[0]["meta"]
+    assert '"predicate": "causes"' in planner_inputs[2]["meta"]
+    assert '"source_doc_ids": ["FH-TRACE-1"]' in planner_inputs[2]["meta"]
+    assert '"doc_id": "FH-TRACE-1"' in planner_inputs[3]["meta"]
 
 
 def test_planner_propagates_model_invocation_failure(monkeypatch):

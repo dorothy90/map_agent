@@ -229,9 +229,36 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         metadata = wiki_context.get("metadata") or {}
         trace_metadata = {
             key: metadata[key]
-            for key in ("id", "type", "product", "fail_type", "cause_oper")
+            for key in (
+                "id",
+                "type",
+                "product",
+                "fail_type",
+                "cause_oper",
+                "doc_id",
+                "predicate",
+                "origin_concept_id",
+                "subject_entity_id",
+                "object_entity_id",
+                "source_concept_ids",
+                "source_doc_ids",
+            )
             if key in metadata
         }
+        relations = metadata.get("relations")
+        if isinstance(relations, list):
+            trace_metadata["relation_count"] = len(relations)
+        citation_doc_ids = [
+            citation.get("doc_id")
+            for citation in metadata.get("citations", [])
+            if isinstance(citation, dict) and citation.get("doc_id")
+        ]
+        if citation_doc_ids:
+            trace_metadata["source_doc_ids"] = list(
+                dict.fromkeys(
+                    [*trace_metadata.get("source_doc_ids", []), *citation_doc_ids]
+                )
+            )
         trace_wiki_context_json = json.dumps(
             {
                 "id": wiki_context.get("id"),

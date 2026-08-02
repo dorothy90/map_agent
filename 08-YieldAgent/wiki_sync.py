@@ -432,7 +432,9 @@ class WikiSyncService:
             "failed": 0,
         }
         errors: list[str] = []
-        vault_changed = False
+        # Explicit resume also repairs a projection interrupted after the Concept and
+        # job success were persisted, when no pending job remains to signal the write.
+        vault_changed = not scan
         materialized = False
         try:
             manifest = load_manifest(self.manifest_path, self.index)
