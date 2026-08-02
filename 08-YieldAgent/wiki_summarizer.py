@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from common import get_llm
 from lf_utils import lf_callbacks as _lf_callbacks
+from wiki_graph_models import EntityCandidate, RelationCandidate
 
 logger = logging.getLogger("yield_agent.wiki_summarizer")
 
@@ -62,6 +63,14 @@ class ConceptSynthesis(BaseModel):
     citations: list[EpisodeRef] = Field(
         default_factory=list,
         description="본문에 인용된 episode들. episode_id 필수, 나머지는 후처리에서 보강 가능"
+    )
+    entities: list[EntityCandidate] = Field(
+        default_factory=list,
+        description="입력 근거에 명시된 정규화 엔티티만. 근거가 없으면 빈 목록",
+    )
+    relations: list[RelationCandidate] = Field(
+        default_factory=list,
+        description="입력 근거에 명시된 관계만. 각 관계는 인용된 doc_id를 source_doc_ids에 포함",
     )
     notes: str = Field(default="", description="합성 시 주의사항/한계")
 
@@ -192,6 +201,11 @@ episode마다 1행. Lot/불량유형/공정은 concept_id에서 추출. 없는 �
 - <0.5: source 2건 미만 또는 모순 많음
 
 [citations] 본문에 인용한 모든 episode_id + doc_id 필수
+
+[graph extraction]
+- entities에는 episode 근거에 명시된 엔티티만 넣고, 근거가 없으면 빈 목록으로 둔다.
+- relations에는 episode 근거에 명시된 관계만 넣는다. predicate는 `causes`, `contributes_to`, `resolved_by`, `prevents`, `associated_with` 중 하나만 사용한다.
+- 모든 relation의 source_doc_ids에는 해당 관계를 뒷받침하는, citations에 포함된 doc_id만 넣는다.
 """
 
 
@@ -438,6 +452,11 @@ doc마다 1행. Lot/불량유형/공정은 concept_id에서 추출. 없는 정�
 - <0.5: 1~2건 또는 모순 많음
 
 [citations] doc_id만 채워라. source_file은 절대 추측하지 말고 반드시 빈 문자열("")로 둘 것.
+
+[graph extraction]
+- entities에는 raw docs 근거에 명시된 엔티티만 넣고, 근거가 없으면 빈 목록으로 둔다.
+- relations에는 raw docs 근거에 명시된 관계만 넣는다. predicate는 `causes`, `contributes_to`, `resolved_by`, `prevents`, `associated_with` 중 하나만 사용한다.
+- 모든 relation의 source_doc_ids에는 해당 관계를 뒷받침하는, citations에 포함된 doc_id만 넣는다.
 """
 
 
