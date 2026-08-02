@@ -458,6 +458,20 @@ class WikiSyncService:
         materialized = False
         try:
             manifest = load_manifest(self.manifest_path, self.index)
+            projection_dirty = (
+                isinstance(manifest.get("projection"), dict)
+                and manifest["projection"].get("status") == "dirty"
+            )
+
+            def ensure_projection_dirty() -> None:
+                nonlocal projection_dirty
+                if projection_dirty:
+                    return
+                projection_at = self.now()
+                _set_projection_state(manifest, "dirty", projection_at)
+                save_manifest(self.manifest_path, manifest)
+                projection_dirty = True
+
             # Explicit resume and a persisted incomplete projection both repair an
             # interrupted materialization even when no pending job remains.
             vault_changed = vault_changed or _projection_needs_repair(manifest)
@@ -471,6 +485,7 @@ class WikiSyncService:
                 )
                 detected_at = self.now()
                 for change in plan.source_removed:
+                    ensure_projection_dirty()
                     filters = _filters_from_key(change.triple_key)
                     previous_ids = list((change.previous or {}).get("source_doc_ids", []))
                     current_ids = list(change.snapshot.source_doc_ids) if change.snapshot else []
@@ -493,6 +508,8 @@ class WikiSyncService:
                 job = self.job_store.claim_next(owner)
                 if job is None:
                     break
+                ensure_projection_dirty()
+                vault_changed = True
                 try:
                     outcome, concept_changed = self._process_job(
                         job, owner, manifest
@@ -505,9 +522,7 @@ class WikiSyncService:
                     errors.append(" ".join(str(exc).split())[:500])
 
             if vault_changed:
-                projection_at = self.now()
-                _set_projection_state(manifest, "dirty", projection_at)
-                save_manifest(self.manifest_path, manifest)
+                ensure_projection_dirty()
                 try:
                     report = self.materialize()
                 except Exception as exc:
@@ -539,6 +554,12 @@ class WikiSyncService:
                     completed_at = self.now()
                     _set_projection_state(manifest, "clean", completed_at)
                     save_manifest(self.manifest_path, manifest)
+            elif projection_dirty:
+                # A guarded source-removal check can prove to be an idempotent
+                # no-op. No projection write is needed, but its guard is complete.
+                completed_at = self.now()
+                _set_projection_state(manifest, "clean", completed_at)
+                save_manifest(self.manifest_path, manifest)
             status = "completed" if not errors else "completed_with_errors"
             return SyncRunResult(
                 status=status,

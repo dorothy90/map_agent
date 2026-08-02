@@ -419,6 +419,155 @@ def test_next_normal_apply_repairs_failed_materialization_without_synthesis(stor
     assert len(list(store._PATHS.relations.glob("*.md"))) == 1
 
 
+def test_next_normal_apply_repairs_after_termination_following_job_success(store):
+    from wiki_materializer import materialize_wiki
+
+    class TerminatingJobStore(InMemoryJobStore):
+        terminate_after_success = True
+
+        def mark_succeeded(self, *args, **kwargs):
+            marked = super().mark_succeeded(*args, **kwargs)
+            if self.terminate_after_success:
+                self.terminate_after_success = False
+                raise KeyboardInterrupt("terminated after job success")
+            return marked
+
+    snapshot = _snapshot()
+    jobs = TerminatingJobStore()
+    synthesis_calls = []
+    synthesis = _synthesis()
+    synthesis.entities.append(
+        EntityCandidate(
+            canonical_name="자연 산화",
+            entity_type="failure_mechanism",
+        )
+    )
+    interrupted_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: synthesis_calls.append(args) or synthesis,
+        materialize=lambda: (_ for _ in ()).throw(
+            AssertionError("termination must happen before materialization")
+        ),
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="terminated after job success"):
+        interrupted_service.apply(limit=10)
+
+    interrupted_manifest = load_manifest(store._PATHS.manifest, "fail-history")
+    assert interrupted_manifest["projection"]["status"] == "dirty"
+    assert next(iter(jobs.jobs.values()))["status"] == "succeeded"
+    assert len(synthesis_calls) == 1
+
+    repairing_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: (_ for _ in ()).throw(
+            AssertionError("normal repair must not synthesize")
+        ),
+        materialize=lambda: materialize_wiki(store._PATHS, apply=True),
+    )
+
+    repaired = repairing_service.apply(limit=10)
+
+    assert repaired.status == "completed"
+    assert repaired.unchanged == 1
+    assert repaired.materialized is True
+    assert len(synthesis_calls) == 1
+    assert load_manifest(store._PATHS.manifest, "fail-history")["projection"][
+        "status"
+    ] == "clean"
+    assert len(list(store._PATHS.entities.glob("*.md"))) == 2
+    assert len(list(store._PATHS.relations.glob("*.md"))) == 1
+
+
+def test_source_removal_is_dirty_before_mutation_and_normal_apply_repairs(
+    store, monkeypatch
+):
+    previous = _snapshot(_doc("FH-1"), _doc("FH-2"))
+    current = _snapshot(_doc("FH-1"))
+    store.upsert_concept(
+        filters={
+            "product": previous.key.product,
+            "fail_type": previous.key.fail_type,
+            "cause_oper": previous.key.cause_oper,
+        },
+        synthesized_body="existing body",
+        sync_metadata={
+            "source_fingerprint": previous.source_fingerprint,
+            "source_doc_ids": list(previous.source_doc_ids),
+            "evidence_count": previous.evidence_count,
+            "evidence_scope": previous.evidence_scope,
+            "sync_job_id": "old-job",
+        },
+        materialize=False,
+    )
+    manifest = empty_manifest("fail-history")
+    record_success(
+        manifest,
+        previous,
+        concept_id=f"concept:{previous.key.canonical}",
+        concept_version=1,
+        success_at="2026-07-31T00:00:00+00:00",
+    )
+    save_manifest(store._PATHS.manifest, manifest)
+
+    original_mark_stale = store.mark_concept_stale
+    original_create_review = store.create_source_removal_review
+
+    def assert_dirty_then_mark_stale(*args, **kwargs):
+        current_manifest = load_manifest(store._PATHS.manifest, "fail-history")
+        assert current_manifest["projection"]["status"] == "dirty"
+        return original_mark_stale(*args, **kwargs)
+
+    def terminate_after_review(*args, **kwargs):
+        original_create_review(*args, **kwargs)
+        raise KeyboardInterrupt("terminated after source-removal mutation")
+
+    monkeypatch.setattr(store, "mark_concept_stale", assert_dirty_then_mark_stale)
+    monkeypatch.setattr(store, "create_source_removal_review", terminate_after_review)
+    interrupted_service, _ = _service(
+        store,
+        {current.key.canonical: current},
+        synthesize=lambda *args: (_ for _ in ()).throw(
+            AssertionError("source removal must not synthesize")
+        ),
+    )
+
+    with pytest.raises(
+        KeyboardInterrupt, match="terminated after source-removal mutation"
+    ):
+        interrupted_service.apply(limit=10)
+
+    assert load_manifest(store._PATHS.manifest, "fail-history")["projection"][
+        "status"
+    ] == "dirty"
+    monkeypatch.setattr(store, "mark_concept_stale", original_mark_stale)
+    monkeypatch.setattr(store, "create_source_removal_review", original_create_review)
+    materialize_calls = []
+    repairing_service, _ = _service(
+        store,
+        {current.key.canonical: current},
+        synthesize=lambda *args: (_ for _ in ()).throw(
+            AssertionError("source-removal repair must not synthesize")
+        ),
+        materialize=lambda: materialize_calls.append(True)
+        or SimpleNamespace(errors=()),
+    )
+
+    repaired = repairing_service.apply(limit=10)
+
+    assert repaired.status == "completed"
+    assert repaired.source_removed == 1
+    assert repaired.materialized is True
+    assert materialize_calls == [True]
+    assert load_manifest(store._PATHS.manifest, "fail-history")["projection"][
+        "status"
+    ] == "clean"
+
+
 def test_changed_source_resynthesizes_existing_concept_and_restores_active(store):
     previous = _snapshot(_doc(content="old"))
     current = _snapshot(_doc(content="new"))
