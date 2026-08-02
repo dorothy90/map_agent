@@ -73,10 +73,17 @@ def test_super_concept_upsert_materializes_once_by_default_and_can_defer(
     assert calls == [(wiki_store._PATHS, True)]
 
 
-def test_bootstrap_process_triple_defers_concept_materialization(monkeypatch):
+def test_bootstrap_process_triple_defers_concept_materialization(
+    tmp_path, monkeypatch
+):
     import bootstrap_wiki_warmup as bootstrap
 
     captured = []
+    monkeypatch.setattr(
+        bootstrap,
+        "_MANIFEST_PATH",
+        tmp_path / ".yield-wiki" / "manifest.json",
+    )
     monkeypatch.setattr(
         bootstrap,
         "fetch_docs_for_triple",
