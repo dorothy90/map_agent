@@ -318,7 +318,7 @@ def _planner_empty_canonical_retry(
     ], raw_retry
 
 
-@observe(name="planner_node", capture_input=False)
+@observe(name="planner_node", capture_input=False, capture_output=False)
 def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     """Primary LLM canonicalizer for the latest user request.
 

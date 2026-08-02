@@ -723,7 +723,17 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                     # custom 이벤트: thinking/token/status — get_stream_writer()에서 직통
                     if mode == "custom":
                         kind = data.pop("kind", "")
-                        emit_runtime_detail("stream.custom", {"kind": kind, "data": data})
+                        emit_runtime_detail(
+                            "stream.custom",
+                            {
+                                "kind": kind,
+                                "data": (
+                                    summarize_trace_value(data)
+                                    if wiki_context_turn
+                                    else data
+                                ),
+                            },
+                        )
                         if kind == "thinking":
                             yield _sse(ThinkingEvent(**data))
                         elif kind == "token":

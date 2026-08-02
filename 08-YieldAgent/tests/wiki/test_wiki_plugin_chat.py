@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -498,6 +499,29 @@ class _StreamTraceGraph:
         yield "updates", {"planner": self.planner_update}
 
 
+class _PlannerSupervisorStreamTraceGraph:
+    def __init__(self):
+        self.custom_events = []
+        self.planner_update = {}
+        self.supervisor_command = None
+
+    async def aget_state(self, config):
+        return SimpleNamespace(values={}, tasks=[])
+
+    async def astream(self, stream_input, config, stream_mode):
+        import node_planner
+        import node_supervisor
+
+        self.planner_update = node_planner.planner_node(stream_input, config)
+        yield "updates", {"planner": self.planner_update}
+
+        state = {**stream_input, **self.planner_update}
+        self.supervisor_command = node_supervisor.supervisor_node(state, config)
+        for event in self.custom_events:
+            yield "custom", dict(event)
+        yield "updates", {"supervisor": self.supervisor_command.update}
+
+
 class _StreamTraceTurns:
     def __init__(self):
         self.documents = []
@@ -657,6 +681,191 @@ async def test_non_wiki_shared_stream_preserves_provider_answer_in_trace_and_ses
     assert sentinel in sse_text
     assert sentinel in trace_json.read_text(encoding="utf-8")
     assert sentinel in json.dumps(turns.documents, ensure_ascii=False, default=str)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("provider_kind", ["canonical_slot", "canonical_retry_slot"])
+async def test_wiki_planner_supervisor_stream_diagnostics_omit_provider_echo(
+    monkeypatch, tmp_path, provider_kind
+):
+    import agent_server
+    import local_trace
+    import node_planner
+    import node_supervisor
+
+    slot_sentinel = f"WIKI_{provider_kind.upper()}_SLOT_SENTINEL"
+    goal_sentinel = f"WIKI_{provider_kind.upper()}_GOAL_SENTINEL"
+    provider_content = {
+        "requests": [
+            {
+                "intent": "fail_history_search",
+                "agent": "fail_history_agent",
+                "slots": {"dh_query": slot_sentinel},
+                "goal": f"분석 목표 {goal_sentinel}",
+            }
+        ],
+        "answer": "",
+    }
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, messages, **kwargs):
+            self.calls += 1
+            if provider_kind == "canonical_retry_slot" and self.calls == 1:
+                return SimpleNamespace(content='{"requests": [], "answer": ""}')
+            return SimpleNamespace(
+                content=json.dumps(provider_content, ensure_ascii=False)
+            )
+
+    trace_json = tmp_path / f"planner-supervisor-{provider_kind}.json"
+    monkeypatch.setattr(local_trace, "_TURNS", [])
+    monkeypatch.setattr(local_trace, "_TURNS_LOADED", True)
+    monkeypatch.setattr(local_trace, "_last_turns_json_path", lambda: trace_json)
+    monkeypatch.setattr(local_trace, "_last_turn_path", lambda: tmp_path / "trace.html")
+    monkeypatch.setattr(node_planner, "_model", FakeModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+    monkeypatch.setattr(agent_server, "get_client", lambda: _StreamTraceClient())
+    monkeypatch.setattr(agent_server, "SIMULATED_STREAM_DELAY", 0)
+
+    graph = _PlannerSupervisorStreamTraceGraph()
+
+    def capture_custom(kind, event):
+        payload = event.model_dump() if hasattr(event, "model_dump") else event
+        graph.custom_events.append({"kind": kind, **payload})
+
+    monkeypatch.setattr(node_supervisor, "stream_event", capture_custom)
+    turns = _StreamTraceTurns()
+    req = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                graph=graph,
+                motor_db=SimpleNamespace(chat_turns=turns),
+            )
+        )
+    )
+    request = models.InternalChatRequest(
+        query="원인은?",
+        session_id=f"session-{provider_kind}",
+        wiki_context={
+            "id": "concept:trace",
+            "path": "concepts/trace.md",
+            "metadata": {"id": "concept:trace", "type": "concept"},
+            "body": f"{slot_sentinel}\n{goal_sentinel}",
+        },
+    )
+
+    response = await agent_server._chat_stream(request, req)
+    sse_text = await _consume_stream_response(response)
+    local_trace._persist_turns()
+
+    persisted_trace = trace_json.read_text(encoding="utf-8")
+    persisted = json.loads(persisted_trace)
+    details = {detail["label"]: detail["payload"] for detail in persisted[0]["details"]}
+    assert {
+        "supervisor.current_task",
+        "supervisor.dispatch_state",
+        "stream.custom",
+    } <= details.keys()
+    assert slot_sentinel not in persisted_trace
+    assert goal_sentinel not in persisted_trace
+    serialized_params = json.dumps(
+        {"dh_query": slot_sentinel}, ensure_ascii=False, sort_keys=True
+    )
+    assert hashlib.sha256(serialized_params.encode()).hexdigest() in persisted_trace
+    assert hashlib.sha256(f"분석 목표 {goal_sentinel}".encode()).hexdigest() in persisted_trace
+    assert graph.supervisor_command.goto == "fail_history_agent"
+    current_task = graph.supervisor_command.update["current_task"]
+    assert current_task["params"]["dh_query"] == slot_sentinel
+    assert current_task["goal"] == f"분석 목표 {goal_sentinel}"
+    assert goal_sentinel in sse_text
+    assert any(
+        goal_sentinel in json.dumps(event, ensure_ascii=False)
+        for event in graph.custom_events
+    )
+
+
+@pytest.mark.anyio
+async def test_non_wiki_planner_supervisor_stream_preserves_task_diagnostics(
+    monkeypatch, tmp_path
+):
+    import agent_server
+    import local_trace
+    import node_planner
+    import node_supervisor
+
+    slot_sentinel = "NON_WIKI_SUPERVISOR_SLOT_SENTINEL"
+    goal_sentinel = "NON_WIKI_SUPERVISOR_GOAL_SENTINEL"
+
+    class FakeModel:
+        def invoke(self, messages, **kwargs):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "requests": [
+                            {
+                                "intent": "fail_history_search",
+                                "agent": "fail_history_agent",
+                                "slots": {"dh_query": slot_sentinel},
+                                "goal": goal_sentinel,
+                            }
+                        ],
+                        "answer": "",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    trace_json = tmp_path / "non-wiki-planner-supervisor.json"
+    monkeypatch.setattr(local_trace, "_TURNS", [])
+    monkeypatch.setattr(local_trace, "_TURNS_LOADED", True)
+    monkeypatch.setattr(local_trace, "_last_turns_json_path", lambda: trace_json)
+    monkeypatch.setattr(local_trace, "_last_turn_path", lambda: tmp_path / "trace.html")
+    monkeypatch.setattr(node_planner, "_model", FakeModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+    monkeypatch.setattr(agent_server, "get_client", lambda: _StreamTraceClient())
+    monkeypatch.setattr(agent_server, "SIMULATED_STREAM_DELAY", 0)
+
+    graph = _PlannerSupervisorStreamTraceGraph()
+
+    def capture_custom(kind, event):
+        payload = event.model_dump() if hasattr(event, "model_dump") else event
+        graph.custom_events.append({"kind": kind, **payload})
+
+    monkeypatch.setattr(node_supervisor, "stream_event", capture_custom)
+    turns = _StreamTraceTurns()
+    req = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                graph=graph,
+                motor_db=SimpleNamespace(chat_turns=turns),
+            )
+        )
+    )
+
+    response = await agent_server._chat_stream(
+        models.ChatRequest(query="원인은?", session_id="session-public-supervisor"),
+        req,
+    )
+    await _consume_stream_response(response)
+    local_trace._persist_turns()
+
+    persisted_trace = trace_json.read_text(encoding="utf-8")
+    assert slot_sentinel in persisted_trace
+    assert goal_sentinel in persisted_trace
+    assert (
+        graph.supervisor_command.update["current_task"]["params"]["dh_query"]
+        == slot_sentinel
+    )
+
+
+def test_planner_langfuse_observation_disables_output_capture():
+    import node_planner
+
+    decorator = inspect.getsource(node_planner.planner_node).splitlines()[0]
+    assert "capture_input=False" in decorator
+    assert "capture_output=False" in decorator
 
 
 def test_planner_propagates_model_invocation_failure(monkeypatch):
