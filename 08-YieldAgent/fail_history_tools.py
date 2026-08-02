@@ -1,12 +1,13 @@
 """
 Fail History @tool 함수 모듈
 ============================
-OpenSearch BM25 검색 + HTML 리포트 렌더링.
+OpenSearch 하이브리드 검색(BM25 + kNN) + HTML 리포트 렌더링.
 fail_history_agent.py에서 사용.
 """
 from __future__ import annotations
 
 import contextvars
+import functools
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import requests as http_requests
 from jinja2 import Environment, FileSystemLoader
 from langfuse import observe
 
@@ -38,6 +40,14 @@ _OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "fail-history")
 _OPENSEARCH_USER = os.getenv("OPENSEARCH_USER", "admin")
 _OPENSEARCH_PASSWORD = os.getenv("OPENSEARCH_PASSWORD", "admin")
 _OPENSEARCH_USE_SSL = os.getenv("OPENSEARCH_USE_SSL", "false").lower() in ("true", "1", "yes")
+
+_EMBEDDING_MODEL = os.getenv("EMBEDDINGS_MODEL_NAME", "qwen/qwen3-embedding-8b")
+_EMBEDDING_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+_EMBEDDING_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+_EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "4096"))
+
+_BM25_WEIGHT = float(os.getenv("BM25_WEIGHT", "0.4"))
+_VECTOR_WEIGHT = float(os.getenv("VECTOR_WEIGHT", "0.6"))
 
 # ── 약어 사전 ────────────────────────────────────────────────
 ACRONYM_MAP: Dict[str, str] = {
@@ -124,6 +134,40 @@ def _get_opensearch_client():
     return _os_client
 
 
+# ── 임베딩 ───────────────────────────────────────────────────
+@functools.lru_cache(maxsize=128)
+def _get_embedding_cached(text: str) -> tuple:
+    """임베딩 API 호출 (캐시 + 재시도). 캐시 호환을 위해 tuple 반환."""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            resp = http_requests.post(
+                f"{_EMBEDDING_BASE_URL}/embeddings",
+                headers={
+                    "Authorization": f"Bearer {_EMBEDDING_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": _EMBEDDING_MODEL, "input": text},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return tuple(resp.json()["data"][0]["embedding"])
+        except http_requests.exceptions.RequestException as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if attempt < max_retries - 1 and (status is None or status >= 429):
+                import time
+                time.sleep(2 ** attempt)
+                continue
+            raise
+    raise RuntimeError("임베딩 API 호출 실패 (최대 재시도 초과)")
+
+
+@observe(name="fh_get_embedding")
+def _get_embedding(text: str) -> List[float]:
+    """OpenRouter API로 텍스트 임베딩 생성 (캐시 + 재시도 적용)"""
+    return list(_get_embedding_cached(text))
+
+
 def _expand_acronyms(query: str) -> str:
     """쿼리 내 약어를 풀네임으로 확장 (BM25 recall 향상)"""
     expanded = query
@@ -145,7 +189,7 @@ def _normalize_fail_type(fail_type: str) -> str:
     return _FAIL_TYPE_STAGE_PREFIX_RE.sub("", fail_type)
 
 
-# ── OpenSearch BM25 검색 ─────────────────────────────────────
+# ── OpenSearch 하이브리드 검색 ────────────────────────────────
 @observe(name="fh_search_opensearch")
 def _search_opensearch(
     query: str,
@@ -154,13 +198,14 @@ def _search_opensearch(
     cause_oper: str = "",
     top_k: int = 5,
 ) -> List[Dict[str, Any]]:
-    """BM25 검색 실행"""
+    """BM25 + kNN 하이브리드 검색 실행"""
     client = _get_opensearch_client()
 
     fail_type = _normalize_fail_type(fail_type)
 
-    # 약어 확장
+    # 약어 확장 후 임베딩 생성
     expanded_query = _expand_acronyms(query)
+    embedding = _get_embedding(expanded_query)
 
     # 메타데이터 필터 구성
     # product / fail_type은 text + .keyword 매핑 → 정확매칭 위해 .keyword 사용
@@ -193,8 +238,69 @@ def _search_opensearch(
     if filters:
         bm25_query = {"bool": {"must": [bm25_query], "filter": filters}}
 
-    search_body = {"size": top_k, "query": bm25_query}
-    response = client.search(index=_OPENSEARCH_INDEX, body=search_body)
+    # kNN 쿼리 (메타데이터 필터 포함)
+    # ※ kNN + filter 조합에서 OpenSearch가 exact-kNN 경로로 떨어지면,
+    #   필터된 후보군에 embedding=null인 문서가 섞일 때
+    #   "cannot read field 'point' because this.point is null" 오류 발생.
+    #   filter에 항상 `exists: embedding`을 함께 걸어 null 후보를 배제.
+    knn_body: Dict[str, Any] = {"vector": embedding, "k": top_k}
+    knn_filters = filters + [{"exists": {"field": "embedding"}}]
+    knn_body["filter"] = {"bool": {"filter": knn_filters}}
+    knn_query: Dict[str, Any] = {
+        "knn": {
+            "embedding": knn_body
+        }
+    }
+
+    # 하이브리드 검색 (인라인 search_pipeline)
+    search_body = {
+        "size": top_k,
+        "query": {
+            "hybrid": {
+                "queries": [bm25_query, knn_query]
+            }
+        },
+        "search_pipeline": {
+            "phase_results_processors": [
+                {
+                    "normalization-processor": {
+                        "normalization": {"technique": "min_max"},
+                        "combination": {
+                            "technique": "arithmetic_mean",
+                            "parameters": {"weights": [_BM25_WEIGHT, _VECTOR_WEIGHT]},
+                        },
+                    }
+                }
+            ]
+        },
+    }
+
+    try:
+        response = client.search(
+            index=_OPENSEARCH_INDEX,
+            body=search_body,
+        )
+    except Exception as e:
+        # OpenSearch hybrid search + normalization-processor 는 sub-query 결과 수가
+        # 어긋나면(특히 kNN 후보가 0건일 때) `index -X out of bounds for length Y`
+        # 같은 search_phase_execution_exception 을 던지는 알려진 버그가 있다.
+        # BM25-only 로 폴백해 사용자에게 빈 화면 대신 결과를 돌려준다.
+        msg = str(e)
+        is_hybrid_bug = (
+            "search_phase_execution_exception" in msg
+            or "out of bounds" in msg
+            or "this.point is null" in msg
+        )
+        if not is_hybrid_bug:
+            logger.error("OpenSearch 검색 실패: %s", e, exc_info=True)
+            raise
+        logger.warning("[_search_opensearch] hybrid 실패 — BM25-only 폴백: %s", e)
+        bm25_only_body = {"size": top_k, "query": bm25_query}
+        try:
+            response = client.search(index=_OPENSEARCH_INDEX, body=bm25_only_body)
+        except Exception as e2:
+            logger.error("OpenSearch BM25 폴백도 실패: %s", e2, exc_info=True)
+            raise
 
     results = []
     for hit in response.get("hits", {}).get("hits", []):
