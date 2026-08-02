@@ -20,6 +20,11 @@ import requests as http_requests
 from jinja2 import Environment, FileSystemLoader
 from langfuse import observe
 
+from wiki_config import resolve_wiki_paths
+from wiki_graph_models import GraphContext
+from wiki_graph_projection import build_graph_projection
+from wiki_sync import make_triple_key
+
 # ── Jinja2 템플릿 환경 ──────────────────────────────────────
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _jinja_env = Environment(
@@ -445,11 +450,7 @@ def _fetch_results_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
         "size": min(len(doc_ids), 20),
         "query": {"terms": {"doc_id": doc_ids}},
     }
-    try:
-        resp = client.search(index=_OPENSEARCH_INDEX, body=body)
-    except Exception as e:
-        logger.warning("[_fetch_results_by_doc_ids] terms query 실패: %s", e)
-        return []
+    resp = client.search(index=_OPENSEARCH_INDEX, body=body)
     results: List[Dict[str, Any]] = []
     for hit in resp.get("hits", {}).get("hits", []):
         src = hit.get("_source", {})
@@ -469,6 +470,87 @@ def _fetch_results_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
             "content": src.get("content", "")[:200],
         })
     return results
+
+
+def _seed_concept_ids(
+    product: str,
+    fail_type: str,
+    cause_oper: str,
+    results: List[Dict[str, Any]],
+) -> List[str]:
+    seeds: List[str] = []
+    if product and fail_type and cause_oper:
+        seeds.append(
+            f"concept:{make_triple_key(product, fail_type, cause_oper).canonical}"
+        )
+    for result in results:
+        triple = make_triple_key(
+            str(result.get("product") or ""),
+            str(result.get("fail_type") or ""),
+            str(result.get("cause_oper") or ""),
+        )
+        if triple.product and triple.fail_type and triple.cause_oper:
+            seeds.append(f"concept:{triple.canonical}")
+    return list(dict.fromkeys(seeds))
+
+
+def _merge_evidence(
+    results: List[Dict[str, Any]], graph_results: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    merged = {
+        str(item.get("doc_id") or ""): item
+        for item in results
+        if item.get("doc_id")
+    }
+    for item in graph_results:
+        merged.setdefault(str(item.get("doc_id") or ""), item)
+    return list(merged.values())
+
+
+def _expand_graph_context(concept_ids: List[str]) -> GraphContext | None:
+    if not concept_ids:
+        return None
+    try:
+        projection = build_graph_projection(resolve_wiki_paths())
+        return projection.expand_concepts(concept_ids)
+    except Exception as exc:
+        logger.warning("[do_search] graph projection unavailable: %s", exc)
+        return None
+
+
+def _ground_graph_context(
+    graph_context: GraphContext,
+    results: List[Dict[str, Any]],
+) -> Dict[str, Any] | None:
+    resolved_doc_ids = {
+        str(result.get("doc_id") or "")
+        for result in results
+        if result.get("doc_id")
+    }
+    relations = []
+    for relation in graph_context.relations:
+        source_doc_ids = [
+            doc_id
+            for doc_id in relation.source_doc_ids
+            if doc_id in resolved_doc_ids
+        ]
+        if source_doc_ids:
+            relations.append(
+                relation.model_copy(update={"source_doc_ids": source_doc_ids})
+            )
+    if not relations:
+        return None
+    grounded = graph_context.model_copy(
+        update={
+            "relations": relations,
+            "source_doc_ids": [
+                doc_id
+                for doc_id in graph_context.source_doc_ids
+                if doc_id in resolved_doc_ids
+            ],
+        }
+    )
+    return grounded.model_dump(mode="json")
 
 
 # ── 함수형 노드 API (B2: ReAct 제거, 코드가 직접 호출) ────
@@ -570,6 +652,11 @@ def do_search(
             "super_reference_body": _lookup_super_reference(product, fail_type, cause_oper),
         }
 
+    exact_seed_ids = _seed_concept_ids(product, fail_type, cause_oper, [])
+    graph_context = (
+        _expand_graph_context(exact_seed_ids) if exact_seed_ids else None
+    )
+
     try:
         results = _search_opensearch(
             query=query,
@@ -604,6 +691,33 @@ def do_search(
             logger.error("[do_search] fallback 검색 오류: %s", e, exc_info=True)
             raise
 
+    opensearch_results = results
+    if graph_context is None and not exact_seed_ids:
+        graph_context = _expand_graph_context(
+            _seed_concept_ids(product, fail_type, cause_oper, results)
+        )
+
+    if graph_context is not None:
+        existing_doc_ids = {
+            str(result.get("doc_id") or "")
+            for result in results
+            if result.get("doc_id")
+        }
+        graph_only_doc_ids = [
+            doc_id
+            for doc_id in graph_context.source_doc_ids
+            if doc_id not in existing_doc_ids
+        ]
+        graph_results = (
+            _fetch_results_by_doc_ids(graph_only_doc_ids)
+            if graph_only_doc_ids
+            else []
+        )
+        results = _merge_evidence(results, graph_results)
+        grounded_graph_context = _ground_graph_context(graph_context, results)
+    else:
+        grounded_graph_context = None
+
     if not results:
         return {
             "total": 0,
@@ -634,7 +748,7 @@ def do_search(
         enqueue_status = wiki_queue.summarize_enqueue({
             "query": query,
             "filters": {"product": product, "fail_type": fail_type, "cause_oper": cause_oper},
-            "raw_results": results,
+            "raw_results": opensearch_results,
         })
     except Exception as e:
         logger.warning("[do_search] wiki enqueue 실패: %s", e)
@@ -658,6 +772,10 @@ def do_search(
         output["wiki_citations"] = _format_user_citations(gate_result.get("citations", []))
         logger.info("[do_search] WIKI-ASSISTED mode (confidence=%.2f)",
                     gate_result["confidence"])
+
+    if grounded_graph_context is not None:
+        output["retrieval_mode"] = "graph-assisted"
+        output["graph_context"] = grounded_graph_context
 
     output["super_reference_body"] = _lookup_super_reference(product, fail_type, cause_oper)
     return output

@@ -7,7 +7,7 @@ import frontmatter
 from fail_history_tools import search_opensearch_with_mode
 from models import PluginEvidence, PluginSearchResponse, PluginSearchResult
 from wiki_config import WikiPaths
-from wiki_materializer import _stable_filename
+from wiki_plugin_notes import NoteNotFound, read_source
 from wiki_sync import make_triple_key
 
 
@@ -44,16 +44,10 @@ def _concepts_by_triple(paths: WikiPaths) -> dict[str, _Concept]:
 def _source_path(paths: WikiPaths, doc_id: str) -> str | None:
     if not doc_id:
         return None
-    path = paths.sources / f"{_stable_filename(doc_id)}.md"
-    if path.parent != paths.sources or not path.is_file():
-        return None
     try:
-        metadata = frontmatter.load(path).metadata
-    except Exception:
+        return read_source(paths, doc_id).source_path
+    except NoteNotFound:
         return None
-    if metadata.get("type") != "source" or str(metadata.get("doc_id") or "") != doc_id:
-        return None
-    return path.relative_to(paths.root).as_posix()
 
 
 def _evidence(paths: WikiPaths, hit: dict) -> PluginEvidence:

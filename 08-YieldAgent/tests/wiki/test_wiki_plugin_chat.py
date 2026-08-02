@@ -425,6 +425,38 @@ def test_citations_deduplicate_and_do_not_infer_missing_links():
     ]
 
 
+def test_graph_only_result_can_emit_canonical_structured_source_citation(tmp_path):
+    from agent_sessions import citations_from_fail_history_results
+    from wiki_config import initialize_wiki_vault, resolve_wiki_paths
+    from wiki_plugin_notes import read_source
+
+    wiki_paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(wiki_paths)
+    (wiki_paths.sources / "FH-GRAPH.md").write_text(
+        "---\ntype: source\ndoc_id: FH-GRAPH\n---\n# Source\n",
+        encoding="utf-8",
+    )
+    result_rows = [
+        {"doc_id": "FH-GRAPH", "download_url": "https://internal/FH-GRAPH"},
+        {"content": "Answer prose mentioning [FH-TEXT-ONLY] is not a citation"},
+    ]
+
+    source = read_source(wiki_paths, "FH-GRAPH")
+    citations = citations_from_fail_history_results(
+        result_rows,
+        source_paths={source.doc_id: source.source_path},
+    )
+
+    assert [citation.model_dump() for citation in citations] == [
+        {
+            "doc_id": "FH-GRAPH",
+            "label": "FH-GRAPH",
+            "source_path": "sources/FH-GRAPH.md",
+            "download_url": "https://internal/FH-GRAPH",
+        }
+    ]
+
+
 def test_additive_chat_and_event_models_keep_existing_clients_valid():
     request = models.ChatRequest(query="hello", session_id="session-1")
     message = models.MessageEvent(agent="planner", content="hello")

@@ -1,5 +1,6 @@
 import pytest
 import frontmatter
+from types import SimpleNamespace
 
 import fail_history_tools
 import wiki_plugin_search
@@ -244,3 +245,40 @@ def test_evidence_source_path_rejects_sanitized_doc_id_collision(tmp_path, monke
     )
 
     assert result.results[0].evidence[0].source_path is None
+
+
+def test_evidence_source_path_uses_read_source_as_canonical_resolver(
+    tmp_path, monkeypatch
+):
+    paths = make_empty_vault(tmp_path)
+    resolved_doc_ids = []
+    monkeypatch.setattr(
+        wiki_plugin_search,
+        "read_source",
+        lambda received_paths, doc_id: resolved_doc_ids.append(doc_id)
+        or SimpleNamespace(source_path="sources/canonical.md"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        wiki_plugin_search,
+        "search_opensearch_with_mode",
+        lambda *args, **kwargs: (
+            [
+                {
+                    "doc_id": "FH:GRAPH",
+                    "product": "4SS",
+                    "fail_type": "EASY",
+                    "cause_oper": "PRE METAL CLN",
+                    "score": 50.0,
+                }
+            ],
+            "hybrid",
+        ),
+    )
+
+    result = wiki_plugin_search.search_wiki(
+        "source", "4SS", "EASY", "PRE METAL CLN", 20, paths
+    )
+
+    assert resolved_doc_ids == ["FH:GRAPH"]
+    assert result.results[0].evidence[0].source_path == "sources/canonical.md"
