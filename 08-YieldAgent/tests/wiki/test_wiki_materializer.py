@@ -74,6 +74,21 @@ def _snapshot(vault):
     }
 
 
+def _write_generated_graph_note(path, *, node_id, node_type, status="active"):
+    path.write_text(
+        frontmatter.dumps(
+            frontmatter.Post(
+                content=f"# {node_id}\n",
+                id=node_id,
+                type=node_type,
+                generated_by="yield-wiki-materializer",
+                status=status,
+            )
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_materializes_product_to_source_topology_and_preserves_concept_body(
     tmp_path,
 ):
@@ -331,7 +346,7 @@ def test_validation_error_changes_no_file_when_citation_has_no_doc_id(tmp_path):
     assert _snapshot(paths.root) == before
 
 
-def test_validation_error_changes_no_file_for_generated_path_collision(tmp_path):
+def test_validation_error_changes_no_file_for_generated_filename_collision(tmp_path):
     from wiki_materializer import materialize_wiki
 
     paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
@@ -354,6 +369,90 @@ def test_validation_error_changes_no_file_for_generated_path_collision(tmp_path)
     report = materialize_wiki(paths, apply=True)
 
     assert "generated path collision" in "\n".join(report.errors)
+    assert _snapshot(paths.root) == before
+
+
+def test_validation_error_changes_no_file_for_generated_path_collision(
+    tmp_path,
+):
+    from wiki_materializer import _readable_graph_path, _stable_graph_id, materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    node_id = _stable_graph_id("entity", {"canonical_name": "Queue time 초과"})
+    target = _readable_graph_path(paths.entities, node_id, "Queue time 초과")
+    target.write_text("operator note\n", encoding="utf-8")
+    before = _snapshot(paths.root)
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert "generated path collision" in "\n".join(report.errors)
+    assert _snapshot(paths.root) == before
+
+
+def test_active_legacy_hash_path_is_replaced_not_marked_stale(tmp_path):
+    from wiki_materializer import _stable_graph_id, materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    node_id = _stable_graph_id("entity", {"canonical_name": "Queue time 초과"})
+    legacy = paths.entities / f"{node_id.rsplit(':', 1)[-1]}.md"
+    _write_generated_graph_note(legacy, node_id=node_id, node_type="entity")
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert report.errors == ()
+    assert not legacy.exists()
+    assert legacy.relative_to(paths.root).as_posix() in report.deleted
+    readable = [
+        path for path in paths.entities.glob("Queue time 초과--*.md")
+        if frontmatter.load(path).metadata["id"] == node_id
+    ]
+    assert len(readable) == 1
+    assert frontmatter.load(readable[0]).metadata["status"] == "active"
+
+
+def test_interrupted_path_migration_deletes_only_legacy_duplicate(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    first = materialize_wiki(paths, apply=True)
+    assert first.errors == ()
+    readable = next(paths.entities.glob("Queue time 초과--*.md"))
+    node_id = frontmatter.load(readable).metadata["id"]
+    legacy = paths.entities / f"{node_id.rsplit(':', 1)[-1]}.md"
+    legacy.write_bytes(readable.read_bytes())
+
+    resumed = materialize_wiki(paths, apply=True)
+
+    assert resumed.errors == ()
+    assert readable.exists()
+    assert not legacy.exists()
+    assert resumed.deleted == (legacy.relative_to(paths.root).as_posix(),)
+
+
+def test_duplicate_noncanonical_graph_paths_are_fatal_and_write_nothing(tmp_path):
+    from wiki_materializer import _stable_graph_id, materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    node_id = _stable_graph_id("entity", {"canonical_name": "Queue time 초과"})
+    for name in ("duplicate-a.md", "duplicate-b.md"):
+        _write_generated_graph_note(
+            paths.entities / name,
+            node_id=node_id,
+            node_type="entity",
+        )
+    before = _snapshot(paths.root)
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert "duplicate generated graph id" in "\n".join(report.errors)
     assert _snapshot(paths.root) == before
 
 

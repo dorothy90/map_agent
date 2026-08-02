@@ -137,6 +137,32 @@ def _generated_metadata(node_id: str, node_type: str, **values: Any) -> dict[str
     }
 
 
+def _scan_generated_graph_paths(
+    paths: WikiPaths,
+) -> tuple[dict[str, list[Path]], list[str]]:
+    by_id: dict[str, list[Path]] = {}
+    errors: list[str] = []
+    for directory, node_type in (
+        (paths.entities, "entity"),
+        (paths.relations, "relation"),
+    ):
+        for path in sorted(directory.glob("*.md")):
+            try:
+                metadata = frontmatter.load(path).metadata
+            except Exception:
+                continue
+            if metadata.get("generated_by") != _GENERATED_BY:
+                continue
+            if metadata.get("type") != node_type:
+                continue
+            node_id = str(metadata.get("id") or "")
+            if not node_id:
+                errors.append(f"{_relative(paths, path)}: generated graph note missing id")
+                continue
+            by_id.setdefault(node_id, []).append(path)
+    return by_id, errors
+
+
 def _replace_managed_block(raw: str, block_body: str) -> str:
     block = f"{_BLOCK_START}\n## Knowledge Links\n\n{block_body.rstrip()}\n{_BLOCK_END}"
     start = raw.find(_BLOCK_START)
@@ -422,7 +448,29 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         for relation_id in relation_records
     }
 
+    generated_graph_paths, scan_errors = _scan_generated_graph_paths(paths)
+    errors.extend(scan_errors)
+    migration_deletions: set[Path] = set()
     for node_id, path in (*entity_paths.items(), *relation_paths.items()):
+        digest = node_id.rsplit(":", 1)[-1]
+        legacy_path = path.with_name(f"{digest}.md")
+        existing_paths = generated_graph_paths.get(node_id, [])
+        legacy_paths = [candidate for candidate in existing_paths if candidate == legacy_path]
+        noncanonical_paths = [
+            candidate
+            for candidate in existing_paths
+            if candidate not in (path, legacy_path)
+        ]
+        if len(legacy_paths) > 1 or noncanonical_paths:
+            errors.append(
+                f"duplicate generated graph id: {node_id} claims "
+                + ", ".join(
+                    _relative(paths, candidate)
+                    for candidate in sorted(existing_paths)
+                )
+            )
+        else:
+            migration_deletions.update(legacy_paths)
         if not path.exists():
             continue
         try:
@@ -711,6 +759,8 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         (paths.relations, "relation"),
     ):
         for path in sorted(directory.glob("*.md")):
+            if path in migration_deletions:
+                continue
             if path in active_graph_targets:
                 continue
             try:
@@ -842,7 +892,7 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
 
     return _MaterializationPlan(
         targets,
-        tuple(sorted(deletions)),
+        tuple(sorted(migration_deletions)) + tuple(sorted(deletions)),
         tuple(sorted(set(warnings))),
         tuple(sorted(set(errors))),
     )
