@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from collections.abc import Iterable
 from typing import Any, Mapping
 
@@ -19,17 +18,13 @@ from pydantic import BaseModel, Field
 from common import get_llm
 from lf_utils import lf_callbacks as _lf_callbacks, observe_with_privacy
 from wiki_graph_models import EntityCandidate, RelationCandidate
+from wiki_source_citations import extract_standalone_source_ids
 
 logger = logging.getLogger("yield_agent.wiki_summarizer")
 
 
 class UnsupportedSourceCitationError(ValueError):
     """A synthesis body cites a Source outside its authoritative input set."""
-
-
-_INLINE_SOURCE_CITATION = re.compile(
-    r"(?<![!\\])\[((?:FH[-:])[A-Za-z0-9][A-Za-z0-9._:-]*)\](?![ \t]*\()"
-)
 
 
 class AliasPair(BaseModel):
@@ -107,7 +102,7 @@ def validate_body_source_citations(
     natural-language claims or link labels.
     """
     allowed = set(canonical_source_doc_ids(authoritative_source_ids))
-    cited = set(_INLINE_SOURCE_CITATION.findall(str(body_markdown or "")))
+    cited = extract_standalone_source_ids(body_markdown)
     unsupported = cited - allowed
     if unsupported:
         raise UnsupportedSourceCitationError(

@@ -261,6 +261,59 @@ def test_source_restriction_rejects_unsupported_inline_source_claims_only():
         wiki_summarizer.restrict_concept_synthesis_sources(unsafe, ["FH-REAL"])
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "inline code `[FH-FORGED]`",
+        "double code ``[FH-FORGED]``",
+        "fenced code\n```text\n[FH-FORGED]\n```",
+        "link [FH-FORGED](https://internal/document)",
+        "destination [source](https://internal/[FH-FORGED])",
+        "image ![FH-FORGED](https://internal/image.png)",
+        "image reference ![source][FH-FORGED]",
+        "reference [source][FH-FORGED]",
+        "reference definition [FH-FORGED]: https://internal/document",
+        "Obsidian note [[FH-FORGED]]",
+        "Obsidian alias [[sources/FH-FORGED|FH-FORGED]]",
+    ],
+)
+def test_body_source_validation_ignores_non_citation_markdown(body):
+    import wiki_summarizer
+
+    wiki_summarizer.validate_body_source_citations(body, ["FH-REAL"])
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "standalone [FH-FORGED]",
+        r"even slash \\[FH-FORGED]",
+        r"escaped image marker \![FH-FORGED]",
+    ],
+)
+def test_body_source_validation_rejects_unsupported_standalone_citations(body):
+    import wiki_summarizer
+
+    with pytest.raises(wiki_summarizer.UnsupportedSourceCitationError):
+        wiki_summarizer.validate_body_source_citations(body, ["FH-REAL"])
+
+
+def test_body_source_validation_preserves_allowed_standalone_citation():
+    import wiki_summarizer
+
+    synthesis = wiki_summarizer.ConceptSynthesis(
+        body_markdown="allowed [FH-REAL]",
+        confidence=0.5,
+        citations=[EpisodeRef(episode_id="", doc_id="FH-REAL")],
+    )
+
+    restricted = wiki_summarizer.restrict_concept_synthesis_sources(
+        synthesis, ["FH-REAL"]
+    )
+
+    assert restricted.body_markdown == "allowed [FH-REAL]"
+
+
 def test_synthesize_from_docs_rejects_unsupported_body_source(monkeypatch):
     import wiki_summarizer
 
