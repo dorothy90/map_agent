@@ -96,6 +96,49 @@ def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) ->
     return "\n".join(lines).strip()
 
 
+def _render_wiki_first_answer(raw: Dict[str, Any]) -> str:
+    """Append grounded structured Graph evidence without invoking an LLM."""
+    answer = str(raw.get("rendered_answer", "wiki 합성 본문이 비어 있습니다."))
+    graph_context = raw.get("graph_context")
+    if not isinstance(graph_context, dict):
+        return answer
+    resolved_doc_ids = {
+        str(result.get("doc_id") or "")
+        for result in raw.get("results", [])
+        if isinstance(result, dict) and result.get("doc_id")
+    }
+    lines = []
+    for relation in graph_context.get("relations", []):
+        if not isinstance(relation, dict):
+            continue
+        source_doc_ids = list(
+            dict.fromkeys(
+                str(doc_id)
+                for doc_id in relation.get("source_doc_ids", [])
+                if str(doc_id) in resolved_doc_ids
+            )
+        )
+        subject = str(relation.get("subject") or "").strip()
+        predicate = str(relation.get("predicate") or "").strip()
+        object_name = str(relation.get("object") or "").strip()
+        confidence = relation.get("confidence")
+        if not source_doc_ids or not subject or not predicate or not object_name:
+            continue
+        confidence_text = (
+            f"{float(confidence):.2f}"
+            if isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
+            else "-"
+        )
+        citations = " ".join(f"[{doc_id}]" for doc_id in source_doc_ids)
+        lines.append(
+            f"- **{subject}** — `{predicate}` → **{object_name}** "
+            f"(confidence={confidence_text}) {citations}"
+        )
+    if not lines:
+        return answer
+    return answer.rstrip() + "\n\n---\n\n## Wiki Graph 근거\n\n" + "\n".join(lines)
+
+
 def _synthesize_answer(
     query: str,
     raw: Dict[str, Any],
@@ -222,7 +265,7 @@ def _fail_history_per_report(state: dict, config: RunnableConfig, fail_groups: l
         results = raw.get("results", [])
         retrieval_mode = raw.get("retrieval_mode", "baseline")
         if retrieval_mode == "wiki-first":
-            answer = raw.get("rendered_answer", "wiki 합성 본문이 비어 있습니다.")
+            answer = _render_wiki_first_answer(raw)
         elif not results:
             answer = "조건에 맞는 불량이력이 없습니다. 검색어나 필터를 조정해보세요. [SUGGESTION: ]"
         else:
@@ -389,7 +432,7 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     # 2) 답변 합성
     if retrieval_mode == "wiki-first":
-        answer = raw.get("rendered_answer", "wiki 합성 본문이 비어 있습니다.")
+        answer = _render_wiki_first_answer(raw)
         logger.info("[FH Agent] wiki-first 경로 — LLM 호출 0회")
     elif not results:
         answer = "조건에 맞는 불량이력이 없습니다. 검색어나 필터를 조정해보세요. [SUGGESTION: ]"

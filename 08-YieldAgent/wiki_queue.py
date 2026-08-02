@@ -219,6 +219,7 @@ class WikiQueue:
     async def _handle_concept_synthesis(self, item: dict[str, Any]) -> None:
         """plan v3 §A: evidence_diversity 통과한 concept을 LLM으로 메타 합성."""
         from wiki_summarizer import synthesize_concept
+        from wiki_sync import build_triple_snapshot, make_triple_key
 
         concept_id = item["concept_id"]
         filters = item["filters"]
@@ -234,6 +235,22 @@ class WikiQueue:
         if result is None:
             self.drops["synthesis"] = self.drops.get("synthesis", 0) + 1
             return
+        source_doc_ids = sorted(
+            {
+                str(doc_id).strip()
+                for episode in episodes
+                for doc_id in (episode.get("frontmatter", {}).get("doc_ids") or [])
+                if str(doc_id).strip()
+            }
+        )
+        snapshot = build_triple_snapshot(
+            make_triple_key(
+                str(filters.get("product") or ""),
+                str(filters.get("fail_type") or ""),
+                str(filters.get("cause_oper") or ""),
+            ),
+            [{"doc_id": doc_id} for doc_id in source_doc_ids],
+        )
         synth_payload = {
             "body_markdown": result.body_markdown,
             "confidence": float(result.confidence),
@@ -247,6 +264,12 @@ class WikiQueue:
                 for relation in getattr(result, "relations", [])
             ],
             "evidence": evidence,
+            "sync_metadata": {
+                "source_fingerprint": snapshot.source_fingerprint,
+                "source_doc_ids": list(snapshot.source_doc_ids),
+                "evidence_count": snapshot.evidence_count,
+                "evidence_scope": snapshot.evidence_scope,
+            },
         }
         try:
             self._persist_q.put_nowait(
@@ -300,6 +323,7 @@ class WikiQueue:
                                     entities=synth["entities"],
                                     relations=synth["relations"],
                                     evidence=synth["evidence"],
+                                    sync_metadata=synth["sync_metadata"],
                                 ),
                             )
                             self.commits["synthesis_persisted"] += 1

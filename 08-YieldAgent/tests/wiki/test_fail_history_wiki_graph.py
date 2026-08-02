@@ -4,6 +4,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import HumanMessage
 
 import fail_history_agent
 import fail_history_tools
@@ -145,6 +146,87 @@ def test_wiki_first_exact_triple_includes_source_backed_graph_without_vector_sea
     assert result["graph_context"]["relations"][0]["source_doc_ids"] == [
         "FH-GRAPH"
     ]
+
+
+def test_wiki_first_agent_renders_grounded_graph_relation_without_llm(monkeypatch):
+    raw = {
+        "retrieval_mode": "wiki-first",
+        "rendered_answer": "Original Concept answer [FH-CONCEPT]",
+        "results": [
+            {"doc_id": "FH-CONCEPT", "source_file": "FH-CONCEPT.pptx"},
+            {"doc_id": "FH-GRAPH", "source_file": "FH-GRAPH.pptx"},
+        ],
+        "graph_context": {
+            "primary_concept_id": "concept:4SS|PRE METAL CLN|EASY",
+            "concept_ids": ["concept:4SS|PRE METAL CLN|EASY"],
+            "relations": [
+                {
+                    "relation_id": "relation:grounded",
+                    "origin_concept_id": "concept:4SS|PRE METAL CLN|EASY",
+                    "subject": "Queue time exceeded",
+                    "predicate": "causes",
+                    "object": "Natural oxidation",
+                    "confidence": 0.82,
+                    "source_doc_ids": ["FH-GRAPH"],
+                },
+                {
+                    "relation_id": "relation:unresolved",
+                    "origin_concept_id": "concept:4SS|PRE METAL CLN|EASY",
+                    "subject": "Unresolved subject",
+                    "predicate": "associated_with",
+                    "object": "Unresolved object",
+                    "confidence": 0.99,
+                    "source_doc_ids": ["FH-404"],
+                },
+            ],
+            "source_doc_ids": ["FH-GRAPH", "FH-404"],
+        },
+        "super_reference_body": "",
+    }
+    monkeypatch.setattr(fail_history_agent, "do_search", lambda **kwargs: raw)
+
+    class NoLlmModel:
+        def invoke(self, *args, **kwargs):
+            pytest.fail("wiki-first graph rendering must not call the LLM")
+
+    monkeypatch.setattr(fail_history_agent, "_fh_model", NoLlmModel())
+
+    wiki_token = fail_history_tools._wiki_payload_var.set({})
+    supervisor_token = fail_history_tools._supervisor_parsed_var.set({})
+    try:
+        update = fail_history_agent.fail_history_agent_node(
+            {
+                "lotcd": "4SS",
+                "fail_type": "EASY",
+                "cause_oper": "PRE METAL CLN",
+                "messages": [HumanMessage(content="What caused the failure?")],
+                "current_task_id": "task:wiki-first",
+            },
+            {},
+        )
+    finally:
+        fail_history_tools._supervisor_parsed_var.reset(supervisor_token)
+        fail_history_tools._wiki_payload_var.reset(wiki_token)
+
+    content = update["messages"][0].content
+    assert "Original Concept answer [FH-CONCEPT]" in content
+    assert "Queue time exceeded" in content
+    assert "`causes`" in content
+    assert "Natural oxidation" in content
+    assert "confidence=0.82" in content
+    assert "[FH-GRAPH]" in content
+    assert "Unresolved subject" not in content
+    assert "FH-404" not in content
+    assert [row["doc_id"] for row in update["fail_history_results"]] == [
+        "FH-CONCEPT",
+        "FH-GRAPH",
+    ]
+
+
+def test_wiki_first_renderer_preserves_existing_answer_without_grounded_graph():
+    assert fail_history_agent._render_wiki_first_answer(
+        {"rendered_answer": "", "results": [], "graph_context": {"relations": []}}
+    ) == ""
 
 
 def test_exact_triple_expands_canonical_concept_before_opensearch(

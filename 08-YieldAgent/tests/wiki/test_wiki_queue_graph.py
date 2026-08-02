@@ -8,6 +8,7 @@ import pytest
 
 from wiki_graph_models import EntityCandidate, RelationCandidate
 from wiki_summarizer import EpisodeRef
+from wiki_sync import build_triple_snapshot, make_triple_key
 
 
 pytestmark = pytest.mark.no_server
@@ -115,12 +116,22 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
     await queue.start()
     try:
         assert queue._summarize_q is not None
+        synthesis_episodes = [
+            {
+                "id": "episode:one",
+                "frontmatter": {"doc_ids": ["FH-1", "FH-1"]},
+            },
+            {
+                "id": "episode:two",
+                "frontmatter": {"doc_ids": ["FH-2"]},
+            },
+        ]
         queue._summarize_q.put_nowait(
             {
                 "task_type": "concept_synthesis",
                 "concept_id": "concept:4SS|PRE METAL CLN|EASY",
                 "filters": filters,
-                "episodes": [{"id": "episode:one"}, {"id": "episode:two"}],
+                "episodes": synthesis_episodes,
                 "evidence": {"score": 0.8, "unique_doc_ids": 2},
                 "private": True,
             }
@@ -136,6 +147,23 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
     assert concept_post.metadata["relations"] == relations
     assert concept_post.metadata["body_versions"][-1]["entities"] == entities
     assert concept_post.metadata["body_versions"][-1]["relations"] == relations
-    assert frontmatter.load(relation_path).metadata["status"] == "active"
+    relation_post = frontmatter.load(relation_path)
+    assert relation_post.metadata["status"] == "active"
+    expected_fingerprint = build_triple_snapshot(
+        make_triple_key("4SS", "EASY", "PRE METAL CLN"),
+        [{"doc_id": "FH-1"}, {"doc_id": "FH-2"}],
+    ).source_fingerprint
+    assert concept_post.metadata["source_fingerprint"] == expected_fingerprint
+    assert relation_post.metadata["source_fingerprint"] == expected_fingerprint
+
+    from wiki_graph_projection import build_graph_projection
+
+    graph_context = build_graph_projection(paths).expand_concepts(
+        ["concept:4SS|PRE METAL CLN|EASY"]
+    )
+    assert graph_context.primary_concept_id == "concept:4SS|PRE METAL CLN|EASY"
+    assert [relation.relation_id for relation in graph_context.relations] == [
+        relation_post.metadata["id"]
+    ]
     assert synthesis_contexts == [True]
     assert persist_contexts == [True, True]
