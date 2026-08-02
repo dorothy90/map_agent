@@ -18,6 +18,8 @@ from wiki_plugin_notes import NoteNotFound, resolve_markdown_path
 
 
 _GENERATED_BY = "yield-wiki-materializer"
+_GRAPH_FILENAME_MAX_BYTES = 179
+_UNSAFE_GRAPH_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 @dataclass(frozen=True)
@@ -206,16 +208,39 @@ def _canonical_generated_location(
     return state.relative_path == f"{directory}/{filename}"
 
 
+def _readable_graph_filename(node_id: str, label: str) -> str:
+    digest = node_id.rsplit(":", 1)[-1]
+    suffix = f"--{digest[:8]}.md"
+    readable = _UNSAFE_GRAPH_FILENAME.sub("_", label)
+    readable = re.sub(r"_+", "_", readable).strip(" .")
+    fallback = node_id.split(":", 1)[0]
+    byte_limit = _GRAPH_FILENAME_MAX_BYTES - len(suffix.encode("utf-8"))
+    while len(readable.encode("utf-8")) > byte_limit:
+        readable = readable[:-1]
+    readable = readable.rstrip(" .")
+    return f"{readable or fallback}{suffix}"
+
+
+def _generated_graph_location(
+    relative_path: str,
+    directory: str,
+    node_id: str,
+    label: str,
+) -> bool:
+    digest = node_id.rsplit(":", 1)[-1]
+    return relative_path in (
+        f"{directory}/{digest}.md",
+        f"{directory}/{_readable_graph_filename(node_id, label)}",
+    )
+
+
 def _readable_generated_graph_location(
     state: _FileState,
     directory: str,
     node_id: str,
+    label: str,
 ) -> bool:
-    digest = node_id.rsplit(":", 1)[-1]
-    return _canonical_generated_location(state, directory, f"{digest}.md") or (
-        state.relative_path.startswith(f"{directory}/")
-        and state.path.name.endswith(f"--{digest[:8]}.md")
-    )
+    return _generated_graph_location(state.relative_path, directory, node_id, label)
 
 
 def _canonical_file(paths: WikiPaths, candidate: Path) -> Path | None:
@@ -327,7 +352,9 @@ def _load_entity(state: _FileState, metadata: dict[str, Any]) -> _EntityRecord |
         or canonical_name is None
         or entity_type is None
         or source_concept_ids is None
-        or not _readable_generated_graph_location(state, "entities", entity_id)
+        or not _readable_generated_graph_location(
+            state, "entities", entity_id, canonical_name
+        )
     ):
         return None
     return _EntityRecord(
@@ -379,7 +406,6 @@ def _load_relation(
         or not source_doc_ids
         or source_fingerprint is None
         or not relation_id.startswith("relation:sha256:")
-        or not _readable_generated_graph_location(state, "relations", relation_id)
         or isinstance(confidence, bool)
         or not isinstance(confidence, (int, float))
         or not 0.0 <= confidence <= 1.0
@@ -473,6 +499,13 @@ def _build_projection(
                     "predicate": relation.predicate.value,
                     "object": object_entity.canonical_name,
                 },
+            )
+            and _generated_graph_location(
+                relation.path,
+                "relations",
+                relation.relation_id,
+                f"{subject.canonical_name} {relation.predicate.value} "
+                f"{object_entity.canonical_name}",
             )
             and relation.origin_concept_id in subject.source_concept_ids
             and relation.origin_concept_id in object_entity.source_concept_ids

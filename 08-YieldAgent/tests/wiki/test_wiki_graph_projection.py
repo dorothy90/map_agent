@@ -555,6 +555,35 @@ def test_projection_rejects_materializer_note_at_forged_location(paths, node_typ
     assert result.source_doc_ids == []
 
 
+@pytest.mark.parametrize("node_type", ["entity", "relation"])
+@pytest.mark.parametrize("filename_kind", ["forged_prefix", "mismatched_hash"])
+def test_projection_rejects_forged_readable_graph_location(
+    paths, node_type, filename_kind
+):
+    from wiki_graph_projection import build_graph_projection
+
+    _write_shared_graph(paths)
+    directory = paths.entities if node_type == "entity" else paths.relations
+    original = (
+        next(
+            path
+            for path in directory.glob("*.md")
+            if frontmatter.load(path).metadata["id"] == SHARED
+        )
+        if node_type == "entity"
+        else next(directory.glob("*.md"))
+    )
+    node_id = frontmatter.load(original).metadata["id"]
+    digest = node_id.rsplit(":", 1)[-1]
+    short_hash = digest[:8] if filename_kind == "forged_prefix" else "0" * 8
+    original.rename(directory / f"forged--{short_hash}.md")
+
+    result = build_graph_projection(paths).expand_concepts([SEED])
+
+    assert result.relations == []
+    assert result.source_doc_ids == []
+
+
 @pytest.mark.parametrize("node_type", ["entity", "relation", "source"])
 def test_projection_requires_materializer_owned_active_graph_notes(paths, node_type):
     from wiki_graph_projection import build_graph_projection
