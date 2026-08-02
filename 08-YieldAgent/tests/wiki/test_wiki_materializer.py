@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import replace
@@ -1348,3 +1349,253 @@ def test_tombstone_finalization_has_no_destructive_pathname_unlink(
     assert operator_path is None
     assert not parked_path.exists()
     _assert_retained_transaction_tombstones(paths.products, original_bytes)
+
+
+def _durable_mutation_inventory(directory):
+    suffixes = (
+        ".yield-wiki-attempt",
+        ".yield-wiki-transaction",
+        ".yield-wiki-transaction-tombstone",
+    )
+    return [
+        path
+        for path in directory.iterdir()
+        if path.is_file() and path.name.endswith(suffixes)
+    ]
+
+
+def _assert_retained_temps_are_attributed(directory):
+    retained = list(directory.glob(".*.tmp"))
+    records = _durable_mutation_inventory(directory)
+    assert retained
+    assert records
+    for record in records:
+        if record.name.endswith(".yield-wiki-attempt"):
+            assert record.name in record.read_text(encoding="utf-8")
+    record_text = "\n".join(
+        record.read_text(encoding="utf-8") for record in records
+    )
+    for path in retained:
+        assert path.name in record_text
+
+
+@pytest.mark.parametrize("existing_target", [False, True])
+@pytest.mark.parametrize("swap_kind", ["regular", "symlink"])
+def test_replacement_rejects_swapped_proposal_after_publication(
+    tmp_path, monkeypatch, existing_target, swap_kind
+):
+    import wiki_safe_mutation
+    from wiki_safe_mutation import GeneratedOwner, PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    if existing_target:
+        target, owner, original_bytes = _owned_target(paths)
+    else:
+        target = paths.products / "TARGET.md"
+        owner = GeneratedOwner(
+            "yield-wiki-materializer", "product", "product:TARGET"
+        )
+        original_bytes = b""
+    proposed_bytes = b"intended generated replacement\n"
+    operator_bytes = (
+        proposed_bytes
+        if swap_kind == "regular"
+        else b"operator proposal replacement\n"
+    )
+    operator_source = paths.products / "operator-source.txt"
+    operator_source.write_bytes(operator_bytes)
+    parked_proposal = paths.products / (
+        f"parked-proposal-{swap_kind}-{int(existing_target)}"
+    )
+    original_move = wiki_safe_mutation._rename_noreplace
+    swapped = False
+
+    def swap_proposal(source, destination, **kwargs):
+        nonlocal swapped
+        if not swapped and str(source).endswith(".tmp") and destination == target.name:
+            swapped = True
+            original_move(source, parked_proposal.name, **kwargs)
+            if swap_kind == "regular":
+                descriptor = wiki_safe_mutation.os.open(
+                    source,
+                    wiki_safe_mutation.os.O_WRONLY
+                    | wiki_safe_mutation.os.O_CREAT
+                    | wiki_safe_mutation.os.O_EXCL
+                    | wiki_safe_mutation.os.O_NOFOLLOW,
+                    0o644,
+                    dir_fd=kwargs["src_dir_fd"],
+                )
+                try:
+                    wiki_safe_mutation.os.write(descriptor, operator_bytes)
+                    wiki_safe_mutation.os.fsync(descriptor)
+                finally:
+                    wiki_safe_mutation.os.close(descriptor)
+            else:
+                wiki_safe_mutation.os.symlink(
+                    operator_source.name,
+                    source,
+                    dir_fd=kwargs["src_dir_fd"],
+                )
+        return original_move(source, destination, **kwargs)
+
+    monkeypatch.setattr(wiki_safe_mutation, "_rename_noreplace", swap_proposal)
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(
+            wiki_safe_mutation.WikiConfigurationError,
+            match="proposal publication conflict",
+        ):
+            mutation.replace_text(
+                target,
+                proposed_bytes.decode(),
+                expected=expected,
+                owner=owner,
+            )
+
+    assert swapped
+    assert parked_proposal.read_bytes() == proposed_bytes
+    if swap_kind == "regular":
+        assert target.read_bytes() == operator_bytes
+    else:
+        assert target.is_symlink()
+        assert str(target.readlink()) == operator_source.name
+    active_records = list(paths.products.glob(".*.yield-wiki-transaction"))
+    assert len(active_records) == 1
+    record = active_records[0].read_text(encoding="utf-8")
+    assert hashlib.sha256(proposed_bytes).hexdigest() in record
+    transaction = json.loads(record.splitlines()[0])
+    parked_info = parked_proposal.stat(follow_symlinks=False)
+    assert transaction["target"] == target.name
+    assert transaction["proposal_expected"]["device"] == parked_info.st_dev
+    assert transaction["proposal_expected"]["inode"] == parked_info.st_ino
+    assert transaction["proposal_expected"]["mode"] == parked_info.st_mode
+    assert target.stat(follow_symlinks=False).st_ino != parked_info.st_ino
+    retained_originals = (
+        list(paths.products.glob(".*.quarantine"))
+        + list(paths.products.glob(".*.yield-wiki-tombstone"))
+    )
+    assert original_bytes == b"" or any(
+        path.read_bytes() == original_bytes for path in retained_originals
+    )
+
+
+@pytest.mark.parametrize("expected_exists", [False, True])
+def test_pretransaction_conflict_retains_durable_proposal_inventory(
+    tmp_path, monkeypatch, expected_exists
+):
+    import wiki_safe_mutation
+    from wiki_safe_mutation import GeneratedOwner, PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    if expected_exists:
+        target, owner, _ = _owned_target(paths)
+    else:
+        target = paths.products / "TARGET.md"
+        owner = GeneratedOwner(
+            "yield-wiki-materializer", "product", "product:TARGET"
+        )
+    proposed_bytes = b"inventory proposal sentinel\n"
+
+    def collide_before_commit(operation, path):
+        assert operation == "replace"
+        path.write_text("operator collision\n", encoding="utf-8")
+
+    monkeypatch.setattr(wiki_safe_mutation, "_before_commit", collide_before_commit)
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(
+            wiki_safe_mutation.WikiConfigurationError,
+            match="changed before replacement",
+        ):
+            mutation.replace_text(
+                target,
+                proposed_bytes.decode(),
+                expected=expected,
+                owner=owner,
+            )
+
+    _assert_retained_temps_are_attributed(paths.products)
+
+
+def test_transaction_record_publication_failure_retains_durable_inventory(
+    tmp_path, monkeypatch
+):
+    import wiki_safe_mutation
+    from wiki_safe_mutation import PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target, owner, _ = _owned_target(paths)
+    original_move = wiki_safe_mutation._rename_noreplace
+    fixed_record = f".{target.name}.yield-wiki-transaction"
+
+    def fail_record_publication(source, destination, **kwargs):
+        if destination == fixed_record:
+            raise OSError(wiki_safe_mutation.errno.EIO, "record publish sentinel")
+        return original_move(source, destination, **kwargs)
+
+    monkeypatch.setattr(
+        wiki_safe_mutation, "_rename_noreplace", fail_record_publication
+    )
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(OSError, match="record publish sentinel"):
+            mutation.replace_text(
+                target,
+                "inventory proposal sentinel\n",
+                expected=expected,
+                owner=owner,
+            )
+
+    _assert_retained_temps_are_attributed(paths.products)
+
+
+def test_competing_transaction_retains_durable_proposal_inventory(
+    tmp_path, monkeypatch
+):
+    import fcntl
+
+    import wiki_safe_mutation
+    from wiki_safe_mutation import PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target, owner, _ = _owned_target(paths)
+    record_name = f".{target.name}.yield-wiki-transaction"
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        directory_fd, _ = mutation._directory(target)
+        competing = wiki_safe_mutation.os.open(
+            record_name,
+            wiki_safe_mutation.os.O_RDWR
+            | wiki_safe_mutation.os.O_CREAT
+            | wiki_safe_mutation.os.O_EXCL
+            | wiki_safe_mutation.os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            wiki_safe_mutation.os.write(competing, b"active competing transaction\n")
+            wiki_safe_mutation.os.fsync(competing)
+            mutation._fsync_directory(directory_fd)
+            fcntl.flock(competing, fcntl.LOCK_EX)
+            with pytest.raises(
+                wiki_safe_mutation.WikiConfigurationError,
+                match="transaction is active",
+            ):
+                mutation.replace_text(
+                    target,
+                    "inventory proposal sentinel\n",
+                    expected=expected,
+                    owner=owner,
+                )
+        finally:
+            wiki_safe_mutation.os.close(competing)
+
+    _assert_retained_temps_are_attributed(paths.products)

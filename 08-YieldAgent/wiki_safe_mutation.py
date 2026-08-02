@@ -50,6 +50,7 @@ class _MutationTransaction:
     operation: str
     expected: dict[str, int | str]
     proposed_sha256: str
+    proposal_expected: dict[str, int | str]
     state: str
     outcome: str
     descriptor: int
@@ -58,6 +59,7 @@ class _MutationTransaction:
 _TRANSACTION_SUFFIX = ".yield-wiki-transaction"
 _TOMBSTONE_SUFFIX = ".yield-wiki-tombstone"
 _TRANSACTION_TOMBSTONE_SUFFIX = ".yield-wiki-transaction-tombstone"
+_ATTEMPT_SUFFIX = ".yield-wiki-attempt"
 
 
 def _rename_noreplace(
@@ -371,6 +373,160 @@ class PinnedWikiMutation:
             raise WikiConfigurationError("Wiki transaction contains an unsafe name")
         return name
 
+    def _start_attempt(
+        self,
+        path: Path,
+        *,
+        directory_fd: int,
+        name: str,
+        proposal_name: str,
+        expected: FileSnapshot,
+        proposed_sha256: str,
+    ) -> tuple[str, int]:
+        attempt_name = f".{name}.{uuid.uuid4().hex}{_ATTEMPT_SUFFIX}"
+        payload = json.dumps(
+            {
+                "version": 1,
+                "kind": "proposal_attempt",
+                "record": attempt_name,
+                "target": name,
+                "proposal": proposal_name,
+                "expected": self._snapshot_fingerprint(expected),
+                "proposed_sha256": proposed_sha256,
+                "state": "preparing",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                attempt_name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            offset = 0
+            while offset < len(payload):
+                written = os.write(descriptor, payload[offset:])
+                if written <= 0:
+                    raise OSError("Wiki mutation attempt write made no progress")
+                offset += written
+            os.fsync(descriptor)
+            self._fsync_directory(directory_fd)
+            opened = self._snapshot_from_descriptor(descriptor)
+            current = self._snapshot_at(
+                path.with_name(attempt_name),
+                directory_fd=directory_fd,
+                name=attempt_name,
+            )
+            if opened != current:
+                raise WikiConfigurationError(
+                    f"Wiki mutation attempt changed while publishing: {path}"
+                )
+            return attempt_name, descriptor
+        except BaseException:
+            if descriptor >= 0:
+                os.close(descriptor)
+            raise
+
+    def _record_attempt_state(
+        self,
+        path: Path,
+        *,
+        directory_fd: int,
+        attempt_name: str,
+        descriptor: int,
+        state: str,
+        proposal_expected: FileSnapshot | None = None,
+    ) -> None:
+        opened = self._snapshot_from_descriptor(descriptor)
+        current = self._snapshot_at(
+            path.with_name(attempt_name),
+            directory_fd=directory_fd,
+            name=attempt_name,
+        )
+        if opened != current:
+            raise WikiConfigurationError(f"Wiki mutation attempt changed: {path}")
+        event: dict[str, object] = {"event": "state", "state": state}
+        if proposal_expected is not None:
+            event["proposal_expected"] = self._snapshot_fingerprint(
+                proposal_expected
+            )
+        payload = json.dumps(
+            event,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        os.lseek(descriptor, 0, os.SEEK_END)
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("Wiki mutation attempt update made no progress")
+            offset += written
+        os.fsync(descriptor)
+        opened = self._snapshot_from_descriptor(descriptor)
+        current = self._snapshot_at(
+            path.with_name(attempt_name),
+            directory_fd=directory_fd,
+            name=attempt_name,
+        )
+        if opened != current:
+            raise WikiConfigurationError(f"Wiki mutation attempt changed: {path}")
+
+    def _publish_proposal(
+        self,
+        path: Path,
+        *,
+        directory_fd: int,
+        proposal_name: str,
+        proposal_descriptor: int,
+        proposal_expected: FileSnapshot,
+        proposed_sha256: str,
+    ) -> None:
+        conflict = (
+            f"Wiki proposal publication conflict: {path}; operator data preserved"
+        )
+        try:
+            opened = self._snapshot_from_descriptor(proposal_descriptor)
+            proposal = self._snapshot_at(
+                path.with_name(proposal_name),
+                directory_fd=directory_fd,
+                name=proposal_name,
+            )
+        except WikiConfigurationError as exc:
+            raise WikiConfigurationError(conflict) from exc
+        if (
+            opened != proposal_expected
+            or proposal != proposal_expected
+            or proposal_expected.sha256 != proposed_sha256
+        ):
+            raise WikiConfigurationError(conflict)
+        _rename_noreplace(
+            proposal_name,
+            path.name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        self._fsync_directory(directory_fd)
+        try:
+            opened = self._snapshot_from_descriptor(proposal_descriptor)
+            published = self._snapshot_at(
+                path,
+                directory_fd=directory_fd,
+                name=path.name,
+            )
+        except WikiConfigurationError as exc:
+            raise WikiConfigurationError(conflict) from exc
+        if (
+            opened != proposal_expected
+            or published != proposal_expected
+            or published.sha256 != proposed_sha256
+        ):
+            raise WikiConfigurationError(conflict)
+
     def _start_transaction(
         self,
         path: Path,
@@ -382,17 +538,21 @@ class PinnedWikiMutation:
         expected: FileSnapshot,
         proposed_sha256: str,
         proposal_name: str,
+        proposal_expected: FileSnapshot | None = None,
+        initial_state: str = "quarantining",
     ) -> _MutationTransaction:
         record_name = self._transaction_record_name(name)
-        temporary_name = f".{record_name}.{uuid.uuid4().hex}.tmp"
         transaction_id = uuid.uuid4().hex
+        temporary_name = f".{name}.{transaction_id}{_ATTEMPT_SUFFIX}"
         tombstone_name = f".{name}.{transaction_id}{_TOMBSTONE_SUFFIX}"
         record_tombstone_name = (
             f".{name}.{transaction_id}{_TRANSACTION_TOMBSTONE_SUFFIX}"
         )
         payload = json.dumps(
             {
-                "version": 2,
+                "version": 3,
+                "kind": "mutation_transaction",
+                "draft": temporary_name,
                 "operation": operation,
                 "target": name,
                 "quarantine": quarantine_name,
@@ -401,7 +561,12 @@ class PinnedWikiMutation:
                 "proposal": proposal_name,
                 "expected": self._snapshot_fingerprint(expected),
                 "proposed_sha256": proposed_sha256,
-                "state": "quarantining",
+                "proposal_expected": (
+                    self._snapshot_fingerprint(proposal_expected)
+                    if proposal_expected is not None
+                    else {}
+                ),
+                "state": initial_state,
                 "outcome": "",
             },
             sort_keys=True,
@@ -424,6 +589,7 @@ class PinnedWikiMutation:
                     raise OSError("Wiki transaction write made no progress")
                 offset += written
             os.fsync(descriptor)
+            self._fsync_directory(directory_fd)
             try:
                 _rename_noreplace(
                     temporary_name,
@@ -457,7 +623,12 @@ class PinnedWikiMutation:
                 operation=operation,
                 expected=self._snapshot_fingerprint(expected),
                 proposed_sha256=proposed_sha256,
-                state="quarantining",
+                proposal_expected=(
+                    self._snapshot_fingerprint(proposal_expected)
+                    if proposal_expected is not None
+                    else {}
+                ),
+                state=initial_state,
                 outcome="",
                 descriptor=descriptor,
             )
@@ -546,7 +717,8 @@ class PinnedWikiMutation:
                     state = "legacy"
                     outcome = ""
                     proposal_name = ""
-                elif version == 2:
+                    proposal_expected: dict[str, int | str] = {}
+                elif version in {2, 3}:
                     tombstone_name = self._safe_entry_name(data["tombstone"])
                     record_tombstone_name = self._safe_entry_name(
                         data["record_tombstone"]
@@ -554,6 +726,11 @@ class PinnedWikiMutation:
                     state = str(data["state"])
                     outcome = str(data.get("outcome") or "")
                     proposal_name = str(data.get("proposal") or "")
+                    proposal_expected = (
+                        dict(data.get("proposal_expected") or {})
+                        if version == 3
+                        else {}
+                    )
                 else:
                     raise ValueError("unsupported transaction version")
                 for event in entries[1:]:
@@ -566,7 +743,7 @@ class PinnedWikiMutation:
                     f"Wiki mutation transaction is invalid: {record_path}"
                 ) from exc
             if (
-                operation not in {"replacement", "deletion"}
+                operation not in {"replacement", "creation", "deletion"}
                 or record_name != self._transaction_record_name(target_name)
                 or (expected_target is not None and target_name != expected_target)
                 or not quarantine_name.endswith(".quarantine")
@@ -584,7 +761,8 @@ class PinnedWikiMutation:
                     "tombstoning",
                     "record_tombstoning",
                 }
-                or outcome not in {"", "replacement", "restoration", "deletion"}
+                or outcome
+                not in {"", "replacement", "creation", "restoration", "deletion"}
                 or (
                     proposal_name
                     and (
@@ -594,6 +772,21 @@ class PinnedWikiMutation:
                 )
                 or set(expected)
                 != {"device", "inode", "mode", "size", "mtime_ns", "sha256"}
+                or (
+                    proposal_expected
+                    and set(proposal_expected)
+                    != {"device", "inode", "mode", "size", "mtime_ns", "sha256"}
+                )
+                or (
+                    operation in {"replacement", "creation"}
+                    and version == 3
+                    and not proposal_expected
+                )
+                or (operation == "creation" and version != 3)
+                or (
+                    proposal_expected
+                    and proposed_sha256 != proposal_expected["sha256"]
+                )
             ):
                 raise WikiConfigurationError(
                     f"Wiki mutation transaction is invalid: {record_path}"
@@ -609,6 +802,7 @@ class PinnedWikiMutation:
                 operation=operation,
                 expected=expected,
                 proposed_sha256=proposed_sha256,
+                proposal_expected=proposal_expected,
                 state=state,
                 outcome=outcome,
                 descriptor=descriptor,
@@ -755,9 +949,14 @@ class PinnedWikiMutation:
             tombstone, transaction.expected
         )
         target_is_proposed = (
-            transaction.operation == "replacement"
+            transaction.operation in {"replacement", "creation"}
             and target.exists
             and target.sha256 == transaction.proposed_sha256
+            and (
+                self._matches_fingerprint(target, transaction.proposal_expected)
+                if transaction.proposal_expected
+                else True
+            )
         )
 
         if transaction.state in {"legacy", "quarantining"}:
@@ -812,6 +1011,54 @@ class PinnedWikiMutation:
                     return
 
         if transaction.state == "publishing":
+            if transaction.operation == "creation":
+                if target_is_proposed and not quarantine.exists and not tombstone.exists:
+                    self._finish_transaction(
+                        path, directory_fd, transaction, outcome="creation"
+                    )
+                    return
+                if (
+                    not target.exists
+                    and not quarantine.exists
+                    and not tombstone.exists
+                    and transaction.proposal_name
+                    and transaction.proposal_expected
+                ):
+                    proposal_path = path.with_name(transaction.proposal_name)
+                    proposal = self._snapshot_at(
+                        proposal_path,
+                        directory_fd=directory_fd,
+                        name=transaction.proposal_name,
+                    )
+                    if self._matches_fingerprint(
+                        proposal, transaction.proposal_expected
+                    ):
+                        try:
+                            descriptor = os.open(
+                                transaction.proposal_name,
+                                os.O_RDONLY | os.O_NOFOLLOW,
+                                dir_fd=directory_fd,
+                            )
+                        except OSError as exc:
+                            raise WikiConfigurationError(
+                                f"Wiki mutation recovery conflict: {path}; "
+                                "operator data preserved"
+                            ) from exc
+                        try:
+                            self._publish_proposal(
+                                path,
+                                directory_fd=directory_fd,
+                                proposal_name=transaction.proposal_name,
+                                proposal_descriptor=descriptor,
+                                proposal_expected=proposal,
+                                proposed_sha256=transaction.proposed_sha256,
+                            )
+                        finally:
+                            os.close(descriptor)
+                        self._finish_transaction(
+                            path, directory_fd, transaction, outcome="creation"
+                        )
+                        return
             if target_is_proposed and (quarantine_is_expected or tombstone_is_expected):
                 expected = quarantine if quarantine_is_expected else tombstone
                 self._tombstone_quarantine(
@@ -875,6 +1122,19 @@ class PinnedWikiMutation:
             return
 
         if transaction.state in {"tombstoning", "record_tombstoning"}:
+            if (
+                transaction.outcome == "creation"
+                and target_is_proposed
+                and not quarantine.exists
+                and not tombstone.exists
+            ):
+                self._finish_transaction(
+                    path,
+                    directory_fd,
+                    transaction,
+                    outcome="creation",
+                )
+                return
             outcome_matches = (
                 (transaction.outcome == "replacement" and target_is_proposed)
                 or (transaction.outcome == "restoration" and target_is_expected)
@@ -1035,65 +1295,124 @@ class PinnedWikiMutation:
         owner: GeneratedOwner | None = None,
     ) -> None:
         directory_fd, name = self._directory(path)
+        payload = content.encode("utf-8")
+        proposed_sha256 = hashlib.sha256(payload).hexdigest()
         temporary_name = f".{name}.{uuid.uuid4().hex}.tmp"
+        attempt_name = ""
+        attempt_descriptor = -1
         transaction: _MutationTransaction | None = None
         quarantine_snapshot: FileSnapshot | None = None
-        descriptor = -1
+        proposal_descriptor = -1
+
+        def record_attempt_state(
+            state: str,
+            proposal_expected: FileSnapshot | None = None,
+        ) -> None:
+            self._record_attempt_state(
+                path,
+                directory_fd=directory_fd,
+                attempt_name=attempt_name,
+                descriptor=attempt_descriptor,
+                state=state,
+                proposal_expected=proposal_expected,
+            )
+
         try:
-            descriptor = os.open(
+            attempt_name, attempt_descriptor = self._start_attempt(
+                path,
+                directory_fd=directory_fd,
+                name=name,
+                proposal_name=temporary_name,
+                expected=expected,
+                proposed_sha256=proposed_sha256,
+            )
+            proposal_descriptor = os.open(
                 temporary_name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                 0o600,
                 dir_fd=directory_fd,
             )
-            payload = content.encode("utf-8")
             offset = 0
             while offset < len(payload):
-                written = os.write(descriptor, payload[offset:])
+                written = os.write(proposal_descriptor, payload[offset:])
                 if written <= 0:
                     raise OSError("Wiki temporary write made no progress")
                 offset += written
-            os.fchmod(descriptor, 0o644)
-            os.fsync(descriptor)
-            os.close(descriptor)
-            descriptor = -1
+            os.fchmod(proposal_descriptor, 0o644)
+            os.fsync(proposal_descriptor)
+            proposal_snapshot = self._snapshot_from_descriptor(proposal_descriptor)
+            if proposal_snapshot.sha256 != proposed_sha256:
+                raise WikiConfigurationError(
+                    f"Wiki proposal changed while preparing: {path}"
+                )
+            record_attempt_state("proposal_ready", proposal_snapshot)
 
             _before_commit("replace", path)
-            current = self.snapshot(path)
+            try:
+                current = self.snapshot(path)
+            except BaseException:
+                record_attempt_state("snapshot_conflict")
+                raise
             if current != expected:
+                record_attempt_state("snapshot_conflict")
                 raise WikiConfigurationError(
                     f"Wiki file changed before replacement: {path}"
                 )
-            self._validate_owner(path, current, owner)
+            try:
+                self._validate_owner(path, current, owner)
+            except BaseException:
+                record_attempt_state("owner_conflict")
+                raise
             _after_snapshot("replace", path)
             directory_fd, name = self._directory(path)
-            if expected.exists:
-                transaction, quarantine_snapshot = self._quarantine(
-                    path,
-                    directory_fd=directory_fd,
-                    name=name,
-                    expected=expected,
-                    owner=owner,
-                    operation="replacement",
-                    proposed_sha256=hashlib.sha256(payload).hexdigest(),
-                    proposal_name=temporary_name,
-                )
-                self._record_transaction_state(
-                    path,
-                    directory_fd=directory_fd,
-                    transaction=transaction,
-                    state="publishing",
-                )
             try:
-                _rename_noreplace(
-                    temporary_name,
-                    name,
-                    src_dir_fd=directory_fd,
-                    dst_dir_fd=directory_fd,
+                if expected.exists:
+                    transaction, quarantine_snapshot = self._quarantine(
+                        path,
+                        directory_fd=directory_fd,
+                        name=name,
+                        expected=expected,
+                        owner=owner,
+                        operation="replacement",
+                        proposed_sha256=proposed_sha256,
+                        proposal_name=temporary_name,
+                        proposal_expected=proposal_snapshot,
+                    )
+                    self._record_transaction_state(
+                        path,
+                        directory_fd=directory_fd,
+                        transaction=transaction,
+                        state="publishing",
+                    )
+                else:
+                    transaction_id = uuid.uuid4().hex
+                    transaction = self._start_transaction(
+                        path,
+                        directory_fd=directory_fd,
+                        name=name,
+                        quarantine_name=f".{name}.{transaction_id}.quarantine",
+                        operation="creation",
+                        expected=expected,
+                        proposed_sha256=proposed_sha256,
+                        proposal_name=temporary_name,
+                        proposal_expected=proposal_snapshot,
+                        initial_state="publishing",
+                    )
+            except BaseException:
+                record_attempt_state("transaction_conflict")
+                raise
+            record_attempt_state("publishing")
+            try:
+                self._publish_proposal(
+                    path,
+                    directory_fd=directory_fd,
+                    proposal_name=temporary_name,
+                    proposal_descriptor=proposal_descriptor,
+                    proposal_expected=proposal_snapshot,
+                    proposed_sha256=proposed_sha256,
                 )
-                self._fsync_directory(directory_fd)
-                temporary_name = ""
             except FileExistsError as exc:
+                record_attempt_state("publication_conflict")
                 if transaction is not None and quarantine_snapshot is not None:
                     self._restore_quarantine(
                         path,
@@ -1110,7 +1429,11 @@ class PinnedWikiMutation:
                 raise WikiConfigurationError(
                     f"Wiki file appeared before replacement: {path}"
                 ) from exc
+            except WikiConfigurationError:
+                record_attempt_state("publication_conflict")
+                raise
             except OSError:
+                record_attempt_state("publication_error")
                 if transaction is not None and quarantine_snapshot is not None:
                     self._restore_quarantine(
                         path,
@@ -1125,6 +1448,7 @@ class PinnedWikiMutation:
                         outcome="restoration",
                     )
                 raise
+            record_attempt_state("published")
             if transaction is not None and quarantine_snapshot is not None:
                 self._tombstone_quarantine(
                     path,
@@ -1139,12 +1463,22 @@ class PinnedWikiMutation:
                     transaction,
                     outcome="replacement",
                 )
+            elif transaction is not None:
+                self._finish_transaction(
+                    path,
+                    directory_fd,
+                    transaction,
+                    outcome="creation",
+                )
+            record_attempt_state("completed")
             self._directory(path)
         finally:
             if transaction is not None:
                 os.close(transaction.descriptor)
-            if descriptor >= 0:
-                os.close(descriptor)
+            if proposal_descriptor >= 0:
+                os.close(proposal_descriptor)
+            if attempt_descriptor >= 0:
+                os.close(attempt_descriptor)
 
     def _quarantine(
         self,
@@ -1157,6 +1491,7 @@ class PinnedWikiMutation:
         operation: str,
         proposed_sha256: str,
         proposal_name: str,
+        proposal_expected: FileSnapshot | None = None,
     ) -> tuple[_MutationTransaction, FileSnapshot]:
         quarantine_name = f".{name}.{uuid.uuid4().hex}.quarantine"
         transaction = self._start_transaction(
@@ -1168,6 +1503,7 @@ class PinnedWikiMutation:
             expected=expected,
             proposed_sha256=proposed_sha256,
             proposal_name=proposal_name,
+            proposal_expected=proposal_expected,
         )
         try:
             _rename_noreplace(
