@@ -123,7 +123,7 @@ def test_wiki_first_exact_triple_includes_source_backed_graph_without_vector_sea
     )
     monkeypatch.setattr(
         fail_history_tools,
-        "_search_opensearch",
+        "search_opensearch_with_mode",
         lambda **kwargs: pytest.fail("wiki-first must not run vector search"),
     )
     fetched = []
@@ -263,9 +263,9 @@ def test_exact_triple_expands_canonical_concept_before_opensearch(
     )
     monkeypatch.setattr(
         fail_history_tools,
-        "_search_opensearch",
+        "search_opensearch_with_mode",
         lambda **kwargs: calls.append(("search", kwargs))
-        or [
+        or ([
             {
                 "doc_id": "FH-SHARED",
                 "product": "4SS",
@@ -273,7 +273,7 @@ def test_exact_triple_expands_canonical_concept_before_opensearch(
                 "cause_oper": "PRE METAL CLN",
                 "score": 91.0,
             }
-        ],
+        ], "hybrid"),
     )
     fetched: list[list[str]] = []
     monkeypatch.setattr(
@@ -336,15 +336,15 @@ def test_graph_retrieval_marks_envelope_and_queue_private_without_request_contex
     )
     monkeypatch.setattr(
         fail_history_tools,
-        "_search_opensearch",
-        lambda **kwargs: [
+        "search_opensearch_with_mode",
+        lambda **kwargs: ([
             {
                 "doc_id": "FH-GRAPH",
                 "product": "4SS",
                 "fail_type": "EASY",
                 "cause_oper": "PRE METAL CLN",
             }
-        ],
+        ], "hybrid"),
     )
 
     result = fail_history_tools.do_search(
@@ -378,9 +378,9 @@ def test_search_metadata_seeds_graph_when_request_has_no_exact_triple(
     )
     monkeypatch.setattr(
         fail_history_tools,
-        "_search_opensearch",
+        "search_opensearch_with_mode",
         lambda **kwargs: calls.append(("search", kwargs))
-        or [
+        or ([
             {
                 "doc_id": "FH-SEARCH",
                 "product": "4SS",
@@ -389,7 +389,7 @@ def test_search_metadata_seeds_graph_when_request_has_no_exact_triple(
                 "score": 77.0,
                 "content": "Natural-language text is not a graph seed",
             }
-        ],
+        ], "hybrid"),
     )
     monkeypatch.setattr(
         fail_history_tools,
@@ -420,7 +420,9 @@ def test_graph_projection_failure_preserves_prior_opensearch_shape(
         }
     ]
     monkeypatch.setattr(
-        fail_history_tools, "_search_opensearch", lambda **kwargs: search_results
+        fail_history_tools,
+        "search_opensearch_with_mode",
+        lambda **kwargs: (search_results, "hybrid"),
     )
     monkeypatch.setattr(
         fail_history_tools,
@@ -438,10 +440,54 @@ def test_graph_projection_failure_preserves_prior_opensearch_shape(
         "results": search_results,
         "wiki_memory": {"concepts": [], "aliases": [], "recent_episodes": []},
         "retrieval_mode": "baseline",
+        "opensearch_retrieval_mode": "hybrid",
         "fail_type_filter_dropped": False,
         "super_reference_body": "",
         "evidence_sensitive": False,
     }
+
+
+def test_agent_search_uses_bm25_fallback_and_propagates_mode(tmp_path, monkeypatch):
+    _stub_existing_wiki_paths(monkeypatch, tmp_path)
+    bm25_calls = []
+    monkeypatch.setattr(
+        fail_history_tools,
+        "_get_embedding",
+        lambda query: (_ for _ in ()).throw(RuntimeError("embedding offline")),
+    )
+
+    def search_bm25(**kwargs):
+        bm25_calls.append(kwargs)
+        return [
+            {
+                "doc_id": "FH-BM25",
+                "product": "4SS",
+                "fail_type": "EASY",
+                "cause_oper": "PRE METAL CLN",
+            }
+        ]
+
+    monkeypatch.setattr(fail_history_tools, "_search_bm25", search_bm25)
+
+    result = fail_history_tools.do_search(
+        query="oxide failure",
+        product="4SS",
+        fail_type="EASY",
+        cause_oper="PRE METAL CLN",
+        top_k=7,
+    )
+
+    assert bm25_calls == [
+        {
+            "query": "oxide failure",
+            "product": "4SS",
+            "fail_type": "EASY",
+            "cause_oper": "PRE METAL CLN",
+            "top_k": 7,
+        }
+    ]
+    assert result["retrieval_mode"] == "bm25_fallback"
+    assert result["opensearch_retrieval_mode"] == "bm25_fallback"
 
 
 def test_merge_evidence_keeps_opensearch_row_and_score():

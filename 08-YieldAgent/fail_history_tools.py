@@ -675,12 +675,13 @@ def do_search(
         return output
 
     try:
-        results = _search_opensearch(
+        results, opensearch_retrieval_mode = search_opensearch_with_mode(
             query=query,
             product=product,
             fail_type=fail_type,
             cause_oper=cause_oper,
             top_k=top_k,
+            allow_embedding_fallback=True,
         )
     except Exception as e:
         logger.error("[do_search] 검색 오류: %s", e, exc_info=True)
@@ -696,13 +697,16 @@ def do_search(
             fail_type,
         )
         try:
-            results = _search_opensearch(
+            results, retry_mode = search_opensearch_with_mode(
                 query=query,
                 product=product,
                 fail_type="",
                 cause_oper=cause_oper,
                 top_k=top_k,
+                allow_embedding_fallback=True,
             )
+            if retry_mode == "bm25_fallback":
+                opensearch_retrieval_mode = retry_mode
             fail_type_filter_dropped = True
         except Exception as e:
             logger.error("[do_search] fallback 검색 오류: %s", e, exc_info=True)
@@ -742,7 +746,12 @@ def do_search(
         return {
             "total": 0,
             "results": [],
-            "retrieval_mode": "baseline",
+            "retrieval_mode": (
+                "bm25_fallback"
+                if opensearch_retrieval_mode == "bm25_fallback"
+                else "baseline"
+            ),
+            "opensearch_retrieval_mode": opensearch_retrieval_mode,
             "super_reference_body": super_reference_body,
             "evidence_sensitive": bool(
                 grounded_graph_context is not None or super_reference_body
@@ -798,7 +807,12 @@ def do_search(
         "total": len(results),
         "results": results,
         "wiki_memory": wiki_mem,
-        "retrieval_mode": "baseline",
+        "retrieval_mode": (
+            "bm25_fallback"
+            if opensearch_retrieval_mode == "bm25_fallback"
+            else "baseline"
+        ),
+        "opensearch_retrieval_mode": opensearch_retrieval_mode,
         "fail_type_filter_dropped": fail_type_filter_dropped,
         "evidence_sensitive": evidence_sensitive,
     }
