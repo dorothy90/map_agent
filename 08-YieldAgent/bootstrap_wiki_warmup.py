@@ -40,7 +40,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from fail_history_tools import _get_opensearch_client  # noqa: E402
 import wiki_store  # noqa: E402
 from wiki_config import resolve_wiki_paths  # noqa: E402
-from wiki_manifest import load_manifest, record_success, save_manifest  # noqa: E402
+from wiki_manifest import (  # noqa: E402
+    load_manifest,
+    record_success,
+    save_manifest,
+    set_projection_state,
+)
 from wiki_summarizer import (  # noqa: E402
     authoritative_citations_from_documents,
     restrict_concept_synthesis_sources,
@@ -185,6 +190,11 @@ def process_triple(t: dict[str, Any], max_docs: int) -> tuple[str, str]:
     except Exception as e:
         return ("synth_fail", f"  ✗ synth: {type(e).__name__}")
     try:
+        projection_at = datetime.datetime.now(
+            datetime.timezone.utc
+        ).isoformat(timespec="seconds")
+        set_projection_state(manifest, "dirty", projection_at)
+        save_manifest(_MANIFEST_PATH, manifest)
         stored = wiki_store.upsert_concept(
             filters={
                 "product": key.product,
@@ -240,6 +250,17 @@ def process_triple(t: dict[str, Any], max_docs: int) -> tuple[str, str]:
             except Exception as e:
                 return ("save_fail", f"  ✗ manifest save: {e}")
     return ("ok", f"  ✓ conf={result.confidence:.2f}  docs={len(docs)}  cits={len(result.citations)}")
+
+
+def _finish_projection(status: str, *, error: str | None = None) -> None:
+    if not _MANIFEST_PATH.exists():
+        return
+    manifest = load_manifest(_MANIFEST_PATH, _OPENSEARCH_INDEX)
+    completed_at = datetime.datetime.now(
+        datetime.timezone.utc
+    ).isoformat(timespec="seconds")
+    set_projection_state(manifest, status, completed_at, error=error)
+    save_manifest(_MANIFEST_PATH, manifest)
 
 
 # ── main ────────────────────────────────────────────────
@@ -334,12 +355,21 @@ def main() -> int:
     print(f"\n  완료: {elapsed:.1f}s ({elapsed/60:.1f}분)")
     print(f"  결과: {counts}")
 
-    materialization = wiki_store.materialize_obsidian_wiki()
+    try:
+        materialization = wiki_store.materialize_obsidian_wiki()
+    except Exception as exc:
+        _finish_projection("failed", error=str(exc))
+        print(f"\n  ✗ Obsidian graph materialization 실패: {exc}")
+        return 1
     if materialization.errors:
+        _finish_projection(
+            "failed", error="; ".join(str(error) for error in materialization.errors)
+        )
         print("\n  ✗ Obsidian graph materialization 실패:")
         for error in materialization.errors:
             print(f"    - {error}")
         return 1
+    _finish_projection("clean")
 
     # ── 5) vault 요약 + lint ───────────────────────────
     vc = wiki_store.counts()

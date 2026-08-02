@@ -363,11 +363,9 @@ def _filters_from_key(triple_key: str) -> dict[str, str]:
 
 
 def _projection_needs_repair(manifest: dict[str, Any]) -> bool:
-    projection = manifest.get("projection")
-    return isinstance(projection, dict) and projection.get("status") in {
-        "dirty",
-        "failed",
-    }
+    from wiki_manifest import projection_needs_repair
+
+    return projection_needs_repair(manifest)
 
 
 def _set_projection_state(
@@ -377,11 +375,9 @@ def _set_projection_state(
     *,
     error: str | None = None,
 ) -> None:
-    projection = {"status": status, "updated_at": updated_at}
-    if error:
-        projection["last_error"] = " ".join(error.split())[:500]
-    manifest["projection"] = projection
-    manifest["updated_at"] = updated_at
+    from wiki_manifest import set_projection_state
+
+    set_projection_state(manifest, status, updated_at, error=error)
 
 
 class WikiSyncService:

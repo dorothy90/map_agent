@@ -4,7 +4,7 @@ import pytest
 
 import bootstrap_wiki_warmup as bootstrap
 from wiki_graph_models import EntityCandidate, RelationCandidate
-from wiki_manifest import load_manifest
+from wiki_manifest import empty_manifest, load_manifest, save_manifest
 from wiki_summarizer import EpisodeRef
 
 
@@ -152,7 +152,6 @@ def test_successful_bootstrap_records_shared_fingerprint_metadata_and_manifest(
             ],
         ),
     )
-
     def upsert(*args, **kwargs):
         captured.append(kwargs)
         return "4SS|PRE METAL CLN|EASY", "created"
@@ -197,6 +196,98 @@ def test_successful_bootstrap_records_shared_fingerprint_metadata_and_manifest(
     assert manifest["triples"]["4SS|PRE METAL CLN|EASY"][
         "source_fingerprint"
     ] == metadata["source_fingerprint"]
+
+
+def test_bootstrap_persists_projection_dirty_before_concept_write(
+    tmp_path, monkeypatch
+):
+    documents = [
+        {
+            "doc_id": "FH-1",
+            "content": "source",
+            "product": "4SS",
+            "fail_type": "EASY(W)",
+            "cause_oper": "PRE METAL CLN",
+        }
+    ]
+    manifest_path = tmp_path / ".yield-wiki" / "manifest.json"
+    monkeypatch.setattr(bootstrap, "_MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(
+        bootstrap, "fetch_docs_for_triple", lambda *args, **kwargs: documents
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "synthesize_concept_from_docs",
+        lambda *args: SimpleNamespace(
+            body_markdown="body",
+            confidence=0.8,
+            citations=[],
+            entities=[],
+            relations=[],
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "restrict_concept_synthesis_sources",
+        lambda result, citations: result,
+    )
+
+    def terminate_during_write(*args, **kwargs):
+        manifest = load_manifest(manifest_path, bootstrap._OPENSEARCH_INDEX)
+        assert manifest["projection"]["status"] == "dirty"
+        raise KeyboardInterrupt("crash after dirty guard")
+
+    monkeypatch.setattr(
+        bootstrap.wiki_store, "upsert_concept", terminate_during_write
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="crash after dirty guard"):
+        bootstrap.process_triple(_triple(), max_docs=15)
+
+    manifest = load_manifest(manifest_path, bootstrap._OPENSEARCH_INDEX)
+    assert manifest["projection"]["status"] == "dirty"
+    assert manifest["triples"] == {}
+
+
+def test_bootstrap_materialization_error_marks_projection_failed(
+    tmp_path, monkeypatch
+):
+    manifest_path = tmp_path / ".yield-wiki" / "manifest.json"
+    manifest = empty_manifest(bootstrap._OPENSEARCH_INDEX)
+    manifest["projection"] = {
+        "status": "dirty",
+        "updated_at": "2026-08-01T00:00:00+00:00",
+    }
+    save_manifest(manifest_path, manifest)
+    monkeypatch.setattr(bootstrap, "_MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(
+        bootstrap.sys,
+        "argv",
+        [
+            "bootstrap_wiki_warmup.py",
+            "--apply",
+            "--product",
+            "4SS",
+            "--fail-type",
+            "EASY",
+            "--cause-oper",
+            "PRE METAL CLN",
+            "--no-lint",
+        ],
+    )
+    monkeypatch.setattr(
+        bootstrap, "process_triple", lambda *args, **kwargs: ("ok", "ok")
+    )
+    monkeypatch.setattr(
+        bootstrap.wiki_store,
+        "materialize_obsidian_wiki",
+        lambda: SimpleNamespace(errors=("projection failed",)),
+    )
+
+    assert bootstrap.main() == 1
+    failed = load_manifest(manifest_path, bootstrap._OPENSEARCH_INDEX)
+    assert failed["projection"]["status"] == "failed"
+    assert failed["projection"]["last_error"] == "projection failed"
 
 
 def test_bootstrap_rejects_unsupported_body_source_before_persistence(

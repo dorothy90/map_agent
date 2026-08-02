@@ -5,7 +5,7 @@ import json
 import os
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from wiki_sync import TripleSnapshot
 
@@ -66,6 +66,28 @@ def record_success(
     triples[snapshot.key.canonical] = entry
     manifest["updated_at"] = success_at
     return True
+
+
+def projection_needs_repair(manifest: dict[str, Any]) -> bool:
+    projection = manifest.get("projection")
+    return isinstance(projection, dict) and projection.get("status") in {
+        "dirty",
+        "failed",
+    }
+
+
+def set_projection_state(
+    manifest: dict[str, Any],
+    status: Literal["dirty", "failed", "clean"],
+    updated_at: str,
+    *,
+    error: str | None = None,
+) -> None:
+    projection = {"status": status, "updated_at": updated_at}
+    if error:
+        projection["last_error"] = " ".join(error.split())[:500]
+    manifest["projection"] = projection
+    manifest["updated_at"] = updated_at
 
 
 def _serialized(manifest: dict[str, Any]) -> bytes:
