@@ -274,7 +274,7 @@ class WikiJobStore:
                 }
             },
         )
-        return result.modified_count == 1
+        return result.matched_count == 1
 
     def release_global_lock(self, owner: str) -> bool:
         return self.locks.delete_one(

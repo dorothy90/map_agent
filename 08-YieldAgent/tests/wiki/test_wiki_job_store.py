@@ -207,3 +207,11 @@ def test_global_lock_is_owned_renewed_and_reclaimed_after_expiry(mongo_store):
     assert store.acquire_global_lock("worker-2", lease_seconds=30) is True
     assert store.release_global_lock("worker-1") is False
     assert store.release_global_lock("worker-2") is True
+
+
+def test_global_lock_same_millisecond_renewal_keeps_owner(mongo_store):
+    store, _ = mongo_store
+
+    assert store.acquire_global_lock("worker-1", lease_seconds=30) is True
+    assert store.renew_global_lock("worker-1", lease_seconds=30) is True
+    assert store.renew_global_lock("worker-2", lease_seconds=30) is False
