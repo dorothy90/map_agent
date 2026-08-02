@@ -55,7 +55,7 @@ The short hash is for filename collision resistance and display only. Frontmatte
 
 The materializer calculates all new paths before writing and applies its existing collision and Vault containment checks. All generated wikilinks in Concept, Entity, Relation, overview, and index notes use the new paths.
 
-Before writing, the materializer scans generated Entity and Relation notes by their full frontmatter `id`. At most one existing materializer-owned path may claim an ID. If the same active ID exists at its old hash-only path, that path is treated as a path migration, not a semantic removal.
+Before writing, the materializer scans generated Entity and Relation notes by their full frontmatter `id`. If the same active ID exists at its old hash-only path, that path is treated as a path migration, not a semantic removal. A previous run may have stopped after writing the readable target but before deleting the old path; the next run recognizes the exact pair of canonical readable target plus materializer-owned legacy hash path and finishes deleting the legacy path. Multiple noncanonical paths claiming one ID remain fatal.
 
 On the first successful materialization:
 
@@ -84,7 +84,7 @@ No new download authorization, embedding call, external database, or Plugin-side
 
 - Empty readable label: use the node type fallback plus the hash suffix.
 - Filename collision: fail before changing any file.
-- Duplicate generated notes claiming the same full ID: fail before changing any file.
+- Duplicate noncanonical generated notes claiming the same full ID: fail before changing any file. The one recoverable canonical-target-plus-legacy-path pair is cleaned up.
 - Existing user-owned target: fail before changing any file.
 - Missing or invalid Citation `source_path`: do not fabricate a path; preserve current non-clickable rendering.
 - Backend unavailable during Desktop verification: report the verification as blocked, not passed.
@@ -98,6 +98,7 @@ Automated tests must prove:
 - Entity and Relation frontmatter retain full canonical IDs.
 - all generated wikilinks target the readable files.
 - the first migration removes obsolete managed hash-only paths without touching user files.
+- an interrupted migration with both the canonical readable target and legacy hash path resumes by deleting only the legacy path.
 - the second materialization is idempotent.
 - stale graph notes and Graph projection continue to work.
 - existing Wiki, confirm-edit, user-memory, and Plugin tests remain green.
