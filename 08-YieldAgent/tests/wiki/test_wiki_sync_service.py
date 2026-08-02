@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import frontmatter
 import pytest
 
+from wiki_graph_models import EntityCandidate, RelationCandidate
 from wiki_manifest import empty_manifest, load_manifest, record_success, save_manifest
 from wiki_sync import (
     WikiSyncService,
@@ -164,6 +165,21 @@ def _synthesis():
         body_markdown="## 합성 결과\n\n검증 본문",
         confidence=0.82,
         citations=[citation],
+        entities=[
+            EntityCandidate(
+                canonical_name="Queue time 초과",
+                entity_type="process_condition",
+            )
+        ],
+        relations=[
+            RelationCandidate(
+                subject="Queue time 초과",
+                predicate="causes",
+                object="자연 산화",
+                confidence=0.82,
+                source_doc_ids=["FH-1"],
+            )
+        ],
     )
 
 
@@ -213,6 +229,12 @@ def test_new_concept_records_sync_metadata_manifest_and_materializes_once(store)
     assert metadata["evidence_count"] == 2
     assert metadata["evidence_scope"] == "multiple_sources"
     assert metadata["sync_job_id"].startswith("job:sha256:")
+    assert metadata["entities"] == [
+        {"canonical_name": "Queue time 초과", "entity_type": "process_condition"}
+    ]
+    assert metadata["relations"][0]["predicate"] == "causes"
+    assert metadata["body_versions"][-1]["entities"] == metadata["entities"]
+    assert metadata["body_versions"][-1]["relations"] == metadata["relations"]
     manifest = load_manifest(store._PATHS.manifest, "fail-history")
     assert manifest["triples"][snapshot.key.canonical]["source_fingerprint"] == snapshot.source_fingerprint
     assert next(iter(jobs.jobs.values()))["status"] == "succeeded"
@@ -237,16 +259,20 @@ def test_matching_concept_fingerprint_repairs_manifest_without_llm(store):
         materialize=False,
     )
     calls = []
+    materialize_calls = []
     service, jobs = _service(
         store,
         {snapshot.key.canonical: snapshot},
         synthesize=lambda *args: calls.append(args),
+        materialize=lambda: materialize_calls.append(True)
+        or SimpleNamespace(errors=()),
     )
 
     result = service.apply(limit=10)
 
     assert result.recovered == 1
     assert calls == []
+    assert materialize_calls == [True]
     assert load_manifest(store._PATHS.manifest, "fail-history")["triples"][
         snapshot.key.canonical
     ]["source_fingerprint"] == snapshot.source_fingerprint

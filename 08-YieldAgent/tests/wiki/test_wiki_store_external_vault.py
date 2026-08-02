@@ -47,6 +47,134 @@ print(json.dumps({"root": str(wiki_store._VAULT), "eid": eid, "status": status})
     assert (vault / "reviews").is_dir()
 
 
+def test_concept_graph_state_tracks_current_and_auditable_body_versions(tmp_path):
+    vault = tmp_path / "YieldWiki"
+    script = """
+import json
+import wiki_store
+from wiki_graph_models import EntityCandidate, RelationCandidate
+
+filters = {"product": "4SS", "fail_type": "EASY", "cause_oper": "PRE METAL CLN"}
+first_entities = [
+    EntityCandidate(
+        canonical_name="Queue time 초과",
+        entity_type="process_condition",
+    ).model_dump(mode="json")
+]
+first_relations = [
+    RelationCandidate(
+        subject="Queue time 초과",
+        predicate="causes",
+        object="자연 산화",
+        confidence=0.82,
+        source_doc_ids=["FH-1"],
+    ).model_dump(mode="json")
+]
+second_entities = [
+    EntityCandidate(
+        canonical_name="자연 산화",
+        entity_type="failure_mechanism",
+    ).model_dump(mode="json")
+]
+second_relations = [
+    RelationCandidate(
+        subject="세정",
+        predicate="prevents",
+        object="자연 산화",
+        confidence=0.91,
+        source_doc_ids=["FH-2"],
+    ).model_dump(mode="json")
+]
+
+wiki_store.upsert_concept(
+    filters=filters,
+    synthesized_body="first body",
+    confidence=0.8,
+    citations=[{"doc_id": "FH-1"}],
+    entities=first_entities,
+    relations=first_relations,
+    sync_metadata={"source_fingerprint": "sha256:one"},
+    materialize=False,
+)
+wiki_store.upsert_concept(
+    filters=filters,
+    entities=second_entities,
+    relations=second_relations,
+    materialize=False,
+)
+unchanged = wiki_store.read_node("concept:4SS|PRE METAL CLN|EASY")["frontmatter"]
+wiki_store.upsert_concept(
+    filters=filters,
+    synthesized_body="second body",
+    confidence=0.9,
+    citations=[{"doc_id": "FH-2"}],
+    entities=second_entities,
+    relations=second_relations,
+    sync_metadata={"source_fingerprint": "sha256:two"},
+    materialize=False,
+)
+
+node = wiki_store.read_node("concept:4SS|PRE METAL CLN|EASY")
+print(json.dumps({"unchanged": unchanged, "current": node["frontmatter"]}, ensure_ascii=False))
+"""
+    env = {**os.environ, "WIKI_VAULT_PATH": str(vault)}
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = json.loads(completed.stdout.strip())
+    unchanged = result["unchanged"]
+    assert unchanged["entities"] == [
+        {"canonical_name": "Queue time 초과", "entity_type": "process_condition"}
+    ]
+    assert unchanged["relations"][0]["predicate"] == "causes"
+    assert len(unchanged["body_versions"]) == 1
+
+    metadata = result["current"]
+    assert metadata["entities"] == [
+        {"canonical_name": "자연 산화", "entity_type": "failure_mechanism"}
+    ]
+    assert metadata["relations"] == [
+        {
+            "subject": "세정",
+            "predicate": "prevents",
+            "object": "자연 산화",
+            "confidence": 0.91,
+            "source_doc_ids": ["FH-2"],
+        }
+    ]
+    assert [version["entities"] for version in metadata["body_versions"]] == [
+        [{"canonical_name": "Queue time 초과", "entity_type": "process_condition"}],
+        [{"canonical_name": "자연 산화", "entity_type": "failure_mechanism"}],
+    ]
+    assert [version["relations"] for version in metadata["body_versions"]] == [
+        [
+            {
+                "subject": "Queue time 초과",
+                "predicate": "causes",
+                "object": "자연 산화",
+                "confidence": 0.82,
+                "source_doc_ids": ["FH-1"],
+            }
+        ],
+        [
+            {
+                "subject": "세정",
+                "predicate": "prevents",
+                "object": "자연 산화",
+                "confidence": 0.91,
+                "source_doc_ids": ["FH-2"],
+            }
+        ],
+    ]
+
+
 def test_bootstrap_default_resolves_relative_external_vault(tmp_path):
     vault_name = "YieldWiki"
     script = """

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import bootstrap_wiki_warmup as bootstrap
+from wiki_graph_models import EntityCandidate, RelationCandidate
 from wiki_manifest import load_manifest
 
 
@@ -106,7 +107,24 @@ def test_successful_bootstrap_records_shared_fingerprint_metadata_and_manifest(
         bootstrap,
         "synthesize_concept_from_docs",
         lambda *args: SimpleNamespace(
-            body_markdown="body", confidence=0.8, citations=[]
+            body_markdown="body",
+            confidence=0.8,
+            citations=[],
+            entities=[
+                EntityCandidate(
+                    canonical_name="Queue time 초과",
+                    entity_type="process_condition",
+                )
+            ],
+            relations=[
+                RelationCandidate(
+                    subject="Queue time 초과",
+                    predicate="causes",
+                    object="자연 산화",
+                    confidence=0.82,
+                    source_doc_ids=["FH-1"],
+                )
+            ],
         ),
     )
 
@@ -129,6 +147,18 @@ def test_successful_bootstrap_records_shared_fingerprint_metadata_and_manifest(
     assert metadata["evidence_count"] == 1
     assert metadata["evidence_scope"] == "single_source"
     assert metadata["sync_job_id"].startswith("bootstrap:sha256:")
+    assert captured[0]["entities"] == [
+        {"canonical_name": "Queue time 초과", "entity_type": "process_condition"}
+    ]
+    assert captured[0]["relations"] == [
+        {
+            "subject": "Queue time 초과",
+            "predicate": "causes",
+            "object": "자연 산화",
+            "confidence": 0.82,
+            "source_doc_ids": ["FH-1"],
+        }
+    ]
     manifest = load_manifest(manifest_path, bootstrap._OPENSEARCH_INDEX)
     assert manifest["triples"]["4SS|PRE METAL CLN|EASY"][
         "source_fingerprint"

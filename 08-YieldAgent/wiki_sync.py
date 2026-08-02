@@ -538,7 +538,7 @@ class WikiSyncService:
                 concept_version=version,
             ):
                 raise RuntimeError("Wiki sync job ownership was lost before recovery")
-            return "recovered", False
+            return "recovered", True
 
         synthesis = self.synthesize(concept_id, list(snapshot.documents))
         if synthesis is None:
@@ -546,6 +546,14 @@ class WikiSyncService:
         citations = [
             citation.model_dump() if hasattr(citation, "model_dump") else dict(citation)
             for citation in synthesis.citations
+        ]
+        entities = [
+            candidate.model_dump(mode="json")
+            for candidate in getattr(synthesis, "entities", [])
+        ]
+        relations = [
+            candidate.model_dump(mode="json")
+            for candidate in getattr(synthesis, "relations", [])
         ]
         filters = {
             "product": snapshot.key.product,
@@ -558,6 +566,8 @@ class WikiSyncService:
             synthesized_body=synthesis.body_markdown,
             confidence=synthesis.confidence,
             citations=citations,
+            entities=entities,
+            relations=relations,
             evidence={
                 "score": 1.0
                 if snapshot.evidence_count >= 5

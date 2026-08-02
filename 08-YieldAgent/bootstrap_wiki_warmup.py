@@ -187,6 +187,14 @@ def process_triple(t: dict[str, Any], max_docs: int) -> tuple[str, str]:
             synthesized_body=result.body_markdown,
             confidence=result.confidence,
             citations=[c.model_dump() for c in result.citations],
+            entities=[
+                candidate.model_dump(mode="json")
+                for candidate in getattr(result, "entities", [])
+            ],
+            relations=[
+                candidate.model_dump(mode="json")
+                for candidate in getattr(result, "relations", [])
+            ],
             evidence={
                 "score": 1.0 if len(docs) >= 5 else len(docs) / 5.0,
                 "unique_doc_ids": len({d.get("doc_id") for d in docs if d.get("doc_id")}),

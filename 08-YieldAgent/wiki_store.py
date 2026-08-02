@@ -9,6 +9,7 @@ import hashlib
 import logging
 import os
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -215,6 +216,8 @@ def upsert_concept(
     synthesized_body: str | None = None,
     confidence: float | None = None,
     citations: list[dict] | None = None,
+    entities: list[dict] | None = None,
+    relations: list[dict] | None = None,
     evidence: dict | None = None,
     sync_metadata: dict[str, Any] | None = None,
     materialize: bool = True,
@@ -223,7 +226,7 @@ def upsert_concept(
 
     Base rollup (seen_count++, source append, version++, lifecycle 갱신)은 항상.
     synthesized_body가 주어지면 body_versions에 누적 + content 갱신 (plan v3 §A 합성).
-    confidence/citations/evidence는 합성 호출에서만 전달.
+    confidence/citations/entities/relations/evidence는 합성 호출에서만 전달.
 
     Returns (concept_id, status) — status in {"created", "updated"}.
     """
@@ -250,6 +253,8 @@ def upsert_concept(
             **_lifecycle_defaults(),
             "confidence": float(confidence) if confidence is not None else 0.0,
             "citations": list(citations or []),
+            "entities": [],
+            "relations": [],
             "evidence_diversity_score": float((evidence or {}).get("score", 0.0)),
             "unique_doc_ids": int((evidence or {}).get("unique_doc_ids", 0)),
             "body_versions": [],
@@ -259,6 +264,8 @@ def upsert_concept(
             fm["status"] = "active"
         body = ""
         if synthesized_body:
+            fm["entities"] = deepcopy(entities or [])
+            fm["relations"] = deepcopy(relations or [])
             fm["body_versions"].append({
                 "version": 1,
                 "created": now,
@@ -266,6 +273,8 @@ def upsert_concept(
                 "source_episode_ids": fm["source_episode_ids"],
                 "body_markdown": synthesized_body,
                 "confidence": fm["confidence"],
+                "entities": deepcopy(fm["entities"]),
+                "relations": deepcopy(fm["relations"]),
             })
             body = synthesized_body
         post = frontmatter.Post(content=body, **fm)
@@ -289,6 +298,8 @@ def upsert_concept(
     md.setdefault("status", "active")
     md.setdefault("stale_after_days", _STALE_AFTER_DAYS)
     md.setdefault("citations", [])
+    md.setdefault("entities", [])
+    md.setdefault("relations", [])
     md.setdefault("body_versions", [])
     md.setdefault("evidence_diversity_score", 0.0)
     md.setdefault("unique_doc_ids", 0)
@@ -299,6 +310,8 @@ def upsert_concept(
 
     body_content = existing.content or ""
     if synthesized_body:
+        md["entities"] = deepcopy(entities or [])
+        md["relations"] = deepcopy(relations or [])
         new_ver = len(md["body_versions"]) + 1
         md["body_versions"].append({
             "version": new_ver,
@@ -307,6 +320,8 @@ def upsert_concept(
             "source_episode_ids": list(se),
             "body_markdown": synthesized_body,
             "confidence": float(confidence) if confidence is not None else md["confidence"],
+            "entities": deepcopy(md["entities"]),
+            "relations": deepcopy(md["relations"]),
         })
         # cap 5 (plan §위험: body_versions 누적 cap)
         if len(md["body_versions"]) > 5:
