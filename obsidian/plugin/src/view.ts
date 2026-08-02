@@ -264,6 +264,7 @@ export class YieldWikiView extends ItemView {
   private relatedLoading = false;
   private relatedError = "";
   private reviewCreateInFlight = false;
+  private reviewCreateRequestToken = 0;
   private activeFileEvent?: EventRef;
   private conceptGeneration = 0;
 
@@ -304,6 +305,8 @@ export class YieldWikiView extends ItemView {
     this.viewOpen = false;
     this.chatGeneration += 1;
     this.conceptGeneration += 1;
+    this.reviewCreateRequestToken += 1;
+    this.reviewCreateInFlight = false;
     const activeFileEvent = this.activeFileEvent;
     this.activeFileEvent = undefined;
     if (activeFileEvent) {
@@ -318,6 +321,8 @@ export class YieldWikiView extends ItemView {
 
   private readonly handleActiveFileChange = (): void => {
     this.conceptGeneration += 1;
+    this.reviewCreateRequestToken += 1;
+    this.reviewCreateInFlight = false;
     this.related = undefined;
     this.relatedLoading = false;
     this.relatedError = "";
@@ -1256,6 +1261,12 @@ export class YieldWikiView extends ItemView {
     comment: string,
   ): Promise<void> {
     if (this.reviewCreateInFlight) return;
+    const generation = this.conceptGeneration;
+    const requestToken = ++this.reviewCreateRequestToken;
+    const isCurrentRequest = () =>
+      this.viewOpen &&
+      generation === this.conceptGeneration &&
+      requestToken === this.reviewCreateRequestToken;
     this.reviewCreateInFlight = true;
     this.reviewError = "";
     this.render();
@@ -1266,12 +1277,15 @@ export class YieldWikiView extends ItemView {
         comment,
         review_type: "operator_feedback",
       });
+      if (!isCurrentRequest()) return;
       await this.loadReviews({ success: "Review를 생성했습니다." });
     } catch (error) {
-      this.reviewError = formattedError(error);
+      if (isCurrentRequest()) this.reviewError = formattedError(error);
     } finally {
-      this.reviewCreateInFlight = false;
-      this.render();
+      if (isCurrentRequest()) {
+        this.reviewCreateInFlight = false;
+        this.render();
+      }
     }
   }
 

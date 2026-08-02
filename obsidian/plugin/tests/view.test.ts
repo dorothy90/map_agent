@@ -1003,6 +1003,113 @@ describe("YieldWikiView", () => {
     expect(view.contentEl.childElementCount).toBe(0);
   });
 
+  it("ignores delayed Concept A Review-create success after switching to B", async () => {
+    const api = fakeApi();
+    let resolveCreate: ((review: PluginReview) => void) | undefined;
+    const delayedCreate = new Promise<PluginReview>((resolve) => {
+      resolveCreate = resolve;
+    });
+    vi.mocked(api.createReview).mockReturnValue(delayedCreate);
+    const { view, setActiveConcept, emitFileOpen } = createTestView({
+      api,
+      activeFile: "concepts/A.md",
+      activeConceptId: "concept:A",
+    });
+    await view.onOpen();
+    clickButton(view.containerEl, "Review");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(1));
+    const reviewerA = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="review-create-reviewer"]',
+    );
+    const commentA = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-create-comment"]',
+    );
+    if (!reviewerA || !commentA) throw new Error("Concept A Review form not found");
+    reviewerA.value = "operator-a";
+    commentA.value = "A review";
+    clickButton(view.containerEl, "Review 생성");
+    await vi.waitFor(() => expect(api.createReview).toHaveBeenCalledTimes(1));
+
+    setActiveConcept("concepts/B.md", "concept:B");
+    emitFileOpen();
+    const reviewerB = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="review-create-reviewer"]',
+    );
+    const commentB = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-create-comment"]',
+    );
+    if (!reviewerB || !commentB) throw new Error("Concept B Review form not found");
+    reviewerB.value = "operator-b draft";
+    commentB.value = "B draft must remain";
+
+    resolveCreate?.(pendingReview);
+    await delayedCreate;
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(api.listReviews).toHaveBeenCalledTimes(1);
+    expect(view.containerEl.textContent).not.toContain("Review를 생성했습니다.");
+    expect(
+      view.containerEl.querySelector('[data-testid="review-create-reviewer"]'),
+    ).toBe(reviewerB);
+    expect(reviewerB.value).toBe("operator-b draft");
+    expect(commentB.value).toBe("B draft must remain");
+    expect(findButton(view.containerEl, "Review 생성").disabled).toBe(false);
+  });
+
+  it("ignores delayed Concept A Review-create failure after switching to B", async () => {
+    const api = fakeApi();
+    let rejectCreate: ((error: Error) => void) | undefined;
+    const delayedCreate = new Promise<PluginReview>((_resolve, reject) => {
+      rejectCreate = reject;
+    });
+    vi.mocked(api.createReview).mockReturnValue(delayedCreate);
+    const { view, setActiveConcept, emitFileOpen } = createTestView({
+      api,
+      activeFile: "concepts/A.md",
+      activeConceptId: "concept:A",
+    });
+    await view.onOpen();
+    clickButton(view.containerEl, "Review");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(1));
+    const reviewerA = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="review-create-reviewer"]',
+    );
+    const commentA = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-create-comment"]',
+    );
+    if (!reviewerA || !commentA) throw new Error("Concept A Review form not found");
+    reviewerA.value = "operator-a";
+    commentA.value = "A review";
+    clickButton(view.containerEl, "Review 생성");
+    await vi.waitFor(() => expect(api.createReview).toHaveBeenCalledTimes(1));
+
+    setActiveConcept("concepts/B.md", "concept:B");
+    emitFileOpen();
+    const reviewerB = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="review-create-reviewer"]',
+    );
+    const commentB = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-create-comment"]',
+    );
+    if (!reviewerB || !commentB) throw new Error("Concept B Review form not found");
+    reviewerB.value = "operator-b draft";
+    commentB.value = "B draft must remain";
+
+    rejectCreate?.(new Error("CONCEPT-A-FAILURE-SENTINEL"));
+    await delayedCreate.catch(() => undefined);
+    await Promise.resolve();
+
+    expect(view.containerEl.textContent).not.toContain("CONCEPT-A-FAILURE-SENTINEL");
+    expect(
+      view.containerEl.querySelector('[data-testid="review-create-reviewer"]'),
+    ).toBe(reviewerB);
+    expect(reviewerB.value).toBe("operator-b draft");
+    expect(commentB.value).toBe("B draft must remain");
+    expect(findButton(view.containerEl, "Review 생성").disabled).toBe(false);
+  });
+
   it("reloads a Review after a version conflict without resending the update", async () => {
     const api = fakeApi();
     vi.mocked(api.updateReview).mockRejectedValue(new ApiError(409, "conflict"));
