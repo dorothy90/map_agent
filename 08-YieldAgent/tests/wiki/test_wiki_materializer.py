@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from dataclasses import replace
 
 import frontmatter
 import pytest
@@ -11,7 +13,28 @@ from wiki_config import initialize_wiki_vault, resolve_wiki_paths
 pytestmark = pytest.mark.no_server
 
 
-def _write_concept(paths, *, citations=None):
+def _write_concept(paths, *, citations=None, entities=None, relations=None):
+    if entities is None:
+        entities = [
+            {
+                "canonical_name": "Queue time 초과",
+                "entity_type": "process_condition",
+            },
+            {
+                "canonical_name": "자연 산화",
+                "entity_type": "failure_mechanism",
+            },
+        ]
+    if relations is None:
+        relations = [
+            {
+                "subject": "Queue time 초과",
+                "predicate": "causes",
+                "object": "자연 산화",
+                "confidence": 0.82,
+                "source_doc_ids": ["FH-000238"],
+            }
+        ]
     post = frontmatter.Post(
         content="## Analysis\n\nLLM BODY SENTINEL\n",
         id="concept:4SS|PRE METAL CLN|EASY",
@@ -34,6 +57,9 @@ def _write_concept(paths, *, citations=None):
                 "download_url": "https://files.example/FH-000243",
             },
         ],
+        entities=entities,
+        relations=relations,
+        source_fingerprint="sha256:concept-source-set",
     )
     path = paths.concepts / "4SS_PRE_METAL_CLN_EASY.md"
     path.write_text(frontmatter.dumps(post), encoding="utf-8")
@@ -87,6 +113,28 @@ def test_materializes_product_to_source_topology_and_preserves_concept_body(
     assert "Operations: 1" in index
     assert "Concepts: 1" in index
     assert "Sources: 2" in index
+    assert "Entities: 2" in index
+    assert "Relations: 1" in index
+
+    assert paths.entities.is_dir()
+    assert paths.relations.is_dir()
+    entity_posts = [frontmatter.load(path) for path in paths.entities.glob("*.md")]
+    assert {post.metadata["canonical_name"] for post in entity_posts} == {
+        "Queue time 초과",
+        "자연 산화",
+    }
+    assert all(post.metadata["status"] == "active" for post in entity_posts)
+    assert all(re.fullmatch(r"[0-9a-f]{64}\.md", path.name) for path in paths.entities.glob("*.md"))
+    relation_path = next(paths.relations.glob("*.md"))
+    assert re.fullmatch(r"[0-9a-f]{64}\.md", relation_path.name)
+    relation_post = frontmatter.load(relation_path)
+    assert relation_post.metadata["predicate"] == "causes"
+    assert relation_post.metadata["status"] == "active"
+    assert relation_post.metadata["source_doc_ids"] == ["FH-000238"]
+    relation_body = relation_post.content
+    assert "[[sources/FH-000238|FH-000238]]" in relation_body
+    assert "[[concepts/4SS_PRE_METAL_CLN_EASY|4SS EASY]]" in relation_body
+    assert "[[entities/" in relation_body
 
 
 def test_materializes_super_concept_links_and_marks_missing_references_stale(
@@ -238,3 +286,148 @@ def test_validation_error_changes_no_file_for_generated_path_collision(tmp_path)
 
     assert "generated path collision" in "\n".join(report.errors)
     assert _snapshot(paths.root) == before
+
+
+def test_invalid_relation_endpoint_warns_without_blocking_valid_targets(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    valid = {
+        "subject": "Queue time 초과",
+        "predicate": "causes",
+        "object": "자연 산화",
+        "confidence": 0.82,
+        "source_doc_ids": ["FH-000238"],
+    }
+    _write_concept(paths, relations=[valid, {**valid, "subject": "없는 Entity"}])
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert report.errors == ()
+    assert "missing endpoint" in "\n".join(report.warnings)
+    assert len(list(paths.relations.glob("*.md"))) == 1
+    assert len(list(paths.entities.glob("*.md"))) == 2
+    assert paths.products.joinpath("4SS.md").exists()
+
+
+def test_relation_with_uncited_source_warns_while_valid_relation_is_written(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    valid = {
+        "subject": "Queue time 초과",
+        "predicate": "causes",
+        "object": "자연 산화",
+        "confidence": 0.82,
+        "source_doc_ids": ["FH-000238"],
+    }
+    _write_concept(
+        paths,
+        relations=[valid, {**valid, "predicate": "prevents", "source_doc_ids": ["FH-NOT-CITED"]}],
+    )
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert report.errors == ()
+    assert "source_doc_id" in "\n".join(report.warnings)
+    assert len(list(paths.relations.glob("*.md"))) == 1
+    assert paths.concepts.joinpath("4SS_PRE_METAL_CLN_EASY.md").exists()
+
+
+def test_removed_graph_notes_become_stale_and_leave_active_entity_links(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    concept_path = _write_concept(paths)
+    first = materialize_wiki(paths, apply=True)
+    assert first.errors == ()
+    relation_path = next(paths.relations.glob("*.md"))
+    relation_before = frontmatter.load(relation_path)
+
+    concept = frontmatter.load(concept_path)
+    concept.metadata["relations"] = []
+    concept_path.write_text(frontmatter.dumps(concept), encoding="utf-8")
+    second = materialize_wiki(paths, apply=True)
+
+    assert second.errors == ()
+    stale_relation = frontmatter.load(relation_path)
+    assert stale_relation.metadata["status"] == "stale"
+    assert stale_relation.content == relation_before.content
+    assert all(
+        relation_path.stem not in frontmatter.load(path).content
+        for path in paths.entities.glob("*.md")
+    )
+
+    entity_paths = list(paths.entities.glob("*.md"))
+    entity_bodies = {path: frontmatter.load(path).content for path in entity_paths}
+    concept = frontmatter.load(concept_path)
+    concept.metadata["entities"] = []
+    concept_path.write_text(frontmatter.dumps(concept), encoding="utf-8")
+    third = materialize_wiki(paths, apply=True)
+
+    assert third.errors == ()
+    for path in entity_paths:
+        stale_entity = frontmatter.load(path)
+        assert stale_entity.metadata["status"] == "stale"
+        assert stale_entity.content == entity_bodies[path]
+
+
+def test_malformed_managed_block_is_fatal_and_changes_no_file(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    concept_path = _write_concept(paths)
+    concept_path.write_text(
+        concept_path.read_text(encoding="utf-8")
+        + "\n<!-- yield-wiki:knowledge-links:start -->\n",
+        encoding="utf-8",
+    )
+    before = _snapshot(paths.root)
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert "unbalanced managed Knowledge Links markers" in "\n".join(report.errors)
+    assert _snapshot(paths.root) == before
+
+
+def test_escaped_generated_entity_path_is_fatal_and_changes_no_file(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    outside = tmp_path / "outside-entities"
+    outside.mkdir()
+    escaped = replace(paths, entities=outside)
+    before = _snapshot(paths.root)
+
+    report = materialize_wiki(escaped, apply=True)
+
+    assert report.errors
+    assert "managed path" in "\n".join(report.errors)
+    assert _snapshot(paths.root) == before
+    assert list(outside.iterdir()) == []
+
+
+def test_symlinked_relation_directory_is_fatal_and_writes_nothing_outside(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    outside = tmp_path / "outside-relations"
+    outside.mkdir()
+    paths.relations.rmdir()
+    paths.relations.symlink_to(outside, target_is_directory=True)
+    before = _snapshot(paths.root)
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert report.errors
+    assert str(paths.relations) in "\n".join(report.errors)
+    assert _snapshot(paths.root) == before
+    assert list(outside.iterdir()) == []

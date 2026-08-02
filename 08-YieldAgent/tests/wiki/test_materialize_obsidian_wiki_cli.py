@@ -40,6 +40,25 @@ def _prepare_vault(tmp_path: Path):
     return paths
 
 
+def _add_invalid_relation(paths) -> None:
+    concept_path = paths.concepts / "4SS_PRE_METAL_CLN_EASY.md"
+    post = frontmatter.load(concept_path)
+    post.metadata["entities"] = [
+        {"canonical_name": "Queue time 초과", "entity_type": "condition"},
+        {"canonical_name": "자연 산화", "entity_type": "mechanism"},
+    ]
+    post.metadata["relations"] = [
+        {
+            "subject": "Queue time 초과",
+            "predicate": "causes",
+            "object": "없는 Entity",
+            "confidence": 0.8,
+            "source_doc_ids": ["FH-1"],
+        }
+    ]
+    concept_path.write_text(frontmatter.dumps(post), encoding="utf-8")
+
+
 def _run_cli(paths, *args):
     app_root = Path(__file__).resolve().parents[2]
     return subprocess.run(
@@ -96,6 +115,18 @@ def test_apply_materializes_the_vault(tmp_path):
     assert completed.returncode == 0
     assert (paths.products / "4SS.md").exists()
     assert (paths.sources / "FH-1.md").exists()
+
+
+def test_warning_is_printed_separately_without_failing_apply(tmp_path):
+    paths = _prepare_vault(tmp_path)
+    _add_invalid_relation(paths)
+
+    completed = _run_cli(paths, "--apply")
+
+    assert completed.returncode == 0
+    assert "warning:" in completed.stdout
+    assert "warnings=1" in completed.stdout
+    assert "errors=0" in completed.stdout
 
 
 @pytest.mark.parametrize("args", [(), ("--check", "--apply")])

@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         ("modified", report.modified),
         ("deleted", report.deleted),
         ("unchanged", report.unchanged),
+        ("warning", report.warnings),
         ("error", report.errors),
     ):
         for value in values:
@@ -45,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         f"created={len(report.created)} "
         f"modified={len(report.modified)} "
         f"deleted={len(report.deleted)} "
+        f"warnings={len(report.warnings)} "
         f"errors={len(report.errors)}"
     )
     return 1 if report.errors else 0

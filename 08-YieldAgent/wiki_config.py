@@ -15,6 +15,7 @@ WIKI_PURPOSE_TEMPLATE = (
 WIKI_SCHEMA_TEMPLATE = (
     "# Wiki Schema\n\n"
     "Product → Product Fail → Cause Operation → Concept → Source\n"
+    "Concept → Entity → Relation → Source\n"
 )
 WIKI_OVERVIEW_TEMPLATE = "# Wiki Overview\n\n"
 
@@ -34,6 +35,8 @@ class WikiPaths:
     products: Path
     product_fails: Path
     operations: Path
+    entities: Path
+    relations: Path
     sources: Path
     reviews: Path
     attachments: Path
@@ -79,6 +82,8 @@ def resolve_wiki_paths(
         products=root / "products",
         product_fails=root / "product_fails",
         operations=root / "operations",
+        entities=root / "entities",
+        relations=root / "relations",
         sources=root / "sources",
         reviews=root / "reviews",
         attachments=root / "attachments",
@@ -118,6 +123,8 @@ def initialize_wiki_vault(paths: WikiPaths) -> None:
         paths.products,
         paths.product_fails,
         paths.operations,
+        paths.entities,
+        paths.relations,
         paths.sources,
         paths.reviews,
         paths.attachments,
@@ -142,6 +149,8 @@ def _managed_writer_directories(paths: WikiPaths) -> tuple[Path, ...]:
         paths.products,
         paths.product_fails,
         paths.operations,
+        paths.entities,
+        paths.relations,
         paths.sources,
         paths.reviews,
         paths.attachments,

@@ -1,6 +1,7 @@
 """Deterministically materialize Wiki metadata as Obsidian Markdown links."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -10,8 +11,16 @@ from pathlib import Path
 from typing import Any
 
 import frontmatter
+from pydantic import ValidationError
 
-from wiki_config import WIKI_PURPOSE_TEMPLATE, WIKI_SCHEMA_TEMPLATE, WikiPaths
+from wiki_config import (
+    WIKI_PURPOSE_TEMPLATE,
+    WIKI_SCHEMA_TEMPLATE,
+    WikiConfigurationError,
+    WikiPaths,
+    validate_wiki_vault,
+)
+from wiki_graph_models import EntityCandidate, RelationCandidate
 
 
 _GENERATED_BY = "yield-wiki-materializer"
@@ -25,6 +34,7 @@ class MaterializationReport:
     modified: tuple[str, ...] = ()
     deleted: tuple[str, ...] = ()
     unchanged: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
 
     @property
@@ -36,6 +46,7 @@ class MaterializationReport:
 class _MaterializationPlan:
     targets: dict[Path, str]
     deletions: tuple[Path, ...]
+    warnings: tuple[str, ...]
     errors: tuple[str, ...]
 
 
@@ -47,6 +58,9 @@ class _Concept:
     fail_type: str
     cause_oper: str
     citations: tuple[dict[str, Any], ...]
+    entities: tuple[Any, ...]
+    relations: tuple[Any, ...]
+    source_fingerprint: str
 
     @property
     def title(self) -> str:
@@ -63,6 +77,17 @@ class _SuperConcept:
 
 def _stable_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_\-]+", "_", value)
+
+
+def _stable_graph_id(kind: str, payload: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return f"{kind}:sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _graph_path(directory: Path, node_id: str) -> Path:
+    return directory / f"{node_id.rsplit(':', 1)[-1]}.md"
 
 
 def _relative(paths: WikiPaths, path: Path) -> str:
@@ -124,6 +149,12 @@ def _read_concepts(paths: WikiPaths) -> tuple[list[_Concept], list[str]]:
             for citation in (metadata.get("citations") or [])
             if isinstance(citation, dict)
         )
+        raw_entities = metadata.get("entities") or []
+        entities = tuple(raw_entities if isinstance(raw_entities, list) else [raw_entities])
+        raw_relations = metadata.get("relations") or []
+        relations = tuple(
+            raw_relations if isinstance(raw_relations, list) else [raw_relations]
+        )
         concepts.append(
             _Concept(
                 path=path,
@@ -132,6 +163,9 @@ def _read_concepts(paths: WikiPaths) -> tuple[list[_Concept], list[str]]:
                 fail_type=required["fail_type"],
                 cause_oper=required["cause_oper"],
                 citations=citations,
+                entities=entities,
+                relations=relations,
+                source_fingerprint=str(metadata.get("source_fingerprint") or "").strip(),
             )
         )
     return concepts, errors
@@ -178,9 +212,10 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
     super_concepts, super_errors = _read_super_concepts(paths)
     errors.extend(super_errors)
     if errors:
-        return _MaterializationPlan({}, (), tuple(errors))
+        return _MaterializationPlan({}, (), (), tuple(errors))
 
     targets: dict[Path, str] = {}
+    warnings: list[str] = []
     product_fails: dict[tuple[str, str], set[str]] = {}
     products: dict[str, set[tuple[str, str]]] = {}
     operations: dict[str, set[tuple[str, str]]] = {}
@@ -227,7 +262,7 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
             source["concepts"].append(concept)
 
     if errors:
-        return _MaterializationPlan({}, (), tuple(sorted(set(errors))))
+        return _MaterializationPlan({}, (), (), tuple(sorted(set(errors))))
 
     product_paths = {
         product: paths.products / f"{_stable_filename(product)}.md"
@@ -247,6 +282,124 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         for doc_id in sources
     }
 
+    entity_records: dict[str, dict[str, Any]] = {}
+    concept_entity_names: dict[str, set[str]] = {}
+    concept_relation_ids: dict[str, list[str]] = {}
+    relation_records: dict[str, dict[str, Any]] = {}
+
+    for concept in concepts:
+        names = concept_entity_names.setdefault(concept.concept_id, set())
+        for index, candidate in enumerate(concept.entities):
+            try:
+                entity = EntityCandidate.model_validate(candidate)
+            except ValidationError as exc:
+                warnings.append(
+                    f"{_relative(paths, concept.path)}: entity[{index}] invalid: "
+                    f"{exc.errors()[0]['msg']}"
+                )
+                continue
+            canonical_name = entity.canonical_name
+            entity_type = entity.entity_type
+            names.add(canonical_name)
+            entity_id = _stable_graph_id(
+                "entity", {"canonical_name": canonical_name}
+            )
+            record = entity_records.setdefault(
+                canonical_name,
+                {
+                    "entity_id": entity_id,
+                    "canonical_name": canonical_name,
+                    "entity_type": entity_type,
+                    "concepts": [],
+                    "relation_ids": set(),
+                },
+            )
+            if concept not in record["concepts"]:
+                record["concepts"].append(concept)
+
+    for concept in concepts:
+        citation_doc_ids = {
+            str(citation.get("doc_id") or "").strip()
+            for citation in concept.citations
+            if str(citation.get("doc_id") or "").strip()
+        }
+        for index, candidate in enumerate(concept.relations):
+            prefix = f"{_relative(paths, concept.path)}: relation[{index}]"
+            try:
+                relation = RelationCandidate.model_validate(candidate)
+            except ValidationError as exc:
+                warnings.append(f"{prefix} invalid: {exc.errors()[0]['msg']}")
+                continue
+            subject = relation.subject
+            object_name = relation.object
+            missing_endpoints = [
+                name
+                for name in (subject, object_name)
+                if not name or name not in concept_entity_names[concept.concept_id]
+            ]
+            if missing_endpoints:
+                warnings.append(
+                    f"{prefix} missing endpoint: {', '.join(missing_endpoints) or '<empty>'}"
+                )
+                continue
+            predicate = relation.predicate.value
+            confidence = relation.confidence
+            source_doc_ids = relation.source_doc_ids
+            missing_sources = [
+                doc_id for doc_id in source_doc_ids if doc_id not in citation_doc_ids
+            ]
+            if not source_doc_ids or missing_sources:
+                detail = ", ".join(missing_sources) if missing_sources else "<empty>"
+                warnings.append(f"{prefix} invalid source_doc_ids: {detail}")
+                continue
+            relation_id = _stable_graph_id(
+                "relation",
+                {
+                    "origin_concept_id": concept.concept_id,
+                    "subject": subject,
+                    "predicate": predicate,
+                    "object": object_name,
+                },
+            )
+            relation_records[relation_id] = {
+                "relation_id": relation_id,
+                "concept": concept,
+                "subject": subject,
+                "subject_entity_id": entity_records[subject]["entity_id"],
+                "predicate": predicate,
+                "object": object_name,
+                "object_entity_id": entity_records[object_name]["entity_id"],
+                "confidence": confidence,
+                "source_doc_ids": source_doc_ids,
+            }
+            concept_relation_ids.setdefault(concept.concept_id, []).append(relation_id)
+            entity_records[subject]["relation_ids"].add(relation_id)
+            entity_records[object_name]["relation_ids"].add(relation_id)
+
+    entity_paths = {
+        record["entity_id"]: _graph_path(paths.entities, record["entity_id"])
+        for record in entity_records.values()
+    }
+    relation_paths = {
+        relation_id: _graph_path(paths.relations, relation_id)
+        for relation_id in relation_records
+    }
+
+    for node_id, path in (*entity_paths.items(), *relation_paths.items()):
+        if not path.exists():
+            continue
+        try:
+            metadata = frontmatter.load(path).metadata
+        except Exception as exc:
+            errors.append(
+                f"generated path collision: {_relative(paths, path)} is unreadable: {exc}"
+            )
+            continue
+        if metadata.get("generated_by") != _GENERATED_BY or metadata.get("id") != node_id:
+            errors.append(
+                f"generated path collision: {node_id} resolves to {_relative(paths, path)}"
+            )
+
     for path_map in (
         product_paths,
         product_fail_paths,
@@ -263,7 +416,9 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
                 )
 
     if errors:
-        return _MaterializationPlan({}, (), tuple(sorted(set(errors))))
+        return _MaterializationPlan(
+            {}, (), tuple(sorted(set(warnings))), tuple(sorted(set(errors)))
+        )
 
     for product in sorted(products):
         links = [
@@ -323,6 +478,74 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
             body,
         )
 
+    for canonical_name in sorted(entity_records):
+        record = entity_records[canonical_name]
+        entity_id = record["entity_id"]
+        concept_links = [
+            f"- {_wikilink(paths, concept.path, concept.title)}"
+            for concept in sorted(record["concepts"], key=lambda item: item.concept_id)
+        ]
+        relation_links = [
+            f"- {_wikilink(paths, relation_paths[relation_id], relation_id)}"
+            for relation_id in sorted(record["relation_ids"])
+        ]
+        body = (
+            f"# {canonical_name}\n\n"
+            f"- Entity Type: {record['entity_type']}\n\n"
+            "## Concepts\n\n"
+            + "\n".join(concept_links)
+        )
+        if relation_links:
+            body += "\n\n## Active Relations\n\n" + "\n".join(relation_links)
+        targets[entity_paths[entity_id]] = _render_post(
+            _generated_metadata(
+                entity_id,
+                "entity",
+                canonical_name=canonical_name,
+                entity_type=record["entity_type"],
+                status="active",
+                source_concept_ids=sorted(
+                    concept.concept_id for concept in record["concepts"]
+                ),
+            ),
+            body,
+        )
+
+    for relation_id in sorted(relation_records):
+        relation = relation_records[relation_id]
+        concept = relation["concept"]
+        subject_path = entity_paths[relation["subject_entity_id"]]
+        object_path = entity_paths[relation["object_entity_id"]]
+        source_links = [
+            f"  - {_wikilink(paths, source_paths[doc_id], doc_id)}"
+            for doc_id in relation["source_doc_ids"]
+        ]
+        body = (
+            f"# {relation['subject']} {relation['predicate']} {relation['object']}\n\n"
+            f"- Subject: {_wikilink(paths, subject_path, relation['subject'])}\n"
+            f"- Predicate: `{relation['predicate']}`\n"
+            f"- Object: {_wikilink(paths, object_path, relation['object'])}\n"
+            f"- Concept: {_wikilink(paths, concept.path, concept.title)}\n"
+            "- Sources:\n"
+            + "\n".join(source_links)
+            + f"\n- Confidence: {relation['confidence']}"
+        )
+        targets[relation_paths[relation_id]] = _render_post(
+            _generated_metadata(
+                relation_id,
+                "relation",
+                origin_concept_id=concept.concept_id,
+                subject_entity_id=relation["subject_entity_id"],
+                predicate=relation["predicate"],
+                object_entity_id=relation["object_entity_id"],
+                confidence=relation["confidence"],
+                source_doc_ids=relation["source_doc_ids"],
+                status="active",
+                source_fingerprint=concept.source_fingerprint,
+            ),
+            body,
+        )
+
     for concept in concepts:
         source_links = [
             _wikilink(paths, source_paths[doc_id], doc_id)
@@ -340,6 +563,24 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         if source_links:
             lines.append("- Sources:")
             lines.extend(f"  - {link}" for link in source_links)
+        entity_links = [
+            _wikilink(
+                paths,
+                entity_paths[entity_records[name]["entity_id"]],
+                name,
+            )
+            for name in sorted(concept_entity_names[concept.concept_id])
+        ]
+        if entity_links:
+            lines.append("- Entities:")
+            lines.extend(f"  - {link}" for link in entity_links)
+        relation_links = [
+            _wikilink(paths, relation_paths[relation_id], relation_id)
+            for relation_id in sorted(concept_relation_ids.get(concept.concept_id, []))
+        ]
+        if relation_links:
+            lines.append("- Relations:")
+            lines.extend(f"  - {link}" for link in relation_links)
         super_links = [
             _wikilink(paths, item.path, item.title)
             for item in sorted(
@@ -423,11 +664,39 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
             body,
         )
 
+    active_graph_targets = set(entity_paths.values()) | set(relation_paths.values())
+    for directory, node_type in (
+        (paths.entities, "entity"),
+        (paths.relations, "relation"),
+    ):
+        for path in sorted(directory.glob("*.md")):
+            if path in active_graph_targets:
+                continue
+            try:
+                post = frontmatter.load(path)
+            except Exception:
+                continue
+            if (
+                post.metadata.get("generated_by") != _GENERATED_BY
+                or post.metadata.get("type") != node_type
+            ):
+                continue
+            if post.metadata.get("status") == "stale":
+                targets[path] = path.read_text(encoding="utf-8")
+                continue
+            metadata = dict(post.metadata)
+            metadata["status"] = "stale"
+            targets[path] = frontmatter.dumps(
+                frontmatter.Post(content=post.content, **metadata)
+            )
+
     counts = (
         f"- Products: {len(products)}\n"
         f"- Product Fails: {len(product_fails)}\n"
         f"- Operations: {len(operations)}\n"
         f"- Concepts: {len(concepts)}\n"
+        f"- Entities: {len(entity_records)}\n"
+        f"- Relations: {len(relation_records)}\n"
         f"- Super Concepts: {len(super_concepts)}\n"
         f"- Sources: {len(sources)}"
     )
@@ -441,6 +710,16 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         + "\n".join(
             f"- {_wikilink(paths, concept.path, concept.title)}"
             for concept in sorted(concepts, key=lambda item: item.concept_id)
+        ),
+        "## Entities\n\n"
+        + "\n".join(
+            f"- {_wikilink(paths, entity_paths[record['entity_id']], canonical_name)}"
+            for canonical_name, record in sorted(entity_records.items())
+        ),
+        "## Relations\n\n"
+        + "\n".join(
+            f"- {_wikilink(paths, relation_paths[relation_id], relation_id)}"
+            for relation_id in sorted(relation_records)
         ),
         "## Sources\n\n"
         + "\n".join(
@@ -523,6 +802,7 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
     return _MaterializationPlan(
         targets,
         tuple(sorted(deletions)),
+        tuple(sorted(set(warnings))),
         tuple(sorted(set(errors))),
     )
 
@@ -569,6 +849,7 @@ def _execute_plan(
         modified=tuple(modified),
         deleted=tuple(deleted),
         unchanged=tuple(unchanged),
+        warnings=plan.warnings,
     )
 
 
@@ -577,7 +858,12 @@ def materialize_wiki(
     *,
     apply: bool = False,
 ) -> MaterializationReport:
+    if apply:
+        try:
+            validate_wiki_vault(paths)
+        except WikiConfigurationError as exc:
+            return MaterializationReport(errors=(str(exc),))
     plan = _build_plan(paths)
     if plan.errors:
-        return MaterializationReport(errors=plan.errors)
+        return MaterializationReport(warnings=plan.warnings, errors=plan.errors)
     return _execute_plan(paths, plan, apply=apply)

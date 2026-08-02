@@ -22,6 +22,10 @@ from typing import Any
 import frontmatter
 import yaml
 from wiki_config import resolve_wiki_paths
+from wiki_graph_models import RelationPredicate
+
+
+_GENERATED_BY = "yield-wiki-materializer"
 
 
 def scan(vault: Path) -> dict[str, list[Any]]:
@@ -39,12 +43,21 @@ def scan(vault: Path) -> dict[str, list[Any]]:
         "gap": [],
         "low_confidence": [],
         "stale_episode": [],
+        "invalid_relation": [],
+        "stale_node": [],
     }
 
     nodes: dict[str, tuple[Path, dict]] = {}  # id -> (path, frontmatter)
 
     # 1) frontmatter 파싱 + id 등록
-    for kind in ("episodes", "concepts", "aliases"):
+    for kind in (
+        "episodes",
+        "concepts",
+        "aliases",
+        "entities",
+        "relations",
+        "sources",
+    ):
         d = vault / kind
         if not d.exists():
             continue
@@ -154,6 +167,45 @@ def scan(vault: Path) -> dict[str, list[Any]]:
             conf = 0.0
         if conf < 0.5:
             issues["low_confidence"].append({"id": nid, "confidence": conf})
+
+    valid_predicates = {predicate.value for predicate in RelationPredicate}
+    source_doc_ids = {
+        str(md.get("doc_id") or "").strip()
+        for _, md in nodes.values()
+        if md.get("type") == "source" and str(md.get("doc_id") or "").strip()
+    }
+    for nid, (path, md) in nodes.items():
+        if (
+            md.get("type") not in {"entity", "relation"}
+            or md.get("generated_by") != _GENERATED_BY
+        ):
+            continue
+        if md.get("status") == "stale":
+            issues["stale_node"].append({"id": nid, "path": str(path)})
+            continue
+        if md.get("type") != "relation" or md.get("status") != "active":
+            continue
+        reasons: list[str] = []
+        for field in ("subject_entity_id", "object_entity_id"):
+            endpoint_id = str(md.get(field) or "").strip()
+            endpoint = nodes.get(endpoint_id)
+            if endpoint is None or endpoint[1].get("type") != "entity":
+                reasons.append(field)
+        predicate = str(md.get("predicate") or "").strip()
+        if predicate not in valid_predicates:
+            reasons.append("predicate")
+        relation_source_doc_ids = md.get("source_doc_ids")
+        if not isinstance(relation_source_doc_ids, list) or not relation_source_doc_ids:
+            reasons.append("source_doc_ids")
+        elif any(
+            str(doc_id).strip() not in source_doc_ids
+            for doc_id in relation_source_doc_ids
+        ):
+            reasons.append("source_doc_ids")
+        if reasons:
+            issues["invalid_relation"].append(
+                {"id": nid, "path": str(path), "invalid": sorted(set(reasons))}
+            )
 
     return issues
 
