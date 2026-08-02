@@ -1070,3 +1070,56 @@ def test_sensitive_fail_history_replanner_fingerprints_logs_and_disables_callbac
     assert hashlib.sha256(sensitive_summary.encode()).hexdigest() in caplog.text
     assert callback_calls == []
     assert model.configs == [{"callbacks": []}]
+
+
+@pytest.mark.parametrize(
+    ("sentinel", "raw_response", "error_name"),
+    [
+        (
+            "PRIVATE-MALFORMED-REPLANNER-SENTINEL",
+            "PRIVATE-MALFORMED-REPLANNER-SENTINEL without JSON",
+            "ValueError",
+        ),
+        (
+            "PRIVATE-VALIDATION-REPLANNER-SENTINEL",
+            '{"requests":[{"intent":"map","agent":'
+            '"PRIVATE-VALIDATION-REPLANNER-SENTINEL","slots":{}}]}',
+            "ValidationError",
+        ),
+    ],
+)
+def test_sensitive_replanner_failures_do_not_log_model_values(
+    monkeypatch,
+    caplog,
+    sentinel,
+    raw_response,
+    error_name,
+):
+    import node_replanner
+
+    class ReplannerModel:
+        def invoke(self, messages, config):
+            return SimpleNamespace(content=raw_response)
+
+    monkeypatch.setattr(node_replanner, "_model", ReplannerModel())
+    pending = {
+        "task_id": "task_map",
+        "agent": "map_agent",
+        "goal": "render the dependent map",
+        "params": {"map_oper": "", "lot_ids": ""},
+    }
+
+    with caplog.at_level(logging.WARNING, logger="yield_agent.supervisor"):
+        node_replanner.replanner_node(
+            {
+                "messages": [HumanMessage(content="continue")],
+                "past_steps": [("task_history", "sensitive evidence summary")],
+                "pending_tasks": [pending],
+                "task_plan": [pending],
+                "evidence_sensitive": True,
+            },
+            {},
+        )
+
+    assert sentinel not in caplog.text
+    assert error_name in caplog.text

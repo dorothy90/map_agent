@@ -352,7 +352,13 @@ def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         raw = (response.content or "").strip()
         plan = extract_json_from_llm(raw, CanonicalPlanResponse)
     except Exception as e:
-        logger.warning("[Replanner] LLM 호출 실패 — pass-through: %s", e)
+        if state.get("evidence_sensitive") is True:
+            logger.warning(
+                "[Replanner] LLM 호출 실패 — pass-through (error_type=%s)",
+                type(e).__name__,
+            )
+        else:
+            logger.warning("[Replanner] LLM 호출 실패 — pass-through: %s", e)
         return scratchpad_update
 
     new_requests = [
