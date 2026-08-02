@@ -223,7 +223,7 @@ def get_llm(model: str | None = None, temperature: float = 0) -> "ChatOpenAI":
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(
-        model="openai/gpt-oss-120b",
+        model=model or os.getenv("RETRIEVE_CHAIN_MODEL") or "openai/gpt-oss-120b",
         # model="z-ai/glm-5.1",
         base_url=os.getenv("OPENROUTER_BASE_URL"),
         api_key=os.getenv("OPENROUTER_API_KEY"),

@@ -101,3 +101,104 @@ actual OpenSearch fallback은 검증됐다. 전체 real M5 E2E는 완료하지 �
 아직 pre-M5 구조이고, 외부 OpenRouter로 회사 데이터를 보내는 live synthesis/Chat이
 명시적 승인 전 **BLOCKED**이기 때문이다. Obsidian Desktop GUI도 이번 Task에서는
 조작하지 않았으며 live Relation과 Citation이 생성된 뒤 수동 검증이 필요하다.
+
+## 승인 후 live 무료 모델 검증
+
+- 실행 시각: 2026-08-02 21:12–21:22 KST
+- 검증 기준: `0aeaf4b` + 모델 선택 환경변수 수정
+- 사용자 승인: `4SS / EASY / PRE METAL CLN` 회사 문서를 외부 OpenRouter 무료
+  모델로 전송하는 것을 명시적으로 승인
+- 합성 모델: `nvidia/nemotron-3-super-120b-a12b:free`
+- Planner 모델: `google/gemma-4-26b-a4b-it:free`
+
+승인 직후 live Vault 전체를 다음 경로로 복제했다.
+
+```text
+/Users/daehwankim/SYLDAIX/YieldWiki.backup-20260802-m5-pre-free-llm
+```
+
+백업 직후 원본과 백업의 상대경로+파일 SHA-256 tree hash는 모두
+`ea48b11b574d8c2145621a736cd9145b42abcd3477a76cbbb155cc9ed5cae9ce`로
+같았다.
+
+### 무료 모델 선정과 모델 설정 수정
+
+OpenRouter models API에서 무료 모델의 구조화 출력 지원을 확인했다. 비민감 schema
+probe는 Gemma에서 성공했지만 실제 `ConceptSynthesis` tool schema는 provider가 numeric
+`maximum` 제약을 거부했다. 동일한 실제 schema와 synthetic 문서를 사용한 probe에서
+Nemotron 무료 모델이 성공해 Wiki 합성 모델로 선택했다.
+
+이 과정에서 `common.get_llm(model=...)`이 전달된 model과
+`RETRIEVE_CHAIN_MODEL`을 무시하고 고정 모델을 사용하던 결함을 RED 테스트로 재현했다.
+수정 후 명시적 model, 환경 기본 model, 기존 fallback 순서로 선택하며 관련 테스트
+25개가 통과했다.
+
+### live bootstrap 및 graph projection
+
+exact bootstrap 결과:
+
+```text
+status=ok
+documents=7
+confidence=0.88
+citations=7
+synthesized_entities=8
+synthesized_relations=12
+```
+
+구조 검증에서 endpoint Entity가 없는 Relation 7개는 warning과 함께 materialization에서
+제외됐다. 최종 projection은 active Entity 8개, active Relation 5개이며 exact Concept의
+one-hop 확장은 Relation 5개와 Source 5개를 반환했다. 모든 active Relation Source는
+Concept의 authoritative Source ID 7개 안에 있다.
+
+materializer `--check`를 연속 두 번 실행한 결과는 모두 다음과 같았다.
+
+```text
+created=0 modified=0 deleted=0 errors=0
+```
+
+두 실행 모두 동일한 invalid Relation warning 7개만 반환했으므로 파일 projection은
+idempotent하다.
+
+### authenticated Plugin Chat 및 session Citation
+
+현재 worktree Backend를 실제 Vault, MongoDB, OpenSearch와 임시 Plugin token으로 18001에서
+기동했다. public health와 authenticated Plugin health는 HTTP 200, 잘못된 token은 HTTP
+401이었다.
+
+첫 자연어 질문은 Planner가 기존 `relation_tree_agent`로 분류해 Wiki RAG 검증에서
+제외했다. 요청을 `Fail History 검색 + Wiki 근거`로 명확히 표현한 두 번째 호출은 실제
+`fail_history_agent`로 routing됐다.
+
+```text
+retrieval_mode=wiki-first
+OpenSearch result rows=7
+fail_history synthesis LLM calls=0
+final answer chars=6211
+SSE citations=7
+stream_end=true
+```
+
+MongoDB session history에는 user 1개와 assistant 2개 turn이 저장됐고, 최종 assistant
+turn의 canonical `sources/...` Citation 7개와 6,211자 답변이 재조회됐다. 임시 Backend는
+검증 후 정상 종료했다.
+
+### Obsidian Desktop
+
+실제 `YieldWiki` Vault의 Graph view에서 새 `entities/`와 `relations/` 노드 및 연결이
+표시되는 것을 확인했다. 생성 Entity 노트를 열어 `canonical_name`, `entity_type`,
+`source_concept_ids`, `status: active`와 active Relation wikilink가 표시되는 것도 확인했다.
+Plugin sidebar는 검증 시점에 임시 Backend가 종료된 상태여서 connection refused였으며,
+이번 실행에서 Desktop Citation 버튼 클릭은 다시 수행하지 않았다. Citation의 API/SSE 및
+MongoDB persistence는 위 authenticated E2E로 검증했다.
+
+### 승인 후 최종 판정
+
+외부 LLM 승인으로 기존 BLOCKED였던 live exact synthesis, Entity/Relation materialization,
+authenticated Wiki RAG 답변 및 canonical Citation persistence는 **PASS**로 전환됐다.
+Desktop Graph와 Entity 노트도 실제 확인했다. 남은 UI 항목은 운영 Backend를 실행한
+상태에서 Plugin Citation 버튼을 클릭하는 수동 확인뿐이다.
+
+승인 후 코드 변경까지 포함한 최종 회귀는 Wiki+memory `355 passed`, confirm-edit
+`9 passed`, Obsidian Plugin `36 passed`와 production build 성공이다. `uv lock --check`,
+`git diff --check`, 임시 Backend 종료도 확인했다.
