@@ -208,7 +208,7 @@ def _invalid_lotcd_update(
 
 
 # ── Supervisor 노드 ──────────────────────────────────────────
-@observe(name="supervisor_node")
+@observe(name="supervisor_node", capture_input=False, capture_output=False)
 def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
     """Project a task's resolved params into the per-agent state fields the agent reads.
 

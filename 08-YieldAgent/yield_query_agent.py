@@ -84,7 +84,7 @@ def pretty_print_messages(update, last_message=False):
 # ============================================================
 # LLM 분석 함수
 # ============================================================
-@observe(name="analyze_with_llm")
+@observe(name="analyze_with_llm", capture_input=False, capture_output=False)
 @timed
 def _analyze_with_llm(weeks_data: list[dict], table_str: str, lotcd: str, llm,
                       anomaly_params: list[dict], n: int = 4, config=None) -> str:
@@ -166,7 +166,7 @@ def _yield_artifact_metadata(artifacts: list[dict]) -> dict[str, str | int | flo
 # ============================================================
 # Yield Agent 노드 구현
 # ============================================================
-@observe(name="yield_agent_node")
+@observe(name="yield_agent_node", capture_input=False, capture_output=False)
 @timed
 def yield_agent_node(state: dict, config: RunnableConfig) -> dict:
     """Yield Agent 노드: State에서 파라미터를 읽어 API 호출 + 테이블 생성"""

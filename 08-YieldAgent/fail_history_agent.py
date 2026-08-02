@@ -283,7 +283,7 @@ def _fail_history_per_report(state: dict, config: RunnableConfig, fail_groups: l
     }
 
 
-@observe(name="fail_history_agent_node")
+@observe(name="fail_history_agent_node", capture_input=False, capture_output=False)
 @timed
 def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     """함수형 노드: search → (wiki-first 즉시 / 아니면 LLM 1회 합성) → 인용 문서 표시.

@@ -1,7 +1,9 @@
+import ast
 import hashlib
 import inspect
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import frontmatter
@@ -522,6 +524,30 @@ class _PlannerSupervisorStreamTraceGraph:
         yield "updates", {"supervisor": self.supervisor_command.update}
 
 
+class _PlannerSupervisorAgentStreamTraceGraph(_PlannerSupervisorStreamTraceGraph):
+    def __init__(self):
+        super().__init__()
+        self.agent_update = {}
+
+    async def astream(self, stream_input, config, stream_mode):
+        import fail_history_agent
+        import node_planner
+        import node_supervisor
+
+        self.planner_update = node_planner.planner_node(stream_input, config)
+        yield "updates", {"planner": self.planner_update}
+
+        state = {**stream_input, **self.planner_update}
+        self.supervisor_command = node_supervisor.supervisor_node(state, config)
+        for event in self.custom_events:
+            yield "custom", dict(event)
+        yield "updates", {"supervisor": self.supervisor_command.update}
+
+        state = {**state, **self.supervisor_command.update}
+        self.agent_update = fail_history_agent.fail_history_agent_node(state, config)
+        yield "updates", {"fail_history_agent": self.agent_update}
+
+
 class _StreamTraceTurns:
     def __init__(self):
         self.documents = []
@@ -866,6 +892,173 @@ def test_planner_langfuse_observation_disables_output_capture():
     decorator = inspect.getsource(node_planner.planner_node).splitlines()[0]
     assert "capture_input=False" in decorator
     assert "capture_output=False" in decorator
+
+
+def test_wiki_chat_runtime_observations_disable_payload_capture():
+    import node_planner
+
+    runtime_root = Path(node_planner.__file__).parent
+    unsafe_observations = []
+    for module_path in sorted(runtime_root.glob("*.py")):
+        if module_path.name == "wiki_summarizer.py":
+            continue
+        tree = ast.parse(module_path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not (
+                    isinstance(decorator, ast.Call)
+                    and isinstance(decorator.func, ast.Name)
+                    and decorator.func.id == "observe"
+                ):
+                    continue
+                options = {keyword.arg: keyword.value for keyword in decorator.keywords}
+                input_disabled = isinstance(
+                    options.get("capture_input"), ast.Constant
+                ) and options["capture_input"].value is False
+                output_disabled = isinstance(
+                    options.get("capture_output"), ast.Constant
+                ) and options["capture_output"].value is False
+                if not (input_disabled and output_disabled):
+                    unsafe_observations.append(f"{module_path.name}:{node.name}")
+
+    assert unsafe_observations == []
+
+
+def test_langfuse_span_output_respects_wiki_capture_context(monkeypatch):
+    import lf_utils
+
+    outputs = []
+    client = SimpleNamespace(
+        update_current_span=lambda **kwargs: outputs.append(kwargs)
+    )
+    monkeypatch.setattr(lf_utils, "get_client", lambda: client)
+
+    token = lf_utils.set_lf_capture_disabled(True)
+    try:
+        lf_utils.update_lf_span_output({"value": "WIKI_SENTINEL"})
+    finally:
+        lf_utils.reset_lf_capture_disabled(token)
+    assert outputs == []
+
+    lf_utils.update_lf_span_output({"value": "NON_WIKI_VALUE"})
+    assert outputs == [{"output": {"value": "NON_WIKI_VALUE"}}]
+
+
+@pytest.mark.anyio
+async def test_wiki_stream_disables_callbacks_through_reachable_agent(
+    monkeypatch, tmp_path
+):
+    import agent_server
+    import fail_history_agent
+    import lf_utils
+    import local_trace
+    import node_planner
+    import node_supervisor
+
+    sentinel = "WIKI_DOWNSTREAM_AGENT_CALLBACK_SENTINEL"
+
+    class PlannerModel:
+        def invoke(self, messages, **kwargs):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "requests": [
+                            {
+                                "intent": "fail_history_search",
+                                "agent": "fail_history_agent",
+                                "slots": {"dh_query": sentinel},
+                                "goal": sentinel,
+                            }
+                        ],
+                        "answer": "",
+                    }
+                )
+            )
+
+    class AgentModel:
+        def __init__(self):
+            self.callback_lists = []
+            self.inputs = []
+
+        def invoke(self, messages, config):
+            self.callback_lists.append(config.get("callbacks"))
+            self.inputs.append(str(messages))
+            return SimpleNamespace(content="분석 결과 [FH-doc-1]")
+
+    class LangfuseClient:
+        def get_current_trace_id(self):
+            return "trace-id"
+
+        def get_current_observation_id(self):
+            return "observation-id"
+
+    agent_model = AgentModel()
+    trace_json = tmp_path / "downstream-agent-callbacks.json"
+    monkeypatch.setattr(local_trace, "_TURNS", [])
+    monkeypatch.setattr(local_trace, "_TURNS_LOADED", True)
+    monkeypatch.setattr(local_trace, "_last_turns_json_path", lambda: trace_json)
+    monkeypatch.setattr(local_trace, "_last_turn_path", lambda: tmp_path / "trace.html")
+    monkeypatch.setattr(node_planner, "_model", PlannerModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+    monkeypatch.setattr(fail_history_agent, "_fh_model", agent_model)
+    monkeypatch.setattr(
+        fail_history_agent,
+        "do_search",
+        lambda **kwargs: {
+            "retrieval_mode": "baseline",
+            "results": [
+                {
+                    "doc_id": "doc-1",
+                    "product": "4SS",
+                    "fail_type": "IOFF",
+                    "cause_oper": "PT1H",
+                    "cause": "원인",
+                    "action": "조치",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(lf_utils, "get_client", lambda: LangfuseClient())
+    monkeypatch.setattr(lf_utils, "llm_trace_handler", lambda: "local-callback")
+    monkeypatch.setattr(lf_utils, "_LFHandler", lambda **kwargs: "remote-callback")
+    monkeypatch.setattr(agent_server, "get_client", lambda: _StreamTraceClient())
+    monkeypatch.setattr(agent_server, "SIMULATED_STREAM_DELAY", 0)
+
+    graph = _PlannerSupervisorAgentStreamTraceGraph()
+
+    def capture_custom(kind, event):
+        payload = event.model_dump() if hasattr(event, "model_dump") else event
+        graph.custom_events.append({"kind": kind, **payload})
+
+    monkeypatch.setattr(node_supervisor, "stream_event", capture_custom)
+    turns = _StreamTraceTurns()
+    req = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                graph=graph,
+                motor_db=SimpleNamespace(chat_turns=turns),
+            )
+        )
+    )
+    request = models.InternalChatRequest(
+        query="원인은?",
+        session_id="session-downstream-agent",
+        wiki_context={
+            "id": "concept:trace",
+            "path": "concepts/trace.md",
+            "metadata": {"id": "concept:trace", "type": "concept"},
+            "body": sentinel,
+        },
+    )
+
+    response = await agent_server._chat_stream(request, req)
+    await _consume_stream_response(response)
+
+    assert agent_model.callback_lists == [[]]
+    assert sentinel in agent_model.inputs[0]
+    assert lf_utils.lf_callbacks() == ["local-callback", "remote-callback"]
 
 
 def test_planner_propagates_model_invocation_failure(monkeypatch):

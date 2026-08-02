@@ -21,7 +21,11 @@ from wads_context import _apply_recent_wads_to_map_tasks
 
 
 
-@observe(name="task_normalizer_validator_node")
+@observe(
+    name="task_normalizer_validator_node",
+    capture_input=False,
+    capture_output=False,
+)
 def task_normalizer_validator_node(
     state: Dict[str, Any], config: RunnableConfig
 ) -> dict:

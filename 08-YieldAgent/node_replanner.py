@@ -200,7 +200,7 @@ def _replacements_from_replanned_tasks(
     }
 
 
-@observe(name="replanner_node")
+@observe(name="replanner_node", capture_input=False, capture_output=False)
 def replanner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     """phase 3a replanner: past_steps 기반 LLM dynamic input 채우기.
 

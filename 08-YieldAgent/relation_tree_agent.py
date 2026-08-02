@@ -97,7 +97,7 @@ def _query_main_opers(lotcd: str, fail_type: str, category: str = "") -> list[st
     return out
 
 
-@observe(name="relation_tree_agent_node")
+@observe(name="relation_tree_agent_node", capture_input=False, capture_output=False)
 @timed
 def relation_tree_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     state = {**state, **((state.get("current_task") or {}).get("params") or {})}  # S1-a: task params 우선, scalar fallback

@@ -167,7 +167,7 @@ def _get_embedding_cached(text: str) -> tuple:
     raise RuntimeError("임베딩 API 호출 실패 (최대 재시도 초과)")
 
 
-@observe(name="fh_get_embedding")
+@observe(name="fh_get_embedding", capture_input=False, capture_output=False)
 def _get_embedding(text: str) -> List[float]:
     """OpenRouter API로 텍스트 임베딩 생성 (캐시 + 재시도 적용)"""
     return list(_get_embedding_cached(text))
@@ -388,7 +388,7 @@ def search_opensearch_with_mode(
     )
 
 
-@observe(name="fh_search_opensearch")
+@observe(name="fh_search_opensearch", capture_input=False, capture_output=False)
 def _search_opensearch(
     query: str,
     product: str = "",

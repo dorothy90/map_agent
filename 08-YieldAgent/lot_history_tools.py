@@ -91,7 +91,7 @@ def _query_lot(conn, lot_id: str) -> Dict[str, List[Dict]]:
 
 
 @tool
-@observe(name="query_lot_history")
+@observe(name="query_lot_history", capture_input=False, capture_output=False)
 def query_lot_history(lot_ids: str) -> str:
     """LOT 종합 이력을 조회합니다. 5개 테이블(FDC알람, Q-TIME초과, Trouble, Future Action, Sample Split)에서 LOT_ID로 검색합니다.
 

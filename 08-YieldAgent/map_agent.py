@@ -29,7 +29,7 @@ import platform
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
-from langfuse import observe, get_client
+from langfuse import observe
 
 load_dotenv(override=True)
 
@@ -42,6 +42,7 @@ from common import (  # noqa: E402
     timed,
 )
 from result_contracts import attach_result_envelope, derive_summary_from_rows  # noqa: E402
+from lf_utils import update_lf_span_output  # noqa: E402
 
 ORACLE_TABLE = os.getenv("ORACLE_TABLE", "LANGGRAPH_DATA")
 
@@ -720,7 +721,7 @@ def _png_to_html(png_path: str, title: str) -> str:
 # ============================================================
 # LangGraph 노드
 # ============================================================
-@observe(name="map_agent_node")
+@observe(name="map_agent_node", capture_input=False, capture_output=False)
 @timed
 def map_agent_node(state: dict, config: RunnableConfig) -> dict:
     """Wafer map 시각화 노드 — supervisor가 직접 호출"""
@@ -1012,7 +1013,7 @@ def _handle_standard_map(state: dict) -> dict:
         artifacts.append({"type": "html", "mime": "text/html", "data": map_html, "title": "map", "semantic": "map"})
 
     try:
-        get_client().update_current_span(output={
+        update_lf_span_output({
             "map_result": result_str,
             "png_count": png_count,
             "map_type": map_type,

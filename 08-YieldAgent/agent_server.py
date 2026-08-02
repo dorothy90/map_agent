@@ -68,6 +68,7 @@ from local_trace import (  # noqa: E402
     set_trace_context,
     summarize_trace_value,
 )
+from lf_utils import reset_lf_capture_disabled, set_lf_capture_disabled  # noqa: E402
 from supervisor import workflow, _resume_is_interrupt_answer  # noqa: E402
 from user_memory import update_profile_from_feedback  # noqa: E402
 from wiki_config import (  # noqa: E402
@@ -491,21 +492,33 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
     # HITL 오인 가드: resume 입력이 대기 중 게이트의 '답'이 아니라 '새 질문'이면,
     # 게이트를 드롭(stale 작업 실행 방지)하고 fresh 턴으로 재처리한다. 자동 제안 게이트만 대상.
     # (missing_param/plan_review는 빈 응답이 재질문이라 드레인 부적합 → 제외.)
+    resume_is_interrupt_answer = True
     if (
         request.resume_value is not None
         and pending_interrupt_for_trace.get("interrupt_type")
         in {"task_confirm", "postwads_choice"}
-        and not _resume_is_interrupt_answer(request.resume_value, pending_interrupt_for_trace)
     ):
+        capture_token = set_lf_capture_disabled(wiki_context_turn)
+        try:
+            resume_is_interrupt_answer = _resume_is_interrupt_answer(
+                request.resume_value, pending_interrupt_for_trace
+            )
+        finally:
+            reset_lf_capture_disabled(capture_token)
+    if not resume_is_interrupt_answer:
         logger.info(
             "[Resume] 새 의도 감지(pending=%s) → 게이트 드롭 후 fresh 재처리: %r",
             pending_interrupt_for_trace.get("interrupt_type"),
             preview_text(request.query),
         )
+        capture_token = set_lf_capture_disabled(wiki_context_turn)
         try:
-            await graph.ainvoke(Command(resume=""), config)  # 빈 응답→거절→제안 task 드롭→END
-        except Exception as e:
-            logger.warning("[Resume] 게이트 드롭 드레인 실패: %s", e)
+            try:
+                await graph.ainvoke(Command(resume=""), config)  # 빈 응답→거절→제안 task 드롭→END
+            except Exception as e:
+                logger.warning("[Resume] 게이트 드롭 드레인 실패: %s", e)
+        finally:
+            reset_lf_capture_disabled(capture_token)
         request.resume_value = None  # 아래 fresh 경로로 낙하 (request.query == 새 질문 텍스트)
 
     # resume 요청인 경우: interrupt에서 재개
@@ -665,6 +678,9 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
 
     async def generate():
         trace_tokens = set_trace_context(trace_id, turn_id)
+        # Wiki evidence stays in functional graph state, so suppress every nested
+        # payload-bearing LLM callback for this async stream execution.
+        capture_token = set_lf_capture_disabled(wiki_context_turn)
         start = time.time()
         step_count = 0
         turn_messages: list[dict] = []
@@ -1109,6 +1125,7 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
             except Exception:
                 pass
         finally:
+            reset_lf_capture_disabled(capture_token)
             reset_trace_context(trace_tokens)
 
     return StreamingResponse(generate(), media_type="text/event-stream")

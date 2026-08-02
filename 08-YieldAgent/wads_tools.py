@@ -307,7 +307,7 @@ def _wafer_groups_for_reports(
 
 
 # ── Oracle 조회 ───────────────────────────────────────────────
-@observe(name="wads_query_oracle")
+@observe(name="wads_query_oracle", capture_input=False, capture_output=False)
 def _query_wads_data(
     lotcd: Optional[str] = None,
     end_tm: Optional[str] = None,
@@ -956,7 +956,7 @@ Request: {query_description}"""
 
 
 @tool
-@observe(name="wads_query_sql")
+@observe(name="wads_query_sql", capture_input=False, capture_output=False)
 def wads_query_sql(query_description: str) -> str:
     """WADS 데이터에 대한 복잡한 SQL 쿼리를 생성하고 실행합니다.
     wads_query_data/wads_get_html_report로 처리할 수 없는 복잡한 조건에만 사용하세요.
