@@ -253,3 +253,51 @@ Citation을 클릭하자 canonical `sources/FH-9001-EXTRA.md`가 열렸으며, �
 최종 회귀는 Wiki+memory `365 passed`(기존 LangGraph deprecated API warning 2건),
 confirm-edit `9 passed`, Obsidian Plugin `36 passed`였고 production build도 성공했다.
 `uv lock --check`는 268 packages를 정상 확인했으며 `git diff --check`도 통과했다.
+
+## Final review 수정 후 live 재검증
+
+- 실행 시각: 2026-08-03 06:16–08:08 KST
+- 검증 기준: `7943a62`
+- live Vault: `/Users/daehwankim/SYLDAIX/YieldWiki`
+
+최종 privacy, safe mutation, legacy Concept fallback, Plugin refresh 수정 이후 전체 자동 회귀를
+다시 실행했다. Wiki+memory `409 passed`(기존 LangGraph deprecated API warning 2건),
+confirm-edit `9 passed`, Obsidian Plugin `45 passed`였고 production build도 성공했다.
+샌드박스 내부 실행은 기존 `uv` cache와 `127.0.0.1` listen 권한 때문에 실패했으며,
+동일 명령을 허용된 실제 환경에서 재실행한 위 결과를 기준으로 판정했다.
+
+live Vault materializer check를 연속 두 번 실행한 결과는 모두 다음과 같았다.
+
+```text
+created=0 modified=0 deleted=0 warnings=7 errors=0
+```
+
+7개 warning은 기존 누락 Relation endpoint warning과 동일하다. active hash-only filename은
+없었고 readable Entity 8개와 Relation 5개 모두 frontmatter에 full SHA-256 ID를 유지했다.
+
+현재 worktree Backend를 실제 Vault, MongoDB, OpenSearch와 기존 Plugin 인증 설정으로
+`127.0.0.1:18001`에서 실행했다. public health HTTP 200, authenticated Plugin health HTTP
+200, 잘못된 token HTTP 401을 확인했다. Planner를
+`google/gemma-4-26b-a4b-it:free`로 둔 첫 요청은 OpenRouter provider가 HTTP 500을 반환해
+실패했다. 동일 코드와 입력에서 Planner만 구조화 출력이 검증된
+`nvidia/nemotron-3-super-120b-a12b:free`로 바꾼 재실행은 정상 완료됐다.
+
+```text
+route=fail_history_agent
+retrieval_mode=wiki-first
+OpenSearch result rows=7
+fail_history synthesis LLM calls=0
+SSE citations=7
+stream_end=true
+```
+
+7개 Citation은 모두 canonical `sources/...` 경로였고, 대표 Citation
+`sources/FH-000238.md`를 Plugin Source API로 재조회해 HTTP 200, `doc_id=FH-000238`,
+`type=source`가 일치하는 것을 확인했다. 임시 Backend는 정상 종료했으며 port 18001에
+listener가 없음을 확인했다. 토큰 값과 회사 문서·답변 본문은 기록하지 않았다.
+
+이번 재검증에서 Mac Computer Use 계층은 Obsidian의 최초 app-state 조회에서 응답하지
+않았다. 두 UI 전용 검증 에이전트와 controller 직접 호출이 같은 위치에서 멈춰 종료됐으므로,
+**최종 수정 이후 Desktop Citation 버튼 클릭 재확인은 BLOCKED**로 기록한다. 이전
+`628bb47` 기준 Desktop Citation 클릭 PASS 증거는 유지되지만, 현재 `7943a62`에서의 API,
+SSE, canonical Source 해석 성공을 새로운 Desktop 클릭 성공으로 대체하지 않는다.
