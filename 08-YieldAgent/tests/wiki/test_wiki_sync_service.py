@@ -183,6 +183,78 @@ def _synthesis():
     )
 
 
+def test_manual_concept_edit_is_preserved_and_creates_conflict_review(store):
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+    store.upsert_concept(
+        filters=filters,
+        synthesized_body="generated body",
+        materialize=False,
+    )
+    concept_path = next(store._PATHS.concepts.glob("*.md"))
+    post = frontmatter.load(concept_path)
+    post.content = "operator-authored body"
+    concept_path.write_text(frontmatter.dumps(post), encoding="utf-8")
+    preserved = concept_path.read_bytes()
+
+    with pytest.raises(store.ConceptEditConflict):
+        store.upsert_concept(
+            filters=filters,
+            synthesized_body="replacement generated body",
+            sync_metadata={"sync_job_id": "job:manual-conflict"},
+            materialize=False,
+        )
+
+    assert concept_path.read_bytes() == preserved
+    reviews = list(store._PATHS.reviews.glob("concept_edit_conflict_*.md"))
+    assert len(reviews) == 1
+    review = frontmatter.load(reviews[0])
+    assert review.metadata["review_type"] == "concept_edit_conflict"
+    assert review.metadata["status"] == "pending"
+    assert review.metadata["target_concept_id"] == (
+        "concept:4SS|PRE METAL CLN|EASY"
+    )
+    assert review.metadata["sync_job_id"] == "job:manual-conflict"
+    serialized = reviews[0].read_text(encoding="utf-8")
+    assert "operator-authored body" not in serialized
+    assert "replacement generated body" not in serialized
+
+
+def test_materializer_links_do_not_look_like_a_manual_concept_edit(store):
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+    store.upsert_concept(
+        filters=filters,
+        synthesized_body="first generated body",
+        materialize=False,
+    )
+    concept_path = next(store._PATHS.concepts.glob("*.md"))
+    post = frontmatter.load(concept_path)
+    post.content = (
+        "first generated body\n\n"
+        "<!-- yield-wiki:knowledge-links:start -->\n"
+        "## Knowledge Links\n\n- [[sources/FH-1]]\n"
+        "<!-- yield-wiki:knowledge-links:end -->"
+    )
+    concept_path.write_text(frontmatter.dumps(post), encoding="utf-8")
+
+    concept_id, status = store.upsert_concept(
+        filters=filters,
+        synthesized_body="second generated body",
+        materialize=False,
+    )
+
+    assert concept_id == "4SS|PRE METAL CLN|EASY"
+    assert status == "updated"
+    assert store.read_node("concept:4SS|PRE METAL CLN|EASY")["body"] == (
+        "second generated body"
+    )
 def _service(store, snapshots, jobs=None, synthesize=None, materialize=None, fetched=None):
     jobs = jobs or InMemoryJobStore()
     synthesize = synthesize or (lambda concept_id, docs: _synthesis())

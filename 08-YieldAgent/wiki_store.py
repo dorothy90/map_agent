@@ -36,6 +36,16 @@ WIKI_FIRST_MIN_CONFIDENCE = float(os.getenv("WIKI_FIRST_MIN_CONFIDENCE", "0.5"))
 WIKI_FIRST_MIN_CITATION_COVERAGE = float(os.getenv("WIKI_FIRST_MIN_CITATION_COVERAGE", "0.0"))
 WIKI_FIRST_MAX_AGE_DAYS = int(os.getenv("WIKI_FIRST_MAX_AGE_DAYS", "30"))
 
+_KNOWLEDGE_LINKS_BLOCK_RE = re.compile(
+    r"\n*<!-- yield-wiki:knowledge-links:start -->.*?"
+    r"<!-- yield-wiki:knowledge-links:end -->\s*$",
+    re.DOTALL,
+)
+
+
+class ConceptEditConflict(RuntimeError):
+    """Raised when generated Concept prose was edited outside the agent."""
+
 
 # ── ACRONYM_MAP 재사용 (fail_history_tools에 정의) ───────
 def _acronym_map() -> dict[str, str]:
@@ -78,6 +88,49 @@ def _episode_key(query: str, filters: dict, doc_ids: list[str]) -> str:
 
 def _concept_key(filters: dict) -> str:
     return f"{filters.get('product','')}|{filters.get('cause_oper','')}|{filters.get('fail_type','')}"
+
+
+def _generated_body_sha256(body: str) -> str:
+    generated_body = _KNOWLEDGE_LINKS_BLOCK_RE.sub("", str(body or "")).rstrip()
+    return hashlib.sha256(generated_body.encode("utf-8")).hexdigest()
+
+
+def _create_concept_edit_conflict_review(
+    concept_id: str,
+    *,
+    expected_sha256: str,
+    observed_sha256: str,
+    proposed_sha256: str,
+    sync_metadata: dict[str, Any] | None,
+    detected_at: str,
+) -> None:
+    identity = "|".join(
+        (concept_id, expected_sha256, observed_sha256, proposed_sha256)
+    )
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    path = _PATHS.reviews / f"concept_edit_conflict_{digest}.md"
+    if not path.exists():
+        metadata = {
+            "id": f"review:concept-edit-conflict:{digest}",
+            "type": "review",
+            "review_type": "concept_edit_conflict",
+            "status": "pending",
+            "target_concept_id": concept_id,
+            "expected_body_sha256": expected_sha256,
+            "observed_body_sha256": observed_sha256,
+            "proposed_body_sha256": proposed_sha256,
+            "sync_job_id": str((sync_metadata or {}).get("sync_job_id") or ""),
+            "detected_at": detected_at,
+            "created": detected_at,
+            "updated": detected_at,
+        }
+        body = (
+            "# Concept Edit Conflict\n\n"
+            "운영자 편집이 감지되어 자동 본문 교체를 보류했습니다. "
+            "검토 후 보존 또는 재합성을 결정하세요.\n"
+        )
+        _write(path, frontmatter.Post(content=body, **metadata))
+        _log("concept_edit_conflict", concept_id)
 
 
 def _alias_key(canonical: str, variant: str) -> str:
@@ -299,6 +352,7 @@ def upsert_concept(
                 "entities": deepcopy(fm["entities"]),
                 "relations": deepcopy(fm["relations"]),
             })
+            fm["generated_body_sha256"] = _generated_body_sha256(synthesized_body)
             body = synthesized_body
         post = frontmatter.Post(content=body, **fm)
         _write(path, post)
@@ -333,6 +387,24 @@ def upsert_concept(
 
     body_content = existing.content or ""
     if synthesized_body:
+        observed_sha256 = _generated_body_sha256(body_content)
+        expected_sha256 = str(md.get("generated_body_sha256") or "")
+        if not expected_sha256 and md["body_versions"]:
+            latest_body = str(
+                (md["body_versions"][-1] or {}).get("body_markdown") or ""
+            )
+            expected_sha256 = _generated_body_sha256(latest_body)
+        if expected_sha256 and observed_sha256 != expected_sha256:
+            proposed_sha256 = _generated_body_sha256(synthesized_body)
+            _create_concept_edit_conflict_review(
+                f"concept:{cid}",
+                expected_sha256=expected_sha256,
+                observed_sha256=observed_sha256,
+                proposed_sha256=proposed_sha256,
+                sync_metadata=sync_metadata,
+                detected_at=now,
+            )
+            raise ConceptEditConflict(f"manual Concept edit detected: concept:{cid}")
         md["entities"] = deepcopy(entities or [])
         md["relations"] = deepcopy(relations or [])
         new_ver = len(md["body_versions"]) + 1
@@ -356,6 +428,7 @@ def upsert_concept(
         if evidence:
             md["evidence_diversity_score"] = float(evidence.get("score", md["evidence_diversity_score"]))
             md["unique_doc_ids"] = int(evidence.get("unique_doc_ids", md["unique_doc_ids"]))
+        md["generated_body_sha256"] = _generated_body_sha256(synthesized_body)
         body_content = synthesized_body
 
     _write(path, frontmatter.Post(content=body_content, **md))
