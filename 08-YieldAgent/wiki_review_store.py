@@ -18,6 +18,7 @@ from models import (
     ReviewStatus,
 )
 from wiki_config import WikiPaths
+from wiki_safe_mutation import FileSnapshot, PinnedWikiMutation
 
 
 _HISTORY_START = "<!-- yield-wiki:review-history:start -->"
@@ -35,27 +36,18 @@ class ReviewConflict(RuntimeError):
 
 @contextmanager
 def _review_lock(paths: WikiPaths):
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
-    with (paths.state_dir / "reviews.lock").open("a+") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    with PinnedWikiMutation(paths) as mutation:
+        descriptor = mutation.open_lock_file(paths.state_dir / "reviews.lock")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
         try:
-            yield
+            yield mutation
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _atomic_write(path: Path, post: frontmatter.Post) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temporary.write_text(frontmatter.dumps(post), encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _plain_text(value: object) -> str:
@@ -117,16 +109,16 @@ class WikiReviewStore:
         self.paths = paths
 
     def list(self, status: ReviewStatus | None = None) -> list[PluginReview]:
-        if not self.paths.reviews.exists():
-            return []
         reviews = []
-        for path in sorted(self.paths.reviews.glob("*.md")):
-            post = frontmatter.load(path)
-            if post.metadata.get("type") != "review":
-                continue
-            review = _review_from_post(post)
-            if status is None or review.status == status:
-                reviews.append(review)
+        with PinnedWikiMutation(self.paths) as mutation:
+            for path in mutation.list_paths(self.paths.reviews, suffix=".md"):
+                snapshot = mutation.snapshot(path)
+                post = _post_from_snapshot(snapshot)
+                if post.metadata.get("type") != "review":
+                    continue
+                review = _review_from_post(post)
+                if status is None or review.status == status:
+                    reviews.append(review)
         return reviews
 
     def create(self, request: PluginReviewCreate) -> PluginReview:
@@ -150,14 +142,20 @@ class WikiReviewStore:
         title = request.review_type.replace("_", " ").title()
         body = f"# {_plain_text(title)} Review\n\n{_plain_text(request.comment)}\n"
         post = frontmatter.Post(content=body, **metadata)
-        with _review_lock(self.paths):
-            _atomic_write(path, post)
+        with _review_lock(self.paths) as mutation:
+            expected = mutation.snapshot(path)
+            if expected.exists:
+                raise ReviewConflict(review_id)
+            mutation.replace_text(
+                path,
+                frontmatter.dumps(post),
+                expected=expected,
+            )
         return _review_from_post(post)
 
     def update(self, review_id: str, request: PluginReviewUpdate) -> PluginReview:
-        with _review_lock(self.paths):
-            path = self._find_path(review_id)
-            post = frontmatter.load(path)
+        with _review_lock(self.paths) as mutation:
+            path, post, expected = self._find_review(mutation, review_id)
             current_version = int(post.metadata.get("version", 1))
             if current_version != request.expected_version:
                 raise ReviewConflict(review_id)
@@ -182,16 +180,28 @@ class WikiReviewStore:
                 content=_replace_history_block(post.content or "", history),
                 **metadata,
             )
-            _atomic_write(path, updated)
+            mutation.replace_text(
+                path,
+                frontmatter.dumps(updated),
+                expected=expected,
+            )
             return _review_from_post(updated)
 
-    def _find_path(self, review_id: str) -> Path:
-        if self.paths.reviews.exists():
-            for path in sorted(self.paths.reviews.glob("*.md")):
-                post = frontmatter.load(path)
-                if (
-                    post.metadata.get("type") == "review"
-                    and post.metadata.get("id") == review_id
-                ):
-                    return path
+    def _find_review(
+        self,
+        mutation: PinnedWikiMutation,
+        review_id: str,
+    ) -> tuple[Path, frontmatter.Post, FileSnapshot]:
+        for path in mutation.list_paths(self.paths.reviews, suffix=".md"):
+            snapshot = mutation.snapshot(path)
+            post = _post_from_snapshot(snapshot)
+            if (
+                post.metadata.get("type") == "review"
+                and post.metadata.get("id") == review_id
+            ):
+                return path, post, snapshot
         raise ReviewNotFound(review_id)
+
+
+def _post_from_snapshot(snapshot: FileSnapshot) -> frontmatter.Post:
+    return frontmatter.loads(snapshot.content.decode("utf-8"))

@@ -267,17 +267,33 @@ def test_simultaneous_updates_allow_one_writer(store, paths):
 def test_replace_failure_leaves_original_review_and_cleans_temp(
     store, paths, monkeypatch
 ):
-    import wiki_review_store
+    import wiki_safe_mutation
 
     path = write_existing_source_removal_review(paths.reviews / "source_removal_a.md")
     before = path.read_bytes()
+    original_link = wiki_safe_mutation.os.link
 
-    def fail_replace(source, target):
-        raise OSError("replace failed")
+    def fail_publication(
+        source,
+        target,
+        *,
+        src_dir_fd=None,
+        dst_dir_fd=None,
+        follow_symlinks=True,
+    ):
+        if target == path.name and str(source).endswith(".tmp"):
+            raise OSError("publish failed")
+        return original_link(
+            source,
+            target,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
 
-    monkeypatch.setattr(wiki_review_store.os, "replace", fail_replace)
+    monkeypatch.setattr(wiki_safe_mutation.os, "link", fail_publication)
 
-    with pytest.raises(OSError, match="replace failed"):
+    with pytest.raises(OSError, match="publish failed"):
         store.update(
             "review:source-removal:a",
             PluginReviewUpdate(
@@ -289,6 +305,7 @@ def test_replace_failure_leaves_original_review_and_cleans_temp(
 
     assert path.read_bytes() == before
     assert list(paths.reviews.glob(".*.tmp")) == []
+    assert list(paths.reviews.glob(".*.quarantine")) == []
 
 
 def test_missing_review_raises_not_found(store):
@@ -301,3 +318,56 @@ def test_missing_review_raises_not_found(store):
                 expected_version=1,
             ),
         )
+
+
+def test_create_rejects_swapped_reviews_directory_without_outside_write(
+    store, paths, tmp_path
+):
+    outside = tmp_path / "outside-reviews"
+    outside.mkdir()
+    sentinel = outside / "sentinel.md"
+    sentinel.write_text("outside retained\n", encoding="utf-8")
+    parked = tmp_path / "parked-reviews"
+    paths.reviews.rename(parked)
+    paths.reviews.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="managed directory is not safe"):
+        store.create(
+            PluginReviewCreate(
+                target_concept_id="concept:A",
+                reviewer="operator-1",
+                comment="must stay inside the Vault",
+            )
+        )
+
+    assert sentinel.read_text(encoding="utf-8") == "outside retained\n"
+    assert list(outside.iterdir()) == [sentinel]
+
+
+def test_update_rejects_swapped_reviews_directory_without_outside_write(
+    store, paths, tmp_path
+):
+    source = write_existing_source_removal_review(
+        paths.reviews / "source_removal_a.md"
+    )
+    outside = tmp_path / "outside-reviews"
+    outside.mkdir()
+    outside_review = outside / source.name
+    outside_review.write_bytes(source.read_bytes())
+    outside_before = outside_review.read_bytes()
+    parked = tmp_path / "parked-reviews"
+    paths.reviews.rename(parked)
+    paths.reviews.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="managed directory is not safe"):
+        store.update(
+            "review:source-removal:a",
+            PluginReviewUpdate(
+                status="approved",
+                reviewer="operator-1",
+                expected_version=1,
+            ),
+        )
+
+    assert outside_review.read_bytes() == outside_before
+    assert (parked / source.name).exists()

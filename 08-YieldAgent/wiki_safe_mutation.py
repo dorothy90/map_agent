@@ -117,6 +117,15 @@ class PinnedWikiMutation:
             return self.root_fd, parts[0]
 
         directory = self.paths.root / parts[0]
+        return self._managed_directory_fd(directory), parts[1]
+
+    def _managed_directory_fd(self, directory: Path) -> int:
+        parts = self._relative_parts(directory)
+        if len(parts) != 1:
+            raise WikiConfigurationError(
+                f"Wiki Vault directory is not directly managed: {directory}"
+            )
+        self._validate_root()
         descriptor = self.directory_fds.get(directory)
         if descriptor is None:
             try:
@@ -131,7 +140,7 @@ class PinnedWikiMutation:
                 ) from exc
             self.directory_fds[directory] = descriptor
         self._validate_directory(directory, descriptor)
-        return descriptor, parts[1]
+        return descriptor
 
     def _validate_directory(self, directory: Path, descriptor: int) -> None:
         self._validate_root()
@@ -198,6 +207,60 @@ class PinnedWikiMutation:
             sha256=hashlib.sha256(content).hexdigest(),
             content=content,
         )
+
+    def list_paths(self, directory: Path, *, suffix: str = "") -> tuple[Path, ...]:
+        """List direct managed-directory entries through its pinned descriptor."""
+        descriptor = self._managed_directory_fd(directory)
+        names = sorted(os.listdir(descriptor))
+        self._validate_directory(directory, descriptor)
+        return tuple(
+            directory / name
+            for name in names
+            if name not in {".", ".."}
+            and Path(name).name == name
+            and (not suffix or name.endswith(suffix))
+        )
+
+    def open_lock_file(self, path: Path) -> int:
+        """Open or create a regular lock file relative to a pinned directory."""
+        directory_fd, name = self._directory(path)
+        try:
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDWR | os.O_NOFOLLOW,
+                    dir_fd=directory_fd,
+                )
+            except FileNotFoundError:
+                try:
+                    descriptor = os.open(
+                        name,
+                        os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600,
+                        dir_fd=directory_fd,
+                    )
+                except FileExistsError:
+                    descriptor = os.open(
+                        name,
+                        os.O_RDWR | os.O_NOFOLLOW,
+                        dir_fd=directory_fd,
+                    )
+        except OSError as exc:
+            raise WikiConfigurationError(f"Wiki lock file is not safe: {path}") from exc
+        try:
+            opened = os.fstat(descriptor)
+            entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or not stat.S_ISREG(entry.st_mode)
+                or _identity(opened) != _identity(entry)
+            ):
+                raise WikiConfigurationError(f"Wiki lock file changed: {path}")
+            self._directory(path)
+            return descriptor
+        except Exception:
+            os.close(descriptor)
+            raise
 
     @staticmethod
     def _validate_owner(
