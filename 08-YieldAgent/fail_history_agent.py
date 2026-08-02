@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import string
 from datetime import datetime
 from typing import Any, Dict, List, Set
 
@@ -42,6 +43,7 @@ _SOURCE_DOC_ID_RE = re.compile(
     r"FH[-:][A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*"
 )
 _MARKDOWN = MarkdownIt()
+_COMMONMARK_ESCAPABLE_PUNCTUATION = frozenset(string.punctuation) - {"\\"}
 
 
 def _product_filter_from_lotcd(value: str) -> str:
@@ -63,14 +65,14 @@ def _product_filter_from_lotcd(value: str) -> str:
     return ""
 
 
-def _mask_escaped_open_brackets(markdown: str) -> str:
+def _mask_escaped_punctuation(markdown: str) -> str:
     sentinel = "\ue000"
     while sentinel in markdown:
         sentinel += "\ue001"
 
     masked = list(markdown)
     for index, character in enumerate(markdown):
-        if character != "[":
+        if character not in _COMMONMARK_ESCAPABLE_PUNCTUATION:
             continue
         backslash_count = 0
         position = index - 1
@@ -127,7 +129,7 @@ def _extract_standalone_source_ids(text: str) -> Set[str]:
 def _extract_cited_doc_ids(answer: str) -> Set[str]:
     cited_ids: Set[str] = set()
 
-    for block in _MARKDOWN.parse(_mask_escaped_open_brackets(answer)):
+    for block in _MARKDOWN.parse(_mask_escaped_punctuation(answer)):
         if block.type != "inline":
             continue
         link_depth = 0

@@ -563,6 +563,9 @@ def test_bracket_citations_preserve_exact_canonical_source_ids():
         "참조 정의 [FH:GRAPH]  : https://internal/document",
         r"이스케이프 \[FH-1]",
         r"홀수 이스케이프 \\\[FH-1]",
+        r"닫는 괄호 이스케이프 [FH-1\]",
+        r"하이픈 이스케이프 [FH\-1]",
+        r"콜론 이스케이프 [FH\:GRAPH]",
         "인라인 코드 `[FH-1]`",
         "이중 인라인 코드 ``[FH-1]``",
         "펜스 코드\n```text\n[FH-1]\n```",
@@ -579,6 +582,20 @@ def test_even_backslash_parity_keeps_standalone_source_citation():
     assert fail_history_agent._extract_cited_doc_ids(r"리터럴 백슬래시 \\[FH-1]") == {
         "FH-1"
     }
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [r"[FH\\-1]", r"[FH\\:GRAPH]", r"[FH-1\\]"],
+)
+def test_even_backslash_inside_source_id_remains_noncanonical(answer):
+    assert fail_history_agent._extract_cited_doc_ids(answer) == set()
+
+
+def test_mask_sentinel_collision_does_not_change_citation_results():
+    answer = "\ue000 독립 근거 [FH-1] 및 이스케이프 " + r"\[FH-2]"
+
+    assert fail_history_agent._extract_cited_doc_ids(answer) == {"FH-1"}
 
 
 def test_only_ordinary_standalone_duplicate_source_id_is_cited():
@@ -657,6 +674,9 @@ def test_main_agent_formats_only_the_exact_cited_result(monkeypatch):
         "축약 이미지 ![FH-1]",
         "참조 정의 [FH-MISSING] : https://internal/missing",
         r"이스케이프 \[FH-1]",
+        r"닫는 괄호 이스케이프 [FH-1\]",
+        r"하이픈 이스케이프 [FH\-1]",
+        r"콜론 이스케이프 [FH\:MISSING]",
     ],
 )
 def test_main_markdown_link_label_keeps_no_citation_fallback(monkeypatch, answer):
@@ -770,10 +790,12 @@ def test_fanout_markdown_link_labels_keep_no_citation_fallback(monkeypatch):
         def __init__(self):
             self.answers = iter(
                 (
-                    "코드 `[FH-EASY-1]` 및 링크 목적지 "
-                    "[source](https://internal/[FH-EASY-1])",
-                    "역참조 [source][FH-IOFF-MISSING] 및 펜스 코드\n"
-                    "```text\n[FH-IOFF-MISSING]\n```",
+                    "코드 `[FH-EASY-1]`, 링크 목적지 "
+                    "[source](https://internal/[FH-EASY-1]), 닫는 괄호 "
+                    r"[FH-EASY-1\] 및 하이픈 [FH\-EASY-1]",
+                    "역참조 [source][FH-IOFF-MISSING], 펜스 코드\n"
+                    "```text\n[FH-IOFF-MISSING]\n```, 콜론 "
+                    r"[FH\:IOFF-MISSING] 및 닫는 괄호 [FH-IOFF-MISSING\]",
                 )
             )
 
