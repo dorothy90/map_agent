@@ -923,3 +923,141 @@ def test_delete_rejects_same_directory_swap_after_snapshot(tmp_path, monkeypatch
 
     assert target.read_bytes() == operator_bytes
     assert parked.exists()
+
+
+def test_replace_recovers_interruption_immediately_after_quarantine(
+    tmp_path, monkeypatch
+):
+    import wiki_safe_mutation
+    from wiki_safe_mutation import GeneratedOwner, PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target = paths.products / "TARGET.md"
+    owner = GeneratedOwner(
+        "yield-wiki-materializer", "product", "product:TARGET"
+    )
+    target.write_text(
+        frontmatter.dumps(
+            frontmatter.Post(
+                content="generated original",
+                id=owner.node_id,
+                type=owner.node_type,
+                generated_by=owner.generated_by,
+                product="TARGET",
+            )
+        ),
+        encoding="utf-8",
+    )
+    before = target.read_bytes()
+    original_rename = wiki_safe_mutation.os.rename
+    original_fsync = wiki_safe_mutation.os.fsync
+    crashed = False
+    directory_fsyncs = []
+
+    class SimulatedCrash(BaseException):
+        pass
+
+    def crash_after_quarantine(source, destination, **kwargs):
+        nonlocal crashed
+        original_rename(source, destination, **kwargs)
+        if source == target.name and str(destination).endswith(".quarantine"):
+            crashed = True
+            raise SimulatedCrash("interrupted after quarantine")
+
+    def observe_fsync(descriptor):
+        if wiki_safe_mutation.stat.S_ISDIR(
+            wiki_safe_mutation.os.fstat(descriptor).st_mode
+        ):
+            directory_fsyncs.append(descriptor)
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(wiki_safe_mutation.os, "rename", crash_after_quarantine)
+    monkeypatch.setattr(wiki_safe_mutation.os, "fsync", observe_fsync)
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(SimulatedCrash, match="interrupted after quarantine"):
+            mutation.replace_text(
+                target,
+                "new generated content\n",
+                expected=expected,
+                owner=owner,
+            )
+
+    assert crashed
+    assert not target.exists()
+    assert len(list(paths.products.glob(".*.yield-wiki-transaction"))) == 1
+    with PinnedWikiMutation(paths) as recovery:
+        recovered = recovery.snapshot(target)
+
+    assert recovered == expected
+    assert target.read_bytes() == before
+    assert list(paths.products.glob(".*.quarantine")) == []
+    assert list(paths.products.glob(".*.yield-wiki-transaction")) == []
+    assert directory_fsyncs
+
+
+def test_quarantine_cleanup_rejects_concurrent_replacement_and_preserves_data(
+    tmp_path, monkeypatch
+):
+    import wiki_safe_mutation
+    from wiki_safe_mutation import GeneratedOwner, PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target = paths.products / "TARGET.md"
+    owner = GeneratedOwner(
+        "yield-wiki-materializer", "product", "product:TARGET"
+    )
+    target.write_text(
+        frontmatter.dumps(
+            frontmatter.Post(
+                content="generated original",
+                id=owner.node_id,
+                type=owner.node_type,
+                generated_by=owner.generated_by,
+                product="TARGET",
+            )
+        ),
+        encoding="utf-8",
+    )
+    original_bytes = target.read_bytes()
+    operator_bytes = b"operator-owned cleanup replacement\n"
+    parked = paths.products / "parked-cleanup-original.md"
+    original_snapshot = PinnedWikiMutation.snapshot
+    quarantine_snapshots = 0
+    replacement_path = None
+
+    def swap_after_cleanup_snapshot(self, path):
+        nonlocal quarantine_snapshots, replacement_path
+        snapshot = original_snapshot(self, path)
+        if path.name.endswith(".quarantine"):
+            quarantine_snapshots += 1
+            if quarantine_snapshots == 2:
+                path.rename(parked)
+                path.write_bytes(operator_bytes)
+                replacement_path = path
+        return snapshot
+
+    monkeypatch.setattr(
+        PinnedWikiMutation,
+        "snapshot",
+        swap_after_cleanup_snapshot,
+    )
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(RuntimeError, match="changed before cleanup"):
+            mutation.replace_text(
+                target,
+                "new generated content\n",
+                expected=expected,
+                owner=owner,
+            )
+
+    assert quarantine_snapshots == 2
+    assert parked.read_bytes() == original_bytes
+    assert replacement_path is not None
+    assert replacement_path.read_bytes() == operator_bytes
+    assert len(list(paths.products.glob(".*.yield-wiki-transaction"))) == 1
