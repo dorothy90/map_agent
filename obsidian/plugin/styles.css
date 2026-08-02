@@ -591,6 +591,43 @@
   color: var(--text-muted);
 }
 
+.yield-wiki-concept-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary-alt);
+}
+
+.yield-wiki-related-groups,
+.yield-wiki-review-create {
+  display: grid;
+  gap: 8px;
+}
+
+.yield-wiki-related-groups {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.yield-wiki-related-group {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.yield-wiki-review-create {
+  padding-top: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.yield-wiki-review-create .yield-wiki-primary-button {
+  justify-self: end;
+}
+
 .yield-wiki-review-target,
 .yield-wiki-review-body,
 .yield-wiki-review-history,
@@ -661,7 +698,8 @@
 
 @container (max-width: 300px) {
   .yield-wiki-filter-grid,
-  .yield-wiki-evidence-rail {
+  .yield-wiki-evidence-rail,
+  .yield-wiki-related-groups {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

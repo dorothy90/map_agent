@@ -4,7 +4,9 @@ import * as https from "node:https";
 import type {
   ChatRequest,
   HealthResponse,
+  PluginRelatedResponse,
   PluginReview,
+  PluginReviewCreate,
   PluginReviewUpdate,
   PluginSearchRequest,
   PluginSearchResponse,
@@ -127,8 +129,16 @@ export class YieldWikiApi {
     return this.rest(`/search?${params.toString()}`);
   }
 
+  related(notePath: string): Promise<PluginRelatedResponse> {
+    return this.rest(`/related/${encodeURIComponent(notePath)}`);
+  }
+
   listReviews(status: ReviewStatus = "pending"): Promise<PluginReview[]> {
     return this.rest(`/reviews?status=${encodeURIComponent(status)}`);
+  }
+
+  createReview(create: PluginReviewCreate): Promise<PluginReview> {
+    return this.rest("/reviews", { method: "POST", body: create });
   }
 
   updateReview(

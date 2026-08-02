@@ -5,7 +5,9 @@ import type { YieldWikiSettings } from "./settings";
 import type {
   ChatRequest,
   HealthResponse,
+  PluginRelatedResponse,
   PluginReview,
+  PluginReviewCreate,
   PluginReviewUpdate,
   PluginSearchRequest,
   PluginSearchResponse,
@@ -81,7 +83,9 @@ export interface YieldWikiApiClient {
   listSessions(): Promise<PluginSessionSummary[]>;
   getSession(sessionId: string): Promise<PluginSessionHistory>;
   search(request: PluginSearchRequest): Promise<PluginSearchResponse>;
+  related(notePath: string): Promise<PluginRelatedResponse>;
   listReviews(status?: ReviewStatus): Promise<PluginReview[]>;
+  createReview(create: PluginReviewCreate): Promise<PluginReview>;
   updateReview(reviewId: string, update: PluginReviewUpdate): Promise<PluginReview>;
   streamChat(
     body: ChatRequest,
@@ -256,6 +260,10 @@ export class YieldWikiView extends ItemView {
   private reviewsLoading = false;
   private reviewError = "";
   private reviewInFlight = new Set<string>();
+  private related?: PluginRelatedResponse;
+  private relatedLoading = false;
+  private relatedError = "";
+  private reviewCreateInFlight = false;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -1080,6 +1088,7 @@ export class YieldWikiView extends ItemView {
   }
 
   private renderReviews(panel: HTMLElement): void {
+    this.renderActiveConceptTools(panel);
     const header = createElement("div", "yield-wiki-review-heading");
     header.append(
       createElement("div", undefined, `${this.reviews.length} pending`),
@@ -1101,6 +1110,140 @@ export class YieldWikiView extends ItemView {
       this.reviews.forEach((review) => content.append(this.renderReview(review)));
     }
     panel.append(content);
+  }
+
+  private activeConcept(): { id: string; path: string } | undefined {
+    const file = this.yieldWikiPlugin.app.workspace.getActiveFile();
+    if (!file || file.extension.toLowerCase() !== "md") return undefined;
+    const frontmatter = this.yieldWikiPlugin.app.metadataCache.getFileCache(file)?.frontmatter;
+    const id = typeof frontmatter?.id === "string" ? frontmatter.id.trim() : "";
+    if (!file.path.startsWith("concepts/") || !id.startsWith("concept:")) {
+      return undefined;
+    }
+    return { id, path: file.path };
+  }
+
+  private renderActiveConceptTools(panel: HTMLElement): void {
+    const concept = this.activeConcept();
+    const section = createElement("section", "yield-wiki-concept-tools");
+    section.append(createElement("span", "yield-wiki-eyebrow", "Current Concept"));
+    if (!concept) {
+      section.append(
+        createElement(
+          "p",
+          "yield-wiki-muted",
+          "Concept 노트를 열면 Related Notes와 Review 생성을 사용할 수 있습니다.",
+        ),
+      );
+      panel.append(section);
+      return;
+    }
+
+    section.append(
+      createElement("div", "yield-wiki-mono yield-wiki-review-target", concept.id),
+      createButton("Related Notes", "yield-wiki-secondary-button", () => {
+        if (!this.relatedLoading) void this.loadRelated(concept.path);
+      }),
+    );
+    if (this.relatedError) {
+      section.append(createElement("div", "yield-wiki-inline-error", this.relatedError));
+    } else if (this.relatedLoading) {
+      section.append(createElement("p", "yield-wiki-muted", "Related Notes 불러오는 중…"));
+    } else if (this.related?.note_path === concept.path) {
+      const related = createElement("div", "yield-wiki-related-groups");
+      for (const [label, notes] of [
+        ["Outgoing", this.related.outgoing],
+        ["Backlinks", this.related.backlinks],
+      ] as const) {
+        const group = createElement("section", "yield-wiki-related-group");
+        group.append(createElement("span", "yield-wiki-field-label", label));
+        if (notes.length === 0) {
+          group.append(createElement("span", "yield-wiki-muted", "없음"));
+        } else {
+          for (const note of notes) {
+            group.append(
+              createButton(note.label, "yield-wiki-link-button", () => {
+                void openVaultPath(this.yieldWikiPlugin.app, note.path);
+              }),
+            );
+          }
+        }
+        related.append(group);
+      }
+      section.append(related);
+    }
+
+    const form = createElement("form", "yield-wiki-review-create");
+    const reviewerLabel = createElement("label", "yield-wiki-field");
+    reviewerLabel.append(createElement("span", "yield-wiki-field-label", "Reviewer"));
+    const reviewer = createElement("input", "yield-wiki-input");
+    reviewer.required = true;
+    reviewer.placeholder = "operator-id";
+    reviewer.dataset.testid = "review-create-reviewer";
+    reviewerLabel.append(reviewer);
+    const commentLabel = createElement("label", "yield-wiki-field");
+    commentLabel.append(createElement("span", "yield-wiki-field-label", "Comment"));
+    const comment = createElement("textarea", "yield-wiki-textarea");
+    comment.required = true;
+    comment.rows = 2;
+    comment.placeholder = "검토가 필요한 이유를 남기세요";
+    comment.dataset.testid = "review-create-comment";
+    commentLabel.append(comment);
+    const submit = createElement("button", "yield-wiki-primary-button", "Review 생성");
+    submit.type = "submit";
+    submit.disabled = this.reviewCreateInFlight;
+    form.append(reviewerLabel, commentLabel, submit);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (this.reviewCreateInFlight || !form.reportValidity()) return;
+      void this.createReview(
+        concept.id,
+        reviewer.value.trim(),
+        comment.value.trim(),
+      );
+    });
+    section.append(form);
+    panel.append(section);
+  }
+
+  private async loadRelated(notePath: string): Promise<void> {
+    this.relatedLoading = true;
+    this.relatedError = "";
+    this.render();
+    try {
+      this.related = await this.api.related(notePath);
+    } catch (error) {
+      this.related = undefined;
+      this.relatedError = formattedError(error);
+    } finally {
+      this.relatedLoading = false;
+      this.render();
+    }
+  }
+
+  private async createReview(
+    targetConceptId: string,
+    reviewer: string,
+    comment: string,
+  ): Promise<void> {
+    if (this.reviewCreateInFlight) return;
+    this.reviewCreateInFlight = true;
+    this.reviewError = "";
+    this.render();
+    try {
+      await this.api.createReview({
+        target_concept_id: targetConceptId,
+        reviewer,
+        comment,
+        review_type: "operator_feedback",
+      });
+      await this.loadReviews({ success: "Review를 생성했습니다." });
+    } catch (error) {
+      this.reviewError = formattedError(error);
+    } finally {
+      this.reviewCreateInFlight = false;
+      this.render();
+    }
   }
 
   private renderReview(review: PluginReview): HTMLElement {

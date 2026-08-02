@@ -8,7 +8,12 @@ import {
   nodeSseStream,
   type RestTransport,
 } from "../src/api";
-import type { ChatRequest, PluginSettings, SseEvent } from "../src/types";
+import type {
+  ChatRequest,
+  PluginReviewCreate,
+  PluginSettings,
+  SseEvent,
+} from "../src/types";
 
 const DUMMY_TOKEN = "test-token-not-a-secret";
 const chatBody: ChatRequest = {
@@ -148,6 +153,57 @@ describe("YieldWikiApi REST", () => {
           comment: "근거 확인",
           expected_version: 2,
         }),
+      }),
+    );
+  });
+
+  it("loads Related Notes for an encoded Vault path", async () => {
+    const request = vi.fn().mockResolvedValue({
+      status: 200,
+      json: { note_path: "concepts/A B.md", outgoing: [], backlinks: [] },
+    });
+    const api = new YieldWikiApi(
+      { serverUrl: "http://localhost:8001", apiToken: DUMMY_TOKEN },
+      request,
+      unusedStream,
+    );
+
+    await api.related("concepts/A B.md");
+
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url:
+          "http://localhost:8001/api/wiki/plugin/related/" +
+          "concepts%2FA%20B.md",
+      }),
+    );
+  });
+
+  it("creates an operator Review with the backend contract", async () => {
+    const request = vi.fn().mockResolvedValue({
+      status: 201,
+      json: { id: "review:operator-feedback:1", status: "pending" },
+    });
+    const api = new YieldWikiApi(
+      { serverUrl: "http://localhost:8001", apiToken: DUMMY_TOKEN },
+      request,
+      unusedStream,
+    );
+    const body: PluginReviewCreate = {
+      target_concept_id: "concept:4SS|PRE METAL CLN|EASY",
+      reviewer: "operator-1",
+      comment: "근거를 다시 확인해 주세요.",
+      review_type: "operator_feedback",
+    };
+
+    await api.createReview(body);
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "http://localhost:8001/api/wiki/plugin/reviews",
+        method: "POST",
+        body: JSON.stringify(body),
       }),
     );
   });

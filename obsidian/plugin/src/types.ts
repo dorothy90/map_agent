@@ -98,6 +98,18 @@ export interface PluginSearchRequest {
   limit?: number;
 }
 
+export interface PluginNoteLink {
+  path: string;
+  label: string;
+  node_type: string;
+}
+
+export interface PluginRelatedResponse {
+  note_path: string;
+  outgoing: PluginNoteLink[];
+  backlinks: PluginNoteLink[];
+}
+
 export type ReviewStatus = "pending" | "approved" | "rejected" | "resolved";
 
 export interface PluginReviewHistory {
@@ -126,6 +138,13 @@ export interface PluginReviewUpdate {
   reviewer: string;
   comment: string;
   expected_version: number;
+}
+
+export interface PluginReviewCreate {
+  target_concept_id: string;
+  reviewer: string;
+  comment: string;
+  review_type?: string;
 }
 
 export interface RestInit {

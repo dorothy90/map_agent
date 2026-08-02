@@ -106,6 +106,7 @@ vi.mock("obsidian", () => {
 import { ApiError } from "../src/api";
 import { DEFAULT_SETTINGS, YieldWikiSettingTab } from "../src/settings";
 import type {
+  PluginRelatedResponse,
   PluginReview,
   PluginSearchResponse,
   SseEvent,
@@ -169,7 +170,13 @@ function fakeApi(): YieldWikiApiClient {
     listSessions: vi.fn().mockResolvedValue([]),
     getSession: vi.fn().mockResolvedValue({ session_id: "unused", turns: [] }),
     search: vi.fn().mockResolvedValue(searchResult),
+    related: vi.fn().mockResolvedValue({
+      note_path: "concepts/4SS_PRE_METAL_CLN_EASY.md",
+      outgoing: [],
+      backlinks: [],
+    }),
     listReviews: vi.fn().mockResolvedValue([pendingReview]),
+    createReview: vi.fn().mockResolvedValue(pendingReview),
     updateReview: vi.fn().mockResolvedValue({
       ...pendingReview,
       status: "approved",
@@ -181,6 +188,7 @@ function fakeApi(): YieldWikiApiClient {
 
 function createTestView(options: {
   activeFile?: string;
+  activeConceptId?: string;
   api?: YieldWikiApiClient;
 } = {}): {
   view: YieldWikiView;
@@ -198,8 +206,15 @@ function createTestView(options: {
     getActiveFile: vi.fn(() => activeFile),
     openLinkText: vi.fn().mockResolvedValue(undefined),
   };
+  const metadataCache = {
+    getFileCache: vi.fn(() =>
+      options.activeConceptId
+        ? { frontmatter: { id: options.activeConceptId, type: "concept" } }
+        : null,
+    ),
+  };
   const plugin = {
-    app: { workspace },
+    app: { workspace, metadataCache },
     settings: { ...DEFAULT_SETTINGS },
   } as unknown as YieldWikiViewPlugin;
   const view = new YieldWikiView(
@@ -826,6 +841,75 @@ describe("YieldWikiView", () => {
     expect(view.containerEl.textContent).toContain("FH-1");
     expect(view.containerEl.textContent).toContain("FH-2");
     expect(view.containerEl.textContent).toContain("Source 노트");
+  });
+
+  it("loads Related Notes for the active Concept and opens a result", async () => {
+    const api = fakeApi();
+    const related: PluginRelatedResponse = {
+      note_path: "concepts/4SS_PRE_METAL_CLN_EASY.md",
+      outgoing: [
+        { path: "sources/FH-1.md", label: "FH-1 Source", node_type: "source" },
+      ],
+      backlinks: [
+        { path: "reviews/operator.md", label: "Operator Review", node_type: "review" },
+      ],
+    };
+    vi.mocked(api.related).mockResolvedValue(related);
+    const { view, workspace } = createTestView({
+      api,
+      activeFile: "concepts/4SS_PRE_METAL_CLN_EASY.md",
+      activeConceptId: "concept:4SS|PRE METAL CLN|EASY",
+    });
+    await view.onOpen();
+
+    clickButton(view.containerEl, "Review");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(1));
+    clickButton(view.containerEl, "Related Notes");
+    await vi.waitFor(() => expect(api.related).toHaveBeenCalledTimes(1));
+
+    expect(api.related).toHaveBeenCalledWith(
+      "concepts/4SS_PRE_METAL_CLN_EASY.md",
+    );
+    expect(view.containerEl.textContent).toContain("Outgoing");
+    expect(view.containerEl.textContent).toContain("Backlinks");
+    clickButton(view.containerEl, "FH-1 Source");
+    expect(workspace.openLinkText).toHaveBeenCalledWith(
+      "sources/FH-1",
+      "",
+      false,
+    );
+  });
+
+  it("creates a Review for the active Concept and refreshes pending reviews", async () => {
+    const api = fakeApi();
+    const { view } = createTestView({
+      api,
+      activeFile: "concepts/4SS_PRE_METAL_CLN_EASY.md",
+      activeConceptId: "concept:4SS|PRE METAL CLN|EASY",
+    });
+    await view.onOpen();
+    clickButton(view.containerEl, "Review");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(1));
+    const reviewer = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="review-create-reviewer"]',
+    );
+    const comment = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-create-comment"]',
+    );
+    if (!reviewer || !comment) throw new Error("Review create fields not found");
+    reviewer.value = "operator-1";
+    comment.value = "근거를 다시 확인해 주세요.";
+
+    clickButton(view.containerEl, "Review 생성");
+    await vi.waitFor(() => expect(api.createReview).toHaveBeenCalledTimes(1));
+
+    expect(api.createReview).toHaveBeenCalledWith({
+      target_concept_id: "concept:4SS|PRE METAL CLN|EASY",
+      reviewer: "operator-1",
+      comment: "근거를 다시 확인해 주세요.",
+      review_type: "operator_feedback",
+    });
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(2));
   });
 
   it("reloads a Review after a version conflict without resending the update", async () => {
