@@ -553,12 +553,19 @@ def test_bracket_citations_preserve_exact_canonical_source_ids():
         "다운로드 [FH-1](https://internal/document)",
         "다운로드 [FH:GRAPH](https://internal/document)",
         "참조 [FH-1][source]",
+        "역참조 [source][FH-1]",
+        "이미지 참조 ![source][FH-1]",
+        "링크 목적지 [source](https://internal/[FH-1])",
+        "연속 참조 [FH-1][FH-2]",
         "이미지 ![FH-1](https://internal/image.png)",
         "축약 이미지 ![FH-1]",
         "참조 정의 [FH-1]: https://internal/document",
         "참조 정의 [FH:GRAPH]  : https://internal/document",
         r"이스케이프 \[FH-1]",
         r"홀수 이스케이프 \\\[FH-1]",
+        "인라인 코드 `[FH-1]`",
+        "이중 인라인 코드 ``[FH-1]``",
+        "펜스 코드\n```text\n[FH-1]\n```",
         "관련 노트 [[FH-1]]",
         "관련 노트 [[sources/FH-1|FH-1]]",
         "요약 [원인]",
@@ -572,6 +579,14 @@ def test_even_backslash_parity_keeps_standalone_source_citation():
     assert fail_history_agent._extract_cited_doc_ids(r"리터럴 백슬래시 \\[FH-1]") == {
         "FH-1"
     }
+
+
+def test_only_ordinary_standalone_duplicate_source_id_is_cited():
+    excluded = r"이스케이프 \[FH-1] 및 코드 `[FH-1]`"
+    included = excluded + " 및 독립 근거 [FH-1]"
+
+    assert fail_history_agent._extract_cited_doc_ids(excluded) == set()
+    assert fail_history_agent._extract_cited_doc_ids(included) == {"FH-1"}
 
 
 def test_unresolved_explicit_citation_does_not_broaden_to_all_results():
@@ -633,6 +648,12 @@ def test_main_agent_formats_only_the_exact_cited_result(monkeypatch):
         "직접 링크 [FH-1](https://internal/document)",
         "잘못된 링크 [FH-MISSING](https://internal/missing)",
         "참조 링크 [FH-1][source]",
+        "역참조 [source][FH-1]",
+        "이미지 참조 ![source][FH-MISSING]",
+        "링크 목적지 [source](https://internal/[FH-1])",
+        "연속 참조 [FH-1][FH-MISSING]",
+        "인라인 코드 `[FH-1]`",
+        "펜스 코드\n```text\n[FH-MISSING]\n```",
         "축약 이미지 ![FH-1]",
         "참조 정의 [FH-MISSING] : https://internal/missing",
         r"이스케이프 \[FH-1]",
@@ -749,8 +770,10 @@ def test_fanout_markdown_link_labels_keep_no_citation_fallback(monkeypatch):
         def __init__(self):
             self.answers = iter(
                 (
-                    "축약 이미지 ![FH-EASY-1]",
-                    "참조 정의 [FH-IOFF-MISSING] : https://internal/missing",
+                    "코드 `[FH-EASY-1]` 및 링크 목적지 "
+                    "[source](https://internal/[FH-EASY-1])",
+                    "역참조 [source][FH-IOFF-MISSING] 및 펜스 코드\n"
+                    "```text\n[FH-IOFF-MISSING]\n```",
                 )
             )
 

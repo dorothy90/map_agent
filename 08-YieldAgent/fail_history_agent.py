@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langfuse import observe
+from markdown_it import MarkdownIt
 
 from common import timed, get_llm, extract_suggestion, is_transient_error
 from lf_utils import lf_callbacks as _lf_callbacks
@@ -40,6 +41,7 @@ _LOT_ID_RE = re.compile(r"^[A-Za-z0-9]{7}$")
 _SOURCE_DOC_ID_RE = re.compile(
     r"FH[-:][A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*"
 )
+_MARKDOWN = MarkdownIt()
 
 
 def _product_filter_from_lotcd(value: str) -> str:
@@ -61,43 +63,55 @@ def _product_filter_from_lotcd(value: str) -> str:
     return ""
 
 
-def _extract_cited_doc_ids(answer: str) -> Set[str]:
+def _mask_escaped_open_brackets(markdown: str) -> str:
+    sentinel = "\ue000"
+    while sentinel in markdown:
+        sentinel += "\ue001"
+
+    masked = list(markdown)
+    for index, character in enumerate(markdown):
+        if character != "[":
+            continue
+        backslash_count = 0
+        position = index - 1
+        while position >= 0 and markdown[position] == "\\":
+            backslash_count += 1
+            position -= 1
+        if backslash_count % 2 == 1:
+            masked[index] = sentinel
+    return "".join(masked)
+
+
+def _extract_standalone_source_ids(text: str) -> Set[str]:
     cited_ids: Set[str] = set()
     cursor = 0
 
     while True:
-        start = answer.find("[", cursor)
+        start = text.find("[", cursor)
         if start == -1:
             break
-        end = answer.find("]", start + 1)
+        end = text.find("]", start + 1)
         if end == -1:
             break
 
-        backslash_count = 0
-        position = start - 1
-        while position >= 0 and answer[position] == "\\":
-            backslash_count += 1
-            position -= 1
-
-        token = answer[start + 1 : end]
+        token = text[start + 1 : end]
         suffix = end + 1
         definition = suffix
-        while definition < len(answer) and answer[definition] in " \t":
+        while definition < len(text) and text[definition] in " \t":
             definition += 1
 
         is_nested_bracket = (
-            (start > 0 and answer[start - 1] == "[")
-            or (start + 1 < len(answer) and answer[start + 1] == "[")
-            or (end + 1 < len(answer) and answer[end + 1] == "]")
+            (start > 0 and text[start - 1] in "[]")
+            or (start + 1 < len(text) and text[start + 1] == "[")
+            or (end + 1 < len(text) and text[end + 1] in "[]")
         )
-        is_markdown_link = suffix < len(answer) and answer[suffix] in "(["
+        is_markdown_link = suffix < len(text) and text[suffix] in "(["
         is_reference_definition = (
-            definition < len(answer) and answer[definition] == ":"
+            definition < len(text) and text[definition] == ":"
         )
 
         if (
-            backslash_count % 2 == 0
-            and not (start > 0 and answer[start - 1] == "!")
+            not (start > 0 and text[start - 1] == "!")
             and not is_nested_bracket
             and not is_markdown_link
             and not is_reference_definition
@@ -106,6 +120,24 @@ def _extract_cited_doc_ids(answer: str) -> Set[str]:
             cited_ids.add(token)
 
         cursor = end + 1
+
+    return cited_ids
+
+
+def _extract_cited_doc_ids(answer: str) -> Set[str]:
+    cited_ids: Set[str] = set()
+
+    for block in _MARKDOWN.parse(_mask_escaped_open_brackets(answer)):
+        if block.type != "inline":
+            continue
+        link_depth = 0
+        for child in block.children or []:
+            if child.type == "link_open":
+                link_depth += 1
+            elif child.type == "link_close":
+                link_depth = max(0, link_depth - 1)
+            elif child.type == "text" and link_depth == 0:
+                cited_ids.update(_extract_standalone_source_ids(child.content))
 
     return cited_ids
 
