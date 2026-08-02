@@ -484,6 +484,181 @@ def test_wiki_trace_metadata_from_malformed_oversized_yaml_is_bounded(
     assert all(len(doc_id) <= 160 for doc_id in trace_metadata["source_doc_ids"])
 
 
+class _StreamTraceGraph:
+    def __init__(self):
+        self.planner_update = {}
+
+    async def aget_state(self, config):
+        return SimpleNamespace(values={}, tasks=[])
+
+    async def astream(self, stream_input, config, stream_mode):
+        import node_planner
+
+        self.planner_update = node_planner.planner_node(stream_input, config)
+        yield "updates", {"planner": self.planner_update}
+
+
+class _StreamTraceTurns:
+    def __init__(self):
+        self.documents = []
+
+    async def insert_one(self, document):
+        self.documents.append(document)
+
+
+class _StreamTraceClient:
+    def set_current_trace_io(self, **kwargs):
+        return None
+
+    def flush(self):
+        return None
+
+
+async def _consume_stream_response(response) -> str:
+    chunks = []
+    async for chunk in response.body_iterator:
+        chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+    return "".join(chunks)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "provider_kind",
+    ["direct_answer", "canonical_slot", "canonical_retry_slot"],
+)
+async def test_wiki_shared_stream_diagnostics_omit_provider_echo(
+    monkeypatch, tmp_path, provider_kind
+):
+    import agent_server
+    import local_trace
+    import node_planner
+
+    sentinel = f"RAW_WIKI_{provider_kind.upper()}_SENTINEL"
+    if provider_kind == "direct_answer":
+        provider_content = {
+            "requests": [],
+            "answer": f"echo: {sentinel}",
+        }
+    else:
+        provider_content = {
+            "requests": [
+                {
+                    "intent": "fail_history_search",
+                    "agent": "fail_history_agent",
+                    "slots": {"dh_query": sentinel},
+                    "goal": "불량 이력 조회",
+                }
+            ],
+            "answer": "",
+        }
+
+    class FakeModel:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, messages, **kwargs):
+            self.calls += 1
+            if provider_kind == "canonical_retry_slot" and self.calls == 1:
+                return SimpleNamespace(content='{"requests": [], "answer": ""}')
+            return SimpleNamespace(
+                content=json.dumps(provider_content, ensure_ascii=False)
+            )
+
+    trace_json = tmp_path / f"{provider_kind}.json"
+    monkeypatch.setattr(local_trace, "_TURNS", [])
+    monkeypatch.setattr(local_trace, "_TURNS_LOADED", True)
+    monkeypatch.setattr(local_trace, "_last_turns_json_path", lambda: trace_json)
+    monkeypatch.setattr(local_trace, "_last_turn_path", lambda: tmp_path / "trace.html")
+    monkeypatch.setattr(node_planner, "_model", FakeModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+    monkeypatch.setattr(agent_server, "get_client", lambda: _StreamTraceClient())
+    monkeypatch.setattr(agent_server, "SIMULATED_STREAM_DELAY", 0)
+
+    turns = _StreamTraceTurns()
+    graph = _StreamTraceGraph()
+    req = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                graph=graph,
+                motor_db=SimpleNamespace(chat_turns=turns),
+            )
+        )
+    )
+    request = models.InternalChatRequest(
+        query="원인은?",
+        session_id="session-wiki-trace",
+        wiki_context={
+            "id": "concept:trace",
+            "path": "concepts/trace.md",
+            "metadata": {"id": "concept:trace", "type": "concept"},
+            "body": sentinel,
+        },
+    )
+
+    response = await agent_server._chat_stream(request, req)
+    sse_text = await _consume_stream_response(response)
+    local_trace._persist_turns()
+
+    persisted_trace = trace_json.read_text(encoding="utf-8")
+    persisted_session = json.dumps(turns.documents, ensure_ascii=False, default=str)
+    assert sentinel not in persisted_trace
+    assert hashlib.sha256(sentinel.encode()).hexdigest() in persisted_trace
+    if provider_kind == "direct_answer":
+        assert sentinel in sse_text
+        assert sentinel in persisted_session
+    else:
+        assert graph.planner_update["task_plan"][0]["params"]["dh_query"] == sentinel
+
+
+@pytest.mark.anyio
+async def test_non_wiki_shared_stream_preserves_provider_answer_in_trace_and_session(
+    monkeypatch, tmp_path
+):
+    import agent_server
+    import local_trace
+    import node_planner
+
+    sentinel = "NON_WIKI_SHARED_STREAM_SENTINEL"
+
+    class FakeModel:
+        def invoke(self, messages, **kwargs):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {"requests": [], "answer": sentinel}, ensure_ascii=False
+                )
+            )
+
+    trace_json = tmp_path / "non-wiki.json"
+    monkeypatch.setattr(local_trace, "_TURNS", [])
+    monkeypatch.setattr(local_trace, "_TURNS_LOADED", True)
+    monkeypatch.setattr(local_trace, "_last_turns_json_path", lambda: trace_json)
+    monkeypatch.setattr(local_trace, "_last_turn_path", lambda: tmp_path / "trace.html")
+    monkeypatch.setattr(node_planner, "_model", FakeModel())
+    monkeypatch.setattr(node_planner, "_lf_callbacks", lambda: [])
+    monkeypatch.setattr(agent_server, "get_client", lambda: _StreamTraceClient())
+    monkeypatch.setattr(agent_server, "SIMULATED_STREAM_DELAY", 0)
+
+    turns = _StreamTraceTurns()
+    req = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                graph=_StreamTraceGraph(),
+                motor_db=SimpleNamespace(chat_turns=turns),
+            )
+        )
+    )
+    response = await agent_server._chat_stream(
+        models.ChatRequest(query="원인은?", session_id="session-public-trace"),
+        req,
+    )
+    sse_text = await _consume_stream_response(response)
+    local_trace._persist_turns()
+
+    assert sentinel in sse_text
+    assert sentinel in trace_json.read_text(encoding="utf-8")
+    assert sentinel in json.dumps(turns.documents, ensure_ascii=False, default=str)
+
+
 def test_planner_propagates_model_invocation_failure(monkeypatch):
     import node_planner
 

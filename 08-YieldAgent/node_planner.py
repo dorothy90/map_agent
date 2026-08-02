@@ -18,7 +18,14 @@ from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import StatusEvent
 from prompts import CANONICAL_PLANNER_SYSTEM_PROMPT
 from task_normalizer_validator import apply_ordinal_ref
-from local_trace import emit_runtime_detail, emit_trace_event, preview_text, summarize_tasks, task_flow
+from local_trace import (
+    emit_runtime_detail,
+    emit_trace_event,
+    preview_text,
+    summarize_tasks,
+    summarize_trace_value,
+    task_flow,
+)
 
 load_dotenv(override=True)
 
@@ -47,10 +54,7 @@ planner가 실행할 agent task를 만들지 못한 상황에서 사용자에게
 def _trace_provider_text(value: str, *, redact: bool) -> str | dict[str, Any]:
     if not redact:
         return value
-    return {
-        "length": len(value),
-        "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
-    }
+    return summarize_trace_value(value)
 
 
 def _llm_empty_plan_response(
@@ -98,7 +102,49 @@ def _llm_empty_plan_response(
 _PLANNER_REFERENT_TURNS = 3
 
 
-def _build_tasks_update(canonical_requests: list[dict]) -> dict:
+def _trace_canonical_requests(
+    canonical_requests: list[dict], *, redact: bool
+) -> list[dict]:
+    if not redact:
+        return canonical_requests
+    return [
+        {
+            "intent": _bounded_wiki_trace_string(request.get("intent")),
+            "agent": _bounded_wiki_trace_string(request.get("agent")),
+            "slot_keys": sorted(
+                str(key)[:_MAX_WIKI_TRACE_STRING_CHARS]
+                for key in (request.get("slots") or {})
+            )[:_MAX_WIKI_TRACE_IDS],
+            "slots": summarize_trace_value(request.get("slots") or {}),
+            "goal": summarize_trace_value(request.get("goal") or ""),
+        }
+        for request in canonical_requests
+        if isinstance(request, dict)
+    ]
+
+
+def _trace_tasks(tasks: list[dict], *, redact: bool) -> list[dict]:
+    if not redact:
+        return summarize_tasks(tasks)
+    return [
+        {
+            "task_id": _bounded_wiki_trace_string(task.get("task_id")),
+            "agent": _bounded_wiki_trace_string(task.get("agent")),
+            "param_keys": sorted(
+                str(key)[:_MAX_WIKI_TRACE_STRING_CHARS]
+                for key in (task.get("params") or {})
+            )[:_MAX_WIKI_TRACE_IDS],
+            "params": summarize_trace_value(task.get("params") or {}),
+            "goal": summarize_trace_value(task.get("goal") or ""),
+        }
+        for task in tasks
+        if isinstance(task, dict)
+    ]
+
+
+def _build_tasks_update(
+    canonical_requests: list[dict], *, redact_trace: bool = False
+) -> dict:
     """Build the task contract from canonical request(s) and emit plan status.
 
     Folded from the former task_builder graph node into planner_node. Emissions
@@ -108,14 +154,24 @@ def _build_tasks_update(canonical_requests: list[dict]) -> dict:
     emit_runtime_detail(
         "task_builder.output",
         {
-            "canonical_requests": canonical_requests,
-            "tasks": tasks,
+            "canonical_requests": _trace_canonical_requests(
+                canonical_requests, redact=redact_trace
+            ),
+            "tasks": _trace_tasks(tasks, redact=redact_trace),
         },
     )
     if not tasks:
         return {"task_plan": [], "pending_tasks": []}
 
-    logger.info("[TaskBuilder] %d task(s) built: %s", len(tasks), task_flow(tasks))
+    safe_task_flow = (
+        task_flow(tasks)
+        if not redact_trace
+        else " -> ".join(
+            f"{task.get('task_id', '-')}:{task.get('agent', '-')} params=<redacted>"
+            for task in tasks
+        )
+    )
+    logger.info("[TaskBuilder] %d task(s) built: %s", len(tasks), safe_task_flow)
     stream_event(
         "status",
         StatusEvent(
@@ -130,8 +186,8 @@ def _build_tasks_update(canonical_requests: list[dict]) -> dict:
         payload={
             "status": "ok",
             "task_count": len(tasks),
-            "task_flow": task_flow(tasks),
-            "tasks": summarize_tasks(tasks),
+            "task_flow": safe_task_flow,
+            "tasks": _trace_tasks(tasks, redact=redact_trace),
         },
     )
     return {
@@ -510,7 +566,9 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                     "question": last_human.content,
                     "raw_text": trace_raw_text,
                     "retry_raw": trace_retry_raw,
-                    "canonical_requests": canonical_requests,
+                    "canonical_requests": _trace_canonical_requests(
+                        canonical_requests, redact=bool(wiki_context)
+                    ),
                 },
             )
             emit_trace_event(
@@ -523,11 +581,18 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
                     "question_preview": preview_text(last_human.content),
                     "raw_preview": preview_text(trace_raw_text),
                     "retry_raw_preview": preview_text(trace_retry_raw),
-                    "canonical_requests": canonical_requests,
+                    "canonical_requests": _trace_canonical_requests(
+                        canonical_requests, redact=bool(wiki_context)
+                    ),
                 },
             )
     emit_runtime_detail(
-        "planner.canonical_requests", {"canonical_requests": canonical_requests}
+        "planner.canonical_requests",
+        {
+            "canonical_requests": _trace_canonical_requests(
+                canonical_requests, redact=bool(wiki_context)
+            )
+        },
     )
     logger.info(
         "[Planner] %d canonical request(s) 생성: %s",
@@ -584,7 +649,9 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
             "request_count": len(canonical_requests),
             "max_tasks": _MAX_TASKS,
             "question_preview": preview_text(last_human.content),
-            "canonical_requests": canonical_requests,
+            "canonical_requests": _trace_canonical_requests(
+                canonical_requests, redact=bool(wiki_context)
+            ),
         },
     )
 
@@ -617,5 +684,9 @@ def planner_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
         ],
     }
     # task_builder folded in: build tasks + emit plan status in the same node
-    update.update(_build_tasks_update(canonical_requests))
+    update.update(
+        _build_tasks_update(
+            canonical_requests, redact_trace=bool(wiki_context)
+        )
+    )
     return update

@@ -66,6 +66,7 @@ from local_trace import (  # noqa: E402
     preview_text,
     reset_trace_context,
     set_trace_context,
+    summarize_trace_value,
 )
 from supervisor import workflow, _resume_is_interrupt_answer  # noqa: E402
 from user_memory import update_profile_from_feedback  # noqa: E402
@@ -460,6 +461,9 @@ async def get_session_history(session_id: str, request: Request):
 async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request):
     graph = req.app.state.graph
     db = req.app.state.motor_db
+    wiki_context_turn = bool(
+        isinstance(request, InternalChatRequest) and request.wiki_context
+    )
     # #23 fix: 5-task plan 처리 시 노드 호출 횟수가 ~12회 (rewrite + planner + supervisor×6 + agents×5)
     # → limit 20은 빠듯. interrupt resume이나 미래 replanner 추가 여유까지 30으로 상향.
     base_config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 30}
@@ -751,10 +755,34 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                                 "node": node_name,
                                 "keys": sorted(node_state.keys()),
                                 "current_task_id": node_state.get("current_task_id", ""),
-                                "current_task_goal": node_state.get("current_task_goal", ""),
-                                "pending_tasks": node_state.get("pending_tasks", []),
-                                "task_plan": node_state.get("task_plan", []),
-                                "validation_issues": node_state.get("task_validation_issues", []),
+                                "current_task_goal": (
+                                    summarize_trace_value(
+                                        node_state.get("current_task_goal", "")
+                                    )
+                                    if wiki_context_turn
+                                    else node_state.get("current_task_goal", "")
+                                ),
+                                "pending_tasks": (
+                                    summarize_trace_value(
+                                        node_state.get("pending_tasks", [])
+                                    )
+                                    if wiki_context_turn
+                                    else node_state.get("pending_tasks", [])
+                                ),
+                                "task_plan": (
+                                    summarize_trace_value(
+                                        node_state.get("task_plan", [])
+                                    )
+                                    if wiki_context_turn
+                                    else node_state.get("task_plan", [])
+                                ),
+                                "validation_issues": (
+                                    summarize_trace_value(
+                                        node_state.get("task_validation_issues", [])
+                                    )
+                                    if wiki_context_turn
+                                    else node_state.get("task_validation_issues", [])
+                                ),
                             },
                             task_id=str(node_state.get("current_task_id", "")),
                         )
@@ -771,7 +799,13 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                                 "elapsed": elapsed,
                                 "keys": sorted(str(k) for k in node_state.keys()),
                                 "current_task_id": str(node_state.get("current_task_id", "")),
-                                "current_task_goal_preview": preview_text(node_state.get("current_task_goal", "")),
+                                "current_task_goal_preview": preview_text(
+                                    summarize_trace_value(
+                                        node_state.get("current_task_goal", "")
+                                    )
+                                    if wiki_context_turn
+                                    else node_state.get("current_task_goal", "")
+                                ),
                                 "task_plan_count": len(node_state.get("task_plan", []) or []),
                                 "pending_task_count": len(node_state.get("pending_tasks", []) or []),
                             },
@@ -812,13 +846,23 @@ async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request)
                             if not content:
                                 continue
                             additional_kwargs = getattr(msg, "additional_kwargs", {}) or {}
+                            trace_content = (
+                                summarize_trace_value(content)
+                                if wiki_context_turn
+                                else content
+                            )
+                            trace_additional_kwargs = (
+                                summarize_trace_value(additional_kwargs)
+                                if wiki_context_turn
+                                else additional_kwargs
+                            )
                             emit_runtime_detail(
                                 "message",
                                 {
                                     "node": node_name,
                                     "agent": agent_name,
-                                    "content": content,
-                                    "additional_kwargs": additional_kwargs,
+                                    "content": trace_content,
+                                    "additional_kwargs": trace_additional_kwargs,
                                 },
                                 task_id=str(node_state.get("current_task_id", "")),
                                 result_id=str((additional_kwargs.get("result") or {}).get("result_id", "")) if isinstance(additional_kwargs.get("result"), dict) else "",

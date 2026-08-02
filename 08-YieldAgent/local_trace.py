@@ -137,6 +137,23 @@ def _stable_hash(value: Any) -> str:
     return _sha256_text(text)
 
 
+def summarize_trace_value(value: Any) -> dict[str, Any]:
+    """Return bounded observability metadata without retaining the input value."""
+
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            text = str(value)
+    return {
+        "redacted": True,
+        "length": len(text),
+        "sha256": _sha256_text(text),
+    }
+
+
 def make_trace_id(seed: str | None = None) -> str:
     if seed:
         return f"trace_{_sha256_text(seed)[:16]}"
