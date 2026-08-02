@@ -550,6 +550,10 @@ def test_bracket_citations_preserve_exact_canonical_source_ids():
     "answer",
     [
         "자세한 내용은 [원본 보기](https://internal/document)",
+        "다운로드 [FH-1](https://internal/document)",
+        "다운로드 [FH:GRAPH](https://internal/document)",
+        "참조 [FH-1][source]",
+        "이미지 ![FH-1](https://internal/image.png)",
         "관련 노트 [[FH-1]]",
         "관련 노트 [[sources/FH-1|FH-1]]",
         "요약 [원인]",
@@ -611,7 +615,16 @@ def test_main_agent_formats_only_the_exact_cited_result(monkeypatch):
     assert "unrelated cause" not in content
 
 
-def test_main_markdown_link_label_keeps_no_citation_fallback(monkeypatch):
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "자세한 문서는 [원본 보기](https://internal/document)",
+        "직접 링크 [FH-1](https://internal/document)",
+        "잘못된 링크 [FH-MISSING](https://internal/missing)",
+        "참조 링크 [FH-1][source]",
+    ],
+)
+def test_main_markdown_link_label_keeps_no_citation_fallback(monkeypatch, answer):
     raw = {
         "retrieval_mode": "baseline",
         "results": [
@@ -624,9 +637,7 @@ def test_main_markdown_link_label_keeps_no_citation_fallback(monkeypatch):
 
     class Model:
         def invoke(self, messages, config):
-            return SimpleNamespace(
-                content="자세한 문서는 [원본 보기](https://internal/document)"
-            )
+            return SimpleNamespace(content=answer)
 
     monkeypatch.setattr(fail_history_agent, "_fh_model", Model())
 
@@ -721,10 +732,16 @@ def test_fanout_markdown_link_labels_keep_no_citation_fallback(monkeypatch):
     monkeypatch.setattr(fail_history_agent, "_lf_callbacks", lambda: [])
 
     class Model:
-        def invoke(self, messages, config):
-            return SimpleNamespace(
-                content="자세한 문서는 [원본 보기](https://internal/document)"
+        def __init__(self):
+            self.answers = iter(
+                (
+                    "직접 링크 [FH-EASY-1](https://internal/easy)",
+                    "잘못된 링크 [FH-IOFF-MISSING][source]",
+                )
             )
+
+        def invoke(self, messages, config):
+            return SimpleNamespace(content=next(self.answers))
 
     monkeypatch.setattr(fail_history_agent, "_fh_model", Model())
 
