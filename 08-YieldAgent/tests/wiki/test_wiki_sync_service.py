@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -220,6 +221,66 @@ def test_manual_concept_edit_is_preserved_and_creates_conflict_review(store):
     assert review.metadata["sync_job_id"] == "job:manual-conflict"
     serialized = reviews[0].read_text(encoding="utf-8")
     assert "operator-authored body" not in serialized
+    assert "replacement generated body" not in serialized
+
+
+def test_explicit_empty_generated_body_records_checksum_and_version(store):
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+
+    store.upsert_concept(
+        filters=filters,
+        synthesized_body="",
+        materialize=False,
+    )
+
+    post = frontmatter.load(next(store._PATHS.concepts.glob("*.md")))
+    empty_sha256 = hashlib.sha256(b"").hexdigest()
+    assert post.content == ""
+    assert post.metadata["generated_body_sha256"] == empty_sha256
+    assert len(post.metadata["body_versions"]) == 1
+    assert post.metadata["body_versions"][0]["body_markdown"] == ""
+
+
+def test_legacy_concept_without_baseline_preserves_operator_body_and_conflicts(store):
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+    store.upsert_concept(filters=filters, materialize=False)
+    concept_path = next(store._PATHS.concepts.glob("*.md"))
+    legacy = frontmatter.load(concept_path)
+    legacy.content = "operator-authored legacy body"
+    legacy.metadata.pop("generated_body_sha256", None)
+    legacy.metadata["body_versions"] = []
+    concept_path.write_text(frontmatter.dumps(legacy), encoding="utf-8")
+    preserved = concept_path.read_bytes()
+
+    with pytest.raises(store.ConceptEditConflict):
+        store.upsert_concept(
+            filters=filters,
+            synthesized_body="replacement generated body",
+            sync_metadata={"sync_job_id": "job:legacy-conflict"},
+            materialize=False,
+        )
+
+    assert concept_path.read_bytes() == preserved
+    reviews = list(store._PATHS.reviews.glob("concept_edit_conflict_*.md"))
+    assert len(reviews) == 1
+    review = frontmatter.load(reviews[0])
+    assert review.metadata["expected_body_sha256"] == hashlib.sha256(b"").hexdigest()
+    assert review.metadata["observed_body_sha256"] == store._generated_body_sha256(
+        "operator-authored legacy body"
+    )
+    assert review.metadata["proposed_body_sha256"] == store._generated_body_sha256(
+        "replacement generated body"
+    )
+    serialized = reviews[0].read_text(encoding="utf-8")
+    assert "operator-authored legacy body" not in serialized
     assert "replacement generated body" not in serialized
 
 

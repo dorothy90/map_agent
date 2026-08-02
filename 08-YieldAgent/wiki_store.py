@@ -362,7 +362,7 @@ def upsert_concept(
         if sync_metadata:
             fm["status"] = "active"
         body = ""
-        if synthesized_body:
+        if synthesized_body is not None:
             fm["entities"] = deepcopy(entities or [])
             fm["relations"] = deepcopy(relations or [])
             fm["body_versions"].append({
@@ -409,7 +409,7 @@ def upsert_concept(
         md["status"] = "active"
 
     body_content = existing.content or ""
-    if synthesized_body:
+    if synthesized_body is not None:
         observed_sha256 = _generated_body_sha256(body_content)
         expected_sha256 = str(md.get("generated_body_sha256") or "")
         if not expected_sha256 and md["body_versions"]:
@@ -417,6 +417,8 @@ def upsert_concept(
                 (md["body_versions"][-1] or {}).get("body_markdown") or ""
             )
             expected_sha256 = _generated_body_sha256(latest_body)
+        if not expected_sha256:
+            expected_sha256 = _generated_body_sha256("")
         if expected_sha256 and observed_sha256 != expected_sha256:
             proposed_sha256 = _generated_body_sha256(synthesized_body)
             _create_concept_edit_conflict_review(
