@@ -29,7 +29,10 @@ from prompts import FAIL_HISTORY_SYNTH_SYSTEM_PROMPT_TEMPLATE
 from result_contracts import attach_result_envelope, derive_summary_from_rows
 from wiki_source_citations import (
     extract_standalone_source_ids as _extract_cited_doc_ids,
+    remove_invalid_standalone_source_citations,
 )
+from wiki_config import resolve_wiki_paths
+from wiki_plugin_notes import NoteNotFound, read_source
 from fail_history_tools import (
     do_search,
     _wiki_payload_var,
@@ -97,6 +100,33 @@ def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) ->
         lines.append("")
 
     return "\n".join(lines).strip()
+
+
+def _validate_answer_citations(
+    answer: str, results: List[Dict[str, Any]]
+) -> tuple[str, Set[str], bool]:
+    explicit_ids = _extract_cited_doc_ids(answer)
+    if not explicit_ids:
+        return answer, set(), False
+
+    evidence_ids = {
+        str(result.get("doc_id") or "").strip()
+        for result in results
+        if isinstance(result, dict) and result.get("doc_id")
+    }
+    paths = resolve_wiki_paths()
+    valid_ids: Set[str] = set()
+    for doc_id in explicit_ids & evidence_ids:
+        try:
+            read_source(paths, doc_id)
+        except NoteNotFound:
+            continue
+        valid_ids.add(doc_id)
+    return (
+        remove_invalid_standalone_source_citations(answer, valid_ids),
+        valid_ids,
+        True,
+    )
 
 
 def _render_wiki_first_answer(raw: Dict[str, Any]) -> str:
@@ -293,8 +323,14 @@ def _fail_history_per_report(state: dict, config: RunnableConfig, fail_groups: l
         if super_body:
             answer = answer.rstrip() + "\n\n---\n\n## 관련 패턴 (참고용)\n\n" + super_body
         answer, suggestion = extract_suggestion(answer)
-        cited = _extract_cited_doc_ids(answer)
-        block = _format_cited_results(results, cited)
+        answer, cited, had_explicit_citations = _validate_answer_citations(
+            answer, results
+        )
+        block = (
+            _format_cited_results(results, cited)
+            if cited or not had_explicit_citations
+            else ""
+        )
         body = f"{answer}\n\n---\n\n{block}" if block else answer
         sections.append(f"## {param or g_lotcd}\n\n{body}")
         all_results.extend(results)
@@ -473,8 +509,14 @@ def fail_history_agent_node(state: dict, config: RunnableConfig) -> dict:
 
     answer, agent_suggestion = extract_suggestion(answer)
 
-    cited_ids = _extract_cited_doc_ids(answer)
-    result_block = _format_cited_results(results, cited_ids)
+    answer, cited_ids, had_explicit_citations = _validate_answer_citations(
+        answer, results
+    )
+    result_block = (
+        _format_cited_results(results, cited_ids)
+        if cited_ids or not had_explicit_citations
+        else ""
+    )
     if result_block:
         message_content = f"### 💡 [답변]\n\n{answer}\n\n---\n\n{result_block}"
     else:

@@ -10,6 +10,9 @@ from markdown_it import MarkdownIt
 _SOURCE_DOC_ID_RE = re.compile(
     r"FH[-:][A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*"
 )
+_BRACKETED_SOURCE_RE = re.compile(
+    rf"\[(?P<doc_id>{_SOURCE_DOC_ID_RE.pattern})\]"
+)
 _MARKDOWN = MarkdownIt()
 _COMMONMARK_ESCAPABLE_PUNCTUATION = frozenset(string.punctuation) - {"\\"}
 
@@ -92,3 +95,26 @@ def extract_standalone_source_ids(markdown: str) -> set[str]:
                 cited_ids.update(_extract_from_text(child.content))
 
     return cited_ids
+
+
+def remove_invalid_standalone_source_citations(
+    markdown: str, valid_source_ids: set[str]
+) -> str:
+    """Remove invalid standalone Source markers while preserving other Markdown."""
+
+    text = str(markdown or "")
+    removals: list[tuple[int, int]] = []
+    for index, match in enumerate(_BRACKETED_SOURCE_RE.finditer(text)):
+        doc_id = match.group("doc_id")
+        if doc_id in valid_source_ids:
+            continue
+        probe_id = f"FH-CITATION-PROBE-{index}"
+        while probe_id in text:
+            probe_id += "X"
+        probe = text[: match.start("doc_id")] + probe_id + text[match.end("doc_id") :]
+        if probe_id in extract_standalone_source_ids(probe):
+            removals.append(match.span())
+
+    for start, end in reversed(removals):
+        text = text[:start] + text[end:]
+    return text

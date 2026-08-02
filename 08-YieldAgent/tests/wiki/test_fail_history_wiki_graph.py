@@ -9,10 +9,24 @@ from langchain_core.messages import HumanMessage
 import fail_history_agent
 import fail_history_tools
 import lf_utils
+import wiki_source_citations
 from wiki_graph_models import GraphContext, GraphRelation
+from wiki_plugin_notes import NoteNotFound
 
 
 pytestmark = pytest.mark.no_server
+
+
+def _allow_canonical_sources(monkeypatch, *doc_ids: str) -> None:
+    allowed = set(doc_ids)
+    monkeypatch.setattr(fail_history_agent, "resolve_wiki_paths", lambda: object())
+
+    def read_source(_paths, doc_id):
+        if doc_id not in allowed:
+            raise NoteNotFound(doc_id)
+        return SimpleNamespace(source_path=f"sources/{doc_id}.md")
+
+    monkeypatch.setattr(fail_history_agent, "read_source", read_source)
 
 
 def _stub_existing_wiki_paths(monkeypatch, tmp_path) -> list[dict]:
@@ -184,6 +198,7 @@ def test_wiki_first_agent_renders_grounded_graph_relation_without_llm(monkeypatc
         "super_reference_body": "",
     }
     monkeypatch.setattr(fail_history_agent, "do_search", lambda **kwargs: raw)
+    _allow_canonical_sources(monkeypatch, "FH-CONCEPT", "FH-GRAPH")
 
     class NoLlmModel:
         def invoke(self, *args, **kwargs):
@@ -425,6 +440,7 @@ def test_graph_projection_failure_preserves_prior_opensearch_shape(
         "retrieval_mode": "baseline",
         "fail_type_filter_dropped": False,
         "super_reference_body": "",
+        "evidence_sensitive": False,
     }
 
 
@@ -657,6 +673,79 @@ def test_unresolved_explicit_citation_does_not_broaden_to_all_results():
     assert fail_history_agent._format_cited_results(results, cited) == ""
 
 
+def test_invalid_standalone_citations_are_removed_without_touching_markdown():
+    answer = (
+        "유효 [FH-1], 무효 [FH-404]. "
+        "코드 `[FH-404]`, 링크 [FH-404](https://internal/doc), "
+        r"이스케이프 \[FH-404], 위키링크 [[FH-404]]"
+    )
+
+    sanitized = wiki_source_citations.remove_invalid_standalone_source_citations(
+        answer, {"FH-1"}
+    )
+
+    assert "유효 [FH-1]" in sanitized
+    assert "무효 [FH-404]" not in sanitized
+    assert "`[FH-404]`" in sanitized
+    assert "[FH-404](https://internal/doc)" in sanitized
+    assert r"\[FH-404]" in sanitized
+    assert "[[FH-404]]" in sanitized
+
+
+def test_main_agent_emits_only_evidence_backed_canonical_source_markers(monkeypatch):
+    raw = {
+        "retrieval_mode": "baseline",
+        "results": [
+            {"doc_id": "FH-1", "cause": "valid cause", "action": "valid action"},
+            {
+                "doc_id": "FH-2",
+                "cause": "missing source note",
+                "action": "must not render",
+            },
+        ],
+    }
+    monkeypatch.setattr(fail_history_agent, "do_search", lambda **kwargs: raw)
+    monkeypatch.setattr(fail_history_agent, "_lf_callbacks", lambda: [])
+    monkeypatch.setattr(fail_history_agent, "resolve_wiki_paths", lambda: object())
+
+    def read_source(_paths, doc_id):
+        if doc_id in {"FH-1", "FH-3"}:
+            return SimpleNamespace(source_path=f"sources/{doc_id}.md")
+        raise NoteNotFound(doc_id)
+
+    monkeypatch.setattr(fail_history_agent, "read_source", read_source)
+
+    class Model:
+        def invoke(self, messages, config):
+            return SimpleNamespace(
+                content=(
+                    "확인 [FH-1], Source 없음 [FH-2], 검색 근거 없음 [FH-3]. "
+                    "코드 `[FH-2]` 링크 [FH-2](https://internal/doc)"
+                )
+            )
+
+    monkeypatch.setattr(fail_history_agent, "_fh_model", Model())
+
+    update = fail_history_agent.fail_history_agent_node(
+        {
+            "lotcd": "4SS",
+            "messages": [HumanMessage(content="원인은?")],
+            "current_task_id": "task:validated-citation",
+        },
+        {},
+    )
+
+    content = update["messages"][0].content
+    assert "확인 [FH-1]" in content
+    assert "Source 없음 [FH-2]" not in content
+    assert "검색 근거 없음 [FH-3]" not in content
+    assert "`[FH-2]`" in content
+    assert "[FH-2](https://internal/doc)" in content
+    assert "출처 (총 1건)" in content
+    assert "valid cause" in content
+    assert "missing source note" not in content
+
+
 def test_main_agent_formats_only_the_exact_cited_result(monkeypatch):
     raw = {
         "retrieval_mode": "baseline",
@@ -675,6 +764,7 @@ def test_main_agent_formats_only_the_exact_cited_result(monkeypatch):
     }
     monkeypatch.setattr(fail_history_agent, "do_search", lambda **kwargs: raw)
     monkeypatch.setattr(fail_history_agent, "_lf_callbacks", lambda: [])
+    _allow_canonical_sources(monkeypatch, "FH-1")
 
     class Model:
         def invoke(self, messages, config):
@@ -770,6 +860,7 @@ def test_fanout_agent_formats_only_each_exact_cited_result(monkeypatch):
 
     monkeypatch.setattr(fail_history_agent, "do_search", search)
     monkeypatch.setattr(fail_history_agent, "_lf_callbacks", lambda: [])
+    _allow_canonical_sources(monkeypatch, "FH-EASY-1", "FH-IOFF-1")
 
     class Model:
         def __init__(self):
