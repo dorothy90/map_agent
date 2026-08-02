@@ -546,6 +546,19 @@ def test_bracket_citations_preserve_exact_canonical_source_ids():
     }
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "자세한 내용은 [원본 보기](https://internal/document)",
+        "관련 노트 [[FH-1]]",
+        "관련 노트 [[sources/FH-1|FH-1]]",
+        "요약 [원인]",
+    ],
+)
+def test_non_source_brackets_and_wikilinks_are_not_explicit_citations(answer):
+    assert fail_history_agent._extract_cited_doc_ids(answer) == set()
+
+
 def test_unresolved_explicit_citation_does_not_broaden_to_all_results():
     results = [
         {"doc_id": "FH-1", "cause": "relevant cause"},
@@ -596,6 +609,40 @@ def test_main_agent_formats_only_the_exact_cited_result(monkeypatch):
     assert "출처 (총 1건)" in content
     assert "cited cause" in content
     assert "unrelated cause" not in content
+
+
+def test_main_markdown_link_label_keeps_no_citation_fallback(monkeypatch):
+    raw = {
+        "retrieval_mode": "baseline",
+        "results": [
+            {"doc_id": "FH-1", "cause": "first evidence", "action": "first"},
+            {"doc_id": "FH-2", "cause": "second evidence", "action": "second"},
+        ],
+    }
+    monkeypatch.setattr(fail_history_agent, "do_search", lambda **kwargs: raw)
+    monkeypatch.setattr(fail_history_agent, "_lf_callbacks", lambda: [])
+
+    class Model:
+        def invoke(self, messages, config):
+            return SimpleNamespace(
+                content="자세한 문서는 [원본 보기](https://internal/document)"
+            )
+
+    monkeypatch.setattr(fail_history_agent, "_fh_model", Model())
+
+    update = fail_history_agent.fail_history_agent_node(
+        {
+            "lotcd": "4SS",
+            "messages": [HumanMessage(content="원인은?")],
+            "current_task_id": "task:main-no-citation",
+        },
+        {},
+    )
+
+    content = update["messages"][0].content
+    assert "출처 (총 2건)" in content
+    assert "first evidence" in content
+    assert "second evidence" in content
 
 
 def test_fanout_agent_formats_only_each_exact_cited_result(monkeypatch):
@@ -650,3 +697,53 @@ def test_fanout_agent_formats_only_each_exact_cited_result(monkeypatch):
     assert "IOFF cited cause" in content
     assert "EASY unrelated cause" not in content
     assert "IOFF unrelated cause" not in content
+
+
+def test_fanout_markdown_link_labels_keep_no_citation_fallback(monkeypatch):
+    def search(*, fail_type, **kwargs):
+        return {
+            "retrieval_mode": "baseline",
+            "results": [
+                {
+                    "doc_id": f"FH-{fail_type}-1",
+                    "cause": f"{fail_type} first evidence",
+                    "action": "first",
+                },
+                {
+                    "doc_id": f"FH-{fail_type}-2",
+                    "cause": f"{fail_type} second evidence",
+                    "action": "second",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(fail_history_agent, "do_search", search)
+    monkeypatch.setattr(fail_history_agent, "_lf_callbacks", lambda: [])
+
+    class Model:
+        def invoke(self, messages, config):
+            return SimpleNamespace(
+                content="자세한 문서는 [원본 보기](https://internal/document)"
+            )
+
+    monkeypatch.setattr(fail_history_agent, "_fh_model", Model())
+
+    update = fail_history_agent.fail_history_agent_node(
+        {
+            "lotcd": "4SS",
+            "fail_groups": [
+                {"lotcd": "4SS", "parameter": "EASY"},
+                {"lotcd": "4SS", "parameter": "IOFF"},
+            ],
+            "messages": [HumanMessage(content="각 불량의 원인은?")],
+            "current_task_id": "task:fanout-no-citation",
+        },
+        {},
+    )
+
+    content = update["messages"][0].content
+    assert content.count("출처 (총 2건)") == 2
+    assert "EASY first evidence" in content
+    assert "EASY second evidence" in content
+    assert "IOFF first evidence" in content
+    assert "IOFF second evidence" in content

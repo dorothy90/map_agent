@@ -37,6 +37,9 @@ _fh_model = get_llm(model="z-ai/glm-5.1")
 
 _PRODUCT_CODE_RE = re.compile(r"^[0-9][A-Za-z0-9]{2}$")
 _LOT_ID_RE = re.compile(r"^[A-Za-z0-9]{7}$")
+_SOURCE_CITATION_RE = re.compile(
+    r"(?<!\[)\[(FH[-:][A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*)\](?!\])"
+)
 
 
 def _product_filter_from_lotcd(value: str) -> str:
@@ -59,7 +62,7 @@ def _product_filter_from_lotcd(value: str) -> str:
 
 
 def _extract_cited_doc_ids(answer: str) -> Set[str]:
-    return set(re.findall(r"\[([^\[\]\r\n]+)\]", answer))
+    return set(_SOURCE_CITATION_RE.findall(answer))
 
 
 def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) -> str:
