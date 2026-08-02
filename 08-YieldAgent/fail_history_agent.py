@@ -126,13 +126,12 @@ def _synthesize_answer(
         f"[검색 결과 ({len(results)}건)]\n"
         + json.dumps(results, ensure_ascii=False, indent=2),
     ]
-    if raw.get("retrieval_mode") == "wiki-assisted":
-        wiki_body = raw.get("wiki_concept_body", "")
+    wiki_body = raw.get("wiki_concept_body", "")
+    if wiki_body:
         wiki_confidence = raw.get("wiki_concept_confidence", 0.0)
-        if wiki_body:
-            input_parts.append(
-                f"[과거 누적 합성 본문 (confidence={wiki_confidence:.2f})]\n{wiki_body}"
-            )
+        input_parts.append(
+            f"[과거 누적 합성 본문 (confidence={wiki_confidence:.2f})]\n{wiki_body}"
+        )
     graph_context = raw.get("graph_context")
     if isinstance(graph_context, dict):
         resolved_doc_ids = {

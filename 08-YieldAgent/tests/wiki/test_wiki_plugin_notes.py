@@ -130,6 +130,15 @@ def test_source_requires_source_frontmatter_type(paths):
         read_source(paths, "FH-1")
 
 
+def test_source_rejects_in_vault_symlink_to_source_shaped_concept(paths):
+    target = paths.concepts / "source-shaped.md"
+    write_source(target, doc_id="FH-LINK")
+    (paths.sources / "FH-LINK.md").symlink_to(target)
+
+    with pytest.raises(NoteNotFound):
+        read_source(paths, "FH-LINK")
+
+
 def test_source_rejects_stable_filename_collision(paths):
     write_source(paths.sources / "FH_1.md", doc_id="FH 1")
 

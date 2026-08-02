@@ -282,3 +282,33 @@ def test_evidence_source_path_uses_read_source_as_canonical_resolver(
 
     assert resolved_doc_ids == ["FH:GRAPH"]
     assert result.results[0].evidence[0].source_path == "sources/canonical.md"
+
+
+def test_malformed_source_frontmatter_omits_source_path(tmp_path, monkeypatch):
+    paths = make_empty_vault(tmp_path)
+    (paths.sources / "FH-BROKEN.md").write_text(
+        "---\ntype: source\ndoc_id: [FH-BROKEN\n---\n# Source\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        wiki_plugin_search,
+        "search_opensearch_with_mode",
+        lambda *args, **kwargs: (
+            [
+                {
+                    "doc_id": "FH-BROKEN",
+                    "product": "4SS",
+                    "fail_type": "EASY",
+                    "cause_oper": "PRE METAL CLN",
+                    "score": 50.0,
+                }
+            ],
+            "hybrid",
+        ),
+    )
+
+    result = wiki_plugin_search.search_wiki(
+        "source", "4SS", "EASY", "PRE METAL CLN", 20, paths
+    )
+
+    assert result.results[0].evidence[0].source_path is None

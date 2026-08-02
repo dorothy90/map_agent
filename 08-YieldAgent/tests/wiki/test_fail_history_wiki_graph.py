@@ -320,3 +320,47 @@ def test_synthesis_labels_graph_context_as_untrusted_and_omits_unresolved_relati
     assert '"source_doc_ids": [\n        "FH-1"' in human_evidence
     assert "Missing source statement" not in human_evidence
     assert "FH-404" not in human_evidence
+
+
+def test_synthesis_keeps_wiki_body_when_graph_evidence_coexists(monkeypatch):
+    captured = {}
+
+    class Model:
+        def invoke(self, messages, config):
+            captured["messages"] = messages
+            return SimpleNamespace(content="combined answer")
+
+    monkeypatch.setattr(fail_history_agent, "_fh_model", Model())
+    monkeypatch.setattr(fail_history_agent, "_lf_callbacks", lambda: [])
+    raw = {
+        "results": [{"doc_id": "FH-1"}],
+        "retrieval_mode": "graph-assisted",
+        "wiki_concept_body": "Existing Wiki synthesis evidence",
+        "wiki_concept_confidence": 0.73,
+        "graph_context": {
+            "primary_concept_id": "concept:4SS|PRE METAL CLN|EASY",
+            "concept_ids": ["concept:4SS|PRE METAL CLN|EASY"],
+            "relations": [
+                {
+                    "relation_id": "relation:causes",
+                    "origin_concept_id": "concept:4SS|PRE METAL CLN|EASY",
+                    "subject": "Queue time exceeded",
+                    "predicate": "causes",
+                    "object": "Natural oxidation",
+                    "confidence": 0.82,
+                    "source_doc_ids": ["FH-1"],
+                }
+            ],
+            "source_doc_ids": ["FH-1"],
+        },
+    }
+
+    answer = fail_history_agent._synthesize_answer(
+        "Why did it fail?", raw, "4SS", "EASY", "PRE METAL CLN", {}
+    )
+
+    assert answer == "combined answer"
+    human_evidence = captured["messages"][1].content
+    assert "[과거 누적 합성 본문 (confidence=0.73)]" in human_evidence
+    assert "Existing Wiki synthesis evidence" in human_evidence
+    assert "UNTRUSTED GRAPH EVIDENCE" in human_evidence

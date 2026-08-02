@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import frontmatter
+from yaml import YAMLError
 
 from models import PluginNoteLink, PluginRelatedResponse, PluginSourceResponse
 from wiki_config import WikiPaths
@@ -47,7 +49,7 @@ def _relative(paths: WikiPaths, path: Path) -> str:
 def _load_note(path: Path) -> tuple[dict[str, Any], str]:
     try:
         post = frontmatter.load(path)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, YAMLError) as exc:
         raise NoteNotFound(str(path)) from exc
     return dict(post.metadata), post.content or ""
 
@@ -115,7 +117,16 @@ def read_source(paths: WikiPaths, doc_id: str) -> PluginSourceResponse:
     relative = PurePosixPath(doc_id)
     if not doc_id or relative.is_absolute() or ".." in relative.parts:
         raise NoteNotFound(doc_id)
-    source = resolve_markdown_path(paths, f"sources/{_stable_filename(doc_id)}.md")
+    candidate = paths.sources / f"{_stable_filename(doc_id)}.md"
+    try:
+        candidate_mode = candidate.lstat().st_mode
+    except OSError as exc:
+        raise NoteNotFound(doc_id) from exc
+    if candidate.parent != paths.sources or not stat.S_ISREG(candidate_mode):
+        raise NoteNotFound(doc_id)
+    source = resolve_markdown_path(paths, f"sources/{candidate.name}")
+    if source != candidate:
+        raise NoteNotFound(doc_id)
     metadata, _ = _load_note(source)
     source_doc_id = str(metadata.get("doc_id") or "").strip()
     if source_doc_id != doc_id or metadata.get("type") != "source":
