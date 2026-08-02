@@ -202,3 +202,54 @@ Desktop Graph와 Entity 노트도 실제 확인했다. 남은 UI 항목은 운�
 승인 후 코드 변경까지 포함한 최종 회귀는 Wiki+memory `355 passed`, confirm-edit
 `9 passed`, Obsidian Plugin `36 passed`와 production build 성공이다. `uv lock --check`,
 `git diff --check`, 임시 Backend 종료도 확인했다.
+
+## Readable label live migration 및 Desktop Citation 검증
+
+- 실행 시각: 2026-08-02 23:13–23:18 KST
+- 검증 기준: `628bb47`
+- live Vault: `/Users/daehwankim/SYLDAIX/YieldWiki`
+- 보존 백업: `/Users/daehwankim/SYLDAIX/YieldWiki.backup-20260802-readable-labels`
+
+live Vault write 전에 원본과 백업 각각의 정렬된 상대경로+파일 SHA-256 manifest를
+생성했다. 두 manifest는 각각 61개 파일이며 `cmp`가 exit 0으로 일치했다. 두 manifest
+파일 자체의 SHA-256도 모두
+`a67a2be2390cd53540e8c5707b680a70e94a4369fefd1872634857b13284fadb`였다.
+백업은 삭제하지 않고 보존했다.
+
+실제 migration apply 결과는 `created=13 modified=2 deleted=13 warnings=7 errors=0`이었다.
+이후 연속 두 번의 check는 모두
+`created=0 modified=0 deleted=0 warnings=7 errors=0`으로 idempotent했다. 7개 warning은
+기존 `4SS_PRE_METAL_CLN_EASY.md`의 누락 Relation endpoint warning과 동일하며 새로운
+warning class는 없었다. 대표 readable 경로는 다음과 같다.
+
+```text
+entities/wafer queue time 초과--af3a0906.md
+relations/wafer queue time 초과 causes EASY(W)--22c969f1.md
+```
+
+Obsidian Desktop Graph view에서 Entity/Relation 노드가 자연어 label과 8자리 hash로
+표시되고 64자리 hash-only node가 active projection에서 사라진 것을 확인했다. 위 Entity
+노트를 열어 full `entity:sha256:...` ID, `concept:4SS|PRE METAL CLN|EASY` 연결과 active
+Relation link를 확인했다. 위 Relation 노트에서는 full `relation:sha256:...` ID,
+subject/object full Entity ID, Concept link, `FH-9003-EXTRA` Source link가 유지됐다.
+
+현재 worktree Backend를 `127.0.0.1:18001`에서 승인된 free model override와 임시 Plugin
+token으로 실행했다. public health는 HTTP 200, 잘못된 token은 HTTP 401, 유효 token의
+Plugin health는 HTTP 200이었다. Plugin 설정의 연결 테스트도 Desktop에서 `연결됨`을
+표시했다.
+
+승인된 exact `4SS / EASY / PRE METAL CLN` 질문을 Obsidian Plugin Chat에서 전송했다.
+Planner는 `fail_history_agent`로 routing했고 `retrieval_mode=wiki-first`, 결과 7건,
+fail-history synthesis LLM call 0회를 기록했다. Desktop은 정상 completion UI와
+`1 steps · 19.1초`를 표시하고 Citation 버튼 7개를 렌더링했다. `FH-9001-EXTRA`
+Citation을 클릭하자 canonical `sources/FH-9001-EXTRA.md`가 열렸으며, 표시된 frontmatter
+`doc_id`가 `FH-9001-EXTRA`와 일치했다. 기존 Citation 구현이 그대로 통과해 Plugin 코드나
+테스트는 변경하지 않았다.
+
+검증 후 exact Backend PID를 종료했다. `127.0.0.1:18001`에 listener가 없음을 확인했고
+임시 Plugin token/PID 파일을 제거했다. 토큰 값, 회사 문서 본문, Vault 본문은 이 문서에
+기록하지 않았다.
+
+최종 회귀는 Wiki+memory `365 passed`(기존 LangGraph deprecated API warning 2건),
+confirm-edit `9 passed`, Obsidian Plugin `36 passed`였고 production build도 성공했다.
+`uv lock --check`는 268 packages를 정상 확인했으며 `git diff --check`도 통과했다.
