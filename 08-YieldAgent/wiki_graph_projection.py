@@ -206,6 +206,18 @@ def _canonical_generated_location(
     return state.relative_path == f"{directory}/{filename}"
 
 
+def _readable_generated_graph_location(
+    state: _FileState,
+    directory: str,
+    node_id: str,
+) -> bool:
+    digest = node_id.rsplit(":", 1)[-1]
+    return _canonical_generated_location(state, directory, f"{digest}.md") or (
+        state.relative_path.startswith(f"{directory}/")
+        and state.path.name.endswith(f"--{digest[:8]}.md")
+    )
+
+
 def _canonical_file(paths: WikiPaths, candidate: Path) -> Path | None:
     try:
         relative = candidate.relative_to(paths.root).as_posix()
@@ -315,9 +327,7 @@ def _load_entity(state: _FileState, metadata: dict[str, Any]) -> _EntityRecord |
         or canonical_name is None
         or entity_type is None
         or source_concept_ids is None
-        or not _canonical_generated_location(
-            state, "entities", f"{entity_id.rsplit(':', 1)[-1]}.md"
-        )
+        or not _readable_generated_graph_location(state, "entities", entity_id)
     ):
         return None
     return _EntityRecord(
@@ -369,9 +379,7 @@ def _load_relation(
         or not source_doc_ids
         or source_fingerprint is None
         or not relation_id.startswith("relation:sha256:")
-        or not _canonical_generated_location(
-            state, "relations", f"{relation_id.rsplit(':', 1)[-1]}.md"
-        )
+        or not _readable_generated_graph_location(state, "relations", relation_id)
         or isinstance(confidence, bool)
         or not isinstance(confidence, (int, float))
         or not 0.0 <= confidence <= 1.0
