@@ -98,3 +98,47 @@ Observed result: `211 passed in 8.58s`.
 ## Concerns
 
 None blocking for Task 4. Invalid or unsafe individual notes are intentionally omitted from this read-only projection so valid graph records remain available; Wiki lint remains the operator-visible validation surface.
+
+## Review fix — origin-local validation and bounded Relation evidence
+
+### RED
+
+Command:
+
+```bash
+cd 08-YieldAgent
+uv run --frozen --with pytest pytest -q tests/wiki/test_wiki_graph_projection.py
+```
+
+Observed result: `4 failed, 8 passed in 0.45s`.
+
+- Both parameterizations of `test_relation_requires_both_entities_to_belong_to_origin_concept` returned the invalid Relation when either its subject or object Entity omitted the origin Concept from `source_concept_ids`.
+- `test_relation_requires_sources_cited_by_its_origin_concept` returned a Relation whose Source existed globally but was cited only by another Concept.
+- `test_relation_source_ids_are_trimmed_to_the_context_source_bound` returned `['FH-1', 'FH-2']` inside the Relation while the bounded top-level context contained only `['FH-1']`.
+
+### Fix
+
+- Relation admission now requires the origin Concept to occur in both endpoint Entity `source_concept_ids` lists.
+- Every Relation Source must both exist canonically and occur in the origin Concept's exact citation-derived `source_doc_ids`.
+- Expansion computes the bounded Source set before producing output Relations, trims each Relation to that set, and omits Relations left without bounded Source evidence.
+- The existing general bounds test now gives the seed Concept exact citations for its generated Relations, preventing a vacuous pass under the stricter validation.
+
+### GREEN
+
+Focused command:
+
+```bash
+cd 08-YieldAgent
+uv run --frozen --with pytest pytest -q tests/wiki/test_wiki_graph_projection.py tests/wiki/test_wiki_graph_models.py
+```
+
+Observed result: `14 passed in 0.17s`.
+
+Full Wiki command:
+
+```bash
+cd 08-YieldAgent
+uv run --frozen --with pytest pytest -q tests/wiki
+```
+
+Observed result: `215 passed in 9.76s`.

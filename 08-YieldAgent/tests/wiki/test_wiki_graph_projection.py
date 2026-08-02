@@ -190,6 +190,70 @@ def test_relation_requires_an_exact_source_doc_id(paths):
     assert result.source_doc_ids == []
 
 
+@pytest.mark.parametrize("mismatched_endpoint", ["subject", "object"])
+def test_relation_requires_both_entities_to_belong_to_origin_concept(
+    paths, mismatched_endpoint
+):
+    from wiki_graph_projection import build_graph_projection
+
+    _write_concept(paths, "seed.md", SEED, source_doc_ids=["FH-1"])
+    _write_concept(paths, "related.md", RELATED)
+    _write_entity(
+        paths,
+        "subject.md",
+        SHARED,
+        "Queue time",
+        [RELATED] if mismatched_endpoint == "subject" else [SEED],
+    )
+    _write_entity(
+        paths,
+        "object.md",
+        OTHER,
+        "Natural oxidation",
+        [RELATED] if mismatched_endpoint == "object" else [SEED],
+    )
+    _write_source(paths, "FH-1.md", "FH-1")
+    _write_relation(
+        paths,
+        "wrong-origin-entity.md",
+        "relation:wrong-origin-entity",
+        SEED,
+        SHARED,
+        OTHER,
+        ["FH-1"],
+    )
+
+    result = build_graph_projection(paths).expand_concepts([SEED])
+
+    assert result.relations == []
+    assert result.source_doc_ids == []
+
+
+def test_relation_requires_sources_cited_by_its_origin_concept(paths):
+    from wiki_graph_projection import build_graph_projection
+
+    _write_concept(paths, "seed.md", SEED, source_doc_ids=["FH-OWNED"])
+    _write_concept(paths, "related.md", RELATED, source_doc_ids=["FH-GLOBAL"])
+    _write_entity(paths, "subject.md", SHARED, "Queue time", [SEED])
+    _write_entity(paths, "object.md", OTHER, "Natural oxidation", [SEED])
+    _write_source(paths, "FH-OWNED.md", "FH-OWNED")
+    _write_source(paths, "FH-GLOBAL.md", "FH-GLOBAL")
+    _write_relation(
+        paths,
+        "wrong-origin-source.md",
+        "relation:wrong-origin-source",
+        SEED,
+        SHARED,
+        OTHER,
+        ["FH-GLOBAL"],
+    )
+
+    result = build_graph_projection(paths).expand_concepts([SEED])
+
+    assert result.relations == []
+    assert result.source_doc_ids == []
+
+
 def test_related_concept_can_share_only_a_canonical_source(paths):
     from wiki_graph_projection import build_graph_projection
 
@@ -232,7 +296,12 @@ def test_malformed_note_does_not_hide_valid_projection_records(paths):
 def test_expansion_never_exceeds_requested_bounds(paths):
     from wiki_graph_projection import build_graph_projection
 
-    _write_concept(paths, "seed.md", SEED)
+    _write_concept(
+        paths,
+        "seed.md",
+        SEED,
+        source_doc_ids=[f"FH-{index}" for index in range(4)],
+    )
     for index in range(4):
         related_id = f"concept:related:{index}"
         entity_id = f"entity:{index}"
@@ -272,6 +341,33 @@ def test_expansion_never_exceeds_requested_bounds(paths):
     assert len(result.concept_ids[1:]) <= 1
     assert len(result.relations) <= 2
     assert len(result.source_doc_ids) <= 1
+
+
+def test_relation_source_ids_are_trimmed_to_the_context_source_bound(paths):
+    from wiki_graph_projection import build_graph_projection
+
+    _write_concept(paths, "seed.md", SEED, source_doc_ids=["FH-1", "FH-2"])
+    _write_entity(paths, "subject.md", SHARED, "Queue time", [SEED])
+    _write_entity(paths, "object.md", OTHER, "Natural oxidation", [SEED])
+    _write_source(paths, "FH-1.md", "FH-1")
+    _write_source(paths, "FH-2.md", "FH-2")
+    _write_relation(
+        paths,
+        "two-sources.md",
+        "relation:two-sources",
+        SEED,
+        SHARED,
+        OTHER,
+        ["FH-1", "FH-2"],
+    )
+
+    result = build_graph_projection(paths).expand_concepts(
+        [SEED], max_sources=1
+    )
+
+    assert result.source_doc_ids == ["FH-1"]
+    assert len(result.relations) == 1
+    assert result.relations[0].source_doc_ids == ["FH-1"]
 
 
 def test_symlinked_entity_and_source_notes_are_not_traversed(paths, tmp_path):

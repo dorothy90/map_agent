@@ -90,10 +90,32 @@ class WikiGraphProjection:
             for concept_id in seeds
             for relation_id in self.relations_by_concept.get(concept_id, ())
         )[: max(0, max_relations)]
-        relations = [self.relations[relation_id] for relation_id in relation_ids]
+        selected_relations = [
+            self.relations[relation_id] for relation_id in relation_ids
+        ]
+        source_doc_ids = _deduplicate(
+            doc_id
+            for relation in selected_relations
+            for doc_id in relation.source_doc_ids
+        )[: max(0, max_sources)]
+        source_set = set(source_doc_ids)
+        bounded_relations = [
+            (
+                relation,
+                tuple(
+                    doc_id
+                    for doc_id in relation.source_doc_ids
+                    if doc_id in source_set
+                ),
+            )
+            for relation in selected_relations
+        ]
+        bounded_relations = [
+            item for item in bounded_relations if item[1]
+        ]
 
         related_candidates: list[str] = []
-        for relation in relations:
+        for relation, relation_source_doc_ids in bounded_relations:
             for entity_id in (
                 relation.subject_entity_id,
                 relation.object_entity_id,
@@ -101,7 +123,7 @@ class WikiGraphProjection:
                 related_candidates.extend(
                     self.concepts_by_entity.get(entity_id, ())
                 )
-            for doc_id in relation.source_doc_ids:
+            for doc_id in relation_source_doc_ids:
                 related_candidates.extend(
                     self.concepts_by_source.get(doc_id, ())
                 )
@@ -112,9 +134,6 @@ class WikiGraphProjection:
             for concept_id in related_candidates
             if concept_id in self.concepts and concept_id not in seed_set
         )[: max(0, max_related)]
-        source_doc_ids = _deduplicate(
-            doc_id for relation in relations for doc_id in relation.source_doc_ids
-        )[: max(0, max_sources)]
 
         return GraphContext(
             primary_concept_id=seeds[0],
@@ -127,9 +146,9 @@ class WikiGraphProjection:
                     predicate=relation.predicate,
                     object=self.entities[relation.object_entity_id].canonical_name,
                     confidence=relation.confidence,
-                    source_doc_ids=list(relation.source_doc_ids),
+                    source_doc_ids=list(relation_source_doc_ids),
                 )
-                for relation in relations
+                for relation, relation_source_doc_ids in bounded_relations
             ],
             source_doc_ids=source_doc_ids,
         )
@@ -374,14 +393,24 @@ def _build_projection(
         ),
         "relation_id",
     )
-    relations = {
-        relation_id: relation
-        for relation_id, relation in candidate_relations.items()
-        if relation.origin_concept_id in concepts
-        and relation.subject_entity_id in entities
-        and relation.object_entity_id in entities
-        and all(doc_id in sources for doc_id in relation.source_doc_ids)
-    }
+    relations: dict[str, _RelationRecord] = {}
+    for relation_id, relation in candidate_relations.items():
+        origin = concepts.get(relation.origin_concept_id)
+        subject = entities.get(relation.subject_entity_id)
+        object_entity = entities.get(relation.object_entity_id)
+        if (
+            origin is not None
+            and subject is not None
+            and object_entity is not None
+            and relation.origin_concept_id in subject.source_concept_ids
+            and relation.origin_concept_id in object_entity.source_concept_ids
+            and all(
+                doc_id in origin.source_doc_ids
+                for doc_id in relation.source_doc_ids
+            )
+            and all(doc_id in sources for doc_id in relation.source_doc_ids)
+        ):
+            relations[relation_id] = relation
 
     return WikiGraphProjection(
         fingerprint=fingerprint,
