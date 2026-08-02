@@ -96,6 +96,8 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
                     natural_label="FORGED LABEL",
                     download_url="https://evil.example/FORGED.pptx",
                 ),
+                EpisodeRef(episode_id="episode:ambiguous", doc_id="FH-A"),
+                EpisodeRef(episode_id="episode:ambiguous", doc_id="FH-B"),
                 EpisodeRef(episode_id="episode:forged", doc_id="FH-FORGED"),
             ],
             entities=[EntityCandidate(**entity) for entity in entities],
@@ -155,6 +157,13 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
                 "id": "episode:two",
                 "frontmatter": {"doc_ids": ["FH-2"]},
             },
+            {
+                "id": "episode:ambiguous",
+                "frontmatter": {
+                    "doc_ids": ["FH-A", "FH-B"],
+                    "source_files": ["B.pptx"],
+                },
+            },
         ]
         queue._summarize_q.put_nowait(
             {
@@ -175,7 +184,9 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
     concept_post = frontmatter.load(next(paths.concepts.glob("*.md")))
     assert concept_post.metadata["entities"] == entities
     assert [citation["doc_id"] for citation in concept_post.metadata["citations"]] == [
-        "FH-1"
+        "FH-1",
+        "FH-A",
+        "FH-B",
     ]
     citation = concept_post.metadata["citations"][0]
     assert citation["episode_id"] == "one"
@@ -190,7 +201,12 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
     assert relation_post.metadata["status"] == "active"
     expected_fingerprint = build_triple_snapshot(
         make_triple_key("4SS", "EASY", "PRE METAL CLN"),
-        [{"doc_id": "FH-1"}, {"doc_id": "FH-2"}],
+        [
+            {"doc_id": "FH-1"},
+            {"doc_id": "FH-2"},
+            {"doc_id": "FH-A"},
+            {"doc_id": "FH-B"},
+        ],
     ).source_fingerprint
     assert concept_post.metadata["source_fingerprint"] == expected_fingerprint
     assert relation_post.metadata["source_fingerprint"] == expected_fingerprint
@@ -211,5 +227,9 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
     assert "download_url" not in source_post.metadata
     assert "FORGED" not in source_post.content
     assert "evil.example" not in source_post.content
+    for doc_id in ("FH-A", "FH-B"):
+        ambiguous_source = frontmatter.load(paths.sources / f"{doc_id}.md")
+        assert "source_file" not in ambiguous_source.metadata
+        assert "B.pptx" not in ambiguous_source.content
     assert synthesis_contexts == [True]
     assert persist_contexts == [True, True]

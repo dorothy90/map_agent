@@ -157,3 +157,35 @@ def test_source_restriction_drops_all_forged_provider_sources():
 
     assert restricted.citations == []
     assert restricted.relations == []
+
+
+def test_episode_authority_maps_source_files_only_for_equal_length_lists():
+    import wiki_summarizer
+
+    ambiguous = wiki_summarizer.authoritative_citations_from_episodes(
+        [
+            {
+                "id": "episode:ambiguous",
+                "frontmatter": {
+                    "doc_ids": ["FH-A", "FH-B"],
+                    "source_files": ["B.pptx"],
+                },
+            }
+        ]
+    )
+    aligned = wiki_summarizer.authoritative_citations_from_episodes(
+        [
+            {
+                "id": "episode:aligned",
+                "frontmatter": {
+                    "doc_ids": ["FH-A", "FH-B"],
+                    "source_files": ["A.pptx", "B.pptx"],
+                },
+            }
+        ]
+    )
+
+    assert ambiguous["FH-A"]["source_file"] == ""
+    assert ambiguous["FH-B"]["source_file"] == ""
+    assert aligned["FH-A"]["source_file"] == "A.pptx"
+    assert aligned["FH-B"]["source_file"] == "B.pptx"

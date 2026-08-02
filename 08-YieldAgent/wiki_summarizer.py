@@ -125,8 +125,15 @@ def authoritative_citations_from_episodes(
         frontmatter = episode.get("frontmatter", {}) or {}
         episode_id = str(episode.get("id") or frontmatter.get("id") or "")
         episode_id = episode_id.replace("episode:", "", 1)
-        doc_ids = list(frontmatter.get("doc_ids") or [])
-        source_files = list(frontmatter.get("source_files") or [])
+        raw_doc_ids = frontmatter.get("doc_ids")
+        raw_source_files = frontmatter.get("source_files")
+        doc_ids = list(raw_doc_ids) if isinstance(raw_doc_ids, (list, tuple)) else []
+        source_files = (
+            list(raw_source_files)
+            if isinstance(raw_source_files, (list, tuple))
+            else []
+        )
+        source_files_aligned = bool(doc_ids) and len(doc_ids) == len(source_files)
         date = str(frontmatter.get("created") or "")[:10]
         for index, doc_id in enumerate(doc_ids):
             documents.append(
@@ -134,7 +141,7 @@ def authoritative_citations_from_episodes(
                     "doc_id": str(doc_id),
                     "episode_id": episode_id,
                     "source_file": (
-                        str(source_files[index]) if index < len(source_files) else ""
+                        str(source_files[index]) if source_files_aligned else ""
                     ),
                     "date": date,
                 }
