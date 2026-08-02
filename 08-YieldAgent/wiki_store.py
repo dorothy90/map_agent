@@ -15,6 +15,7 @@ from typing import Any
 
 import frontmatter
 from wiki_config import initialize_wiki_vault, resolve_wiki_paths
+from wiki_safe_mutation import PinnedWikiMutation
 
 logger = logging.getLogger("yield_agent.wiki_store")
 
@@ -155,12 +156,14 @@ def _read(path: Path) -> frontmatter.Post | None:
 
 
 def _write(path: Path, post: frontmatter.Post) -> None:
-    """Atomic write: .tmp → os.rename. plan v3 §위험·동시 write 충돌 가드."""
-    import os as _os
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(frontmatter.dumps(post), encoding="utf-8")
-    _os.replace(tmp, path)
+    """Write relative to pinned Vault descriptors with a final identity check."""
+    with PinnedWikiMutation(_PATHS) as mutation:
+        expected = mutation.snapshot(path)
+        mutation.replace_text(
+            path,
+            frontmatter.dumps(post),
+            expected=expected,
+        )
 
 
 def materialize_obsidian_wiki() -> Any:

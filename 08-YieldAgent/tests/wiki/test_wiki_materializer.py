@@ -273,7 +273,15 @@ def test_apply_is_idempotent_and_prunes_only_materializer_owned_files(tmp_path):
     _write_concept(paths)
     generated_stale = paths.products / "OBSOLETE.md"
     generated_stale.write_text(
-        "---\ntype: product\ngenerated_by: yield-wiki-materializer\n---\nold\n",
+        frontmatter.dumps(
+            frontmatter.Post(
+                content="old",
+                id="product:OBSOLETE",
+                type="product",
+                generated_by="yield-wiki-materializer",
+                product="OBSOLETE",
+            )
+        ),
         encoding="utf-8",
     )
     user_note = paths.products / "operator-note.md"
@@ -383,6 +391,60 @@ def test_validation_error_changes_no_file_for_generated_path_collision(
     node_id = _stable_graph_id("entity", {"canonical_name": "Queue time 초과"})
     target = _readable_graph_path(paths.entities, node_id, "Queue time 초과")
     target.write_text("operator note\n", encoding="utf-8")
+    before = _snapshot(paths.root)
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert "generated path collision" in "\n".join(report.errors)
+    assert _snapshot(paths.root) == before
+
+
+@pytest.mark.parametrize(
+    ("directory_name", "filename"),
+    [
+        ("products", "4SS.md"),
+        ("product_fails", "4SS_EASY.md"),
+        ("operations", "PRE_METAL_CLN.md"),
+        ("sources", "FH-000238.md"),
+    ],
+)
+def test_generated_namespace_preflight_preserves_operator_note(
+    tmp_path, directory_name, filename
+):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    target = getattr(paths, directory_name) / filename
+    target.write_text("operator-authored markdown\n", encoding="utf-8")
+    before = _snapshot(paths.root)
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert "generated path collision" in "\n".join(report.errors)
+    assert _snapshot(paths.root) == before
+
+
+def test_generated_namespace_preflight_requires_exact_full_id(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    target = paths.sources / "FH-000238.md"
+    target.write_text(
+        frontmatter.dumps(
+            frontmatter.Post(
+                content="operator content",
+                id="source:FH-DIFFERENT",
+                type="source",
+                generated_by="yield-wiki-materializer",
+                doc_id="FH-DIFFERENT",
+            )
+        ),
+        encoding="utf-8",
+    )
     before = _snapshot(paths.root)
 
     report = materialize_wiki(paths, apply=True)
@@ -653,3 +715,122 @@ def test_check_rejects_symlinked_graph_directory_without_persistent_writes(
     assert str(managed_directory) in "\n".join(report.errors)
     assert _snapshot(paths.root) == before
     assert _snapshot(outside) == outside_before
+
+
+def test_materializer_replace_rejects_directory_swap_without_outside_write(
+    tmp_path, monkeypatch
+):
+    import wiki_safe_mutation
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    outside = tmp_path / "outside-products"
+    outside.mkdir()
+    sentinel = outside / "sentinel.md"
+    sentinel.write_text("retained\n", encoding="utf-8")
+    parked = tmp_path / "parked-products"
+    swapped = False
+
+    def swap(operation, path):
+        nonlocal swapped
+        if swapped or operation != "replace" or path.parent != paths.products:
+            return
+        swapped = True
+        paths.products.rename(parked)
+        paths.products.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(wiki_safe_mutation, "_before_commit", swap)
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert report.errors
+    assert sentinel.read_text(encoding="utf-8") == "retained\n"
+    assert not (outside / "4SS.md").exists()
+
+
+def test_materializer_delete_rejects_directory_swap_without_outside_delete(
+    tmp_path, monkeypatch
+):
+    import wiki_safe_mutation
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    obsolete = paths.products / "OBSOLETE.md"
+    obsolete.write_text(
+        frontmatter.dumps(
+            frontmatter.Post(
+                content="generated obsolete",
+                id="product:OBSOLETE",
+                type="product",
+                generated_by="yield-wiki-materializer",
+                product="OBSOLETE",
+            )
+        ),
+        encoding="utf-8",
+    )
+    outside = tmp_path / "outside-products"
+    outside.mkdir()
+    outside_obsolete = outside / "OBSOLETE.md"
+    outside_obsolete.write_text("outside retained\n", encoding="utf-8")
+    parked = tmp_path / "parked-products"
+    swapped = False
+
+    def swap(operation, path):
+        nonlocal swapped
+        if swapped or operation != "delete" or path != obsolete:
+            return
+        swapped = True
+        paths.products.rename(parked)
+        paths.products.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(wiki_safe_mutation, "_before_commit", swap)
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert report.errors
+    assert outside_obsolete.read_text(encoding="utf-8") == "outside retained\n"
+
+
+def test_store_write_rejects_directory_swap_without_outside_write(
+    tmp_path, monkeypatch
+):
+    import importlib
+    import wiki_safe_mutation
+    import wiki_store
+
+    monkeypatch.setenv("WIKI_VAULT_PATH", str(tmp_path / "YieldWiki"))
+    store = importlib.reload(wiki_store)
+    outside = tmp_path / "outside-concepts"
+    outside.mkdir()
+    sentinel = outside / "sentinel.md"
+    sentinel.write_text("retained\n", encoding="utf-8")
+    parked = tmp_path / "parked-concepts"
+    swapped = False
+
+    def swap(operation, path):
+        nonlocal swapped
+        if swapped or operation != "replace" or path.parent != store._PATHS.concepts:
+            return
+        swapped = True
+        store._PATHS.concepts.rename(parked)
+        store._PATHS.concepts.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(wiki_safe_mutation, "_before_commit", swap)
+
+    with pytest.raises(RuntimeError, match="managed directory changed"):
+        store.upsert_concept(
+            {
+                "product": "4SS",
+                "fail_type": "EASY",
+                "cause_oper": "PRE METAL CLN",
+            },
+            synthesized_body="generated body",
+            materialize=False,
+        )
+
+    assert sentinel.read_text(encoding="utf-8") == "retained\n"
+    assert not any(outside.glob("4SS*.md"))

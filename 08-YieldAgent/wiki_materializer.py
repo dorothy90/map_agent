@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import uuid
-from dataclasses import dataclass
+import stat
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +13,7 @@ import frontmatter
 from pydantic import ValidationError
 
 from wiki_config import (
+    WIKI_OVERVIEW_TEMPLATE,
     WIKI_PURPOSE_TEMPLATE,
     WIKI_SCHEMA_TEMPLATE,
     WikiConfigurationError,
@@ -22,6 +22,7 @@ from wiki_config import (
     validate_wiki_vault_paths,
 )
 from wiki_graph_models import EntityCandidate, RelationCandidate
+from wiki_safe_mutation import GeneratedOwner, PinnedWikiMutation
 
 
 _GENERATED_BY = "yield-wiki-materializer"
@@ -51,6 +52,8 @@ class _MaterializationPlan:
     deletions: tuple[Path, ...]
     warnings: tuple[str, ...]
     errors: tuple[str, ...]
+    target_owners: dict[Path, GeneratedOwner] = field(default_factory=dict)
+    deletion_owners: dict[Path, GeneratedOwner] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -135,6 +138,112 @@ def _generated_metadata(node_id: str, node_type: str, **values: Any) -> dict[str
         "generated_by": _GENERATED_BY,
         **values,
     }
+
+
+def _owner_from_rendered_target(content: str) -> GeneratedOwner | None:
+    try:
+        metadata = frontmatter.loads(content).metadata
+    except Exception:
+        return None
+    if metadata.get("generated_by") != _GENERATED_BY:
+        return None
+    node_type = str(metadata.get("type") or "")
+    node_id = str(metadata.get("id") or "")
+    if not node_type or not node_id:
+        return None
+    return GeneratedOwner(_GENERATED_BY, node_type, node_id)
+
+
+def _bootstrap_scaffold(paths: WikiPaths, path: Path, content: str) -> bool:
+    return (path == paths.index and content == "# Wiki Index\n\n") or (
+        path == paths.overview and content == WIKI_OVERVIEW_TEMPLATE
+    )
+
+
+def _preflight_generated_targets(
+    paths: WikiPaths,
+    targets: dict[Path, str],
+) -> tuple[dict[Path, GeneratedOwner], list[str]]:
+    owners: dict[Path, GeneratedOwner] = {}
+    errors: list[str] = []
+    for path, content in targets.items():
+        owner = _owner_from_rendered_target(content)
+        if owner is None:
+            continue
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            owners[path] = owner
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            errors.append(
+                f"generated path collision: {_relative(paths, path)} is not a regular file"
+            )
+            continue
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            errors.append(
+                f"generated path collision: {_relative(paths, path)} is unreadable: {exc}"
+            )
+            continue
+        if _bootstrap_scaffold(paths, path, existing):
+            continue
+        try:
+            metadata = frontmatter.loads(existing).metadata
+        except Exception as exc:
+            errors.append(
+                f"generated path collision: {_relative(paths, path)} is unreadable: {exc}"
+            )
+            continue
+        actual = (
+            metadata.get("generated_by"),
+            metadata.get("type"),
+            metadata.get("id"),
+        )
+        expected = (owner.generated_by, owner.node_type, owner.node_id)
+        if actual != expected:
+            errors.append(
+                f"generated path collision: {_relative(paths, path)} owner "
+                f"{actual!r} != {expected!r}"
+            )
+            continue
+        owners[path] = owner
+    return owners, errors
+
+
+def _namespace_deletion_owner(
+    paths: WikiPaths,
+    path: Path,
+    node_type: str,
+    metadata: dict[str, Any],
+) -> GeneratedOwner | None:
+    if metadata.get("generated_by") != _GENERATED_BY or metadata.get("type") != node_type:
+        return None
+    if node_type == "product":
+        product = str(metadata.get("product") or "")
+        node_id = f"product:{product}"
+        expected_path = paths.products / f"{_stable_filename(product)}.md"
+    elif node_type == "product_fail":
+        product = str(metadata.get("product") or "")
+        fail_type = str(metadata.get("fail_type") or "")
+        node_id = f"product_fail:{product}|{fail_type}"
+        expected_path = paths.product_fails / (
+            f"{_stable_filename(product)}_{_stable_filename(fail_type)}.md"
+        )
+    elif node_type == "operation":
+        cause_oper = str(metadata.get("cause_oper") or "")
+        node_id = f"operation:{cause_oper}"
+        expected_path = paths.operations / f"{_stable_filename(cause_oper)}.md"
+    elif node_type == "source":
+        doc_id = str(metadata.get("doc_id") or "")
+        node_id = f"source:{doc_id}"
+        expected_path = paths.sources / f"{_stable_filename(doc_id)}.md"
+    else:
+        return None
+    if not node_id.split(":", 1)[1] or path != expected_path or metadata.get("id") != node_id:
+        return None
+    return GeneratedOwner(_GENERATED_BY, node_type, node_id)
 
 
 def _scan_generated_graph_paths(
@@ -451,6 +560,7 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
     generated_graph_paths, scan_errors = _scan_generated_graph_paths(paths)
     errors.extend(scan_errors)
     migration_deletions: set[Path] = set()
+    migration_deletion_owners: dict[Path, GeneratedOwner] = {}
     for node_id, path in (*entity_paths.items(), *relation_paths.items()):
         digest = node_id.rsplit(":", 1)[-1]
         legacy_path = path.with_name(f"{digest}.md")
@@ -471,6 +581,11 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
             )
         else:
             migration_deletions.update(legacy_paths)
+            node_type = node_id.split(":", 1)[0]
+            for legacy_path in legacy_paths:
+                migration_deletion_owners[legacy_path] = GeneratedOwner(
+                    _GENERATED_BY, node_type, node_id
+                )
         if not path.exists():
             continue
         try:
@@ -873,39 +988,49 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         ) + "\n"
 
     deletions: list[Path] = []
+    deletion_owners = dict(migration_deletion_owners)
     target_paths = set(targets)
-    for directory in (
-        paths.products,
-        paths.product_fails,
-        paths.operations,
-        paths.sources,
+    for directory, node_type in (
+        (paths.products, "product"),
+        (paths.product_fails, "product_fail"),
+        (paths.operations, "operation"),
+        (paths.sources, "source"),
     ):
         for path in sorted(directory.glob("*.md")):
             if path in target_paths:
                 continue
             try:
-                generated_by = frontmatter.load(path).metadata.get("generated_by")
+                metadata = dict(frontmatter.load(path).metadata)
             except Exception:
                 continue
-            if generated_by == _GENERATED_BY:
-                deletions.append(path)
+            if metadata.get("generated_by") != _GENERATED_BY:
+                continue
+            owner = _namespace_deletion_owner(
+                paths, path, node_type, metadata
+            )
+            if owner is None:
+                errors.append(
+                    f"generated path collision: {_relative(paths, path)} has invalid ownership"
+                )
+                continue
+            deletions.append(path)
+            deletion_owners[path] = owner
+
+    target_owners, owner_errors = _preflight_generated_targets(paths, targets)
+    errors.extend(owner_errors)
+    if errors:
+        return _MaterializationPlan(
+            {}, (), tuple(sorted(set(warnings))), tuple(sorted(set(errors)))
+        )
 
     return _MaterializationPlan(
         targets,
         tuple(sorted(migration_deletions)) + tuple(sorted(deletions)),
         tuple(sorted(set(warnings))),
         tuple(sorted(set(errors))),
+        target_owners,
+        deletion_owners,
     )
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temporary.write_text(content, encoding="utf-8")
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _execute_plan(
@@ -918,23 +1043,52 @@ def _execute_plan(
     modified: list[str] = []
     deleted: list[str] = []
     unchanged: list[str] = []
-    for path, content in sorted(plan.targets.items(), key=lambda item: str(item[0])):
-        relative = _relative(paths, path)
-        if not path.exists():
-            created.append(relative)
-            if apply:
-                _atomic_write(path, content)
-        elif path.read_text(encoding="utf-8") == content:
-            unchanged.append(relative)
-        else:
-            modified.append(relative)
-            if apply:
-                _atomic_write(path, content)
-    for path in plan.deletions:
-        relative = _relative(paths, path)
-        deleted.append(relative)
-        if apply:
-            path.unlink()
+    if apply:
+        with PinnedWikiMutation(paths) as mutation:
+            for path, content in sorted(
+                plan.targets.items(), key=lambda item: str(item[0])
+            ):
+                relative = _relative(paths, path)
+                expected = mutation.snapshot(path)
+                if not expected.exists:
+                    created.append(relative)
+                elif expected.content == content.encode("utf-8"):
+                    unchanged.append(relative)
+                    continue
+                else:
+                    modified.append(relative)
+                mutation.replace_text(
+                    path,
+                    content,
+                    expected=expected,
+                    owner=plan.target_owners.get(path),
+                )
+            for path in plan.deletions:
+                relative = _relative(paths, path)
+                expected = mutation.snapshot(path)
+                if not expected.exists:
+                    raise WikiConfigurationError(
+                        f"Wiki deletion target disappeared: {path}"
+                    )
+                owner = plan.deletion_owners.get(path)
+                if owner is None:
+                    raise WikiConfigurationError(
+                        f"Wiki deletion target has no exact owner: {path}"
+                    )
+                mutation.delete(path, expected=expected, owner=owner)
+                deleted.append(relative)
+    else:
+        for path, content in sorted(
+            plan.targets.items(), key=lambda item: str(item[0])
+        ):
+            relative = _relative(paths, path)
+            if not path.exists():
+                created.append(relative)
+            elif path.read_text(encoding="utf-8") == content:
+                unchanged.append(relative)
+            else:
+                modified.append(relative)
+        deleted.extend(_relative(paths, path) for path in plan.deletions)
     return MaterializationReport(
         created=tuple(created),
         modified=tuple(modified),
@@ -959,4 +1113,10 @@ def materialize_wiki(
     plan = _build_plan(paths)
     if plan.errors:
         return MaterializationReport(warnings=plan.warnings, errors=plan.errors)
-    return _execute_plan(paths, plan, apply=apply)
+    try:
+        return _execute_plan(paths, plan, apply=apply)
+    except (OSError, WikiConfigurationError) as exc:
+        return MaterializationReport(
+            warnings=plan.warnings,
+            errors=(str(exc),),
+        )
