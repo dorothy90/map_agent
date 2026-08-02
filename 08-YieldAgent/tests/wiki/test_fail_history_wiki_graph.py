@@ -7,6 +7,7 @@ import pytest
 
 import fail_history_agent
 import fail_history_tools
+import lf_utils
 from wiki_graph_models import GraphContext, GraphRelation
 
 
@@ -33,7 +34,9 @@ def _stub_existing_wiki_paths(monkeypatch, tmp_path) -> list[dict]:
         "wiki_queue",
         SimpleNamespace(
             wiki_queue=SimpleNamespace(
-                summarize_enqueue=lambda payload: queued_payloads.append(payload)
+                summarize_enqueue=lambda payload, *, private=False: queued_payloads.append(
+                    {**payload, "__private": private}
+                )
                 or "skipped"
             )
         ),
@@ -103,12 +106,16 @@ def test_exact_triple_expands_canonical_concept_before_opensearch(
         or [{"doc_id": "FH-GRAPH", "score": 0.0}],
     )
 
-    result = fail_history_tools.do_search(
-        query="Use this sentence as a relation instead",
-        product="4SS",
-        fail_type="EASY(W)",
-        cause_oper="PRE METAL CLN",
-    )
+    capture_token = lf_utils.set_lf_capture_disabled(True)
+    try:
+        result = fail_history_tools.do_search(
+            query="Use this sentence as a relation instead",
+            product="4SS",
+            fail_type="EASY(W)",
+            cause_oper="PRE METAL CLN",
+        )
+    finally:
+        lf_utils.reset_lf_capture_disabled(capture_token)
 
     assert [name for name, _ in calls] == ["load", "expand", "search"]
     assert calls[1][1] == ["concept:4SS|PRE METAL CLN|EASY"]
@@ -133,6 +140,7 @@ def test_exact_triple_expands_canonical_concept_before_opensearch(
         "concept:4SS|PRE METAL CLN|EASY"
     )
     assert queued_payloads[0]["raw_results"] == [result["results"][0]]
+    assert queued_payloads[0]["__private"] is True
 
 
 def test_search_metadata_seeds_graph_when_request_has_no_exact_triple(

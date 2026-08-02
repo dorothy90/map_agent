@@ -1,7 +1,8 @@
 """Langfuse 공통 유틸리티 — 모든 에이전트에서 공유"""
 import contextvars
+from functools import wraps
 
-from langfuse import get_client
+from langfuse import get_client, observe
 from langfuse.langchain import CallbackHandler as _LFHandler
 
 from local_trace import llm_trace_handler
@@ -20,6 +21,27 @@ def set_lf_capture_disabled(disabled: bool) -> contextvars.Token[bool]:
 
 def reset_lf_capture_disabled(token: contextvars.Token[bool]) -> None:
     _CAPTURE_DISABLED.reset(token)
+
+
+def lf_capture_disabled() -> bool:
+    return _CAPTURE_DISABLED.get()
+
+
+def observe_with_privacy(**options):
+    """Bypass the observation wrapper when the current item is private."""
+
+    def decorate(function):
+        observed = observe(**options)(function)
+
+        @wraps(function)
+        def wrapped(*args, **kwargs):
+            if _CAPTURE_DISABLED.get():
+                return function(*args, **kwargs)
+            return observed(*args, **kwargs)
+
+        return wrapped
+
+    return decorate
 
 
 def update_lf_span_output(output: dict) -> None:

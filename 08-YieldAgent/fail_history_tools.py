@@ -24,6 +24,7 @@ from wiki_config import resolve_wiki_paths
 from wiki_graph_models import GraphContext
 from wiki_graph_projection import build_graph_projection
 from wiki_sync import make_triple_key
+from lf_utils import lf_capture_disabled
 
 # ── Jinja2 템플릿 환경 ──────────────────────────────────────
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -745,11 +746,18 @@ def do_search(
     enqueue_status = "skipped"
     try:
         from wiki_queue import wiki_queue
-        enqueue_status = wiki_queue.summarize_enqueue({
-            "query": query,
-            "filters": {"product": product, "fail_type": fail_type, "cause_oper": cause_oper},
-            "raw_results": opensearch_results,
-        })
+        enqueue_status = wiki_queue.summarize_enqueue(
+            {
+                "query": query,
+                "filters": {
+                    "product": product,
+                    "fail_type": fail_type,
+                    "cause_oper": cause_oper,
+                },
+                "raw_results": opensearch_results,
+            },
+            private=lf_capture_disabled(),
+        )
     except Exception as e:
         logger.warning("[do_search] wiki enqueue 실패: %s", e)
     ws = _get_wiki_payload()

@@ -4,7 +4,7 @@ plan v3 §wiki_summarizer.py:
 - LangChain `with_structured_output(method="function_calling")`로 모델 독립성 확보
 - get_llm + lf_callbacks 재사용
 - 모델: WIKI_SUMMARIZE_MODEL > RETRIEVE_CHAIN_MODEL fallback
-- redaction 패스 없음 (plan v3 §변경: 운영=사내 로컬 LLM, dev=OpenRouter라 외부 노출 차단 가드 PoC 외)
+- Plugin Wiki item은 queue가 전달한 privacy context에서 decorator/callback payload capture를 차단
 """
 from __future__ import annotations
 
@@ -12,11 +12,10 @@ import logging
 import os
 from typing import Any
 
-from langfuse import observe
 from pydantic import BaseModel, Field
 
 from common import get_llm
-from lf_utils import lf_callbacks as _lf_callbacks
+from lf_utils import lf_callbacks as _lf_callbacks, observe_with_privacy
 from wiki_graph_models import EntityCandidate, RelationCandidate
 
 logger = logging.getLogger("yield_agent.wiki_summarizer")
@@ -91,7 +90,7 @@ def _model():
     return get_llm(model=name)
 
 
-@observe(name="wiki_summarize")
+@observe_with_privacy(name="wiki_summarize")
 def summarize(payload: dict[str, Any]) -> dict[str, Any] | None:
     """search 결과 → wiki_queue가 persist할 작업 dict.
 
@@ -209,7 +208,7 @@ episode마다 1행. Lot/불량유형/공정은 concept_id에서 추출. 없는 �
 """
 
 
-@observe(name="wiki_synthesize_concept")
+@observe_with_privacy(name="wiki_synthesize_concept")
 def synthesize_concept(
     concept_id: str,
     episodes: list[dict],
@@ -348,7 +347,7 @@ _SUPER_SYSTEM = """당신은 반도체 fail_history wiki의 cross-concept 추상
 """
 
 
-@observe(name="wiki_synthesize_super_concept")
+@observe_with_privacy(name="wiki_synthesize_super_concept")
 def synthesize_super_concept(
     axis: str,
     axis_value: str,
@@ -460,7 +459,7 @@ doc마다 1행. Lot/불량유형/공정은 concept_id에서 추출. 없는 정�
 """
 
 
-@observe(name="wiki_synthesize_concept_from_docs")
+@observe_with_privacy(name="wiki_synthesize_concept_from_docs")
 def synthesize_concept_from_docs(
     concept_id: str,
     raw_docs: list[dict],

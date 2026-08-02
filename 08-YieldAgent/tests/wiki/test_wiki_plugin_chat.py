@@ -900,8 +900,6 @@ def test_wiki_chat_runtime_observations_disable_payload_capture():
     runtime_root = Path(node_planner.__file__).parent
     unsafe_observations = []
     for module_path in sorted(runtime_root.glob("*.py")):
-        if module_path.name == "wiki_summarizer.py":
-            continue
         tree = ast.parse(module_path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
