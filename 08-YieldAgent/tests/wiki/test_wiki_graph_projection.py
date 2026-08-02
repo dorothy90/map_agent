@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import hashlib
+import json
 import os
+import re
 
 import frontmatter
 import pytest
@@ -14,8 +17,46 @@ pytestmark = pytest.mark.no_server
 
 SEED = "concept:4SS|PRE METAL CLN|EASY"
 RELATED = "concept:4SS|STI CMP|EASY"
-SHARED = "entity:shared"
-OTHER = "entity:other"
+SOURCE_FINGERPRINT = "sha256:concept-source-set"
+_GENERATED_BY = "yield-wiki-materializer"
+
+
+def _stable_graph_id(kind, payload):
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return f"{kind}:sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _stable_filename(value):
+    return re.sub(r"[^A-Za-z0-9_\-]+", "_", value)
+
+
+def _entity_id(canonical_name):
+    return _stable_graph_id("entity", {"canonical_name": canonical_name})
+
+
+def _relation_id(origin_concept_id, subject, predicate, object_name):
+    return _stable_graph_id(
+        "relation",
+        {
+            "origin_concept_id": origin_concept_id,
+            "subject": subject,
+            "predicate": predicate,
+            "object": object_name,
+        },
+    )
+
+
+SHARED = _entity_id("Queue time")
+OTHER = _entity_id("Natural oxidation")
+ACTIVE_RELATION = _relation_id(
+    SEED, "Queue time", "causes", "Natural oxidation"
+)
+_ENTITY_ALIASES = {
+    SHARED: (SHARED, "Queue time"),
+    OTHER: (OTHER, "Natural oxidation"),
+}
 
 
 @pytest.fixture
@@ -34,13 +75,20 @@ def _write_note(path, body="BODY MUST NOT BE TRAVERSED", **metadata):
 
 
 def _write_concept(
-    paths, filename, concept_id, *, source_doc_ids=(), status="active"
+    paths,
+    filename,
+    concept_id,
+    *,
+    source_doc_ids=(),
+    status="active",
+    source_fingerprint=SOURCE_FINGERPRINT,
 ):
     return _write_note(
         paths.concepts / filename,
         id=concept_id,
         type="concept",
         status=status,
+        source_fingerprint=source_fingerprint,
         citations=[{"doc_id": doc_id} for doc_id in source_doc_ids],
     )
 
@@ -53,11 +101,22 @@ def _write_entity(
     concept_ids,
     *,
     status="active",
+    canonical_path=True,
+    generated_by=_GENERATED_BY,
+    stable_id=True,
 ):
+    expected_id = _entity_id(canonical_name)
+    actual_id = expected_id if stable_id else entity_id
+    _ENTITY_ALIASES[entity_id] = (actual_id, canonical_name)
+    _ENTITY_ALIASES[actual_id] = (actual_id, canonical_name)
+    path = paths.entities / (
+        f"{expected_id.rsplit(':', 1)[-1]}.md" if canonical_path else filename
+    )
     return _write_note(
-        paths.entities / filename,
-        id=entity_id,
+        path,
+        id=actual_id,
         type="entity",
+        generated_by=generated_by,
         status=status,
         canonical_name=canonical_name,
         entity_type="condition",
@@ -65,11 +124,23 @@ def _write_entity(
     )
 
 
-def _write_source(paths, filename, doc_id):
+def _write_source(
+    paths,
+    filename,
+    doc_id,
+    *,
+    canonical_path=True,
+    generated_by=_GENERATED_BY,
+    stable_id=True,
+):
+    path = paths.sources / (
+        f"{_stable_filename(doc_id)}.md" if canonical_path else filename
+    )
     return _write_note(
-        paths.sources / filename,
-        id=f"source:{doc_id}",
+        path,
+        id=f"source:{doc_id}" if stable_id else "source:forged",
         type="source",
+        generated_by=generated_by,
         doc_id=doc_id,
     )
 
@@ -85,17 +156,33 @@ def _write_relation(
     *,
     status="active",
     body="BODY MUST NOT BE TRAVERSED",
+    predicate="causes",
+    source_fingerprint=SOURCE_FINGERPRINT,
+    canonical_path=True,
+    generated_by=_GENERATED_BY,
+    stable_id=True,
 ):
+    subject_id, subject_name = _ENTITY_ALIASES[subject_entity_id]
+    object_id, object_name = _ENTITY_ALIASES[object_entity_id]
+    expected_id = _relation_id(
+        origin_concept_id, subject_name, predicate, object_name
+    )
+    actual_id = expected_id if stable_id else relation_id
+    path = paths.relations / (
+        f"{expected_id.rsplit(':', 1)[-1]}.md" if canonical_path else filename
+    )
     return _write_note(
-        paths.relations / filename,
+        path,
         body,
-        id=relation_id,
+        id=actual_id,
         type="relation",
+        generated_by=generated_by,
         status=status,
+        source_fingerprint=source_fingerprint,
         origin_concept_id=origin_concept_id,
-        subject_entity_id=subject_entity_id,
-        predicate="causes",
-        object_entity_id=object_entity_id,
+        subject_entity_id=subject_id,
+        predicate=predicate,
+        object_entity_id=object_id,
         confidence=0.82,
         source_doc_ids=source_doc_ids,
     )
@@ -131,6 +218,7 @@ def test_expands_frontmatter_only_active_source_backed_one_hop(paths):
         OTHER,
         ["FH-1"],
         status="stale",
+        predicate="prevents",
         body="status: active\nsource_doc_ids: [FH-BODY-ONLY]",
     )
     _write_relation(
@@ -141,6 +229,7 @@ def test_expands_frontmatter_only_active_source_backed_one_hop(paths):
         SHARED,
         OTHER,
         ["FH-MISSING"],
+        predicate="resolved_by",
     )
 
     result = build_graph_projection(paths).expand_concepts([SEED])
@@ -148,7 +237,7 @@ def test_expands_frontmatter_only_active_source_backed_one_hop(paths):
     assert result.primary_concept_id == SEED
     assert result.concept_ids == [SEED, RELATED]
     assert [relation.relation_id for relation in result.relations] == [
-        "relation:active"
+        ACTIVE_RELATION
     ]
     assert result.relations[0].subject == "Queue time"
     assert result.relations[0].object == "Natural oxidation"
@@ -289,7 +378,7 @@ def test_malformed_note_does_not_hide_valid_projection_records(paths):
 
     assert result.primary_concept_id == SEED
     assert [relation.relation_id for relation in result.relations] == [
-        "relation:active"
+        ACTIVE_RELATION
     ]
 
 
@@ -418,6 +507,93 @@ def test_symlinked_entity_and_source_notes_are_not_traversed(paths, tmp_path):
         OTHER,
         ["FH-LINKED"],
     )
+
+    result = build_graph_projection(paths).expand_concepts([SEED])
+
+    assert result.relations == []
+    assert result.source_doc_ids == []
+
+
+def test_relation_requires_matching_origin_source_fingerprint(paths):
+    from wiki_graph_projection import build_graph_projection
+
+    _write_shared_graph(paths)
+    relation_path = next(paths.relations.glob("*.md"))
+    relation = frontmatter.load(relation_path)
+    relation.metadata["source_fingerprint"] = "sha256:obsolete-source-set"
+    relation_path.write_text(frontmatter.dumps(relation), encoding="utf-8")
+
+    result = build_graph_projection(paths).expand_concepts([SEED])
+
+    assert result.relations == []
+    assert result.source_doc_ids == []
+
+
+@pytest.mark.parametrize("node_type", ["entity", "relation", "source"])
+def test_projection_rejects_materializer_note_at_forged_location(paths, node_type):
+    from wiki_graph_projection import build_graph_projection
+
+    _write_shared_graph(paths)
+    directory = {
+        "entity": paths.entities,
+        "relation": paths.relations,
+        "source": paths.sources,
+    }[node_type]
+    if node_type == "entity":
+        original = next(
+            path
+            for path in directory.glob("*.md")
+            if frontmatter.load(path).metadata["id"] == SHARED
+        )
+    else:
+        original = next(directory.glob("*.md"))
+    original.rename(directory / f"forged-{node_type}.md")
+
+    result = build_graph_projection(paths).expand_concepts([SEED])
+
+    assert result.relations == []
+    assert result.source_doc_ids == []
+
+
+@pytest.mark.parametrize("node_type", ["entity", "relation", "source"])
+def test_projection_requires_materializer_owned_active_graph_notes(paths, node_type):
+    from wiki_graph_projection import build_graph_projection
+
+    _write_shared_graph(paths)
+    directory = {
+        "entity": paths.entities,
+        "relation": paths.relations,
+        "source": paths.sources,
+    }[node_type]
+    if node_type == "entity":
+        path = next(
+            path
+            for path in directory.glob("*.md")
+            if frontmatter.load(path).metadata["id"] == SHARED
+        )
+    else:
+        path = next(directory.glob("*.md"))
+    post = frontmatter.load(path)
+    post.metadata["generated_by"] = "forged-writer"
+    path.write_text(frontmatter.dumps(post), encoding="utf-8")
+
+    result = build_graph_projection(paths).expand_concepts([SEED])
+
+    assert result.relations == []
+
+
+def test_projection_rejects_forged_relation_and_source_ids(paths):
+    from wiki_graph_projection import build_graph_projection
+
+    _write_shared_graph(paths)
+    relation_path = next(paths.relations.glob("*.md"))
+    relation = frontmatter.load(relation_path)
+    relation.metadata["id"] = "relation:sha256:" + "0" * 64
+    relation_path.write_text(frontmatter.dumps(relation), encoding="utf-8")
+    source_path = paths.sources / "FH-1.md"
+    source = frontmatter.load(source_path)
+    source.metadata["id"] = "source:forged"
+    source_path.write_text(frontmatter.dumps(source), encoding="utf-8")
 
     result = build_graph_projection(paths).expand_concepts([SEED])
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -16,10 +17,14 @@ from wiki_graph_models import GraphContext, GraphRelation, RelationPredicate
 from wiki_plugin_notes import NoteNotFound, resolve_markdown_path
 
 
+_GENERATED_BY = "yield-wiki-materializer"
+
+
 @dataclass(frozen=True)
 class _ConceptRecord:
     concept_id: str
     source_doc_ids: tuple[str, ...]
+    source_fingerprint: str | None
     path: str
 
 
@@ -41,6 +46,7 @@ class _RelationRecord:
     object_entity_id: str
     confidence: float
     source_doc_ids: tuple[str, ...]
+    source_fingerprint: str
     path: str
 
 
@@ -181,6 +187,25 @@ def _exact_string_list(value: Any) -> tuple[str, ...] | None:
     return tuple(result)
 
 
+def _stable_graph_id(kind: str, payload: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return f"{kind}:sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _stable_filename(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_\-]+", "_", value)
+
+
+def _canonical_generated_location(
+    state: _FileState,
+    directory: str,
+    filename: str,
+) -> bool:
+    return state.relative_path == f"{directory}/{filename}"
+
+
 def _canonical_file(paths: WikiPaths, candidate: Path) -> Path | None:
     try:
         relative = candidate.relative_to(paths.root).as_posix()
@@ -266,6 +291,7 @@ def _load_concept(state: _FileState, metadata: dict[str, Any]) -> _ConceptRecord
     return _ConceptRecord(
         concept_id=concept_id,
         source_doc_ids=tuple(source_doc_ids),
+        source_fingerprint=_exact_string(metadata.get("source_fingerprint")),
         path=state.relative_path,
     )
 
@@ -275,13 +301,23 @@ def _load_entity(state: _FileState, metadata: dict[str, Any]) -> _EntityRecord |
     canonical_name = _exact_string(metadata.get("canonical_name"))
     entity_type = _exact_string(metadata.get("entity_type"))
     source_concept_ids = _exact_string_list(metadata.get("source_concept_ids"))
+    expected_id = (
+        _stable_graph_id("entity", {"canonical_name": canonical_name})
+        if canonical_name is not None
+        else None
+    )
     if (
         metadata.get("type") != "entity"
+        or metadata.get("generated_by") != _GENERATED_BY
         or metadata.get("status") != "active"
         or entity_id is None
+        or entity_id != expected_id
         or canonical_name is None
         or entity_type is None
         or source_concept_ids is None
+        or not _canonical_generated_location(
+            state, "entities", f"{entity_id.rsplit(':', 1)[-1]}.md"
+        )
     ):
         return None
     return _EntityRecord(
@@ -295,7 +331,15 @@ def _load_entity(state: _FileState, metadata: dict[str, Any]) -> _EntityRecord |
 
 def _load_source(state: _FileState, metadata: dict[str, Any]) -> _SourceRecord | None:
     doc_id = _exact_string(metadata.get("doc_id"))
-    if metadata.get("type") != "source" or doc_id is None:
+    if (
+        metadata.get("type") != "source"
+        or metadata.get("generated_by") != _GENERATED_BY
+        or doc_id is None
+        or metadata.get("id") != f"source:{doc_id}"
+        or not _canonical_generated_location(
+            state, "sources", f"{_stable_filename(doc_id)}.md"
+        )
+    ):
         return None
     return _SourceRecord(doc_id=doc_id, path=state.relative_path)
 
@@ -308,6 +352,7 @@ def _load_relation(
     subject_entity_id = _exact_string(metadata.get("subject_entity_id"))
     object_entity_id = _exact_string(metadata.get("object_entity_id"))
     source_doc_ids = _exact_string_list(metadata.get("source_doc_ids"))
+    source_fingerprint = _exact_string(metadata.get("source_fingerprint"))
     confidence = metadata.get("confidence")
     try:
         predicate = RelationPredicate(metadata.get("predicate"))
@@ -315,12 +360,18 @@ def _load_relation(
         return None
     if (
         metadata.get("type") != "relation"
+        or metadata.get("generated_by") != _GENERATED_BY
         or metadata.get("status") != "active"
         or relation_id is None
         or origin_concept_id is None
         or subject_entity_id is None
         or object_entity_id is None
         or not source_doc_ids
+        or source_fingerprint is None
+        or not relation_id.startswith("relation:sha256:")
+        or not _canonical_generated_location(
+            state, "relations", f"{relation_id.rsplit(':', 1)[-1]}.md"
+        )
         or isinstance(confidence, bool)
         or not isinstance(confidence, (int, float))
         or not 0.0 <= confidence <= 1.0
@@ -334,6 +385,7 @@ def _load_relation(
         object_entity_id=object_entity_id,
         confidence=float(confidence),
         source_doc_ids=source_doc_ids,
+        source_fingerprint=source_fingerprint,
         path=state.relative_path,
     )
 
@@ -402,6 +454,18 @@ def _build_projection(
             origin is not None
             and subject is not None
             and object_entity is not None
+            and origin.source_fingerprint is not None
+            and relation.source_fingerprint == origin.source_fingerprint
+            and relation.relation_id
+            == _stable_graph_id(
+                "relation",
+                {
+                    "origin_concept_id": relation.origin_concept_id,
+                    "subject": subject.canonical_name,
+                    "predicate": relation.predicate.value,
+                    "object": object_entity.canonical_name,
+                },
+            )
             and relation.origin_concept_id in subject.source_concept_ids
             and relation.origin_concept_id in object_entity.source_concept_ids
             and all(

@@ -362,6 +362,28 @@ def _filters_from_key(triple_key: str) -> dict[str, str]:
     }
 
 
+def _projection_needs_repair(manifest: dict[str, Any]) -> bool:
+    projection = manifest.get("projection")
+    return isinstance(projection, dict) and projection.get("status") in {
+        "dirty",
+        "failed",
+    }
+
+
+def _set_projection_state(
+    manifest: dict[str, Any],
+    status: Literal["dirty", "failed", "clean"],
+    updated_at: str,
+    *,
+    error: str | None = None,
+) -> None:
+    projection = {"status": status, "updated_at": updated_at}
+    if error:
+        projection["last_error"] = " ".join(error.split())[:500]
+    manifest["projection"] = projection
+    manifest["updated_at"] = updated_at
+
+
 class WikiSyncService:
     """Coordinate scanner, Mongo jobs, existing synthesis, and Vault writes."""
 
@@ -416,7 +438,7 @@ class WikiSyncService:
         return self._run(limit=limit, scan=False)
 
     def _run(self, *, limit: int, scan: bool) -> SyncRunResult:
-        from wiki_manifest import load_manifest
+        from wiki_manifest import load_manifest, save_manifest
 
         owner = self.owner_factory()
         if not self.job_store.acquire_global_lock(owner):
@@ -432,12 +454,13 @@ class WikiSyncService:
             "failed": 0,
         }
         errors: list[str] = []
-        # Explicit resume also repairs a projection interrupted after the Concept and
-        # job success were persisted, when no pending job remains to signal the write.
         vault_changed = not scan
         materialized = False
         try:
             manifest = load_manifest(self.manifest_path, self.index)
+            # Explicit resume and a persisted incomplete projection both repair an
+            # interrupted materialization even when no pending job remains.
+            vault_changed = vault_changed or _projection_needs_repair(manifest)
             if scan:
                 plan = plan_sync(self.scanner.scan(), manifest)
                 counts.update(
@@ -482,12 +505,40 @@ class WikiSyncService:
                     errors.append(" ".join(str(exc).split())[:500])
 
             if vault_changed:
-                report = self.materialize()
+                projection_at = self.now()
+                _set_projection_state(manifest, "dirty", projection_at)
+                save_manifest(self.manifest_path, manifest)
+                try:
+                    report = self.materialize()
+                except Exception as exc:
+                    failed_at = self.now()
+                    _set_projection_state(
+                        manifest,
+                        "failed",
+                        failed_at,
+                        error=str(exc),
+                    )
+                    save_manifest(self.manifest_path, manifest)
+                    raise
                 report_errors = tuple(getattr(report, "errors", ()) or ())
                 if report_errors:
-                    errors.extend(str(error) for error in report_errors)
+                    materialization_errors = tuple(
+                        str(error) for error in report_errors
+                    )
+                    errors.extend(materialization_errors)
+                    failed_at = self.now()
+                    _set_projection_state(
+                        manifest,
+                        "failed",
+                        failed_at,
+                        error="; ".join(materialization_errors),
+                    )
+                    save_manifest(self.manifest_path, manifest)
                 else:
                     materialized = True
+                    completed_at = self.now()
+                    _set_projection_state(manifest, "clean", completed_at)
+                    save_manifest(self.manifest_path, manifest)
             status = "completed" if not errors else "completed_with_errors"
             return SyncRunResult(
                 status=status,

@@ -354,6 +354,71 @@ def test_resume_repairs_materialization_after_concept_persistence_without_synthe
     assert "[[sources/FH-1|FH-1]]" in relation_post.content
 
 
+def test_next_normal_apply_repairs_failed_materialization_without_synthesis(store):
+    from wiki_materializer import materialize_wiki
+
+    snapshot = _snapshot()
+    jobs = InMemoryJobStore()
+    synthesis_calls = []
+    synthesis = _synthesis()
+    synthesis.entities.append(
+        EntityCandidate(
+            canonical_name="자연 산화",
+            entity_type="failure_mechanism",
+        )
+    )
+
+    def fail_after_concept_write():
+        report = materialize_wiki(store._PATHS, apply=True)
+        assert report.errors == ()
+        for path in (
+            *store._PATHS.entities.glob("*.md"),
+            *store._PATHS.relations.glob("*.md"),
+        ):
+            path.unlink()
+        raise RuntimeError("projection write failed")
+
+    first_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: synthesis_calls.append(args) or synthesis,
+        materialize=fail_after_concept_write,
+    )
+
+    with pytest.raises(RuntimeError, match="projection write failed"):
+        first_service.apply(limit=10)
+
+    failed_manifest = load_manifest(store._PATHS.manifest, "fail-history")
+    assert failed_manifest["projection"]["status"] == "failed"
+    assert len(synthesis_calls) == 1
+    assert list(store._PATHS.entities.glob("*.md")) == []
+    assert list(store._PATHS.relations.glob("*.md")) == []
+
+    repairing_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: (_ for _ in ()).throw(
+            AssertionError("normal repair must not synthesize")
+        ),
+        materialize=lambda: materialize_wiki(store._PATHS, apply=True),
+    )
+
+    repaired = repairing_service.apply(limit=10)
+
+    assert repaired.status == "completed"
+    assert repaired.unchanged == 1
+    assert repaired.materialized is True
+    assert repaired.failed == 0
+    assert len(synthesis_calls) == 1
+    assert load_manifest(store._PATHS.manifest, "fail-history")["projection"][
+        "status"
+    ] == "clean"
+    assert len(list(store._PATHS.entities.glob("*.md"))) == 2
+    assert len(list(store._PATHS.relations.glob("*.md"))) == 1
+
+
 def test_changed_source_resynthesizes_existing_concept_and_restores_active(store):
     previous = _snapshot(_doc(content="old"))
     current = _snapshot(_doc(content="new"))

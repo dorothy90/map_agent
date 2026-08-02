@@ -375,6 +375,33 @@ def test_removed_graph_notes_become_stale_and_leave_active_entity_links(tmp_path
         assert stale_entity.content == entity_bodies[path]
 
 
+def test_stale_concept_cannot_keep_generated_graph_notes_active(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    concept_path = _write_concept(paths)
+    first = materialize_wiki(paths, apply=True)
+    assert first.errors == ()
+    entity_paths = list(paths.entities.glob("*.md"))
+    relation_path = next(paths.relations.glob("*.md"))
+
+    concept = frontmatter.load(concept_path)
+    concept.metadata["status"] = "stale"
+    concept_path.write_text(frontmatter.dumps(concept), encoding="utf-8")
+    second = materialize_wiki(paths, apply=True)
+
+    assert second.errors == ()
+    assert frontmatter.load(relation_path).metadata["status"] == "stale"
+    assert all(
+        frontmatter.load(path).metadata["status"] == "stale"
+        for path in entity_paths
+    )
+    index = paths.index.read_text(encoding="utf-8")
+    assert "Entities: 0" in index
+    assert "Relations: 0" in index
+
+
 def test_malformed_managed_block_is_fatal_and_changes_no_file(tmp_path):
     from wiki_materializer import materialize_wiki
 

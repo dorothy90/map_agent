@@ -55,6 +55,7 @@ class _MaterializationPlan:
 class _Concept:
     path: Path
     concept_id: str
+    status: str
     product: str
     fail_type: str
     cause_oper: str
@@ -160,6 +161,7 @@ def _read_concepts(paths: WikiPaths) -> tuple[list[_Concept], list[str]]:
             _Concept(
                 path=path,
                 concept_id=required["id"],
+                status=str(metadata.get("status") or "active").strip(),
                 product=required["product"],
                 fail_type=required["fail_type"],
                 cause_oper=required["cause_oper"],
@@ -290,6 +292,8 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
 
     for concept in concepts:
         names = concept_entity_names.setdefault(concept.concept_id, set())
+        if concept.status != "active":
+            continue
         for index, candidate in enumerate(concept.entities):
             try:
                 entity = EntityCandidate.model_validate(candidate)
@@ -319,6 +323,8 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
                 record["concepts"].append(concept)
 
     for concept in concepts:
+        if concept.status != "active":
+            continue
         citation_doc_ids = {
             str(citation.get("doc_id") or "").strip()
             for citation in concept.citations
