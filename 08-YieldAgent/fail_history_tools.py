@@ -601,6 +601,11 @@ def do_search(
         except Exception as e:
             logger.warning("[do_search] wiki gate lookup 실패: %s", e)
 
+    exact_seed_ids = _seed_concept_ids(product, fail_type, cause_oper, [])
+    graph_context = (
+        _expand_graph_context(exact_seed_ids) if exact_seed_ids else None
+    )
+
     if gate_result and gate_result.get("gate") == "wiki-first":
         logger.info("[do_search] WIKI-FIRST mode (confidence=%.2f, %s)",
                     gate_result["confidence"], gate_result["concept_id"])
@@ -634,13 +639,20 @@ def do_search(
         # 옵션 4: citations doc_id로 OpenSearch 단순 조회 → HTML 카드용 raw 채움.
         # LLM 합성은 안 거치므로 wiki-first 본질(LLM 0회)은 유지. 점수 의미 없음.
         doc_ids = [c.get("doc_id", "") for c in citations if c.get("doc_id")]
+        if graph_context is not None:
+            doc_ids = list(dict.fromkeys(doc_ids + graph_context.source_doc_ids))
         card_results = _fetch_results_by_doc_ids(doc_ids)
+        grounded_graph_context = (
+            _ground_graph_context(graph_context, card_results)
+            if graph_context is not None
+            else None
+        )
         rendered_answer = (
             f"{badge}{body}\n\n"
             f"**참고 자료 ({len(cit_lines)}건)**:\n{citations_md}\n\n"
             f"_wiki-first 응답 · confidence={confidence:.2f} · OpenSearch lookup {len(card_results)}건 (카드용, LLM 호출 0회)_"
         )
-        return {
+        output = {
             "total": len(card_results),
             "results": card_results,
             "wiki_memory": {"concepts": [], "aliases": [], "recent_episodes": []},
@@ -652,11 +664,9 @@ def do_search(
             "rendered_answer": rendered_answer,
             "super_reference_body": _lookup_super_reference(product, fail_type, cause_oper),
         }
-
-    exact_seed_ids = _seed_concept_ids(product, fail_type, cause_oper, [])
-    graph_context = (
-        _expand_graph_context(exact_seed_ids) if exact_seed_ids else None
-    )
+        if grounded_graph_context is not None:
+            output["graph_context"] = grounded_graph_context
+        return output
 
     try:
         results = _search_opensearch(

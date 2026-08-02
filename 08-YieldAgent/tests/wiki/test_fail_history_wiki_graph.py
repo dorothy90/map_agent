@@ -67,6 +67,86 @@ def _graph_context(*, source_doc_ids: list[str]) -> GraphContext:
     )
 
 
+def test_wiki_first_exact_triple_includes_source_backed_graph_without_vector_search(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("WIKI_VAULT_PATH", str(tmp_path / "YieldWiki"))
+    monkeypatch.setenv("WIKI_FIRST_ENABLED", "true")
+    monkeypatch.setitem(
+        sys.modules,
+        "wiki_store",
+        SimpleNamespace(
+            lookup_concept_body=lambda filters: {
+                "gate": "wiki-first",
+                "confidence": 0.91,
+                "concept_id": "concept:4SS|PRE METAL CLN|EASY",
+                "body": "Existing exact-triple Wiki answer",
+                "citations": [
+                    {
+                        "doc_id": "FH-CONCEPT",
+                        "source_file": "FH-CONCEPT.pptx",
+                    }
+                ],
+            }
+        ),
+    )
+    monkeypatch.setattr(fail_history_tools, "resolve_wiki_paths", lambda: object())
+    monkeypatch.setattr(
+        fail_history_tools, "_lookup_super_reference", lambda *args: ""
+    )
+    graph_calls = []
+
+    class Projection:
+        def expand_concepts(self, concept_ids):
+            graph_calls.append(("expand", list(concept_ids)))
+            return _graph_context(source_doc_ids=["FH-GRAPH"])
+
+    monkeypatch.setattr(
+        fail_history_tools,
+        "build_graph_projection",
+        lambda paths: graph_calls.append(("load", paths)) or Projection(),
+    )
+    monkeypatch.setattr(
+        fail_history_tools,
+        "_search_opensearch",
+        lambda **kwargs: pytest.fail("wiki-first must not run vector search"),
+    )
+    fetched = []
+
+    def fetch_by_doc_ids(doc_ids):
+        fetched.append(list(doc_ids))
+        return [{"doc_id": doc_id, "score": 0.0} for doc_id in doc_ids]
+
+    monkeypatch.setattr(
+        fail_history_tools, "_fetch_results_by_doc_ids", fetch_by_doc_ids
+    )
+
+    result = fail_history_tools.do_search(
+        query="exact triple question",
+        product="4SS",
+        fail_type="EASY(W)",
+        cause_oper="PRE METAL CLN",
+    )
+
+    assert graph_calls[0][0] == "load"
+    assert graph_calls[1] == (
+        "expand",
+        ["concept:4SS|PRE METAL CLN|EASY"],
+    )
+    assert fetched == [["FH-CONCEPT", "FH-GRAPH"]]
+    assert result["retrieval_mode"] == "wiki-first"
+    assert [row["doc_id"] for row in result["results"]] == [
+        "FH-CONCEPT",
+        "FH-GRAPH",
+    ]
+    assert result["graph_context"]["primary_concept_id"] == (
+        "concept:4SS|PRE METAL CLN|EASY"
+    )
+    assert result["graph_context"]["relations"][0]["source_doc_ids"] == [
+        "FH-GRAPH"
+    ]
+
+
 def test_exact_triple_expands_canonical_concept_before_opensearch(
     tmp_path, monkeypatch
 ):

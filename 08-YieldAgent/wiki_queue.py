@@ -238,6 +238,14 @@ class WikiQueue:
             "body_markdown": result.body_markdown,
             "confidence": float(result.confidence),
             "citations": [c.model_dump() if hasattr(c, "model_dump") else c.dict() for c in result.citations],
+            "entities": [
+                entity.model_dump(mode="json")
+                for entity in getattr(result, "entities", [])
+            ],
+            "relations": [
+                relation.model_dump(mode="json")
+                for relation in getattr(result, "relations", [])
+            ],
             "evidence": evidence,
         }
         try:
@@ -289,6 +297,8 @@ class WikiQueue:
                                     synthesized_body=synth["body_markdown"],
                                     confidence=synth["confidence"],
                                     citations=synth["citations"],
+                                    entities=synth["entities"],
+                                    relations=synth["relations"],
                                     evidence=synth["evidence"],
                                 ),
                             )
