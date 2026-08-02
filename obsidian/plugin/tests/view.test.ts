@@ -1110,6 +1110,122 @@ describe("YieldWikiView", () => {
     expect(findButton(view.containerEl, "Review 생성").disabled).toBe(false);
   });
 
+  it("ignores delayed Concept A Review-list refresh after switching to B", async () => {
+    const api = fakeApi();
+    let resolveRefresh: ((reviews: PluginReview[]) => void) | undefined;
+    const delayedRefresh = new Promise<PluginReview[]>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    vi.mocked(api.listReviews)
+      .mockResolvedValueOnce([pendingReview])
+      .mockReturnValueOnce(delayedRefresh);
+    const { view, setActiveConcept, emitFileOpen } = createTestView({
+      api,
+      activeFile: "concepts/A.md",
+      activeConceptId: "concept:A",
+    });
+    await view.onOpen();
+    clickButton(view.containerEl, "Review");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(1));
+    const reviewerA = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="review-create-reviewer"]',
+    );
+    const commentA = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-create-comment"]',
+    );
+    if (!reviewerA || !commentA) throw new Error("Concept A Review form not found");
+    reviewerA.value = "operator-a";
+    commentA.value = "A review";
+    clickButton(view.containerEl, "Review 생성");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(2));
+
+    setActiveConcept("concepts/B.md", "concept:B");
+    emitFileOpen();
+    const reviewerB = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="review-create-reviewer"]',
+    );
+    const commentB = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-create-comment"]',
+    );
+    if (!reviewerB || !commentB) throw new Error("Concept B Review form not found");
+    reviewerB.value = "operator-b draft";
+    commentB.value = "B draft must remain";
+
+    resolveRefresh?.([
+      {
+        ...pendingReview,
+        id: "review:concept-a-refresh",
+        target_concept_id: "concept:A",
+        body_markdown: "CONCEPT-A-REFRESH-SENTINEL",
+      },
+    ]);
+    await delayedRefresh;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(view.containerEl.textContent).not.toContain(
+      "CONCEPT-A-REFRESH-SENTINEL",
+    );
+    expect(view.containerEl.textContent).not.toContain("Review를 생성했습니다.");
+    expect(view.containerEl.textContent).not.toContain("Review 불러오는 중");
+    expect(
+      view.containerEl.querySelector('[data-testid="review-create-reviewer"]'),
+    ).toBe(reviewerB);
+    expect(reviewerB.value).toBe("operator-b draft");
+    expect(commentB.value).toBe("B draft must remain");
+    expect(findButton(view.containerEl, "Review 생성").disabled).toBe(false);
+  });
+
+  it("keeps Review creation locked across repeated same-Concept file-open", async () => {
+    const api = fakeApi();
+    let resolveCreate: ((review: PluginReview) => void) | undefined;
+    const delayedCreate = new Promise<PluginReview>((resolve) => {
+      resolveCreate = resolve;
+    });
+    vi.mocked(api.createReview).mockReturnValue(delayedCreate);
+    const { view, emitFileOpen } = createTestView({
+      api,
+      activeFile: "concepts/A.md",
+      activeConceptId: "concept:A",
+    });
+    await view.onOpen();
+    clickButton(view.containerEl, "Review");
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(1));
+    const reviewer = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="review-create-reviewer"]',
+    );
+    const comment = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-create-comment"]',
+    );
+    if (!reviewer || !comment) throw new Error("Review create fields not found");
+    reviewer.value = "operator-a";
+    comment.value = "single Review";
+    clickButton(view.containerEl, "Review 생성");
+    await vi.waitFor(() => expect(api.createReview).toHaveBeenCalledTimes(1));
+
+    emitFileOpen();
+    const duplicateReviewer = view.containerEl.querySelector<HTMLInputElement>(
+      '[data-testid="review-create-reviewer"]',
+    );
+    const duplicateComment = view.containerEl.querySelector<HTMLTextAreaElement>(
+      '[data-testid="review-create-comment"]',
+    );
+    if (!duplicateReviewer || !duplicateComment) {
+      throw new Error("Repeated Concept Review form not found");
+    }
+    duplicateReviewer.value = "operator-a-duplicate";
+    duplicateComment.value = "must not submit";
+    const duplicateSubmit = findButton(view.containerEl, "Review 생성");
+    expect(duplicateSubmit.disabled).toBe(true);
+    duplicateSubmit.click();
+    expect(api.createReview).toHaveBeenCalledTimes(1);
+
+    resolveCreate?.(pendingReview);
+    await delayedCreate;
+    await vi.waitFor(() => expect(api.listReviews).toHaveBeenCalledTimes(2));
+    expect(api.createReview).toHaveBeenCalledTimes(1);
+  });
+
   it("reloads a Review after a version conflict without resending the update", async () => {
     const api = fakeApi();
     vi.mocked(api.updateReview).mockRejectedValue(new ApiError(409, "conflict"));

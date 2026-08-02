@@ -265,8 +265,10 @@ export class YieldWikiView extends ItemView {
   private relatedError = "";
   private reviewCreateInFlight = false;
   private reviewCreateRequestToken = 0;
+  private reviewLoadRequestToken = 0;
   private activeFileEvent?: EventRef;
   private conceptGeneration = 0;
+  private activeConceptKey = "";
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -291,6 +293,7 @@ export class YieldWikiView extends ItemView {
 
   async onOpen(): Promise<void> {
     this.viewOpen = true;
+    this.activeConceptKey = this.currentConceptKey();
     if (!this.activeFileEvent) {
       this.activeFileEvent = this.yieldWikiPlugin.app.workspace.on(
         "file-open",
@@ -306,7 +309,10 @@ export class YieldWikiView extends ItemView {
     this.chatGeneration += 1;
     this.conceptGeneration += 1;
     this.reviewCreateRequestToken += 1;
+    this.reviewLoadRequestToken += 1;
     this.reviewCreateInFlight = false;
+    this.reviewsLoading = false;
+    this.activeConceptKey = "";
     const activeFileEvent = this.activeFileEvent;
     this.activeFileEvent = undefined;
     if (activeFileEvent) {
@@ -320,13 +326,19 @@ export class YieldWikiView extends ItemView {
   }
 
   private readonly handleActiveFileChange = (): void => {
-    this.conceptGeneration += 1;
-    this.reviewCreateRequestToken += 1;
-    this.reviewCreateInFlight = false;
-    this.related = undefined;
-    this.relatedLoading = false;
-    this.relatedError = "";
-    this.reviewError = "";
+    const nextConceptKey = this.currentConceptKey();
+    if (nextConceptKey !== this.activeConceptKey) {
+      this.activeConceptKey = nextConceptKey;
+      this.conceptGeneration += 1;
+      this.reviewCreateRequestToken += 1;
+      this.reviewLoadRequestToken += 1;
+      this.reviewCreateInFlight = false;
+      this.reviewsLoading = false;
+      this.related = undefined;
+      this.relatedLoading = false;
+      this.relatedError = "";
+      this.reviewError = "";
+    }
     this.render();
   };
 
@@ -1151,6 +1163,11 @@ export class YieldWikiView extends ItemView {
     return { id, path: file.path };
   }
 
+  private currentConceptKey(): string {
+    const concept = this.activeConcept();
+    return concept ? `${concept.id}\n${concept.path}` : "";
+  }
+
   private renderActiveConceptTools(panel: HTMLElement): void {
     const concept = this.activeConcept();
     const section = createElement("section", "yield-wiki-concept-tools");
@@ -1382,22 +1399,33 @@ export class YieldWikiView extends ItemView {
   private async loadReviews(
     messages: { success?: string; failurePrefix?: string } = {},
   ): Promise<boolean> {
+    const generation = this.conceptGeneration;
+    const requestToken = ++this.reviewLoadRequestToken;
+    const isCurrentRequest = () =>
+      this.viewOpen &&
+      generation === this.conceptGeneration &&
+      requestToken === this.reviewLoadRequestToken;
     this.reviewsLoading = true;
     this.reviewError = "";
     this.render();
     try {
-      this.reviews = await this.api.listReviews("pending");
+      const reviews = await this.api.listReviews("pending");
+      if (!isCurrentRequest()) return false;
+      this.reviews = reviews;
       this.reviewError = messages.success ?? "";
       return true;
     } catch (error) {
+      if (!isCurrentRequest()) return false;
       const detail = formattedError(error);
       this.reviewError = messages.failurePrefix
         ? `${messages.failurePrefix} · ${detail}`
         : detail;
       return false;
     } finally {
-      this.reviewsLoading = false;
-      this.render();
+      if (isCurrentRequest()) {
+        this.reviewsLoading = false;
+        this.render();
+      }
     }
   }
 
