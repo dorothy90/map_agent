@@ -37,8 +37,8 @@ _fh_model = get_llm(model="z-ai/glm-5.1")
 
 _PRODUCT_CODE_RE = re.compile(r"^[0-9][A-Za-z0-9]{2}$")
 _LOT_ID_RE = re.compile(r"^[A-Za-z0-9]{7}$")
-_SOURCE_CITATION_RE = re.compile(
-    r"(?<!\[)\[(FH[-:][A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*)\](?![\[(])"
+_SOURCE_DOC_ID_RE = re.compile(
+    r"FH[-:][A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*"
 )
 
 
@@ -62,7 +62,52 @@ def _product_filter_from_lotcd(value: str) -> str:
 
 
 def _extract_cited_doc_ids(answer: str) -> Set[str]:
-    return set(_SOURCE_CITATION_RE.findall(answer))
+    cited_ids: Set[str] = set()
+    cursor = 0
+
+    while True:
+        start = answer.find("[", cursor)
+        if start == -1:
+            break
+        end = answer.find("]", start + 1)
+        if end == -1:
+            break
+
+        backslash_count = 0
+        position = start - 1
+        while position >= 0 and answer[position] == "\\":
+            backslash_count += 1
+            position -= 1
+
+        token = answer[start + 1 : end]
+        suffix = end + 1
+        definition = suffix
+        while definition < len(answer) and answer[definition] in " \t":
+            definition += 1
+
+        is_nested_bracket = (
+            (start > 0 and answer[start - 1] == "[")
+            or (start + 1 < len(answer) and answer[start + 1] == "[")
+            or (end + 1 < len(answer) and answer[end + 1] == "]")
+        )
+        is_markdown_link = suffix < len(answer) and answer[suffix] in "(["
+        is_reference_definition = (
+            definition < len(answer) and answer[definition] == ":"
+        )
+
+        if (
+            backslash_count % 2 == 0
+            and not (start > 0 and answer[start - 1] == "!")
+            and not is_nested_bracket
+            and not is_markdown_link
+            and not is_reference_definition
+            and _SOURCE_DOC_ID_RE.fullmatch(token)
+        ):
+            cited_ids.add(token)
+
+        cursor = end + 1
+
+    return cited_ids
 
 
 def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) -> str:
