@@ -59,7 +59,7 @@ def _product_filter_from_lotcd(value: str) -> str:
 
 
 def _extract_cited_doc_ids(answer: str) -> Set[str]:
-    return set(re.findall(r"\[FH-([^\]]+)\]", answer))
+    return set(re.findall(r"\[([^\[\]\r\n]+)\]", answer))
 
 
 def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) -> str:
@@ -70,7 +70,7 @@ def _format_cited_results(results: List[Dict[str, Any]], cited_ids: Set[str]) ->
         [r for r in results if r.get("doc_id") in cited_ids] if cited_ids else results
     )
     if not display:
-        display = results
+        return ""
 
     lines = [f"### 🔍 출처 (총 {len(display)}건)\n"]
     for i, r in enumerate(display, start=1):

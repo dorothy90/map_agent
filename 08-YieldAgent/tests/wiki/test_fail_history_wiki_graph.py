@@ -534,3 +534,119 @@ def test_synthesis_keeps_wiki_body_when_graph_evidence_coexists(monkeypatch):
     assert "[과거 누적 합성 본문 (confidence=0.73)]" in human_evidence
     assert "Existing Wiki synthesis evidence" in human_evidence
     assert "UNTRUSTED GRAPH EVIDENCE" in human_evidence
+
+
+def test_bracket_citations_preserve_exact_canonical_source_ids():
+    answer = "근거 [FH-1] [FH-9003-EXTRA] [FH:GRAPH]"
+
+    assert fail_history_agent._extract_cited_doc_ids(answer) == {
+        "FH-1",
+        "FH-9003-EXTRA",
+        "FH:GRAPH",
+    }
+
+
+def test_unresolved_explicit_citation_does_not_broaden_to_all_results():
+    results = [
+        {"doc_id": "FH-1", "cause": "relevant cause"},
+        {"doc_id": "FH-2", "cause": "unrelated cause"},
+    ]
+
+    cited = fail_history_agent._extract_cited_doc_ids("근거 [FH-404]")
+
+    assert cited == {"FH-404"}
+    assert fail_history_agent._format_cited_results(results, cited) == ""
+
+
+def test_main_agent_formats_only_the_exact_cited_result(monkeypatch):
+    raw = {
+        "retrieval_mode": "baseline",
+        "results": [
+            {
+                "doc_id": "FH-1",
+                "cause": "cited cause",
+                "action": "cited action",
+            },
+            {
+                "doc_id": "FH-2",
+                "cause": "unrelated cause",
+                "action": "unrelated action",
+            },
+        ],
+    }
+    monkeypatch.setattr(fail_history_agent, "do_search", lambda **kwargs: raw)
+    monkeypatch.setattr(fail_history_agent, "_lf_callbacks", lambda: [])
+
+    class Model:
+        def invoke(self, messages, config):
+            return SimpleNamespace(content="확인된 원인입니다. [FH-1]")
+
+    monkeypatch.setattr(fail_history_agent, "_fh_model", Model())
+
+    update = fail_history_agent.fail_history_agent_node(
+        {
+            "lotcd": "4SS",
+            "messages": [HumanMessage(content="원인은?")],
+            "current_task_id": "task:main-citation",
+        },
+        {},
+    )
+
+    content = update["messages"][0].content
+    assert "출처 (총 1건)" in content
+    assert "cited cause" in content
+    assert "unrelated cause" not in content
+
+
+def test_fanout_agent_formats_only_each_exact_cited_result(monkeypatch):
+    def search(*, fail_type, **kwargs):
+        return {
+            "retrieval_mode": "baseline",
+            "results": [
+                {
+                    "doc_id": f"FH-{fail_type}-1",
+                    "cause": f"{fail_type} cited cause",
+                    "action": "cited action",
+                },
+                {
+                    "doc_id": f"FH-{fail_type}-2",
+                    "cause": f"{fail_type} unrelated cause",
+                    "action": "unrelated action",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(fail_history_agent, "do_search", search)
+    monkeypatch.setattr(fail_history_agent, "_lf_callbacks", lambda: [])
+
+    class Model:
+        def __init__(self):
+            self.answers = iter(
+                ("EASY 근거 [FH-EASY-1]", "IOFF 근거 [FH-IOFF-1]")
+            )
+
+        def invoke(self, messages, config):
+            return SimpleNamespace(content=next(self.answers))
+
+    monkeypatch.setattr(fail_history_agent, "_fh_model", Model())
+
+    update = fail_history_agent.fail_history_agent_node(
+        {
+            "lotcd": "4SS",
+            "cause_oper": "PRE METAL CLN",
+            "fail_groups": [
+                {"lotcd": "4SS", "parameter": "EASY"},
+                {"lotcd": "4SS", "parameter": "IOFF"},
+            ],
+            "messages": [HumanMessage(content="각 불량의 원인은?")],
+            "current_task_id": "task:fanout-citation",
+        },
+        {},
+    )
+
+    content = update["messages"][0].content
+    assert content.count("출처 (총 1건)") == 2
+    assert "EASY cited cause" in content
+    assert "IOFF cited cause" in content
+    assert "EASY unrelated cause" not in content
+    assert "IOFF unrelated cause" not in content
