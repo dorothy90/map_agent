@@ -41,7 +41,10 @@ from fail_history_tools import _get_opensearch_client  # noqa: E402
 import wiki_store  # noqa: E402
 from wiki_config import resolve_wiki_paths  # noqa: E402
 from wiki_manifest import load_manifest, record_success, save_manifest  # noqa: E402
-from wiki_summarizer import synthesize_concept_from_docs  # noqa: E402
+from wiki_summarizer import (  # noqa: E402
+    restrict_concept_synthesis_sources,
+    synthesize_concept_from_docs,
+)
 from wiki_sync import build_triple_snapshot, make_triple_key, normalize_fail_type  # noqa: E402
 
 _OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "fail-history")
@@ -176,6 +179,7 @@ def process_triple(t: dict[str, Any], max_docs: int) -> tuple[str, str]:
         return ("synth_fail", f"  ✗ synth: {e}")
     if result is None:
         return ("synth_none", "  ✗ synth None (LLM 실패 또는 응답 빈 채)")
+    result = restrict_concept_synthesis_sources(result, snapshot.source_doc_ids)
     try:
         stored = wiki_store.upsert_concept(
             filters={

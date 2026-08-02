@@ -87,9 +87,28 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
         return SimpleNamespace(
             body_markdown="current synthesis",
             confidence=0.9,
-            citations=[EpisodeRef(**citations[0])],
+            citations=[
+                EpisodeRef(**citations[0]),
+                EpisodeRef(episode_id="episode:forged", doc_id="FH-FORGED"),
+            ],
             entities=[EntityCandidate(**entity) for entity in entities],
-            relations=[RelationCandidate(**relation) for relation in relations],
+            relations=[
+                RelationCandidate(**relations[0]),
+                RelationCandidate(
+                    subject="Queue time exceeded",
+                    predicate="contributes_to",
+                    object="Natural oxidation",
+                    confidence=0.72,
+                    source_doc_ids=["FH-1", "FH-FORGED"],
+                ),
+                RelationCandidate(
+                    subject="Queue time exceeded",
+                    predicate="associated_with",
+                    object="Natural oxidation",
+                    confidence=0.62,
+                    source_doc_ids=["FH-FORGED"],
+                ),
+            ],
         )
 
     monkeypatch.setattr(wiki_summarizer, "synthesize_concept", synthesize_concept)
@@ -144,6 +163,9 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
 
     concept_post = frontmatter.load(next(paths.concepts.glob("*.md")))
     assert concept_post.metadata["entities"] == entities
+    assert [citation["doc_id"] for citation in concept_post.metadata["citations"]] == [
+        "FH-1"
+    ]
     assert concept_post.metadata["relations"] == relations
     assert concept_post.metadata["body_versions"][-1]["entities"] == entities
     assert concept_post.metadata["body_versions"][-1]["relations"] == relations
@@ -165,5 +187,6 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
     assert [relation.relation_id for relation in graph_context.relations] == [
         relation_post.metadata["id"]
     ]
+    assert not (paths.sources / "FH-FORGED.md").exists()
     assert synthesis_contexts == [True]
     assert persist_contexts == [True, True]

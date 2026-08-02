@@ -240,6 +240,69 @@ def test_new_concept_records_sync_metadata_manifest_and_materializes_once(store)
     assert next(iter(jobs.jobs.values()))["status"] == "succeeded"
 
 
+def test_sync_restricts_provider_sources_to_actual_snapshot_before_persistence(store):
+    snapshot = _snapshot(_doc("FH-REAL"))
+    snapshots = {snapshot.key.canonical: snapshot}
+    synthesis = SimpleNamespace(
+        body_markdown="body",
+        confidence=0.8,
+        citations=[
+            SimpleNamespace(
+                model_dump=lambda: {"episode_id": "", "doc_id": "FH-REAL"}
+            ),
+            SimpleNamespace(
+                model_dump=lambda: {"episode_id": "", "doc_id": "FH-FORGED"}
+            ),
+        ],
+        entities=[
+            EntityCandidate(canonical_name="Queue", entity_type="condition"),
+            EntityCandidate(canonical_name="Oxide", entity_type="mechanism"),
+        ],
+        relations=[
+            RelationCandidate(
+                subject="Queue",
+                predicate="causes",
+                object="Oxide",
+                confidence=0.8,
+                source_doc_ids=["FH-REAL"],
+            ),
+            RelationCandidate(
+                subject="Queue",
+                predicate="contributes_to",
+                object="Oxide",
+                confidence=0.7,
+                source_doc_ids=["FH-REAL", "FH-FORGED"],
+            ),
+            RelationCandidate(
+                subject="Queue",
+                predicate="associated_with",
+                object="Oxide",
+                confidence=0.6,
+                source_doc_ids=["FH-FORGED"],
+            ),
+        ],
+    )
+    service, _ = _service(
+        store,
+        snapshots,
+        synthesize=lambda concept_id, docs: synthesis,
+    )
+
+    result = service.apply(limit=10)
+
+    assert result.status == "completed"
+    metadata = store.read_node("concept:4SS|PRE METAL CLN|EASY")["frontmatter"]
+    assert [citation["doc_id"] for citation in metadata["citations"]] == [
+        "FH-REAL"
+    ]
+    assert [relation["predicate"] for relation in metadata["relations"]] == [
+        "causes"
+    ]
+    assert metadata["relations"][0]["source_doc_ids"] == ["FH-REAL"]
+    assert metadata["source_doc_ids"] == ["FH-REAL"]
+    assert metadata["source_fingerprint"] == snapshot.source_fingerprint
+
+
 def test_matching_concept_fingerprint_repairs_manifest_without_llm(store):
     snapshot = _snapshot()
     store.upsert_concept(

@@ -5,6 +5,7 @@ import pytest
 import bootstrap_wiki_warmup as bootstrap
 from wiki_graph_models import EntityCandidate, RelationCandidate
 from wiki_manifest import load_manifest
+from wiki_summarizer import EpisodeRef
 
 
 pytestmark = pytest.mark.no_server
@@ -109,7 +110,10 @@ def test_successful_bootstrap_records_shared_fingerprint_metadata_and_manifest(
         lambda *args: SimpleNamespace(
             body_markdown="body",
             confidence=0.8,
-            citations=[],
+            citations=[
+                EpisodeRef(episode_id="", doc_id="FH-1"),
+                EpisodeRef(episode_id="", doc_id="FH-FORGED"),
+            ],
             entities=[
                 EntityCandidate(
                     canonical_name="Queue time 초과",
@@ -123,7 +127,21 @@ def test_successful_bootstrap_records_shared_fingerprint_metadata_and_manifest(
                     object="자연 산화",
                     confidence=0.82,
                     source_doc_ids=["FH-1"],
-                )
+                ),
+                RelationCandidate(
+                    subject="Queue time 초과",
+                    predicate="contributes_to",
+                    object="자연 산화",
+                    confidence=0.72,
+                    source_doc_ids=["FH-1", "FH-FORGED"],
+                ),
+                RelationCandidate(
+                    subject="Queue time 초과",
+                    predicate="associated_with",
+                    object="자연 산화",
+                    confidence=0.62,
+                    source_doc_ids=["FH-FORGED"],
+                ),
             ],
         ),
     )
@@ -147,6 +165,9 @@ def test_successful_bootstrap_records_shared_fingerprint_metadata_and_manifest(
     assert metadata["evidence_count"] == 1
     assert metadata["evidence_scope"] == "single_source"
     assert metadata["sync_job_id"].startswith("bootstrap:sha256:")
+    assert [citation["doc_id"] for citation in captured[0]["citations"]] == [
+        "FH-1"
+    ]
     assert captured[0]["entities"] == [
         {"canonical_name": "Queue time 초과", "entity_type": "process_condition"}
     ]

@@ -218,7 +218,10 @@ class WikiQueue:
 
     async def _handle_concept_synthesis(self, item: dict[str, Any]) -> None:
         """plan v3 §A: evidence_diversity 통과한 concept을 LLM으로 메타 합성."""
-        from wiki_summarizer import synthesize_concept
+        from wiki_summarizer import (
+            restrict_concept_synthesis_sources,
+            synthesize_concept,
+        )
         from wiki_sync import build_triple_snapshot, make_triple_key
 
         concept_id = item["concept_id"]
@@ -250,6 +253,9 @@ class WikiQueue:
                 str(filters.get("cause_oper") or ""),
             ),
             [{"doc_id": doc_id} for doc_id in source_doc_ids],
+        )
+        result = restrict_concept_synthesis_sources(
+            result, snapshot.source_doc_ids
         )
         synth_payload = {
             "body_markdown": result.body_markdown,

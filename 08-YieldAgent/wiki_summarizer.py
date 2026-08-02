@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterable
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -72,6 +73,81 @@ class ConceptSynthesis(BaseModel):
         description="입력 근거에 명시된 관계만. 각 관계는 인용된 doc_id를 source_doc_ids에 포함",
     )
     notes: str = Field(default="", description="합성 시 주의사항/한계")
+
+
+def canonical_source_doc_ids(values: Iterable[Any]) -> list[str]:
+    """Return non-empty Source IDs in stable, de-duplicated canonical form."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        doc_id = str(value or "").strip()
+        if doc_id and doc_id not in seen:
+            seen.add(doc_id)
+            result.append(doc_id)
+    return result
+
+
+def _model_data(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    dump = getattr(value, "model_dump", None)
+    if dump is not None:
+        try:
+            return dict(dump(mode="json"))
+        except TypeError:
+            return dict(dump())
+    return dict(value)
+
+
+def restrict_concept_synthesis_sources(
+    synthesis: Any,
+    allowed_source_doc_ids: Iterable[Any],
+) -> Any:
+    """Remove provider Source claims not present in the actual input set.
+
+    Relations are strict: any out-of-set Source rejects the complete Relation
+    instead of silently weakening its provenance by trimming individual IDs.
+    """
+    allowed = set(canonical_source_doc_ids(allowed_source_doc_ids))
+    provider_citations = list(getattr(synthesis, "citations", []) or [])
+    provider_relations = list(getattr(synthesis, "relations", []) or [])
+    citations: list[EpisodeRef] = []
+    seen_citations: set[str] = set()
+    for value in provider_citations:
+        try:
+            citation = EpisodeRef.model_validate(_model_data(value))
+        except (TypeError, ValueError):
+            continue
+        doc_id = str(citation.doc_id or "").strip()
+        if doc_id not in allowed or doc_id in seen_citations:
+            continue
+        seen_citations.add(doc_id)
+        citations.append(citation.model_copy(update={"doc_id": doc_id}))
+
+    relations: list[RelationCandidate] = []
+    for value in provider_relations:
+        try:
+            relation = RelationCandidate.model_validate(_model_data(value))
+        except (TypeError, ValueError):
+            continue
+        source_doc_ids = canonical_source_doc_ids(relation.source_doc_ids)
+        if not source_doc_ids or any(doc_id not in allowed for doc_id in source_doc_ids):
+            continue
+        relations.append(
+            relation.model_copy(update={"source_doc_ids": source_doc_ids})
+        )
+
+    synthesis.citations = citations
+    synthesis.relations = relations
+    dropped_citations = len(provider_citations) - len(citations)
+    dropped_relations = len(provider_relations) - len(relations)
+    if dropped_citations or dropped_relations:
+        logger.warning(
+            "[wiki_source_grounding] dropped citations=%d relations=%d",
+            dropped_citations,
+            dropped_relations,
+        )
+    return synthesis
 
 
 _SYSTEM_PROMPT = """당신은 반도체 불량이력 검색 결과를 wiki episode 노드로 응축하는 어시스턴트입니다.
@@ -305,7 +381,14 @@ def synthesize_concept(
             for ep in episodes[:10]
         ]
     out.citations = [_enrich(c) for c in out.citations]
-    return out
+    return restrict_concept_synthesis_sources(
+        out,
+        (
+            doc_id
+            for episode in episodes
+            for doc_id in ((episode.get("frontmatter", {}) or {}).get("doc_ids") or [])
+        ),
+    )
 
 
 # ── Day 5: super_concept — cross-concept 추상화 (참고용 한정) ─────
@@ -543,4 +626,7 @@ def synthesize_concept_from_docs(
             for d in raw_docs[:10] if d.get("doc_id")
         ]
     out.citations = [_enrich(c) for c in out.citations]
-    return out
+    return restrict_concept_synthesis_sources(
+        out,
+        (document.get("doc_id") for document in raw_docs),
+    )

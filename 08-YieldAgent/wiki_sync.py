@@ -617,6 +617,11 @@ class WikiSyncService:
         synthesis = self.synthesize(concept_id, list(snapshot.documents))
         if synthesis is None:
             raise RuntimeError("Wiki synthesis returned no result")
+        from wiki_summarizer import restrict_concept_synthesis_sources
+
+        synthesis = restrict_concept_synthesis_sources(
+            synthesis, snapshot.source_doc_ids
+        )
         citations = [
             citation.model_dump() if hasattr(citation, "model_dump") else dict(citation)
             for citation in synthesis.citations
