@@ -834,3 +834,92 @@ def test_store_write_rejects_directory_swap_without_outside_write(
 
     assert sentinel.read_text(encoding="utf-8") == "retained\n"
     assert not any(outside.glob("4SS*.md"))
+
+
+def test_replace_rejects_same_directory_swap_after_snapshot(tmp_path, monkeypatch):
+    import wiki_safe_mutation
+    from wiki_safe_mutation import GeneratedOwner, PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target = paths.products / "TARGET.md"
+    owner = GeneratedOwner(
+        "yield-wiki-materializer", "product", "product:TARGET"
+    )
+    target.write_text(
+        frontmatter.dumps(
+            frontmatter.Post(
+                content="generated original",
+                id=owner.node_id,
+                type=owner.node_type,
+                generated_by=owner.generated_by,
+                product="TARGET",
+            )
+        ),
+        encoding="utf-8",
+    )
+    parked = paths.products / "parked-original.md"
+    operator_bytes = b"operator-owned replacement\n"
+
+    def swap(operation, path):
+        if operation != "replace" or path != target or parked.exists():
+            return
+        target.rename(parked)
+        target.write_bytes(operator_bytes)
+
+    monkeypatch.setattr(wiki_safe_mutation, "_after_snapshot", swap, raising=False)
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(RuntimeError, match="changed before replacement"):
+            mutation.replace_text(
+                target,
+                "new generated content\n",
+                expected=expected,
+                owner=owner,
+            )
+
+    assert target.read_bytes() == operator_bytes
+    assert parked.exists()
+
+
+def test_delete_rejects_same_directory_swap_after_snapshot(tmp_path, monkeypatch):
+    import wiki_safe_mutation
+    from wiki_safe_mutation import GeneratedOwner, PinnedWikiMutation
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    target = paths.products / "TARGET.md"
+    owner = GeneratedOwner(
+        "yield-wiki-materializer", "product", "product:TARGET"
+    )
+    target.write_text(
+        frontmatter.dumps(
+            frontmatter.Post(
+                content="generated original",
+                id=owner.node_id,
+                type=owner.node_type,
+                generated_by=owner.generated_by,
+                product="TARGET",
+            )
+        ),
+        encoding="utf-8",
+    )
+    parked = paths.products / "parked-original.md"
+    operator_bytes = b"operator-owned replacement\n"
+
+    def swap(operation, path):
+        if operation != "delete" or path != target or parked.exists():
+            return
+        target.rename(parked)
+        target.write_bytes(operator_bytes)
+
+    monkeypatch.setattr(wiki_safe_mutation, "_after_snapshot", swap, raising=False)
+
+    with PinnedWikiMutation(paths) as mutation:
+        expected = mutation.snapshot(target)
+        with pytest.raises(RuntimeError, match="changed before deletion"):
+            mutation.delete(target, expected=expected, owner=owner)
+
+    assert target.read_bytes() == operator_bytes
+    assert parked.exists()

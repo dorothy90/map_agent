@@ -39,6 +39,7 @@ def _noop_before_commit(operation: str, path: Path) -> None:
 
 
 _before_commit: Callable[[str, Path], None] = _noop_before_commit
+_after_snapshot: Callable[[str, Path], None] = _noop_before_commit
 
 
 def _identity(info: os.stat_result) -> tuple[int, int]:
@@ -231,6 +232,8 @@ class PinnedWikiMutation:
     ) -> None:
         directory_fd, name = self._directory(path)
         temporary_name = f".{name}.{uuid.uuid4().hex}.tmp"
+        quarantine_name: str | None = None
+        quarantine_snapshot: FileSnapshot | None = None
         descriptor = -1
         try:
             descriptor = os.open(
@@ -258,13 +261,55 @@ class PinnedWikiMutation:
                     f"Wiki file changed before replacement: {path}"
                 )
             self._validate_owner(path, current, owner)
+            _after_snapshot("replace", path)
             directory_fd, name = self._directory(path)
-            os.replace(
-                temporary_name,
-                name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-            )
+            if expected.exists:
+                quarantine_name, quarantine_snapshot = self._quarantine(
+                    path,
+                    directory_fd=directory_fd,
+                    name=name,
+                    expected=expected,
+                    owner=owner,
+                    operation="replacement",
+                )
+            try:
+                os.link(
+                    temporary_name,
+                    name,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError as exc:
+                if quarantine_name is not None:
+                    self._restore_quarantine(
+                        path,
+                        directory_fd=directory_fd,
+                        name=name,
+                        quarantine_name=quarantine_name,
+                    )
+                    quarantine_name = None
+                raise WikiConfigurationError(
+                    f"Wiki file appeared before replacement: {path}"
+                ) from exc
+            except OSError:
+                if quarantine_name is not None:
+                    self._restore_quarantine(
+                        path,
+                        directory_fd=directory_fd,
+                        name=name,
+                        quarantine_name=quarantine_name,
+                    )
+                    quarantine_name = None
+                raise
+            if quarantine_name is not None and quarantine_snapshot is not None:
+                self._remove_quarantine(
+                    path,
+                    directory_fd=directory_fd,
+                    quarantine_name=quarantine_name,
+                    expected=quarantine_snapshot,
+                )
+                quarantine_name = None
             self._directory(path)
         finally:
             if descriptor >= 0:
@@ -274,6 +319,101 @@ class PinnedWikiMutation:
             except OSError as exc:
                 if exc.errno != errno.ENOENT:
                     raise
+
+    def _quarantine(
+        self,
+        path: Path,
+        *,
+        directory_fd: int,
+        name: str,
+        expected: FileSnapshot,
+        owner: GeneratedOwner | None,
+        operation: str,
+    ) -> tuple[str, FileSnapshot]:
+        quarantine_name = f".{name}.{uuid.uuid4().hex}.quarantine"
+        try:
+            os.rename(
+                name,
+                quarantine_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+        except OSError as exc:
+            raise WikiConfigurationError(
+                f"Wiki file changed before {operation}: {path}"
+            ) from exc
+        quarantine_path = path.with_name(quarantine_name)
+        try:
+            moved = self.snapshot(quarantine_path)
+        except Exception as exc:
+            self._restore_quarantine(
+                path,
+                directory_fd=directory_fd,
+                name=name,
+                quarantine_name=quarantine_name,
+            )
+            raise WikiConfigurationError(
+                f"Wiki file changed before {operation}: {path}"
+            ) from exc
+        if moved != expected:
+            self._restore_quarantine(
+                path,
+                directory_fd=directory_fd,
+                name=name,
+                quarantine_name=quarantine_name,
+            )
+            raise WikiConfigurationError(
+                f"Wiki file changed before {operation}: {path}"
+            )
+        try:
+            self._validate_owner(path, moved, owner)
+        except Exception:
+            self._restore_quarantine(
+                path,
+                directory_fd=directory_fd,
+                name=name,
+                quarantine_name=quarantine_name,
+            )
+            raise
+        return quarantine_name, moved
+
+    def _restore_quarantine(
+        self,
+        path: Path,
+        *,
+        directory_fd: int,
+        name: str,
+        quarantine_name: str,
+    ) -> None:
+        try:
+            os.link(
+                quarantine_name,
+                name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError as exc:
+            raise WikiConfigurationError(
+                f"Wiki file changed while restoring quarantine: {path}; "
+                f"preserved as {quarantine_name}"
+            ) from exc
+        os.unlink(quarantine_name, dir_fd=directory_fd)
+
+    def _remove_quarantine(
+        self,
+        path: Path,
+        *,
+        directory_fd: int,
+        quarantine_name: str,
+        expected: FileSnapshot,
+    ) -> None:
+        quarantine_path = path.with_name(quarantine_name)
+        if self.snapshot(quarantine_path) != expected:
+            raise WikiConfigurationError(
+                f"Wiki quarantine changed before cleanup: {quarantine_path}"
+            )
+        os.unlink(quarantine_name, dir_fd=directory_fd)
 
     def delete(
         self,
@@ -287,6 +427,20 @@ class PinnedWikiMutation:
         if current != expected:
             raise WikiConfigurationError(f"Wiki file changed before deletion: {path}")
         self._validate_owner(path, current, owner)
+        _after_snapshot("delete", path)
         directory_fd, name = self._directory(path)
-        os.unlink(name, dir_fd=directory_fd)
+        quarantine_name, quarantine_snapshot = self._quarantine(
+            path,
+            directory_fd=directory_fd,
+            name=name,
+            expected=expected,
+            owner=owner,
+            operation="deletion",
+        )
+        self._remove_quarantine(
+            path,
+            directory_fd=directory_fd,
+            quarantine_name=quarantine_name,
+            expected=quarantine_snapshot,
+        )
         self._directory(path)

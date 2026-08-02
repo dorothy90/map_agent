@@ -255,6 +255,41 @@ def test_materializer_links_do_not_look_like_a_manual_concept_edit(store):
     assert store.read_node("concept:4SS|PRE METAL CLN|EASY")["body"] == (
         "second generated body"
     )
+
+
+def test_store_update_rejects_edit_between_read_and_write(store, monkeypatch):
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+    store.upsert_concept(
+        filters=filters,
+        synthesized_body="generated baseline",
+        materialize=False,
+    )
+    concept_path = next(store._PATHS.concepts.glob("*.md"))
+    original_write = store._write
+    operator_versions = []
+
+    def edit_then_write(path, post, **kwargs):
+        if path == concept_path and not operator_versions:
+            current = frontmatter.load(path)
+            current.content = "operator edit during update"
+            path.write_text(frontmatter.dumps(current), encoding="utf-8")
+            operator_versions.append(path.read_bytes())
+        return original_write(path, post, **kwargs)
+
+    monkeypatch.setattr(store, "_write", edit_then_write)
+
+    with pytest.raises(RuntimeError, match="changed before replacement"):
+        store.upsert_concept(
+            filters=filters,
+            links=["episode:new"],
+            materialize=False,
+        )
+
+    assert concept_path.read_bytes() == operator_versions[0]
 def _service(store, snapshots, jobs=None, synthesize=None, materialize=None, fetched=None):
     jobs = jobs or InMemoryJobStore()
     synthesize = synthesize or (lambda concept_id, docs: _synthesis())

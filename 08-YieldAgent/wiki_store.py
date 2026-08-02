@@ -15,7 +15,7 @@ from typing import Any
 
 import frontmatter
 from wiki_config import initialize_wiki_vault, resolve_wiki_paths
-from wiki_safe_mutation import PinnedWikiMutation
+from wiki_safe_mutation import FileSnapshot, PinnedWikiMutation
 
 logger = logging.getLogger("yield_agent.wiki_store")
 
@@ -110,7 +110,8 @@ def _create_concept_edit_conflict_review(
     )
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     path = _PATHS.reviews / f"concept_edit_conflict_{digest}.md"
-    if not path.exists():
+    existing, expected = _read_with_snapshot(path)
+    if existing is None:
         metadata = {
             "id": f"review:concept-edit-conflict:{digest}",
             "type": "review",
@@ -130,7 +131,7 @@ def _create_concept_edit_conflict_review(
             "운영자 편집이 감지되어 자동 본문 교체를 보류했습니다. "
             "검토 후 보존 또는 재합성을 결정하세요.\n"
         )
-        _write(path, frontmatter.Post(content=body, **metadata))
+        _write(path, frontmatter.Post(content=body, **metadata), expected=expected)
         _log("concept_edit_conflict", concept_id)
 
 
@@ -155,10 +156,25 @@ def _read(path: Path) -> frontmatter.Post | None:
     return frontmatter.load(path)
 
 
-def _write(path: Path, post: frontmatter.Post) -> None:
-    """Write relative to pinned Vault descriptors with a final identity check."""
+def _read_with_snapshot(path: Path) -> tuple[frontmatter.Post | None, FileSnapshot]:
+    """Read bytes and identity from the same descriptor-backed snapshot."""
     with PinnedWikiMutation(_PATHS) as mutation:
-        expected = mutation.snapshot(path)
+        snapshot = mutation.snapshot(path)
+    if not snapshot.exists:
+        return None, snapshot
+    return frontmatter.loads(snapshot.content.decode("utf-8")), snapshot
+
+
+def _write(
+    path: Path,
+    post: frontmatter.Post,
+    *,
+    expected: FileSnapshot | None = None,
+) -> None:
+    """Write only when the descriptor-backed source snapshot is still current."""
+    with PinnedWikiMutation(_PATHS) as mutation:
+        if expected is None:
+            expected = mutation.snapshot(path)
         mutation.replace_text(
             path,
             frontmatter.dumps(post),
@@ -236,14 +252,18 @@ def upsert_episode(payload: dict) -> tuple[str, str]:
     _ensure_dirs()
     eid = _episode_key(payload["query"], payload.get("filters", {}), payload.get("doc_ids", []))
     path = _EPISODES / f"{eid}.md"
-    if path.exists():
+    existing, expected = _read_with_snapshot(path)
+    if existing is not None:
         # Privacy provenance is monotonic even though episode content is immutable.
         if bool(payload.get("private", False)):
-            existing = _read(path)
-            if existing is not None and not bool(existing.metadata.get("private", False)):
+            if not bool(existing.metadata.get("private", False)):
                 metadata = dict(existing.metadata)
                 metadata["private"] = True
-                _write(path, frontmatter.Post(content=existing.content or "", **metadata))
+                _write(
+                    path,
+                    frontmatter.Post(content=existing.content or "", **metadata),
+                    expected=expected,
+                )
         _log("episode_skip", eid)
         return eid, "skipped"
     now = _now_iso()
@@ -268,7 +288,7 @@ def upsert_episode(payload: dict) -> tuple[str, str]:
         "citations": list(payload.get("citations", []) or []),
     }
     post = frontmatter.Post(content=payload.get("body", ""), **fm)
-    _write(path, post)
+    _write(path, post, expected=expected)
     _log("episode_create", eid, hits=len(payload.get("doc_ids", []) or []))
     return eid, "created"
 
@@ -312,7 +332,7 @@ def upsert_concept(
     _ensure_dirs()
     cid = _concept_key(filters)
     path = _CONCEPTS / f"{_safe_filename(cid)}.md"
-    existing = _read(path)
+    existing, expected = _read_with_snapshot(path)
     now = _now_iso()
 
     if existing is None:
@@ -358,7 +378,7 @@ def upsert_concept(
             fm["generated_body_sha256"] = _generated_body_sha256(synthesized_body)
             body = synthesized_body
         post = frontmatter.Post(content=body, **fm)
-        _write(path, post)
+        _write(path, post, expected=expected)
         _log("concept_create", cid)
         if materialize:
             materialize_obsidian_wiki()
@@ -434,7 +454,11 @@ def upsert_concept(
         md["generated_body_sha256"] = _generated_body_sha256(synthesized_body)
         body_content = synthesized_body
 
-    _write(path, frontmatter.Post(content=body_content, **md))
+    _write(
+        path,
+        frontmatter.Post(content=body_content, **md),
+        expected=expected,
+    )
     _log("concept_update", cid)
     if materialize:
         materialize_obsidian_wiki()
@@ -463,7 +487,7 @@ def mark_concept_stale(
     _ensure_dirs()
     cid = _concept_key(filters)
     path = _CONCEPTS / f"{_safe_filename(cid)}.md"
-    post = _read(path)
+    post, expected = _read_with_snapshot(path)
     if post is None:
         return cid, False
     missing = sorted({str(value) for value in missing_doc_ids if value})
@@ -477,7 +501,11 @@ def mark_concept_stale(
     metadata["missing_source_doc_ids"] = missing
     metadata["stale_detected_at"] = detected_at
     metadata["updated"] = detected_at
-    _write(path, frontmatter.Post(content=post.content or "", **metadata))
+    _write(
+        path,
+        frontmatter.Post(content=post.content or "", **metadata),
+        expected=expected,
+    )
     _log("concept_stale", cid, hits=len(missing))
     return cid, True
 
@@ -498,7 +526,8 @@ def create_source_removal_review(
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     review_id = f"review:source-removal:{digest}"
     path = _PATHS.reviews / f"source_removal_{digest}.md"
-    if path.exists():
+    existing, expected = _read_with_snapshot(path)
+    if existing is not None:
         return review_id, False
     metadata = {
         "id": review_id,
@@ -518,7 +547,11 @@ def create_source_removal_review(
         "근거 문서가 제거되어 자동 재합성을 보류했습니다. "
         "운영자 검토 후 exact bootstrap 복구 여부를 결정하세요.\n"
     )
-    _write(path, frontmatter.Post(content=body, **metadata))
+    _write(
+        path,
+        frontmatter.Post(content=body, **metadata),
+        expected=expected,
+    )
     _log("source_removal_review", review_id, hits=len(missing))
     return review_id, True
 
@@ -533,16 +566,21 @@ def update_concept_evidence(concept_id: str, evidence: dict[str, Any]) -> bool:
     합성 발동 여부 무관하게 score/unique_doc_ids/last_evidence_check 저장.
     "왜 합성 안 됐는지"를 vault 파일만 보고도 파악 가능.
     """
+    _ensure_dirs()
     cid_key = concept_id.replace("concept:", "")
     cpath = _CONCEPTS / f"{_safe_filename(cid_key)}.md"
-    post = _read(cpath)
+    post, expected = _read_with_snapshot(cpath)
     if post is None:
         return False
     md = dict(post.metadata)
     md["evidence_diversity_score"] = float(evidence.get("score", 0.0))
     md["unique_doc_ids"] = int(evidence.get("unique_doc_ids", 0))
     md["last_evidence_check"] = _now_iso()
-    _write(cpath, frontmatter.Post(content=post.content or "", **md))
+    _write(
+        cpath,
+        frontmatter.Post(content=post.content or "", **md),
+        expected=expected,
+    )
     return True
 
 
@@ -668,7 +706,8 @@ def upsert_alias(canonical: str, variant: str) -> list[tuple[str, str]]:
     for c, v in ((canonical, variant), (variant, canonical)):
         aid = _alias_key(c, v)
         path = _ALIASES / f"{_safe_filename(aid)}.md"
-        if path.exists():
+        existing, expected = _read_with_snapshot(path)
+        if existing is not None:
             results.append((aid, "skipped"))
             continue
         now = _now_iso()
@@ -686,7 +725,7 @@ def upsert_alias(canonical: str, variant: str) -> list[tuple[str, str]]:
             "citations": [],
         }
         post = frontmatter.Post(content="", **fm)
-        _write(path, post)
+        _write(path, post, expected=expected)
         _log("alias_create", aid)
         results.append((aid, "created"))
     return results
@@ -812,7 +851,7 @@ def upsert_super_concept(
     super_id = f"super:{sid_key}"
     path = _SUPER_CONCEPTS / f"{_safe_filename(sid_key)}.md"
     now = _now_iso()
-    existing = _read(path)
+    existing, expected = _read_with_snapshot(path)
     if existing is not None:
         md = dict(existing.metadata)
     else:
@@ -832,7 +871,7 @@ def upsert_super_concept(
     md["version"] = int(md.get("version", 0)) + 1
     md["status"] = "reference_only"  # 항상 강제
     post = frontmatter.Post(content=synthesized_body, **md)
-    _write(path, post)
+    _write(path, post, expected=expected)
     _log("super_upsert", super_id, hits=len(source_concept_ids))
     if materialize:
         materialize_obsidian_wiki()
