@@ -431,3 +431,30 @@ def test_symlinked_relation_directory_is_fatal_and_writes_nothing_outside(tmp_pa
     assert str(paths.relations) in "\n".join(report.errors)
     assert _snapshot(paths.root) == before
     assert list(outside.iterdir()) == []
+
+
+@pytest.mark.parametrize("directory_name", ["entities", "relations"])
+def test_check_rejects_symlinked_graph_directory_without_persistent_writes(
+    tmp_path, directory_name
+):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    managed_directory = getattr(paths, directory_name)
+    outside = tmp_path / f"outside-{directory_name}"
+    outside.mkdir()
+    sentinel = outside / "sentinel.md"
+    sentinel.write_text("retained\n", encoding="utf-8")
+    managed_directory.rmdir()
+    managed_directory.symlink_to(outside, target_is_directory=True)
+    before = _snapshot(paths.root)
+    outside_before = _snapshot(outside)
+
+    report = materialize_wiki(paths, apply=False)
+
+    assert report.errors
+    assert str(managed_directory) in "\n".join(report.errors)
+    assert _snapshot(paths.root) == before
+    assert _snapshot(outside) == outside_before

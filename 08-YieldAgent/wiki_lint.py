@@ -189,7 +189,11 @@ def scan(vault: Path) -> dict[str, list[Any]]:
         for field in ("subject_entity_id", "object_entity_id"):
             endpoint_id = str(md.get(field) or "").strip()
             endpoint = nodes.get(endpoint_id)
-            if endpoint is None or endpoint[1].get("type") != "entity":
+            if endpoint is None or not (
+                endpoint[1].get("type") == "entity"
+                and endpoint[1].get("status") == "active"
+                and endpoint[1].get("generated_by") == _GENERATED_BY
+            ):
                 reasons.append(field)
         predicate = str(md.get("predicate") or "").strip()
         if predicate not in valid_predicates:

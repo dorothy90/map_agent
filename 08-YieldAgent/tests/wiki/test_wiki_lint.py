@@ -105,3 +105,35 @@ def test_scan_reports_stale_nodes_without_invalidating_stale_relation(tmp_path):
         "relation:stale",
         "entity:stale",
     }
+
+
+@pytest.mark.parametrize(
+    "endpoint_update",
+    [
+        {"status": "stale"},
+        {"generated_by": "operator"},
+    ],
+)
+def test_scan_rejects_inactive_or_unowned_entity_endpoint(tmp_path, endpoint_update):
+    _valid_graph(tmp_path)
+    subject_path = tmp_path / "entities" / "subject.md"
+    subject = frontmatter.load(subject_path)
+    subject.metadata.update(endpoint_update)
+    subject_path.write_text(frontmatter.dumps(subject), encoding="utf-8")
+    _write(
+        tmp_path / "relations" / "relation.md",
+        id="relation:one",
+        type="relation",
+        generated_by="yield-wiki-materializer",
+        status="active",
+        origin_concept_id="concept:one",
+        subject_entity_id="entity:subject",
+        predicate="causes",
+        object_entity_id="entity:object",
+        source_doc_ids=["FH-1"],
+    )
+
+    issues = scan(tmp_path)
+
+    assert len(issues["invalid_relation"]) == 1
+    assert "subject_entity_id" in str(issues["invalid_relation"][0])

@@ -331,6 +331,45 @@ def _validate_appendable_log(
         os.close(descriptor)
 
 
+def validate_wiki_vault_paths(
+    paths: WikiPaths,
+    *,
+    allow_missing_directories: bool = False,
+) -> None:
+    """Validate managed directory identity without creating or modifying files."""
+    root = paths.root
+    try:
+        resolved_root = root.resolve(strict=True)
+    except OSError as exc:
+        raise WikiConfigurationError(f"Wiki Vault root is unavailable: {root}") from exc
+    if resolved_root != root:
+        raise WikiConfigurationError(f"Wiki Vault root contains a symlink: {root}")
+    try:
+        root_descriptor = os.open(
+            root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as exc:
+        raise WikiConfigurationError(f"Wiki Vault root is not safe: {root}") from exc
+    try:
+        _validate_root_identity(root, root_descriptor)
+        for directory in _managed_writer_directories(paths):
+            name = _direct_child_name(root, directory)
+            if allow_missing_directories:
+                try:
+                    os.stat(name, dir_fd=root_descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise WikiConfigurationError(
+                        f"Wiki Vault managed directory is unavailable: {directory}"
+                    ) from exc
+            descriptor = _open_managed_directory(root, root_descriptor, directory)
+            os.close(descriptor)
+    finally:
+        os.close(root_descriptor)
+
+
 def validate_wiki_vault(paths: WikiPaths) -> None:
     root = paths.root
     if root.resolve(strict=True) != root:

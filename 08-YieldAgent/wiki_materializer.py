@@ -19,6 +19,7 @@ from wiki_config import (
     WikiConfigurationError,
     WikiPaths,
     validate_wiki_vault,
+    validate_wiki_vault_paths,
 )
 from wiki_graph_models import EntityCandidate, RelationCandidate
 
@@ -858,11 +859,13 @@ def materialize_wiki(
     *,
     apply: bool = False,
 ) -> MaterializationReport:
-    if apply:
-        try:
+    try:
+        if apply:
             validate_wiki_vault(paths)
-        except WikiConfigurationError as exc:
-            return MaterializationReport(errors=(str(exc),))
+        else:
+            validate_wiki_vault_paths(paths, allow_missing_directories=True)
+    except WikiConfigurationError as exc:
+        return MaterializationReport(errors=(str(exc),))
     plan = _build_plan(paths)
     if plan.errors:
         return MaterializationReport(warnings=plan.warnings, errors=plan.errors)

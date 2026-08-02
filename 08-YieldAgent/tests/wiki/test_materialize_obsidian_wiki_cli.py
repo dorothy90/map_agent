@@ -129,6 +129,30 @@ def test_warning_is_printed_separately_without_failing_apply(tmp_path):
     assert "errors=0" in completed.stdout
 
 
+@pytest.mark.parametrize("directory_name", ["entities", "relations"])
+def test_check_rejects_symlinked_graph_directory_without_writing(
+    tmp_path, directory_name
+):
+    paths = _prepare_vault(tmp_path)
+    managed_directory = getattr(paths, directory_name)
+    outside = tmp_path / f"outside-{directory_name}"
+    outside.mkdir()
+    sentinel = outside / "sentinel.md"
+    sentinel.write_text("retained\n", encoding="utf-8")
+    managed_directory.rmdir()
+    managed_directory.symlink_to(outside, target_is_directory=True)
+    before = _snapshot(paths.root)
+    outside_before = _snapshot(outside)
+
+    completed = _run_cli(paths, "--check")
+
+    assert completed.returncode == 1
+    assert "error:" in completed.stdout
+    assert str(managed_directory) in completed.stdout
+    assert _snapshot(paths.root) == before
+    assert _snapshot(outside) == outside_before
+
+
 @pytest.mark.parametrize("args", [(), ("--check", "--apply")])
 def test_requires_exactly_one_mode(tmp_path, args):
     paths = _prepare_vault(tmp_path)
