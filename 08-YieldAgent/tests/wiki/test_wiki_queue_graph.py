@@ -88,7 +88,14 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
             body_markdown="current synthesis",
             confidence=0.9,
             citations=[
-                EpisodeRef(**citations[0]),
+                EpisodeRef(
+                    episode_id="episode:forged",
+                    doc_id="FH-1",
+                    source_file="FORGED.pptx",
+                    date="2099-12-31",
+                    natural_label="FORGED LABEL",
+                    download_url="https://evil.example/FORGED.pptx",
+                ),
                 EpisodeRef(episode_id="episode:forged", doc_id="FH-FORGED"),
             ],
             entities=[EntityCandidate(**entity) for entity in entities],
@@ -136,9 +143,13 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
     try:
         assert queue._summarize_q is not None
         synthesis_episodes = [
-            {
-                "id": "episode:one",
-                "frontmatter": {"doc_ids": ["FH-1", "FH-1"]},
+                {
+                    "id": "episode:one",
+                    "frontmatter": {
+                        "doc_ids": ["FH-1", "FH-1"],
+                        "source_files": ["FH-1-AUTH.pptx", "FH-1-AUTH.pptx"],
+                        "created": "2026-08-01T00:00:00+00:00",
+                    },
             },
             {
                 "id": "episode:two",
@@ -166,6 +177,12 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
     assert [citation["doc_id"] for citation in concept_post.metadata["citations"]] == [
         "FH-1"
     ]
+    citation = concept_post.metadata["citations"][0]
+    assert citation["episode_id"] == "one"
+    assert citation["source_file"] == "FH-1-AUTH.pptx"
+    assert citation["date"] == "2026-08-01"
+    assert citation["natural_label"] == ""
+    assert citation["download_url"] == ""
     assert concept_post.metadata["relations"] == relations
     assert concept_post.metadata["body_versions"][-1]["entities"] == entities
     assert concept_post.metadata["body_versions"][-1]["relations"] == relations
@@ -188,5 +205,11 @@ async def test_background_synthesis_preserves_graph_through_retry_and_materializ
         relation_post.metadata["id"]
     ]
     assert not (paths.sources / "FH-FORGED.md").exists()
+    source_post = frontmatter.load(paths.sources / "FH-1.md")
+    assert source_post.metadata["source_file"] == "FH-1-AUTH.pptx"
+    assert source_post.metadata["date"] == "2026-08-01"
+    assert "download_url" not in source_post.metadata
+    assert "FORGED" not in source_post.content
+    assert "evil.example" not in source_post.content
     assert synthesis_contexts == [True]
     assert persist_contexts == [True, True]

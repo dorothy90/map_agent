@@ -219,6 +219,7 @@ class WikiQueue:
     async def _handle_concept_synthesis(self, item: dict[str, Any]) -> None:
         """plan v3 §A: evidence_diversity 통과한 concept을 LLM으로 메타 합성."""
         from wiki_summarizer import (
+            authoritative_citations_from_episodes,
             restrict_concept_synthesis_sources,
             synthesize_concept,
         )
@@ -238,14 +239,8 @@ class WikiQueue:
         if result is None:
             self.drops["synthesis"] = self.drops.get("synthesis", 0) + 1
             return
-        source_doc_ids = sorted(
-            {
-                str(doc_id).strip()
-                for episode in episodes
-                for doc_id in (episode.get("frontmatter", {}).get("doc_ids") or [])
-                if str(doc_id).strip()
-            }
-        )
+        authoritative_sources = authoritative_citations_from_episodes(episodes)
+        source_doc_ids = sorted(authoritative_sources)
         snapshot = build_triple_snapshot(
             make_triple_key(
                 str(filters.get("product") or ""),
@@ -255,7 +250,7 @@ class WikiQueue:
             [{"doc_id": doc_id} for doc_id in source_doc_ids],
         )
         result = restrict_concept_synthesis_sources(
-            result, snapshot.source_doc_ids
+            result, authoritative_sources
         )
         synth_payload = {
             "body_markdown": result.body_markdown,

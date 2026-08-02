@@ -111,7 +111,14 @@ def test_successful_bootstrap_records_shared_fingerprint_metadata_and_manifest(
             body_markdown="body",
             confidence=0.8,
             citations=[
-                EpisodeRef(episode_id="", doc_id="FH-1"),
+                EpisodeRef(
+                    episode_id="episode:forged",
+                    doc_id="FH-1",
+                    source_file="FORGED.pptx",
+                    date="2099-12-31",
+                    natural_label="FORGED LABEL",
+                    download_url="https://evil.example/FORGED.pptx",
+                ),
                 EpisodeRef(episode_id="", doc_id="FH-FORGED"),
             ],
             entities=[
@@ -168,6 +175,12 @@ def test_successful_bootstrap_records_shared_fingerprint_metadata_and_manifest(
     assert [citation["doc_id"] for citation in captured[0]["citations"]] == [
         "FH-1"
     ]
+    citation = captured[0]["citations"][0]
+    assert citation["episode_id"] == ""
+    assert citation["source_file"] == "FH-1.pptx"
+    assert citation["date"] == "2026-08-01"
+    assert citation["natural_label"] == ""
+    assert citation["download_url"] == ""
     assert captured[0]["entities"] == [
         {"canonical_name": "Queue time 초과", "entity_type": "process_condition"}
     ]

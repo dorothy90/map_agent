@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Mapping
 
 from pydantic import BaseModel, Field
 
@@ -87,6 +87,61 @@ def canonical_source_doc_ids(values: Iterable[Any]) -> list[str]:
     return result
 
 
+_AUTHORITATIVE_CITATION_FIELDS = (
+    "episode_id",
+    "source_file",
+    "date",
+    "natural_label",
+    "download_url",
+)
+
+
+def authoritative_citations_from_documents(
+    documents: Iterable[Mapping[str, Any]],
+) -> dict[str, dict[str, str]]:
+    """Build trusted citation fields keyed by canonical Source ID."""
+    authoritative: dict[str, dict[str, str]] = {}
+    for document in documents:
+        doc_id = str(document.get("doc_id") or "").strip()
+        if not doc_id:
+            continue
+        metadata = authoritative.setdefault(
+            doc_id,
+            {field: "" for field in _AUTHORITATIVE_CITATION_FIELDS},
+        )
+        for field in _AUTHORITATIVE_CITATION_FIELDS:
+            value = str(document.get(field) or "").strip()
+            if value and not metadata[field]:
+                metadata[field] = value
+    return authoritative
+
+
+def authoritative_citations_from_episodes(
+    episodes: Iterable[Mapping[str, Any]],
+) -> dict[str, dict[str, str]]:
+    """Build trusted citation fields from persisted Episode frontmatter."""
+    documents: list[dict[str, str]] = []
+    for episode in episodes:
+        frontmatter = episode.get("frontmatter", {}) or {}
+        episode_id = str(episode.get("id") or frontmatter.get("id") or "")
+        episode_id = episode_id.replace("episode:", "", 1)
+        doc_ids = list(frontmatter.get("doc_ids") or [])
+        source_files = list(frontmatter.get("source_files") or [])
+        date = str(frontmatter.get("created") or "")[:10]
+        for index, doc_id in enumerate(doc_ids):
+            documents.append(
+                {
+                    "doc_id": str(doc_id),
+                    "episode_id": episode_id,
+                    "source_file": (
+                        str(source_files[index]) if index < len(source_files) else ""
+                    ),
+                    "date": date,
+                }
+            )
+    return authoritative_citations_from_documents(documents)
+
+
 def _model_data(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
@@ -101,14 +156,24 @@ def _model_data(value: Any) -> dict[str, Any]:
 
 def restrict_concept_synthesis_sources(
     synthesis: Any,
-    allowed_source_doc_ids: Iterable[Any],
+    authoritative_sources: Mapping[str, Mapping[str, Any]] | Iterable[Any],
 ) -> Any:
     """Remove provider Source claims not present in the actual input set.
 
     Relations are strict: any out-of-set Source rejects the complete Relation
     instead of silently weakening its provenance by trimming individual IDs.
     """
-    allowed = set(canonical_source_doc_ids(allowed_source_doc_ids))
+    if isinstance(authoritative_sources, Mapping):
+        authoritative = authoritative_citations_from_documents(
+            {**dict(metadata), "doc_id": doc_id}
+            for doc_id, metadata in authoritative_sources.items()
+        )
+    else:
+        authoritative = authoritative_citations_from_documents(
+            {"doc_id": doc_id}
+            for doc_id in canonical_source_doc_ids(authoritative_sources)
+        )
+    allowed = set(authoritative)
     provider_citations = list(getattr(synthesis, "citations", []) or [])
     provider_relations = list(getattr(synthesis, "relations", []) or [])
     citations: list[EpisodeRef] = []
@@ -122,7 +187,17 @@ def restrict_concept_synthesis_sources(
         if doc_id not in allowed or doc_id in seen_citations:
             continue
         seen_citations.add(doc_id)
-        citations.append(citation.model_copy(update={"doc_id": doc_id}))
+        metadata = authoritative[doc_id]
+        citations.append(
+            EpisodeRef(
+                episode_id=metadata["episode_id"],
+                doc_id=doc_id,
+                source_file=metadata["source_file"],
+                date=metadata["date"],
+                natural_label=metadata["natural_label"],
+                download_url=metadata["download_url"],
+            )
+        )
 
     relations: list[RelationCandidate] = []
     for value in provider_relations:
@@ -383,11 +458,7 @@ def synthesize_concept(
     out.citations = [_enrich(c) for c in out.citations]
     return restrict_concept_synthesis_sources(
         out,
-        (
-            doc_id
-            for episode in episodes
-            for doc_id in ((episode.get("frontmatter", {}) or {}).get("doc_ids") or [])
-        ),
+        authoritative_citations_from_episodes(episodes),
     )
 
 
@@ -628,5 +699,5 @@ def synthesize_concept_from_docs(
     out.citations = [_enrich(c) for c in out.citations]
     return restrict_concept_synthesis_sources(
         out,
-        (document.get("doc_id") for document in raw_docs),
+        authoritative_citations_from_documents(raw_docs),
     )

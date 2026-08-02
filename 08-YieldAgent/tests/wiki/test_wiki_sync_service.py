@@ -248,7 +248,14 @@ def test_sync_restricts_provider_sources_to_actual_snapshot_before_persistence(s
         confidence=0.8,
         citations=[
             SimpleNamespace(
-                model_dump=lambda: {"episode_id": "", "doc_id": "FH-REAL"}
+                model_dump=lambda: {
+                    "episode_id": "episode:forged",
+                    "doc_id": "FH-REAL",
+                    "source_file": "FORGED.pptx",
+                    "date": "2099-12-31",
+                    "natural_label": "FORGED LABEL",
+                    "download_url": "https://evil.example/FORGED.pptx",
+                }
             ),
             SimpleNamespace(
                 model_dump=lambda: {"episode_id": "", "doc_id": "FH-FORGED"}
@@ -295,6 +302,12 @@ def test_sync_restricts_provider_sources_to_actual_snapshot_before_persistence(s
     assert [citation["doc_id"] for citation in metadata["citations"]] == [
         "FH-REAL"
     ]
+    citation = metadata["citations"][0]
+    assert citation["episode_id"] == ""
+    assert citation["source_file"] == "FH-REAL.pptx"
+    assert citation["date"] == "2026-08-01"
+    assert citation["natural_label"] == ""
+    assert citation["download_url"] == ""
     assert [relation["predicate"] for relation in metadata["relations"]] == [
         "causes"
     ]

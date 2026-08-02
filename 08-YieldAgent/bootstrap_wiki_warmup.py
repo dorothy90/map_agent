@@ -42,6 +42,7 @@ import wiki_store  # noqa: E402
 from wiki_config import resolve_wiki_paths  # noqa: E402
 from wiki_manifest import load_manifest, record_success, save_manifest  # noqa: E402
 from wiki_summarizer import (  # noqa: E402
+    authoritative_citations_from_documents,
     restrict_concept_synthesis_sources,
     synthesize_concept_from_docs,
 )
@@ -179,7 +180,10 @@ def process_triple(t: dict[str, Any], max_docs: int) -> tuple[str, str]:
         return ("synth_fail", f"  ✗ synth: {e}")
     if result is None:
         return ("synth_none", "  ✗ synth None (LLM 실패 또는 응답 빈 채)")
-    result = restrict_concept_synthesis_sources(result, snapshot.source_doc_ids)
+    result = restrict_concept_synthesis_sources(
+        result,
+        authoritative_citations_from_documents(snapshot.documents),
+    )
     try:
         stored = wiki_store.upsert_concept(
             filters={

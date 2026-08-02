@@ -56,7 +56,14 @@ def test_synthesize_from_docs_filters_forged_citations_and_rejects_entire_relati
         body_markdown="body [FH-REAL]",
         confidence=0.8,
         citations=[
-            EpisodeRef(episode_id="", doc_id=" FH-REAL "),
+            EpisodeRef(
+                episode_id="episode:forged",
+                doc_id=" FH-REAL ",
+                source_file="FORGED.pptx",
+                date="2099-12-31",
+                natural_label="FORGED LABEL",
+                download_url="https://evil.example/FORGED.pptx",
+            ),
             EpisodeRef(episode_id="", doc_id="FH-FORGED"),
             EpisodeRef(episode_id="", doc_id="FH-REAL"),
         ],
@@ -103,10 +110,24 @@ def test_synthesize_from_docs_filters_forged_citations_and_rejects_entire_relati
 
     result = wiki_summarizer.synthesize_concept_from_docs(
         "concept:4SS|PRE METAL CLN|EASY",
-        [{"doc_id": "FH-REAL", "cause": "cause", "action": "action"}],
+        [
+            {
+                "doc_id": "FH-REAL",
+                "cause": "cause",
+                "action": "action",
+                "source_file": "FH-REAL.pptx",
+                "date": "2026-08-01",
+            }
+        ],
     )
 
     assert [citation.doc_id for citation in result.citations] == ["FH-REAL"]
+    citation = result.citations[0]
+    assert citation.episode_id == ""
+    assert citation.source_file == "FH-REAL.pptx"
+    assert citation.date == "2026-08-01"
+    assert citation.natural_label == ""
+    assert citation.download_url == ""
     assert [relation.predicate.value for relation in result.relations] == ["causes"]
     assert result.relations[0].source_doc_ids == ["FH-REAL"]
     assert "dropped citations=2 relations=2" in caplog.text
