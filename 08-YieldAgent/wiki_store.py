@@ -172,7 +172,8 @@ def upsert_episode(payload: dict) -> tuple[str, str]:
     """Immutable episode snapshot.
 
     payload keys: query (필수), filters {product,fail_type,cause_oper},
-                  doc_ids (list[str]), body (markdown), summary (1줄), links (list[str]).
+                  doc_ids (list[str]), body (markdown), summary (1줄), links (list[str]),
+                  private (bool; legacy 누락은 public).
     Returns (episode_id, status) — status in {"created", "skipped"}.
     같은 키 재호출은 skipped (정보 손실 방지). plan v3 §Vault & Schema.
     """
@@ -180,6 +181,13 @@ def upsert_episode(payload: dict) -> tuple[str, str]:
     eid = _episode_key(payload["query"], payload.get("filters", {}), payload.get("doc_ids", []))
     path = _EPISODES / f"{eid}.md"
     if path.exists():
+        # Privacy provenance is monotonic even though episode content is immutable.
+        if bool(payload.get("private", False)):
+            existing = _read(path)
+            if existing is not None and not bool(existing.metadata.get("private", False)):
+                metadata = dict(existing.metadata)
+                metadata["private"] = True
+                _write(path, frontmatter.Post(content=existing.content or "", **metadata))
         _log("episode_skip", eid)
         return eid, "skipped"
     now = _now_iso()
@@ -196,6 +204,7 @@ def upsert_episode(payload: dict) -> tuple[str, str]:
         "source_files": list(payload.get("source_files", []) or []),
         "filters": dict(payload.get("filters", {}) or {}),
         "summary": payload.get("summary", ""),
+        "private": bool(payload.get("private", False)),
         # plan v3 신규 필수 4기능
         **_lifecycle_defaults(),
         "confidence": float(payload.get("confidence", 0.5)),  # episode 단일이라 중립 0.5

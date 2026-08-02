@@ -198,8 +198,9 @@ class WikiQueue:
             private = bool(item.get("private", False))
             ep = result.get("episode")
             if ep:
+                ep_payload = {**ep, "private": private}
                 self._persist_q.put_nowait(
-                    {"kind": "episode", "args": (ep,), "private": private}
+                    {"kind": "episode", "args": (ep_payload,), "private": private}
                 )
             cf = result.get("concept_filters")
             if cf:
@@ -321,7 +322,7 @@ class WikiQueue:
         """
         if concept_id in self._synth_in_flight:
             return  # 동시 트리거 가드
-        def _load_and_check() -> tuple[list[dict], dict] | None:
+        def _load_and_check() -> tuple[list[dict], dict, bool] | None:
             cid_key = concept_id.replace("concept:", "")
             cpath = wiki_store._CONCEPTS / f"{wiki_store._safe_filename(cid_key)}.md"
             cpost = wiki_store._read(cpath)
@@ -332,19 +333,25 @@ class WikiQueue:
             if len(src_ep_ids) < 2:
                 return None
             episodes: list[dict[str, Any]] = []
-            for ep_id in src_ep_ids[:10]:  # 토큰 가드
+            source_private = False
+            for ep_id in src_ep_ids:
                 key = ep_id.replace("episode:", "")
                 ep_post = wiki_store._read(wiki_store._EPISODES / f"{key}.md")
                 if ep_post:
-                    episodes.append({
-                        "id": ep_id,
-                        "frontmatter": dict(ep_post.metadata),
-                        "body": ep_post.content or "",
-                    })
+                    metadata = dict(ep_post.metadata)
+                    source_private = source_private or bool(
+                        metadata.get("private", False)
+                    )
+                    if len(episodes) < 10:  # 합성 입력 토큰 가드
+                        episodes.append({
+                            "id": ep_id,
+                            "frontmatter": metadata,
+                            "body": ep_post.content or "",
+                        })
             if len(episodes) < 2:
                 return None
             ev = wiki_store.compute_evidence_diversity(episodes)
-            return episodes, ev
+            return episodes, ev, source_private
 
         try:
             check = await self._run_sync(_load_and_check)
@@ -353,7 +360,9 @@ class WikiQueue:
             return
         if check is None:
             return
-        episodes, evidence = check
+        episodes, evidence, source_private = check
+        # Pre-provenance episodes intentionally remain public for compatibility.
+        synthesis_private = private or source_private
 
         # 진단 가시성 — evidence 결과를 concept frontmatter에 항상 갱신
         await self._run_sync(
@@ -378,7 +387,7 @@ class WikiQueue:
                 "filters": filters,
                 "episodes": episodes,
                 "evidence": evidence,
-                "private": private,
+                "private": synthesis_private,
             })
             self.commits["synthesis_triggered"] += 1
             logger.info("[wiki_queue] synthesis triggered %s (diversity=%s)",
