@@ -125,6 +125,7 @@ class YieldQueryState(TypedDict):
     step_count: int  # supervisor 루프 카운터
     trace_id: str  # local observability trace id (overwrite)
     turn_id: str  # local observability turn id (overwrite)
+    wiki_context: dict  # current Obsidian note envelope (overwrite per fresh turn)
 
     # 조회 파라미터
     lotcd: str
@@ -183,6 +184,7 @@ class YieldQueryState(TypedDict):
     wiki_update_status: (
         str  # "queued" | "summarized" | "persisted" | "dropped" | "skipped"
     )
+    evidence_sensitive: bool  # retrieved Wiki/Graph evidence requires trace redaction
 
     # Lot History 결과
     lot_history_artifacts: Annotated[list, operator.add]

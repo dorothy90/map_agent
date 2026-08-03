@@ -1,0 +1,1037 @@
+from __future__ import annotations
+
+import hashlib
+import importlib
+from pathlib import Path
+from types import SimpleNamespace
+
+import frontmatter
+import pytest
+
+from wiki_graph_models import EntityCandidate, RelationCandidate
+from wiki_manifest import empty_manifest, load_manifest, record_success, save_manifest
+from wiki_sync import (
+    WikiSyncService,
+    build_triple_snapshot,
+    make_triple_key,
+)
+
+
+pytestmark = pytest.mark.no_server
+
+
+def _doc(doc_id="FH-1", content="source"):
+    return {
+        "doc_id": doc_id,
+        "content": content,
+        "cause": "oxide damage",
+        "action": "clean chamber",
+        "comment": "confirmed",
+        "date": "2026-08-01",
+        "source_file": f"{doc_id}.pptx",
+        "product": "4SS",
+        "fail_type": "EASY(W)",
+        "cause_oper": "PRE METAL CLN",
+    }
+
+
+def _snapshot(*documents):
+    return build_triple_snapshot(
+        make_triple_key("4SS", "EASY(W)", "PRE METAL CLN"),
+        list(documents or (_doc(),)),
+    )
+
+
+class FakeScanner:
+    def __init__(self, snapshots, fetched=None):
+        self.snapshots = snapshots
+        self.fetched = fetched or snapshots
+
+    def scan(self):
+        return self.snapshots
+
+    def fetch_snapshot(
+        self, product, fail_type, cause_oper, *, raw_fail_types=None
+    ):
+        key = make_triple_key(product, fail_type, cause_oper).canonical
+        return self.fetched[key]
+
+
+class InMemoryJobStore:
+    def __init__(self):
+        self.jobs = {}
+        self.lock_owner = None
+        self.enqueue_calls = 0
+
+    def acquire_global_lock(self, owner, lease_seconds=900):
+        if self.lock_owner not in (None, owner):
+            return False
+        self.lock_owner = owner
+        return True
+
+    def renew_global_lock(self, owner, lease_seconds=900):
+        return self.lock_owner == owner
+
+    def release_global_lock(self, owner):
+        if self.lock_owner != owner:
+            return False
+        self.lock_owner = None
+        return True
+
+    def enqueue(self, snapshot, change_type):
+        self.enqueue_calls += 1
+        job_id = f"job:{snapshot.source_fingerprint}"
+        if job_id in self.jobs:
+            return job_id, False
+        self.jobs[job_id] = {
+            "_id": job_id,
+            "triple_key": snapshot.key.canonical,
+            "product": snapshot.key.product,
+            "fail_type": snapshot.key.fail_type,
+            "cause_oper": snapshot.key.cause_oper,
+            "source_fingerprint": snapshot.source_fingerprint,
+            "source_doc_ids": list(snapshot.source_doc_ids),
+            "raw_fail_types": list(snapshot.raw_fail_types),
+            "doc_count": snapshot.evidence_count,
+            "change_type": change_type,
+            "status": "pending",
+            "attempts": 0,
+        }
+        return job_id, True
+
+    def claim_next(self, owner, lease_seconds=900):
+        candidates = [
+            job
+            for job in self.jobs.values()
+            if job["status"] == "pending"
+        ]
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda job: (
+                0 if job["status"] == "failed" else 1,
+                0 if job["change_type"] == "changed" else 1,
+                -job["doc_count"],
+                job["triple_key"],
+            )
+        )
+        job = candidates[0]
+        job["status"] = "running"
+        job["lease_owner"] = owner
+        job["attempts"] += 1
+        return dict(job)
+
+    def mark_succeeded(self, job_id, owner, *, concept_id, concept_version):
+        job = self.jobs[job_id]
+        if job.get("lease_owner") != owner:
+            return False
+        job.update(
+            status="succeeded",
+            concept_id=concept_id,
+            concept_version=concept_version,
+            lease_owner=None,
+        )
+        return True
+
+    def mark_failed(self, job_id, owner, error, **kwargs):
+        job = self.jobs[job_id]
+        if job.get("lease_owner") != owner:
+            return False
+        job.update(status="failed", last_error=str(error), lease_owner=None)
+        return True
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    vault = tmp_path / "YieldWiki"
+    monkeypatch.setenv("WIKI_VAULT_PATH", str(vault))
+    import wiki_store
+
+    module = importlib.reload(wiki_store)
+    return module
+
+
+def _synthesis():
+    citation = SimpleNamespace(
+        model_dump=lambda: {
+            "episode_id": "",
+            "doc_id": "FH-1",
+            "source_file": "FH-1.pptx",
+            "date": "2026-08-01",
+            "natural_label": "",
+            "download_url": "",
+        }
+    )
+    return SimpleNamespace(
+        body_markdown="## 합성 결과\n\n검증 본문",
+        confidence=0.82,
+        citations=[citation],
+        entities=[
+            EntityCandidate(
+                canonical_name="Queue time 초과",
+                entity_type="process_condition",
+            )
+        ],
+        relations=[
+            RelationCandidate(
+                subject="Queue time 초과",
+                predicate="causes",
+                object="자연 산화",
+                confidence=0.82,
+                source_doc_ids=["FH-1"],
+            )
+        ],
+    )
+
+
+def test_manual_concept_edit_is_preserved_and_creates_conflict_review(store):
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+    store.upsert_concept(
+        filters=filters,
+        synthesized_body="generated body",
+        materialize=False,
+    )
+    concept_path = next(store._PATHS.concepts.glob("*.md"))
+    post = frontmatter.load(concept_path)
+    post.content = "operator-authored body"
+    concept_path.write_text(frontmatter.dumps(post), encoding="utf-8")
+    preserved = concept_path.read_bytes()
+
+    with pytest.raises(store.ConceptEditConflict):
+        store.upsert_concept(
+            filters=filters,
+            synthesized_body="replacement generated body",
+            sync_metadata={"sync_job_id": "job:manual-conflict"},
+            materialize=False,
+        )
+
+    assert concept_path.read_bytes() == preserved
+    reviews = list(store._PATHS.reviews.glob("concept_edit_conflict_*.md"))
+    assert len(reviews) == 1
+    review = frontmatter.load(reviews[0])
+    assert review.metadata["review_type"] == "concept_edit_conflict"
+    assert review.metadata["status"] == "pending"
+    assert review.metadata["target_concept_id"] == (
+        "concept:4SS|PRE METAL CLN|EASY"
+    )
+    assert review.metadata["sync_job_id"] == "job:manual-conflict"
+    serialized = reviews[0].read_text(encoding="utf-8")
+    assert "operator-authored body" not in serialized
+    assert "replacement generated body" not in serialized
+
+
+def test_explicit_empty_generated_body_records_checksum_and_version(store):
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+
+    store.upsert_concept(
+        filters=filters,
+        synthesized_body="",
+        materialize=False,
+    )
+
+    post = frontmatter.load(next(store._PATHS.concepts.glob("*.md")))
+    empty_sha256 = hashlib.sha256(b"").hexdigest()
+    assert post.content == ""
+    assert post.metadata["generated_body_sha256"] == empty_sha256
+    assert len(post.metadata["body_versions"]) == 1
+    assert post.metadata["body_versions"][0]["body_markdown"] == ""
+
+
+def test_legacy_concept_without_baseline_preserves_operator_body_and_conflicts(store):
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+    store.upsert_concept(filters=filters, materialize=False)
+    concept_path = next(store._PATHS.concepts.glob("*.md"))
+    legacy = frontmatter.load(concept_path)
+    legacy.content = "operator-authored legacy body"
+    legacy.metadata.pop("generated_body_sha256", None)
+    legacy.metadata["body_versions"] = []
+    concept_path.write_text(frontmatter.dumps(legacy), encoding="utf-8")
+    preserved = concept_path.read_bytes()
+
+    with pytest.raises(store.ConceptEditConflict):
+        store.upsert_concept(
+            filters=filters,
+            synthesized_body="replacement generated body",
+            sync_metadata={"sync_job_id": "job:legacy-conflict"},
+            materialize=False,
+        )
+
+    assert concept_path.read_bytes() == preserved
+    reviews = list(store._PATHS.reviews.glob("concept_edit_conflict_*.md"))
+    assert len(reviews) == 1
+    review = frontmatter.load(reviews[0])
+    assert review.metadata["expected_body_sha256"] == hashlib.sha256(b"").hexdigest()
+    assert review.metadata["observed_body_sha256"] == store._generated_body_sha256(
+        "operator-authored legacy body"
+    )
+    assert review.metadata["proposed_body_sha256"] == store._generated_body_sha256(
+        "replacement generated body"
+    )
+    serialized = reviews[0].read_text(encoding="utf-8")
+    assert "operator-authored legacy body" not in serialized
+    assert "replacement generated body" not in serialized
+
+
+def test_materializer_links_do_not_look_like_a_manual_concept_edit(store):
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+    store.upsert_concept(
+        filters=filters,
+        synthesized_body="first generated body",
+        materialize=False,
+    )
+    concept_path = next(store._PATHS.concepts.glob("*.md"))
+    post = frontmatter.load(concept_path)
+    post.content = (
+        "first generated body\n\n"
+        "<!-- yield-wiki:knowledge-links:start -->\n"
+        "## Knowledge Links\n\n- [[sources/FH-1]]\n"
+        "<!-- yield-wiki:knowledge-links:end -->"
+    )
+    concept_path.write_text(frontmatter.dumps(post), encoding="utf-8")
+
+    concept_id, status = store.upsert_concept(
+        filters=filters,
+        synthesized_body="second generated body",
+        materialize=False,
+    )
+
+    assert concept_id == "4SS|PRE METAL CLN|EASY"
+    assert status == "updated"
+    assert store.read_node("concept:4SS|PRE METAL CLN|EASY")["body"] == (
+        "second generated body"
+    )
+
+
+def test_store_update_rejects_edit_between_read_and_write(store, monkeypatch):
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+    store.upsert_concept(
+        filters=filters,
+        synthesized_body="generated baseline",
+        materialize=False,
+    )
+    concept_path = next(store._PATHS.concepts.glob("*.md"))
+    original_write = store._write
+    operator_versions = []
+
+    def edit_then_write(path, post, **kwargs):
+        if path == concept_path and not operator_versions:
+            current = frontmatter.load(path)
+            current.content = "operator edit during update"
+            path.write_text(frontmatter.dumps(current), encoding="utf-8")
+            operator_versions.append(path.read_bytes())
+        return original_write(path, post, **kwargs)
+
+    monkeypatch.setattr(store, "_write", edit_then_write)
+
+    with pytest.raises(RuntimeError, match="changed before replacement"):
+        store.upsert_concept(
+            filters=filters,
+            links=["episode:new"],
+            materialize=False,
+        )
+
+    assert concept_path.read_bytes() == operator_versions[0]
+def _service(store, snapshots, jobs=None, synthesize=None, materialize=None, fetched=None):
+    jobs = jobs or InMemoryJobStore()
+    synthesize = synthesize or (lambda concept_id, docs: _synthesis())
+    materialize = materialize or (lambda: SimpleNamespace(errors=()))
+    return WikiSyncService(
+        scanner=FakeScanner(snapshots, fetched=fetched),
+        job_store=jobs,
+        manifest_path=store._PATHS.manifest,
+        index="fail-history",
+        synthesize=synthesize,
+        wiki_store=store,
+        materialize=materialize,
+        now=lambda: "2026-08-01T00:00:00+00:00",
+        owner_factory=lambda: "worker-1",
+    ), jobs
+
+
+def test_new_concept_records_sync_metadata_manifest_and_materializes_once(store):
+    snapshot = _snapshot(_doc("FH-1"), _doc("FH-2"))
+    snapshots = {snapshot.key.canonical: snapshot}
+    synthesis_calls = []
+    materialize_calls = []
+    service, jobs = _service(
+        store,
+        snapshots,
+        synthesize=lambda concept_id, docs: synthesis_calls.append(
+            (concept_id, docs)
+        )
+        or _synthesis(),
+        materialize=lambda: materialize_calls.append(True)
+        or SimpleNamespace(errors=()),
+    )
+
+    result = service.apply(limit=10)
+
+    assert result.status == "completed"
+    assert result.succeeded == 1
+    assert len(synthesis_calls) == 1
+    assert materialize_calls == [True]
+    concept = store.read_node("concept:4SS|PRE METAL CLN|EASY")
+    metadata = concept["frontmatter"]
+    assert metadata["source_fingerprint"] == snapshot.source_fingerprint
+    assert metadata["source_doc_ids"] == ["FH-1", "FH-2"]
+    assert metadata["evidence_count"] == 2
+    assert metadata["evidence_scope"] == "multiple_sources"
+    assert metadata["sync_job_id"].startswith("job:sha256:")
+    assert metadata["entities"] == [
+        {"canonical_name": "Queue time 초과", "entity_type": "process_condition"}
+    ]
+    assert metadata["relations"][0]["predicate"] == "causes"
+    assert metadata["body_versions"][-1]["entities"] == metadata["entities"]
+    assert metadata["body_versions"][-1]["relations"] == metadata["relations"]
+    manifest = load_manifest(store._PATHS.manifest, "fail-history")
+    assert manifest["triples"][snapshot.key.canonical]["source_fingerprint"] == snapshot.source_fingerprint
+    assert next(iter(jobs.jobs.values()))["status"] == "succeeded"
+
+
+def test_sync_restricts_provider_sources_to_actual_snapshot_before_persistence(store):
+    snapshot = _snapshot(_doc("FH-REAL"))
+    snapshots = {snapshot.key.canonical: snapshot}
+    synthesis = SimpleNamespace(
+        body_markdown="body",
+        confidence=0.8,
+        citations=[
+            SimpleNamespace(
+                model_dump=lambda: {
+                    "episode_id": "episode:forged",
+                    "doc_id": "FH-REAL",
+                    "source_file": "FORGED.pptx",
+                    "date": "2099-12-31",
+                    "natural_label": "FORGED LABEL",
+                    "download_url": "https://evil.example/FORGED.pptx",
+                }
+            ),
+            SimpleNamespace(
+                model_dump=lambda: {"episode_id": "", "doc_id": "FH-FORGED"}
+            ),
+        ],
+        entities=[
+            EntityCandidate(canonical_name="Queue", entity_type="condition"),
+            EntityCandidate(canonical_name="Oxide", entity_type="mechanism"),
+        ],
+        relations=[
+            RelationCandidate(
+                subject="Queue",
+                predicate="causes",
+                object="Oxide",
+                confidence=0.8,
+                source_doc_ids=["FH-REAL"],
+            ),
+            RelationCandidate(
+                subject="Queue",
+                predicate="contributes_to",
+                object="Oxide",
+                confidence=0.7,
+                source_doc_ids=["FH-REAL", "FH-FORGED"],
+            ),
+            RelationCandidate(
+                subject="Queue",
+                predicate="associated_with",
+                object="Oxide",
+                confidence=0.6,
+                source_doc_ids=["FH-FORGED"],
+            ),
+        ],
+    )
+    service, _ = _service(
+        store,
+        snapshots,
+        synthesize=lambda concept_id, docs: synthesis,
+    )
+
+    result = service.apply(limit=10)
+
+    assert result.status == "completed"
+    metadata = store.read_node("concept:4SS|PRE METAL CLN|EASY")["frontmatter"]
+    assert [citation["doc_id"] for citation in metadata["citations"]] == [
+        "FH-REAL"
+    ]
+    citation = metadata["citations"][0]
+    assert citation["episode_id"] == ""
+    assert citation["source_file"] == "FH-REAL.pptx"
+    assert citation["date"] == "2026-08-01"
+    assert citation["natural_label"] == ""
+    assert citation["download_url"] == ""
+    assert [relation["predicate"] for relation in metadata["relations"]] == [
+        "causes"
+    ]
+    assert metadata["relations"][0]["source_doc_ids"] == ["FH-REAL"]
+    assert metadata["source_doc_ids"] == ["FH-REAL"]
+    assert metadata["source_fingerprint"] == snapshot.source_fingerprint
+
+
+def test_sync_rejects_unsupported_body_source_and_preserves_existing_concept(store):
+    snapshot = _snapshot(_doc("FH-REAL"))
+    store.upsert_concept(
+        filters={
+            "product": snapshot.key.product,
+            "fail_type": snapshot.key.fail_type,
+            "cause_oper": snapshot.key.cause_oper,
+        },
+        synthesized_body="approved body [FH-REAL]",
+        citations=[{"doc_id": "FH-REAL"}],
+        materialize=False,
+    )
+    synthesis = SimpleNamespace(
+        body_markdown="unsupported sync claim [FH-FORGED]",
+        confidence=0.8,
+        citations=[SimpleNamespace(doc_id="FH-REAL")],
+        entities=[],
+        relations=[],
+    )
+    service, jobs = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        synthesize=lambda *args: synthesis,
+    )
+
+    result = service.apply(limit=10)
+
+    concept = store.read_node("concept:4SS|PRE METAL CLN|EASY")
+    assert result.failed == 1
+    assert concept["body"] == "approved body [FH-REAL]"
+    assert "FH-FORGED" not in concept["body"]
+    assert concept["frontmatter"]["version"] == 1
+    job = next(iter(jobs.jobs.values()))
+    assert job["status"] == "failed"
+
+
+def test_store_rejects_unsupported_body_source_before_mutation(store):
+    from wiki_summarizer import UnsupportedSourceCitationError
+
+    filters = {
+        "product": "4SS",
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+    store.upsert_concept(
+        filters=filters,
+        synthesized_body="approved body [FH-REAL]",
+        citations=[{"doc_id": "FH-REAL"}],
+        materialize=False,
+    )
+
+    with pytest.raises(UnsupportedSourceCitationError):
+        store.upsert_concept(
+            filters=filters,
+            synthesized_body="unsupported direct claim [FH-FORGED]",
+            citations=[{"doc_id": "FH-REAL"}],
+            materialize=False,
+        )
+
+    concept = store.read_node("concept:4SS|PRE METAL CLN|EASY")
+    assert concept["body"] == "approved body [FH-REAL]"
+    assert concept["frontmatter"]["version"] == 1
+
+
+def test_matching_concept_fingerprint_repairs_manifest_without_llm(store):
+    snapshot = _snapshot()
+    store.upsert_concept(
+        filters={
+            "product": snapshot.key.product,
+            "fail_type": snapshot.key.fail_type,
+            "cause_oper": snapshot.key.cause_oper,
+        },
+        synthesized_body="existing body",
+        sync_metadata={
+            "source_fingerprint": snapshot.source_fingerprint,
+            "source_doc_ids": list(snapshot.source_doc_ids),
+            "evidence_count": snapshot.evidence_count,
+            "evidence_scope": snapshot.evidence_scope,
+            "sync_job_id": "earlier-job",
+        },
+        materialize=False,
+    )
+    calls = []
+    materialize_calls = []
+    service, jobs = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        synthesize=lambda *args: calls.append(args),
+        materialize=lambda: materialize_calls.append(True)
+        or SimpleNamespace(errors=()),
+    )
+
+    result = service.apply(limit=10)
+
+    assert result.recovered == 1
+    assert calls == []
+    assert materialize_calls == [True]
+    assert load_manifest(store._PATHS.manifest, "fail-history")["triples"][
+        snapshot.key.canonical
+    ]["source_fingerprint"] == snapshot.source_fingerprint
+    assert next(iter(jobs.jobs.values()))["status"] == "succeeded"
+
+
+def test_resume_repairs_materialization_after_concept_persistence_without_synthesis(
+    store,
+):
+    from wiki_materializer import materialize_wiki
+
+    snapshot = _snapshot()
+    jobs = InMemoryJobStore()
+    synthesis_calls = []
+    synthesis = _synthesis()
+    synthesis.entities.append(
+        EntityCandidate(
+            canonical_name="자연 산화",
+            entity_type="failure_mechanism",
+        )
+    )
+
+    def crash_after_partial_materialization():
+        report = materialize_wiki(store._PATHS, apply=True)
+        assert report.errors == ()
+        projection_paths = (
+            *store._PATHS.entities.glob("*.md"),
+            *store._PATHS.relations.glob("*.md"),
+        )
+        for path in projection_paths:
+            path.unlink()
+        raise RuntimeError("crash after Concept persistence")
+
+    first_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: synthesis_calls.append(args) or synthesis,
+        materialize=crash_after_partial_materialization,
+    )
+
+    with pytest.raises(RuntimeError, match="crash after Concept persistence"):
+        first_service.apply(limit=10)
+
+    concept = store.read_node("concept:4SS|PRE METAL CLN|EASY")
+    assert concept is not None
+    assert next(iter(jobs.jobs.values()))["status"] == "succeeded"
+    assert len(synthesis_calls) == 1
+    assert list(store._PATHS.entities.glob("*.md")) == []
+    assert list(store._PATHS.relations.glob("*.md")) == []
+
+    resumed_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: (_ for _ in ()).throw(
+            AssertionError("resume must not synthesize")
+        ),
+        materialize=lambda: materialize_wiki(store._PATHS, apply=True),
+    )
+
+    resumed = resumed_service.resume(limit=10)
+
+    assert resumed.status == "completed"
+    assert resumed.materialized is True
+    assert resumed.failed == 0
+    assert len(synthesis_calls) == 1
+    entity_posts = [
+        frontmatter.load(path) for path in store._PATHS.entities.glob("*.md")
+    ]
+    assert {post.metadata["canonical_name"] for post in entity_posts} == {
+        "Queue time 초과",
+        "자연 산화",
+    }
+    relation_path = next(store._PATHS.relations.glob("*.md"))
+    relation_post = frontmatter.load(relation_path)
+    assert relation_post.metadata["predicate"] == "causes"
+    assert relation_post.metadata["source_doc_ids"] == ["FH-1"]
+    assert "[[sources/FH-1|FH-1]]" in relation_post.content
+
+
+def test_next_normal_apply_repairs_failed_materialization_without_synthesis(store):
+    from wiki_materializer import materialize_wiki
+
+    snapshot = _snapshot()
+    jobs = InMemoryJobStore()
+    synthesis_calls = []
+    synthesis = _synthesis()
+    synthesis.entities.append(
+        EntityCandidate(
+            canonical_name="자연 산화",
+            entity_type="failure_mechanism",
+        )
+    )
+
+    def fail_after_concept_write():
+        report = materialize_wiki(store._PATHS, apply=True)
+        assert report.errors == ()
+        for path in (
+            *store._PATHS.entities.glob("*.md"),
+            *store._PATHS.relations.glob("*.md"),
+        ):
+            path.unlink()
+        raise RuntimeError("projection write failed")
+
+    first_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: synthesis_calls.append(args) or synthesis,
+        materialize=fail_after_concept_write,
+    )
+
+    with pytest.raises(RuntimeError, match="projection write failed"):
+        first_service.apply(limit=10)
+
+    failed_manifest = load_manifest(store._PATHS.manifest, "fail-history")
+    assert failed_manifest["projection"]["status"] == "failed"
+    assert len(synthesis_calls) == 1
+    assert list(store._PATHS.entities.glob("*.md")) == []
+    assert list(store._PATHS.relations.glob("*.md")) == []
+
+    repairing_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: (_ for _ in ()).throw(
+            AssertionError("normal repair must not synthesize")
+        ),
+        materialize=lambda: materialize_wiki(store._PATHS, apply=True),
+    )
+
+    repaired = repairing_service.apply(limit=10)
+
+    assert repaired.status == "completed"
+    assert repaired.unchanged == 1
+    assert repaired.materialized is True
+    assert repaired.failed == 0
+    assert len(synthesis_calls) == 1
+    assert load_manifest(store._PATHS.manifest, "fail-history")["projection"][
+        "status"
+    ] == "clean"
+    assert len(list(store._PATHS.entities.glob("*.md"))) == 2
+    assert len(list(store._PATHS.relations.glob("*.md"))) == 1
+
+
+def test_next_normal_apply_repairs_after_termination_following_job_success(store):
+    from wiki_materializer import materialize_wiki
+
+    class TerminatingJobStore(InMemoryJobStore):
+        terminate_after_success = True
+
+        def mark_succeeded(self, *args, **kwargs):
+            marked = super().mark_succeeded(*args, **kwargs)
+            if self.terminate_after_success:
+                self.terminate_after_success = False
+                raise KeyboardInterrupt("terminated after job success")
+            return marked
+
+    snapshot = _snapshot()
+    jobs = TerminatingJobStore()
+    synthesis_calls = []
+    synthesis = _synthesis()
+    synthesis.entities.append(
+        EntityCandidate(
+            canonical_name="자연 산화",
+            entity_type="failure_mechanism",
+        )
+    )
+    interrupted_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: synthesis_calls.append(args) or synthesis,
+        materialize=lambda: (_ for _ in ()).throw(
+            AssertionError("termination must happen before materialization")
+        ),
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="terminated after job success"):
+        interrupted_service.apply(limit=10)
+
+    interrupted_manifest = load_manifest(store._PATHS.manifest, "fail-history")
+    assert interrupted_manifest["projection"]["status"] == "dirty"
+    assert next(iter(jobs.jobs.values()))["status"] == "succeeded"
+    assert len(synthesis_calls) == 1
+
+    repairing_service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: (_ for _ in ()).throw(
+            AssertionError("normal repair must not synthesize")
+        ),
+        materialize=lambda: materialize_wiki(store._PATHS, apply=True),
+    )
+
+    repaired = repairing_service.apply(limit=10)
+
+    assert repaired.status == "completed"
+    assert repaired.unchanged == 1
+    assert repaired.materialized is True
+    assert len(synthesis_calls) == 1
+    assert load_manifest(store._PATHS.manifest, "fail-history")["projection"][
+        "status"
+    ] == "clean"
+    assert len(list(store._PATHS.entities.glob("*.md"))) == 2
+    assert len(list(store._PATHS.relations.glob("*.md"))) == 1
+
+
+def test_source_removal_is_dirty_before_mutation_and_normal_apply_repairs(
+    store, monkeypatch
+):
+    previous = _snapshot(_doc("FH-1"), _doc("FH-2"))
+    current = _snapshot(_doc("FH-1"))
+    store.upsert_concept(
+        filters={
+            "product": previous.key.product,
+            "fail_type": previous.key.fail_type,
+            "cause_oper": previous.key.cause_oper,
+        },
+        synthesized_body="existing body",
+        sync_metadata={
+            "source_fingerprint": previous.source_fingerprint,
+            "source_doc_ids": list(previous.source_doc_ids),
+            "evidence_count": previous.evidence_count,
+            "evidence_scope": previous.evidence_scope,
+            "sync_job_id": "old-job",
+        },
+        materialize=False,
+    )
+    manifest = empty_manifest("fail-history")
+    record_success(
+        manifest,
+        previous,
+        concept_id=f"concept:{previous.key.canonical}",
+        concept_version=1,
+        success_at="2026-07-31T00:00:00+00:00",
+    )
+    save_manifest(store._PATHS.manifest, manifest)
+
+    original_mark_stale = store.mark_concept_stale
+    original_create_review = store.create_source_removal_review
+
+    def assert_dirty_then_mark_stale(*args, **kwargs):
+        current_manifest = load_manifest(store._PATHS.manifest, "fail-history")
+        assert current_manifest["projection"]["status"] == "dirty"
+        return original_mark_stale(*args, **kwargs)
+
+    def terminate_after_review(*args, **kwargs):
+        original_create_review(*args, **kwargs)
+        raise KeyboardInterrupt("terminated after source-removal mutation")
+
+    monkeypatch.setattr(store, "mark_concept_stale", assert_dirty_then_mark_stale)
+    monkeypatch.setattr(store, "create_source_removal_review", terminate_after_review)
+    interrupted_service, _ = _service(
+        store,
+        {current.key.canonical: current},
+        synthesize=lambda *args: (_ for _ in ()).throw(
+            AssertionError("source removal must not synthesize")
+        ),
+    )
+
+    with pytest.raises(
+        KeyboardInterrupt, match="terminated after source-removal mutation"
+    ):
+        interrupted_service.apply(limit=10)
+
+    assert load_manifest(store._PATHS.manifest, "fail-history")["projection"][
+        "status"
+    ] == "dirty"
+    monkeypatch.setattr(store, "mark_concept_stale", original_mark_stale)
+    monkeypatch.setattr(store, "create_source_removal_review", original_create_review)
+    materialize_calls = []
+    repairing_service, _ = _service(
+        store,
+        {current.key.canonical: current},
+        synthesize=lambda *args: (_ for _ in ()).throw(
+            AssertionError("source-removal repair must not synthesize")
+        ),
+        materialize=lambda: materialize_calls.append(True)
+        or SimpleNamespace(errors=()),
+    )
+
+    repaired = repairing_service.apply(limit=10)
+
+    assert repaired.status == "completed"
+    assert repaired.source_removed == 1
+    assert repaired.materialized is True
+    assert materialize_calls == [True]
+    assert load_manifest(store._PATHS.manifest, "fail-history")["projection"][
+        "status"
+    ] == "clean"
+
+
+def test_changed_source_resynthesizes_existing_concept_and_restores_active(store):
+    previous = _snapshot(_doc(content="old"))
+    current = _snapshot(_doc(content="new"))
+    store.upsert_concept(
+        filters={
+            "product": previous.key.product,
+            "fail_type": previous.key.fail_type,
+            "cause_oper": previous.key.cause_oper,
+        },
+        synthesized_body="old body",
+        sync_metadata={
+            "source_fingerprint": previous.source_fingerprint,
+            "source_doc_ids": list(previous.source_doc_ids),
+            "evidence_count": previous.evidence_count,
+            "evidence_scope": previous.evidence_scope,
+            "sync_job_id": "old-job",
+        },
+        materialize=False,
+    )
+    store.mark_concept_stale(
+        {
+            "product": previous.key.product,
+            "fail_type": previous.key.fail_type,
+            "cause_oper": previous.key.cause_oper,
+        },
+        ["FH-removed"],
+        "2026-07-31T00:00:00+00:00",
+    )
+    manifest = empty_manifest("fail-history")
+    record_success(
+        manifest,
+        previous,
+        concept_id=f"concept:{previous.key.canonical}",
+        concept_version=1,
+        success_at="2026-07-31T00:00:00+00:00",
+    )
+    save_manifest(store._PATHS.manifest, manifest)
+    calls = []
+    service, _ = _service(
+        store,
+        {current.key.canonical: current},
+        synthesize=lambda *args: calls.append(args) or _synthesis(),
+    )
+
+    result = service.apply(limit=10)
+
+    concept = store.read_node("concept:4SS|PRE METAL CLN|EASY")
+    assert result.changed == 1
+    assert result.succeeded == 1
+    assert len(calls) == 1
+    assert concept["body"] == "## 합성 결과\n\n검증 본문"
+    assert concept["frontmatter"]["status"] == "active"
+    assert concept["frontmatter"]["source_fingerprint"] == current.source_fingerprint
+
+
+def test_refetched_fingerprint_mismatch_fails_without_synthesis(store):
+    planned = _snapshot(_doc(content="planned"))
+    current = _snapshot(_doc(content="changed after scan"))
+    calls = []
+    service, jobs = _service(
+        store,
+        {planned.key.canonical: planned},
+        fetched={planned.key.canonical: current},
+        synthesize=lambda *args: calls.append(args),
+    )
+
+    result = service.apply(limit=10)
+
+    assert result.failed == 1
+    assert calls == []
+    job = next(iter(jobs.jobs.values()))
+    assert job["status"] == "failed"
+    assert "fingerprint changed" in job["last_error"]
+    assert store.read_node("concept:4SS|PRE METAL CLN|EASY") is None
+
+
+def test_source_removal_marks_stale_and_never_overwrites_review(store):
+    previous = _snapshot(_doc("FH-1"), _doc("FH-2"))
+    current = _snapshot(_doc("FH-1"))
+    store.upsert_concept(
+        filters={
+            "product": previous.key.product,
+            "fail_type": previous.key.fail_type,
+            "cause_oper": previous.key.cause_oper,
+        },
+        synthesized_body="existing body",
+        sync_metadata={
+            "source_fingerprint": previous.source_fingerprint,
+            "source_doc_ids": list(previous.source_doc_ids),
+            "evidence_count": previous.evidence_count,
+            "evidence_scope": previous.evidence_scope,
+            "sync_job_id": "old-job",
+        },
+        materialize=False,
+    )
+    manifest = empty_manifest("fail-history")
+    record_success(
+        manifest,
+        previous,
+        concept_id=f"concept:{previous.key.canonical}",
+        concept_version=1,
+        success_at="2026-07-31T00:00:00+00:00",
+    )
+    save_manifest(store._PATHS.manifest, manifest)
+    materialize_calls = []
+    service, jobs = _service(
+        store,
+        {current.key.canonical: current},
+        materialize=lambda: materialize_calls.append(True)
+        or SimpleNamespace(errors=()),
+    )
+
+    first = service.apply(limit=10)
+
+    assert first.source_removed == 1
+    assert jobs.jobs == {}
+    assert store.read_node("concept:4SS|PRE METAL CLN|EASY")["frontmatter"][
+        "status"
+    ] == "stale"
+    review_paths = list(store._PATHS.reviews.glob("*.md"))
+    assert len(review_paths) == 1
+    review = frontmatter.load(review_paths[0])
+    assert review.metadata["missing_doc_ids"] == ["FH-2"]
+    assert review.metadata["status"] == "pending"
+    review_paths[0].write_text(
+        review_paths[0].read_text(encoding="utf-8") + "\n운영자 검토 의견\n",
+        encoding="utf-8",
+    )
+    operator_content = review_paths[0].read_text(encoding="utf-8")
+
+    second = service.apply(limit=10)
+
+    assert second.source_removed == 1
+    assert review_paths[0].read_text(encoding="utf-8") == operator_content
+    assert materialize_calls == [True]
+
+
+def test_succeeded_fingerprint_is_not_enqueued_or_synthesized_again(store):
+    snapshot = _snapshot()
+    calls = []
+    materialize_calls = []
+    jobs = InMemoryJobStore()
+    service, _ = _service(
+        store,
+        {snapshot.key.canonical: snapshot},
+        jobs=jobs,
+        synthesize=lambda *args: calls.append(args) or _synthesis(),
+        materialize=lambda: materialize_calls.append(True)
+        or SimpleNamespace(errors=()),
+    )
+
+    first = service.apply(limit=10)
+    second = service.apply(limit=10)
+
+    assert first.succeeded == 1
+    assert second.unchanged == 1
+    assert len(calls) == 1
+    assert jobs.enqueue_calls == 1
+    assert materialize_calls == [True]

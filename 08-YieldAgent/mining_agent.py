@@ -448,7 +448,7 @@ _mining_graph = create_react_agent(
 )
 
 
-@observe(name="mining_agent_node")
+@observe(name="mining_agent_node", capture_input=False, capture_output=False)
 @timed
 def mining_agent_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     """ReAct 노드: state 슬롯으로 mining 실행/질의응답. df_GINI는 동적 HTML artifact +

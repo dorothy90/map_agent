@@ -681,7 +681,7 @@ def _render_lot_history_html(all_results: Dict[str, Dict[str, List[Dict]]]) -> s
 
 # ── Agent 노드 ──────────────────────────────────────────────
 
-@observe(name="lot_history_agent_node")
+@observe(name="lot_history_agent_node", capture_input=False, capture_output=False)
 @timed
 def lot_history_agent_node(state: dict, config: RunnableConfig) -> dict:
     """LOT History deterministic 노드 — ReAct 없이 query_lot_history 직접 호출.

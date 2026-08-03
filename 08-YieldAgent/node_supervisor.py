@@ -19,7 +19,13 @@ from common import extract_json_from_llm, stream_event
 from canonical_request import AGENT_SLOT_SCHEMAS, build_task_from_canonical_request
 from lf_utils import lf_callbacks as _lf_callbacks  # noqa: E402
 from models import StatusEvent
-from local_trace import emit_runtime_detail, emit_trace_event, preview_text, summarize_params
+from local_trace import (
+    emit_runtime_detail,
+    emit_trace_event,
+    preview_text,
+    summarize_params,
+    summarize_trace_value,
+)
 
 load_dotenv(override=True)
 
@@ -203,7 +209,7 @@ def _invalid_lotcd_update(
 
 
 # ── Supervisor 노드 ──────────────────────────────────────────
-@observe(name="supervisor_node")
+@observe(name="supervisor_node", capture_input=False, capture_output=False)
 def _project_task_params(agent: str, task_params: dict, state: dict) -> dict:
     """Project a task's resolved params into the per-agent state fields the agent reads.
 
@@ -686,6 +692,7 @@ def supervisor_node(
     Command를 반환하여 state 업데이트 + 라우팅을 하나로 통합합니다.
     """
     step_count = state.get("step_count", 0) + 1
+    redact_trace = bool(state.get("wiki_context"))
 
     # 최대 스텝 강제 종료 (무한루프 방지) — recursion_limit=30과 정합 맞춤 (#R1 fix).
     # 사이클당 3노드(supervisor + agent + replanner) + setup 3노드 = 3n+3.
@@ -811,20 +818,43 @@ def supervisor_node(
             content=f"[Task {current_task.get('task_id', '?')}] {current_task.get('goal', '')}",
             name="supervisor",
         )
+        trace_current_task = (
+            {
+                "task_id": str(current_task.get("task_id") or ""),
+                "agent": str(current_task.get("agent") or ""),
+                "param_keys": sorted(str(key) for key in task_params),
+                "params": summarize_trace_value(task_params),
+                "goal": summarize_trace_value(current_task.get("goal", "")),
+            }
+            if redact_trace
+            else current_task
+        )
         logger.info(
             "[Supervisor] queued task dispatch: %s → %s params=%s goal=%r (remaining=%d)",
             current_task.get("task_id"),
             current_task.get("agent"),
-            summarize_params(task_params),
-            current_task.get("goal", ""),
+            (
+                summarize_trace_value(task_params)
+                if redact_trace
+                else summarize_params(task_params)
+            ),
+            (
+                summarize_trace_value(current_task.get("goal", ""))
+                if redact_trace
+                else current_task.get("goal", "")
+            ),
             len(remaining),
         )
         emit_runtime_detail(
             "supervisor.current_task",
             {
-                "current_task": current_task,
-                "remaining_tasks": remaining,
-                "resolved_task_params": task_params,
+                "current_task": trace_current_task,
+                "remaining_tasks": (
+                    summarize_trace_value(remaining) if redact_trace else remaining
+                ),
+                "resolved_task_params": (
+                    summarize_trace_value(task_params) if redact_trace else task_params
+                ),
             },
             task_id=str(current_task.get("task_id") or ""),
         )
@@ -889,7 +919,9 @@ def supervisor_node(
             "supervisor.dispatch_state",
             {
                 "goto": current_task["agent"],
-                "update": update_dict,
+                "update": (
+                    summarize_trace_value(update_dict) if redact_trace else update_dict
+                ),
             },
             task_id=str(current_task.get("task_id") or ""),
         )
@@ -927,11 +959,23 @@ def supervisor_node(
             task_id=str(current_task.get("task_id") or ""),
             payload={
                 "target": current_task.get("agent", ""),
-                "task_goal_preview": preview_text(current_task.get("goal", "")),
+                "task_goal_preview": (
+                    summarize_trace_value(current_task.get("goal", ""))
+                    if redact_trace
+                    else preview_text(current_task.get("goal", ""))
+                ),
                 "remaining_tasks": len(remaining),
                 "step_count": step_count,
-                "params": dispatched_params,
-                "report_scope": _report_scope_summary(current_params),
+                "params": (
+                    summarize_trace_value(dispatched_params)
+                    if redact_trace
+                    else dispatched_params
+                ),
+                "report_scope": (
+                    summarize_trace_value(_report_scope_summary(current_params))
+                    if redact_trace
+                    else _report_scope_summary(current_params)
+                ),
             },
         )
         emit_trace_event(
@@ -940,9 +984,17 @@ def supervisor_node(
             task_id=str(current_task.get("task_id") or ""),
             payload={
                 "agent": current_task.get("agent", ""),
-                "task_goal_preview": preview_text(current_task.get("goal", "")),
+                "task_goal_preview": (
+                    summarize_trace_value(current_task.get("goal", ""))
+                    if redact_trace
+                    else preview_text(current_task.get("goal", ""))
+                ),
                 "step_count": step_count,
-                "params": dispatched_params,
+                "params": (
+                    summarize_trace_value(dispatched_params)
+                    if redact_trace
+                    else dispatched_params
+                ),
             },
         )
         return Command(update=update_dict, goto=current_task["agent"])

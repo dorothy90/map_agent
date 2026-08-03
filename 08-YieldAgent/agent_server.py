@@ -34,12 +34,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from models import (  # noqa: E402
-    ArtifactData,
     ArtifactEvent,
     ArtifactType,
     ChatRequest,
+    InternalChatRequest,
     ErrorEvent,
-    HistoryMessage,
     InterruptEvent,
     MessageEvent,
     NodeCompleteEvent,
@@ -52,19 +51,33 @@ from models import (  # noqa: E402
     ThinkingEvent,
     TokenEvent,
 )
+from agent_sessions import (  # noqa: E402
+    citations_from_fail_history_results,
+    list_session_summaries,
+    load_session_history,
+)
 from common import to_user_message  # noqa: E402
 from local_trace import (  # noqa: E402
     configure_runtime_terminal_logger,
     emit_runtime_detail,
     emit_trace_event,
+    fingerprint_trace_value,
     make_trace_id,
     new_turn_id,
     preview_text,
     reset_trace_context,
     set_trace_context,
+    summarize_trace_value,
 )
+from lf_utils import reset_lf_capture_disabled, set_lf_capture_disabled  # noqa: E402
 from supervisor import workflow, _resume_is_interrupt_answer  # noqa: E402
 from user_memory import update_profile_from_feedback  # noqa: E402
+from wiki_config import (  # noqa: E402
+    initialize_wiki_vault,
+    resolve_wiki_paths,
+    validate_wiki_vault,
+)
+from wiki_plugin_notes import NoteNotFound, read_source  # noqa: E402
 
 # 사용자 선호 메모리 백그라운드 flush 태스크 보관 (GC로 조기 소멸 방지)
 _memory_tasks: set = set()
@@ -144,6 +157,12 @@ async def _wiki_lint_cron_loop(interval_hours: float) -> None:
 # ── FastAPI lifespan — MongoDB 연결 + wiki_queue 워커 관리 ─
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    wiki_paths = resolve_wiki_paths()
+    initialize_wiki_vault(wiki_paths)
+    validate_wiki_vault(wiki_paths)
+    app.state.wiki_vault_path = wiki_paths.root
+    logger.info("Wiki Vault ready: %s", wiki_paths.root)
+
     # motor (async) — 대화 이력 저장용
     motor_client = AsyncIOMotorClient(MONGO_URI)
     app.state.motor_db = motor_client[MONGO_DB]
@@ -208,8 +227,10 @@ app.include_router(repl_router, prefix="/repl", tags=["repl"])
 
 # ── Wiki vault graph endpoint (Day 5) ────────────────────
 from wiki_router import router as wiki_router  # noqa: E402
+from wiki_plugin_router import router as wiki_plugin_router  # noqa: E402
 
 app.include_router(wiki_router, prefix="/api/wiki", tags=["wiki"])
+app.include_router(wiki_plugin_router, prefix="/api/wiki/plugin", tags=["wiki-plugin"])
 
 
 _AGENT_META: dict[str, tuple[str, int, int]] = {
@@ -429,63 +450,22 @@ async def create_session():
 # ── 세션 목록 ─────────────────────────────────────────────
 @app.get("/sessions", response_model=list[SessionSummary])
 async def list_sessions(request: Request):
-    db = request.app.state.motor_db
-    pipeline = [
-        {"$sort": {"timestamp": -1}},
-        {"$group": {
-            "_id": "$session_id",
-            "last_query": {"$first": "$query"},
-            "turn_count": {"$sum": 1},
-            "updated_at": {"$first": "$timestamp"},
-        }},
-        {"$sort": {"updated_at": -1}},
-        {"$limit": 50},
-    ]
-    results = []
-    async for doc in db.chat_turns.aggregate(pipeline):
-        results.append(SessionSummary(
-            session_id=doc["_id"],
-            last_query=doc.get("last_query", ""),
-            turn_count=doc.get("turn_count", 0),
-            updated_at=doc.get("updated_at", datetime.now(timezone.utc)),
-        ))
-    return results
+    return await list_session_summaries(request.app.state.motor_db)
 
 
 # ── 세션 대화 이력 조회 ──────────────────────────────────
 @app.get("/session/{session_id}/history", response_model=SessionHistory)
 async def get_session_history(session_id: str, request: Request):
-    db = request.app.state.motor_db
-    turns: list[HistoryMessage] = []
-    async for doc in db.chat_turns.find(
-        {"session_id": session_id},
-        {"_id": 0},
-    ).sort("timestamp", 1):
-        # user turn
-        turns.append(HistoryMessage(
-            role="user",
-            content=doc.get("query", ""),
-            timestamp=doc.get("timestamp", datetime.now(timezone.utc)),
-        ))
-        # assistant turns
-        for msg in doc.get("messages", []):
-            artifacts = [ArtifactData(**a) for a in msg.get("artifacts", [])]
-            turns.append(HistoryMessage(
-                role="assistant",
-                agent=msg.get("agent", ""),
-                content=msg.get("content", ""),
-                artifacts=artifacts,
-                suggestion=msg.get("suggestion", ""),
-                timestamp=doc.get("timestamp", datetime.now(timezone.utc)),
-            ))
-    return SessionHistory(session_id=session_id, turns=turns)
+    return await load_session_history(request.app.state.motor_db, session_id)
 
 
 # ── SSE 스트리밍 ──────────────────────────────────────────
-@app.post("/chat/stream")
-async def chat_stream(request: ChatRequest, req: Request):
+async def _chat_stream(request: ChatRequest | InternalChatRequest, req: Request):
     graph = req.app.state.graph
     db = req.app.state.motor_db
+    wiki_context_turn = bool(
+        isinstance(request, InternalChatRequest) and request.wiki_context
+    )
     # #23 fix: 5-task plan 처리 시 노드 호출 횟수가 ~12회 (rewrite + planner + supervisor×6 + agents×5)
     # → limit 20은 빠듯. interrupt resume이나 미래 replanner 추가 여유까지 30으로 상향.
     base_config = {"configurable": {"thread_id": request.session_id}, "recursion_limit": 30}
@@ -513,21 +493,33 @@ async def chat_stream(request: ChatRequest, req: Request):
     # HITL 오인 가드: resume 입력이 대기 중 게이트의 '답'이 아니라 '새 질문'이면,
     # 게이트를 드롭(stale 작업 실행 방지)하고 fresh 턴으로 재처리한다. 자동 제안 게이트만 대상.
     # (missing_param/plan_review는 빈 응답이 재질문이라 드레인 부적합 → 제외.)
+    resume_is_interrupt_answer = True
     if (
         request.resume_value is not None
         and pending_interrupt_for_trace.get("interrupt_type")
         in {"task_confirm", "postwads_choice"}
-        and not _resume_is_interrupt_answer(request.resume_value, pending_interrupt_for_trace)
     ):
+        capture_token = set_lf_capture_disabled(wiki_context_turn)
+        try:
+            resume_is_interrupt_answer = _resume_is_interrupt_answer(
+                request.resume_value, pending_interrupt_for_trace
+            )
+        finally:
+            reset_lf_capture_disabled(capture_token)
+    if not resume_is_interrupt_answer:
         logger.info(
             "[Resume] 새 의도 감지(pending=%s) → 게이트 드롭 후 fresh 재처리: %r",
             pending_interrupt_for_trace.get("interrupt_type"),
             preview_text(request.query),
         )
+        capture_token = set_lf_capture_disabled(wiki_context_turn)
         try:
-            await graph.ainvoke(Command(resume=""), config)  # 빈 응답→거절→제안 task 드롭→END
-        except Exception as e:
-            logger.warning("[Resume] 게이트 드롭 드레인 실패: %s", e)
+            try:
+                await graph.ainvoke(Command(resume=""), config)  # 빈 응답→거절→제안 task 드롭→END
+            except Exception as e:
+                logger.warning("[Resume] 게이트 드롭 드레인 실패: %s", e)
+        finally:
+            reset_lf_capture_disabled(capture_token)
         request.resume_value = None  # 아래 fresh 경로로 낙하 (request.query == 새 질문 텍스트)
 
     # resume 요청인 경우: interrupt에서 재개
@@ -576,6 +568,7 @@ async def chat_stream(request: ChatRequest, req: Request):
             # Day 4: wiki state는 turn별 overwrite (reducer 없음). 명시적 reset.
             "wiki_hit_ids": [],
             "wiki_update_status": "skipped",
+            "evidence_sensitive": False,
             # 다음-턴 번호 선택 라우팅용 raw results (reducer 없음, turn별 overwrite)
             "fail_history_results": [],
             # anomaly_params는 매 새 사용자 turn 시 리셋 (#11 fix).
@@ -614,6 +607,11 @@ async def chat_stream(request: ChatRequest, req: Request):
             "tech": "",
             "rank_limit": 10,
             "user_id": request.user_id,
+            "wiki_context": (
+                request.wiki_context.model_dump()
+                if isinstance(request, InternalChatRequest) and request.wiki_context
+                else {}
+            ),
             # lotcd/ref_date: 끈적한 god-state 앵커였음 → 매 턴 리셋(제품=재도출, 날짜=today 디폴트)로
             # cross-turn stale 차단. 같은 턴 내 god-state 공유(yield→ppt 라벨 등)는 dispatch persist가
             # 다시 채우므로 유지. cross-turn 제품 참조는 planner가 recent_results에서 재도출.
@@ -682,6 +680,11 @@ async def chat_stream(request: ChatRequest, req: Request):
 
     async def generate():
         trace_tokens = set_trace_context(trace_id, turn_id)
+        # Wiki evidence stays in functional graph state, so suppress every nested
+        # payload-bearing LLM callback for this async stream execution.
+        capture_token = set_lf_capture_disabled(wiki_context_turn)
+        dynamic_capture_token = None
+        sensitive_turn = wiki_context_turn
         start = time.time()
         step_count = 0
         turn_messages: list[dict] = []
@@ -740,7 +743,17 @@ async def chat_stream(request: ChatRequest, req: Request):
                     # custom 이벤트: thinking/token/status — get_stream_writer()에서 직통
                     if mode == "custom":
                         kind = data.pop("kind", "")
-                        emit_runtime_detail("stream.custom", {"kind": kind, "data": data})
+                        emit_runtime_detail(
+                            "stream.custom",
+                            {
+                                "kind": kind,
+                                "data": (
+                                    summarize_trace_value(data)
+                                    if sensitive_turn
+                                    else data
+                                ),
+                            },
+                        )
                         if kind == "thinking":
                             yield _sse(ThinkingEvent(**data))
                         elif kind == "token":
@@ -766,16 +779,46 @@ async def chat_stream(request: ChatRequest, req: Request):
                         # node_state가 dict가 아닌 경우 (interrupt 등) 스킵
                         if not isinstance(node_state, dict):
                             continue
+                        if (
+                            node_state.get("evidence_sensitive") is True
+                            and not sensitive_turn
+                        ):
+                            dynamic_capture_token = set_lf_capture_disabled(True)
+                            sensitive_turn = True
                         emit_runtime_detail(
                             "graph.update",
                             {
                                 "node": node_name,
                                 "keys": sorted(node_state.keys()),
                                 "current_task_id": node_state.get("current_task_id", ""),
-                                "current_task_goal": node_state.get("current_task_goal", ""),
-                                "pending_tasks": node_state.get("pending_tasks", []),
-                                "task_plan": node_state.get("task_plan", []),
-                                "validation_issues": node_state.get("task_validation_issues", []),
+                                "current_task_goal": (
+                                    summarize_trace_value(
+                                        node_state.get("current_task_goal", "")
+                                    )
+                                    if sensitive_turn
+                                    else node_state.get("current_task_goal", "")
+                                ),
+                                "pending_tasks": (
+                                    summarize_trace_value(
+                                        node_state.get("pending_tasks", [])
+                                    )
+                                    if sensitive_turn
+                                    else node_state.get("pending_tasks", [])
+                                ),
+                                "task_plan": (
+                                    summarize_trace_value(
+                                        node_state.get("task_plan", [])
+                                    )
+                                    if sensitive_turn
+                                    else node_state.get("task_plan", [])
+                                ),
+                                "validation_issues": (
+                                    summarize_trace_value(
+                                        node_state.get("task_validation_issues", [])
+                                    )
+                                    if sensitive_turn
+                                    else node_state.get("task_validation_issues", [])
+                                ),
                             },
                             task_id=str(node_state.get("current_task_id", "")),
                         )
@@ -792,10 +835,50 @@ async def chat_stream(request: ChatRequest, req: Request):
                                 "elapsed": elapsed,
                                 "keys": sorted(str(k) for k in node_state.keys()),
                                 "current_task_id": str(node_state.get("current_task_id", "")),
-                                "current_task_goal_preview": preview_text(node_state.get("current_task_goal", "")),
+                                "current_task_goal_preview": preview_text(
+                                    summarize_trace_value(
+                                        node_state.get("current_task_goal", "")
+                                    )
+                                    if sensitive_turn
+                                    else node_state.get("current_task_goal", "")
+                                ),
                                 "task_plan_count": len(node_state.get("task_plan", []) or []),
                                 "pending_task_count": len(node_state.get("pending_tasks", []) or []),
                             },
+                        )
+
+                        structured_results = node_state.get("fail_history_results") or []
+                        if structured_results and sensitive_turn:
+                            emit_runtime_detail(
+                                "evidence.fingerprint",
+                                fingerprint_trace_value(structured_results),
+                                task_id=str(node_state.get("current_task_id", "")),
+                            )
+                        source_paths: dict[str, str] = {}
+                        if structured_results:
+                            wiki_paths = resolve_wiki_paths()
+                            for result in structured_results:
+                                if not isinstance(result, dict):
+                                    continue
+                                doc_id = str(result.get("doc_id") or "").strip()
+                                if not doc_id or doc_id in source_paths:
+                                    continue
+                                try:
+                                    source_paths[doc_id] = read_source(
+                                        wiki_paths, doc_id
+                                    ).source_path
+                                except NoteNotFound:
+                                    continue
+                        citation_results = [
+                            result
+                            for result in structured_results
+                            if isinstance(result, dict)
+                            and str(result.get("doc_id") or "").strip()
+                            in source_paths
+                        ]
+                        citations = citations_from_fail_history_results(
+                            citation_results,
+                            source_paths=source_paths,
                         )
 
                         # 1) node_complete
@@ -812,13 +895,23 @@ async def chat_stream(request: ChatRequest, req: Request):
                             if not content:
                                 continue
                             additional_kwargs = getattr(msg, "additional_kwargs", {}) or {}
+                            trace_content = (
+                                summarize_trace_value(content)
+                                if sensitive_turn
+                                else content
+                            )
+                            trace_additional_kwargs = (
+                                fingerprint_trace_value(additional_kwargs)
+                                if sensitive_turn
+                                else additional_kwargs
+                            )
                             emit_runtime_detail(
                                 "message",
                                 {
                                     "node": node_name,
                                     "agent": agent_name,
-                                    "content": content,
-                                    "additional_kwargs": additional_kwargs,
+                                    "content": trace_content,
+                                    "additional_kwargs": trace_additional_kwargs,
                                 },
                                 task_id=str(node_state.get("current_task_id", "")),
                                 result_id=str((additional_kwargs.get("result") or {}).get("result_id", "")) if isinstance(additional_kwargs.get("result"), dict) else "",
@@ -833,11 +926,15 @@ async def chat_stream(request: ChatRequest, req: Request):
                             yield _sse(MessageEvent(
                                 agent=agent_name,
                                 content=content,
+                                citations=citations,
                                 step=step_count,
                             ))
                             turn_messages.append({
                                 "agent": agent_name,
                                 "content": content,
+                                "citations": [
+                                    citation.model_dump() for citation in citations
+                                ],
                             })
 
                         # 3) artifacts → artifact 이벤트 (오른쪽 패널)
@@ -865,7 +962,11 @@ async def chat_stream(request: ChatRequest, req: Request):
                                         "agent": art.get("agent", default_agent),
                                         "type": art.get("type", ""),
                                         "mime": art.get("mime", ""),
-                                        "data": art_data,
+                                        "data": (
+                                            summarize_trace_value(art_data)
+                                            if sensitive_turn
+                                            else art_data
+                                        ),
                                     },
                                     task_id=str(node_state.get("current_task_id", "")),
                                 )
@@ -906,7 +1007,11 @@ async def chat_stream(request: ChatRequest, req: Request):
                                         "key": key,
                                         "title": art.get("title", key.replace("_artifacts", "")),
                                         "agent": art.get("agent", default_agent),
-                                        "data": art_data,
+                                        "data": (
+                                            summarize_trace_value(art_data)
+                                            if sensitive_turn
+                                            else art_data
+                                        ),
                                     },
                                     task_id=str(node_state.get("current_task_id", "")),
                                 )
@@ -936,7 +1041,14 @@ async def chat_stream(request: ChatRequest, req: Request):
                         if analysis:
                             emit_runtime_detail(
                                 "analysis_result",
-                                {"node": node_name, "analysis": analysis},
+                                {
+                                    "node": node_name,
+                                    "analysis": (
+                                        summarize_trace_value(analysis)
+                                        if sensitive_turn
+                                        else analysis
+                                    ),
+                                },
                                 task_id=str(node_state.get("current_task_id", "")),
                             )
                             evt = ArtifactEvent(
@@ -955,7 +1067,14 @@ async def chat_stream(request: ChatRequest, req: Request):
                         if suggestion:
                             emit_runtime_detail(
                                 "suggestion",
-                                {"node": node_name, "suggestion": suggestion},
+                                {
+                                    "node": node_name,
+                                    "suggestion": (
+                                        summarize_trace_value(suggestion)
+                                        if sensitive_turn
+                                        else suggestion
+                                    ),
+                                },
                                 task_id=str(node_state.get("current_task_id", "")),
                             )
                             yield _sse(SuggestionEvent(
@@ -972,8 +1091,14 @@ async def chat_stream(request: ChatRequest, req: Request):
                     severity="error",
                     payload={
                         "error_type": type(e).__name__,
-                        "error_message": str(e),
-                        "traceback": traceback.format_exc(),
+                        "error_message": (
+                            summarize_trace_value(str(e)) if sensitive_turn else str(e)
+                        ),
+                        "traceback": (
+                            summarize_trace_value(traceback.format_exc())
+                            if sensitive_turn
+                            else traceback.format_exc()
+                        ),
                     },
                 )
                 yield _sse(ErrorEvent(message=to_user_message(e)))
@@ -993,7 +1118,12 @@ async def chat_stream(request: ChatRequest, req: Request):
                             if hasattr(task, "interrupts") and task.interrupts:
                                 for intr in task.interrupts:
                                     interrupt_data = intr.value
-                                    emit_runtime_detail("interrupt", interrupt_data)
+                                    emit_runtime_detail(
+                                        "interrupt",
+                                        summarize_trace_value(interrupt_data)
+                                        if sensitive_turn
+                                        else interrupt_data,
+                                    )
                                     for sse_line in _interrupt_sse_events(interrupt_data):
                                         yield sse_line
                                     interrupt_emitted = True
@@ -1051,6 +1181,21 @@ async def chat_stream(request: ChatRequest, req: Request):
             except Exception:
                 pass
         finally:
+            if dynamic_capture_token is not None:
+                reset_lf_capture_disabled(dynamic_capture_token)
+            reset_lf_capture_disabled(capture_token)
             reset_trace_context(trace_tokens)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest, req: Request):
+    return await _chat_stream(request, req)
+
+
+async def plugin_chat_stream(request: InternalChatRequest, req: Request):
+    return await _chat_stream(request, req)
+
+
+app.state.chat_stream_handler = plugin_chat_stream

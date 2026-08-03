@@ -534,7 +534,7 @@ def _render_wads_report_html(payload: Any) -> str:
 
 
 # -------------------- WADS Agent Node (LangGraph 노드용) --------------------
-@observe(name="wads_agent_node")
+@observe(name="wads_agent_node", capture_input=False, capture_output=False)
 @timed
 def wads_agent_node(state: dict, config: RunnableConfig) -> dict:
     """WADS Agent 노드: 열화 검출 리포트를 Oracle DB에서 조회"""

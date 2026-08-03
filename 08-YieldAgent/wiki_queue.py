@@ -9,15 +9,34 @@ summarize_queue (LLM 호출 직렬화) → persist_queue (디스크 write 직렬
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Callable, Optional, TypedDict
 
 import wiki_store
+from lf_utils import reset_lf_capture_disabled, set_lf_capture_disabled
 
 logger = logging.getLogger("yield_agent.wiki_queue")
 
 SummarizeResult = dict[str, Any]
 SummarizeFn = Callable[[dict[str, Any]], SummarizeResult | None]
+
+
+class SummarizeQueueItem(TypedDict, total=False):
+    task_type: str
+    payload: dict[str, Any]
+    attempt: int
+    concept_id: str
+    filters: dict[str, Any]
+    episodes: list[dict[str, Any]]
+    evidence: dict[str, Any]
+    private: bool
+
+
+class PersistQueueItem(TypedDict):
+    kind: str
+    args: tuple
+    private: bool
 
 
 def _placeholder_summarize(payload: dict[str, Any]) -> SummarizeResult | None:
@@ -30,11 +49,23 @@ def _placeholder_summarize(payload: dict[str, Any]) -> SummarizeResult | None:
     cause = (first.get("cause", "") or "")[:200]
     action = (first.get("action", "") or "")[:200]
     summary = (cause or first.get("comment", "") or "")[:120]
+    source_rows = [
+        result
+        for result in raw
+        if result.get("doc_id") or result.get("filenm")
+    ]
     return {
         "episode": {
             "query": payload.get("query", ""),
             "filters": filters,
-            "doc_ids": [r.get("doc_id") or r.get("filenm") or "" for r in raw if (r.get("doc_id") or r.get("filenm"))],
+            "doc_ids": [
+                result.get("doc_id") or result.get("filenm") or ""
+                for result in source_rows
+            ],
+            "source_files": [
+                str(result.get("source_file") or "") for result in source_rows
+            ],
+            "source_files_aligned": True,
             "body": f"## Placeholder Summary\n\n**원인**: {cause}\n\n**조치**: {action}\n",
             "summary": summary,
             "links": [],
@@ -51,8 +82,8 @@ class WikiQueue:
         self._summarize_fn: SummarizeFn = summarize_fn or _placeholder_summarize
         self._maxsize = maxsize
         self._max_retry = max_retry
-        self._summarize_q: asyncio.Queue[dict[str, Any]] | None = None
-        self._persist_q: asyncio.Queue[tuple[str, tuple]] | None = None
+        self._summarize_q: asyncio.Queue[SummarizeQueueItem] | None = None
+        self._persist_q: asyncio.Queue[PersistQueueItem] | None = None
         self._workers: list[asyncio.Task] = []
         self._running = False
         self.drops: dict[str, int] = {"summarize": 0, "persist": 0, "queue_full": 0,
@@ -68,8 +99,8 @@ class WikiQueue:
         """Day 3에서 wiki_summarizer.summarize로 교체."""
         self._summarize_fn = fn
 
-    def summarize_enqueue(self, payload: dict[str, Any]) -> str:
-        """search_fail_history 도구가 호출. Returns: 'queued' | 'skipped' | 'dropped'."""
+    def summarize_enqueue(self, payload: dict[str, Any], *, private: bool = False) -> str:
+        """Enqueue with caller-provided privacy; never infer it from payload text."""
         if not self._running or self._summarize_q is None:
             return "skipped"
         # 64KB 가드
@@ -80,7 +111,9 @@ class WikiQueue:
         except Exception:
             pass
         try:
-            self._summarize_q.put_nowait({"payload": payload, "attempt": 0})
+            self._summarize_q.put_nowait(
+                {"payload": payload, "attempt": 0, "private": bool(private)}
+            )
             return "queued"
         except asyncio.QueueFull:
             self.drops["queue_full"] += 1
@@ -140,6 +173,8 @@ class WikiQueue:
         assert self._summarize_q is not None and self._persist_q is not None
         while True:
             item = await self._summarize_q.get()
+            # The lifespan worker predates requests, so restore privacy per item.
+            capture_token = set_lf_capture_disabled(bool(item.get("private", False)))
             try:
                 task_type = item.get("task_type", "episode_summarize")
                 if task_type == "concept_synthesis":
@@ -147,6 +182,7 @@ class WikiQueue:
                 else:
                     await self._handle_episode_summarize(item)
             finally:
+                reset_lf_capture_disabled(capture_token)
                 self._summarize_q.task_done()
 
     async def _handle_episode_summarize(self, item: dict[str, Any]) -> None:
@@ -171,86 +207,158 @@ class WikiQueue:
             logger.warning("[wiki_queue] summarize dropped after %d attempts (drops=%d)",
                            self._max_retry, self.drops["summarize"])
         else:
+            private = bool(item.get("private", False))
             ep = result.get("episode")
             if ep:
-                self._persist_q.put_nowait(("episode", (ep,)))
+                ep_payload = {**ep, "private": private}
+                self._persist_q.put_nowait(
+                    {"kind": "episode", "args": (ep_payload,), "private": private}
+                )
             cf = result.get("concept_filters")
             if cf:
-                self._persist_q.put_nowait(("concept", (cf, None)))
+                self._persist_q.put_nowait(
+                    {"kind": "concept", "args": (cf, None), "private": private}
+                )
             for canonical, variant in (result.get("alias_pairs") or []):
-                self._persist_q.put_nowait(("alias", (canonical, variant)))
+                self._persist_q.put_nowait(
+                    {
+                        "kind": "alias",
+                        "args": (canonical, variant),
+                        "private": private,
+                    }
+                )
 
     async def _handle_concept_synthesis(self, item: dict[str, Any]) -> None:
         """plan v3 §A: evidence_diversity 통과한 concept을 LLM으로 메타 합성."""
-        from wiki_summarizer import synthesize_concept
+        from wiki_summarizer import (
+            authoritative_citations_from_episodes,
+            restrict_concept_synthesis_sources,
+            synthesize_concept,
+        )
+        from wiki_sync import build_triple_snapshot, make_triple_key
 
         concept_id = item["concept_id"]
         filters = item["filters"]
         episodes = item["episodes"]
         evidence = item["evidence"]
+        attempt = int(item.get("attempt", 0))
 
-        loop = asyncio.get_running_loop()
         try:
-            result = await loop.run_in_executor(None, synthesize_concept, concept_id, episodes)
+            result = await self._run_sync(synthesize_concept, concept_id, episodes)
+            if result is None:
+                raise RuntimeError("Wiki synthesis returned no result")
+            authoritative_sources = authoritative_citations_from_episodes(episodes)
+            result = restrict_concept_synthesis_sources(
+                result, authoritative_sources
+            )
         except Exception as e:
-            logger.warning("[wiki_queue] synthesize_concept failed: %s", e)
-            result = None
-        self._synth_in_flight.discard(concept_id)
-        if result is None:
+            logger.warning(
+                "[wiki_queue] concept synthesis rejected (attempt=%d, error=%s)",
+                attempt,
+                type(e).__name__,
+            )
+            if attempt + 1 < self._max_retry:
+                await asyncio.sleep(2 ** attempt)
+                retry_item = {**item, "attempt": attempt + 1}
+                assert self._summarize_q is not None
+                try:
+                    self._summarize_q.put_nowait(retry_item)
+                    return
+                except asyncio.QueueFull:
+                    self.drops["queue_full"] += 1
+            self._synth_in_flight.discard(concept_id)
             self.drops["synthesis"] = self.drops.get("synthesis", 0) + 1
             return
+        self._synth_in_flight.discard(concept_id)
+        source_doc_ids = sorted(authoritative_sources)
+        snapshot = build_triple_snapshot(
+            make_triple_key(
+                str(filters.get("product") or ""),
+                str(filters.get("fail_type") or ""),
+                str(filters.get("cause_oper") or ""),
+            ),
+            [{"doc_id": doc_id} for doc_id in source_doc_ids],
+        )
         synth_payload = {
             "body_markdown": result.body_markdown,
             "confidence": float(result.confidence),
             "citations": [c.model_dump() if hasattr(c, "model_dump") else c.dict() for c in result.citations],
+            "entities": [
+                entity.model_dump(mode="json")
+                for entity in getattr(result, "entities", [])
+            ],
+            "relations": [
+                relation.model_dump(mode="json")
+                for relation in getattr(result, "relations", [])
+            ],
             "evidence": evidence,
+            "sync_metadata": {
+                "source_fingerprint": snapshot.source_fingerprint,
+                "source_doc_ids": list(snapshot.source_doc_ids),
+                "evidence_count": snapshot.evidence_count,
+                "evidence_scope": snapshot.evidence_scope,
+            },
         }
         try:
-            self._persist_q.put_nowait(("concept_synthesized", (filters, synth_payload)))
+            self._persist_q.put_nowait(
+                {
+                    "kind": "concept_synthesized",
+                    "args": (filters, synth_payload),
+                    "private": bool(item.get("private", False)),
+                }
+            )
         except asyncio.QueueFull:
             self.drops["queue_full"] += 1
 
     async def _persist_worker(self) -> None:
         assert self._persist_q is not None
-        loop = asyncio.get_running_loop()
         last_episode_id: Optional[str] = None
         while True:
-            kind, args = await self._persist_q.get()
+            item = await self._persist_q.get()
+            kind, args = item["kind"], item["args"]
+            private = bool(item["private"])
+            capture_token = set_lf_capture_disabled(private)
             try:
                 attempt = 0
                 while attempt < self._max_retry:
                     try:
                         if kind == "episode":
                             (ep_payload,) = args
-                            eid, status = await loop.run_in_executor(None, wiki_store.upsert_episode, ep_payload)
+                            eid, status = await self._run_sync(
+                                wiki_store.upsert_episode, ep_payload
+                            )
                             last_episode_id = f"episode:{eid}"
                             self.commits[f"episode_{status}"] = self.commits.get(f"episode_{status}", 0) + 1
                         elif kind == "concept":
                             cf, src_ep = args
                             src = src_ep or last_episode_id
-                            cid, status = await loop.run_in_executor(
-                                None, wiki_store.upsert_concept, cf, src, None
+                            cid, status = await self._run_sync(
+                                wiki_store.upsert_concept, cf, src, None
                             )
                             self.commits[f"concept_{status}"] = self.commits.get(f"concept_{status}", 0) + 1
                             # plan v3 §A: concept update 후 evidence_diversity 트리거
-                            await self._maybe_trigger_synthesis(f"concept:{cid}", cf)
+                            await self._maybe_trigger_synthesis(
+                                f"concept:{cid}", cf, private=private
+                            )
                         elif kind == "concept_synthesized":
                             cf, synth = args
-                            cid, status = await loop.run_in_executor(
-                                None,
+                            cid, status = await self._run_sync(
                                 lambda: wiki_store.upsert_concept(
                                     cf, source_episode_id=None, links=None,
                                     synthesized_body=synth["body_markdown"],
                                     confidence=synth["confidence"],
                                     citations=synth["citations"],
+                                    entities=synth["entities"],
+                                    relations=synth["relations"],
                                     evidence=synth["evidence"],
+                                    sync_metadata=synth["sync_metadata"],
                                 ),
                             )
                             self.commits["synthesis_persisted"] += 1
                         elif kind == "alias":
                             canonical, variant = args
-                            results = await loop.run_in_executor(
-                                None, wiki_store.upsert_alias, canonical, variant
+                            results = await self._run_sync(
+                                wiki_store.upsert_alias, canonical, variant
                             )
                             for _, status in results:
                                 self.commits[f"alias_{status}"] = self.commits.get(f"alias_{status}", 0) + 1
@@ -264,18 +372,19 @@ class WikiQueue:
                             break
                         await asyncio.sleep(2 ** attempt)
             finally:
+                reset_lf_capture_disabled(capture_token)
                 self._persist_q.task_done()
 
-    async def _maybe_trigger_synthesis(self, concept_id: str, filters: dict[str, Any]) -> None:
+    async def _maybe_trigger_synthesis(
+        self, concept_id: str, filters: dict[str, Any], *, private: bool
+    ) -> None:
         """plan v3 §A: evidence_diversity 임계 통과 시 concept_synthesis task 발행.
 
         같은 raw 반복은 score 낮아 트리거 X (사용자 비판 정면 가드).
         """
         if concept_id in self._synth_in_flight:
             return  # 동시 트리거 가드
-        loop = asyncio.get_running_loop()
-
-        def _load_and_check() -> tuple[list[dict], dict] | None:
+        def _load_and_check() -> tuple[list[dict], dict, bool] | None:
             cid_key = concept_id.replace("concept:", "")
             cpath = wiki_store._CONCEPTS / f"{wiki_store._safe_filename(cid_key)}.md"
             cpost = wiki_store._read(cpath)
@@ -286,31 +395,41 @@ class WikiQueue:
             if len(src_ep_ids) < 2:
                 return None
             episodes: list[dict[str, Any]] = []
-            for ep_id in src_ep_ids[:10]:  # 토큰 가드
+            source_private = False
+            for ep_id in src_ep_ids:
                 key = ep_id.replace("episode:", "")
                 ep_post = wiki_store._read(wiki_store._EPISODES / f"{key}.md")
                 if ep_post:
-                    episodes.append({
-                        "id": ep_id,
-                        "frontmatter": dict(ep_post.metadata),
-                        "body": ep_post.content or "",
-                    })
+                    metadata = dict(ep_post.metadata)
+                    source_private = source_private or bool(
+                        metadata.get("private", False)
+                    )
+                    if len(episodes) < 10:  # 합성 입력 토큰 가드
+                        episodes.append({
+                            "id": ep_id,
+                            "frontmatter": metadata,
+                            "body": ep_post.content or "",
+                        })
             if len(episodes) < 2:
                 return None
             ev = wiki_store.compute_evidence_diversity(episodes)
-            return episodes, ev
+            return episodes, ev, source_private
 
         try:
-            check = await loop.run_in_executor(None, _load_and_check)
+            check = await self._run_sync(_load_and_check)
         except Exception as e:
             logger.warning("[wiki_queue] synthesis check failed: %s", e)
             return
         if check is None:
             return
-        episodes, evidence = check
+        episodes, evidence, source_private = check
+        # Pre-provenance episodes intentionally remain public for compatibility.
+        synthesis_private = private or source_private
 
         # 진단 가시성 — evidence 결과를 concept frontmatter에 항상 갱신
-        await loop.run_in_executor(None, wiki_store.update_concept_evidence, concept_id, evidence)
+        await self._run_sync(
+            wiki_store.update_concept_evidence, concept_id, evidence
+        )
 
         # Karpathy 회귀: unique_doc_ids 가드 제거.
         # episode 2건 이상이면 합성 시도하되, evidence_diversity가 매우 낮은(<0.3)
@@ -330,6 +449,7 @@ class WikiQueue:
                 "filters": filters,
                 "episodes": episodes,
                 "evidence": evidence,
+                "private": synthesis_private,
             })
             self.commits["synthesis_triggered"] += 1
             logger.info("[wiki_queue] synthesis triggered %s (diversity=%s)",
@@ -344,8 +464,14 @@ class WikiQueue:
         if asyncio.iscoroutinefunction(fn):
             return await fn(payload)
         # sync 함수는 executor로 실행 (LLM 호출이 블로킹일 수 있음)
+        return await self._run_sync(fn, payload)
+
+    async def _run_sync(self, function, *args):
+        """Run blocking queue work with the current item's privacy context."""
+
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, fn, payload)
+        context = contextvars.copy_context()
+        return await loop.run_in_executor(None, context.run, function, *args)
 
 
 # ── 모듈 레벨 싱글톤 ────────────────────────────────────

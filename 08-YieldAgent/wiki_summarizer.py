@@ -4,21 +4,27 @@ plan v3 §wiki_summarizer.py:
 - LangChain `with_structured_output(method="function_calling")`로 모델 독립성 확보
 - get_llm + lf_callbacks 재사용
 - 모델: WIKI_SUMMARIZE_MODEL > RETRIEVE_CHAIN_MODEL fallback
-- redaction 패스 없음 (plan v3 §변경: 운영=사내 로컬 LLM, dev=OpenRouter라 외부 노출 차단 가드 PoC 외)
+- Plugin Wiki item은 queue가 전달한 privacy context에서 decorator/callback payload capture를 차단
 """
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, Mapping
 
-from langfuse import observe
 from pydantic import BaseModel, Field
 
 from common import get_llm
-from lf_utils import lf_callbacks as _lf_callbacks
+from lf_utils import lf_callbacks as _lf_callbacks, observe_with_privacy
+from wiki_graph_models import EntityCandidate, RelationCandidate
+from wiki_source_citations import extract_standalone_source_ids
 
 logger = logging.getLogger("yield_agent.wiki_summarizer")
+
+
+class UnsupportedSourceCitationError(ValueError):
+    """A synthesis body cites a Source outside its authoritative input set."""
 
 
 class AliasPair(BaseModel):
@@ -63,7 +69,198 @@ class ConceptSynthesis(BaseModel):
         default_factory=list,
         description="본문에 인용된 episode들. episode_id 필수, 나머지는 후처리에서 보강 가능"
     )
+    entities: list[EntityCandidate] = Field(
+        default_factory=list,
+        description="입력 근거에 명시된 정규화 엔티티만. 근거가 없으면 빈 목록",
+    )
+    relations: list[RelationCandidate] = Field(
+        default_factory=list,
+        description="입력 근거에 명시된 관계만. 각 관계는 인용된 doc_id를 source_doc_ids에 포함",
+    )
     notes: str = Field(default="", description="합성 시 주의사항/한계")
+
+
+def canonical_source_doc_ids(values: Iterable[Any]) -> list[str]:
+    """Return non-empty Source IDs in stable, de-duplicated canonical form."""
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        doc_id = str(value or "").strip()
+        if doc_id and doc_id not in seen:
+            seen.add(doc_id)
+            result.append(doc_id)
+    return result
+
+
+def validate_body_source_citations(
+    body_markdown: str,
+    authoritative_source_ids: Iterable[Any],
+) -> None:
+    """Reject standalone canonical Source citations outside the trusted set.
+
+    Markdown links are excluded structurally; this validator does not inspect
+    natural-language claims or link labels.
+    """
+    allowed = set(canonical_source_doc_ids(authoritative_source_ids))
+    cited = extract_standalone_source_ids(body_markdown)
+    unsupported = cited - allowed
+    if unsupported:
+        raise UnsupportedSourceCitationError(
+            f"unsupported inline Source citations: {len(unsupported)}"
+        )
+
+
+_AUTHORITATIVE_CITATION_FIELDS = (
+    "episode_id",
+    "source_file",
+    "date",
+    "natural_label",
+    "download_url",
+)
+
+
+def authoritative_citations_from_documents(
+    documents: Iterable[Mapping[str, Any]],
+) -> dict[str, dict[str, str]]:
+    """Build trusted citation fields keyed by canonical Source ID."""
+    authoritative: dict[str, dict[str, str]] = {}
+    for document in documents:
+        doc_id = str(document.get("doc_id") or "").strip()
+        if not doc_id:
+            continue
+        metadata = authoritative.setdefault(
+            doc_id,
+            {field: "" for field in _AUTHORITATIVE_CITATION_FIELDS},
+        )
+        for field in _AUTHORITATIVE_CITATION_FIELDS:
+            value = str(document.get(field) or "").strip()
+            if value and not metadata[field]:
+                metadata[field] = value
+    return authoritative
+
+
+def authoritative_citations_from_episodes(
+    episodes: Iterable[Mapping[str, Any]],
+) -> dict[str, dict[str, str]]:
+    """Build trusted citation fields from persisted Episode frontmatter."""
+    documents: list[dict[str, str]] = []
+    for episode in episodes:
+        frontmatter = episode.get("frontmatter", {}) or {}
+        episode_id = str(episode.get("id") or frontmatter.get("id") or "")
+        episode_id = episode_id.replace("episode:", "", 1)
+        raw_doc_ids = frontmatter.get("doc_ids")
+        raw_source_files = frontmatter.get("source_files")
+        doc_ids = list(raw_doc_ids) if isinstance(raw_doc_ids, (list, tuple)) else []
+        source_files = (
+            list(raw_source_files)
+            if isinstance(raw_source_files, (list, tuple))
+            else []
+        )
+        source_files_aligned = (
+            frontmatter.get("source_files_aligned") is True
+            and bool(doc_ids)
+            and len(doc_ids) == len(source_files)
+        )
+        date = str(frontmatter.get("created") or "")[:10]
+        for index, doc_id in enumerate(doc_ids):
+            documents.append(
+                {
+                    "doc_id": str(doc_id),
+                    "episode_id": episode_id,
+                    "source_file": (
+                        str(source_files[index]) if source_files_aligned else ""
+                    ),
+                    "date": date,
+                }
+            )
+    return authoritative_citations_from_documents(documents)
+
+
+def _model_data(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    dump = getattr(value, "model_dump", None)
+    if dump is not None:
+        try:
+            return dict(dump(mode="json"))
+        except TypeError:
+            return dict(dump())
+    return dict(value)
+
+
+def restrict_concept_synthesis_sources(
+    synthesis: Any,
+    authoritative_sources: Mapping[str, Mapping[str, Any]] | Iterable[Any],
+) -> Any:
+    """Remove provider Source claims not present in the actual input set.
+
+    Relations are strict: any out-of-set Source rejects the complete Relation
+    instead of silently weakening its provenance by trimming individual IDs.
+    """
+    if isinstance(authoritative_sources, Mapping):
+        authoritative = authoritative_citations_from_documents(
+            {**dict(metadata), "doc_id": doc_id}
+            for doc_id, metadata in authoritative_sources.items()
+        )
+    else:
+        authoritative = authoritative_citations_from_documents(
+            {"doc_id": doc_id}
+            for doc_id in canonical_source_doc_ids(authoritative_sources)
+        )
+    allowed = set(authoritative)
+    validate_body_source_citations(
+        str(getattr(synthesis, "body_markdown", "") or ""),
+        allowed,
+    )
+    provider_citations = list(getattr(synthesis, "citations", []) or [])
+    provider_relations = list(getattr(synthesis, "relations", []) or [])
+    citations: list[EpisodeRef] = []
+    seen_citations: set[str] = set()
+    for value in provider_citations:
+        try:
+            citation = EpisodeRef.model_validate(_model_data(value))
+        except (TypeError, ValueError):
+            continue
+        doc_id = str(citation.doc_id or "").strip()
+        if doc_id not in allowed or doc_id in seen_citations:
+            continue
+        seen_citations.add(doc_id)
+        metadata = authoritative[doc_id]
+        citations.append(
+            EpisodeRef(
+                episode_id=metadata["episode_id"],
+                doc_id=doc_id,
+                source_file=metadata["source_file"],
+                date=metadata["date"],
+                natural_label=metadata["natural_label"],
+                download_url=metadata["download_url"],
+            )
+        )
+
+    relations: list[RelationCandidate] = []
+    for value in provider_relations:
+        try:
+            relation = RelationCandidate.model_validate(_model_data(value))
+        except (TypeError, ValueError):
+            continue
+        source_doc_ids = canonical_source_doc_ids(relation.source_doc_ids)
+        if not source_doc_ids or any(doc_id not in allowed for doc_id in source_doc_ids):
+            continue
+        relations.append(
+            relation.model_copy(update={"source_doc_ids": source_doc_ids})
+        )
+
+    synthesis.citations = citations
+    synthesis.relations = relations
+    dropped_citations = len(provider_citations) - len(citations)
+    dropped_relations = len(provider_relations) - len(relations)
+    if dropped_citations or dropped_relations:
+        logger.warning(
+            "[wiki_source_grounding] dropped citations=%d relations=%d",
+            dropped_citations,
+            dropped_relations,
+        )
+    return synthesis
 
 
 _SYSTEM_PROMPT = """당신은 반도체 불량이력 검색 결과를 wiki episode 노드로 응축하는 어시스턴트입니다.
@@ -82,7 +279,7 @@ def _model():
     return get_llm(model=name)
 
 
-@observe(name="wiki_summarize")
+@observe_with_privacy(name="wiki_summarize")
 def summarize(payload: dict[str, Any]) -> dict[str, Any] | None:
     """search 결과 → wiki_queue가 persist할 작업 dict.
 
@@ -125,14 +322,16 @@ def summarize(payload: dict[str, Any]) -> dict[str, Any] | None:
         logger.warning("[wiki_summarize] structured output None")
         return None
 
-    doc_ids = [r.get("doc_id") for r in raw if r.get("doc_id")]
-    source_files = [r.get("source_file") for r in raw if r.get("source_file")]
+    source_rows = [r for r in raw if r.get("doc_id")]
+    doc_ids = [r.get("doc_id") for r in source_rows]
+    source_files = [str(r.get("source_file") or "") for r in source_rows]
     return {
         "episode": {
             "query": query,
             "filters": filters,
             "doc_ids": doc_ids,
             "source_files": source_files,
+            "source_files_aligned": True,
             "body": out.episode_body_md,
             "summary": out.episode_summary,
             "links": [],
@@ -192,10 +391,15 @@ episode마다 1행. Lot/불량유형/공정은 concept_id에서 추출. 없는 �
 - <0.5: source 2건 미만 또는 모순 많음
 
 [citations] 본문에 인용한 모든 episode_id + doc_id 필수
+
+[graph extraction]
+- entities에는 episode 근거에 명시된 엔티티만 넣고, 근거가 없으면 빈 목록으로 둔다.
+- relations에는 episode 근거에 명시된 관계만 넣는다. predicate는 `causes`, `contributes_to`, `resolved_by`, `prevents`, `associated_with` 중 하나만 사용한다.
+- 모든 relation의 source_doc_ids에는 해당 관계를 뒷받침하는, citations에 포함된 doc_id만 넣는다.
 """
 
 
-@observe(name="wiki_synthesize_concept")
+@observe_with_privacy(name="wiki_synthesize_concept")
 def synthesize_concept(
     concept_id: str,
     episodes: list[dict],
@@ -292,7 +496,10 @@ def synthesize_concept(
             for ep in episodes[:10]
         ]
     out.citations = [_enrich(c) for c in out.citations]
-    return out
+    return restrict_concept_synthesis_sources(
+        out,
+        authoritative_citations_from_episodes(episodes),
+    )
 
 
 # ── Day 5: super_concept — cross-concept 추상화 (참고용 한정) ─────
@@ -334,7 +541,7 @@ _SUPER_SYSTEM = """당신은 반도체 fail_history wiki의 cross-concept 추상
 """
 
 
-@observe(name="wiki_synthesize_super_concept")
+@observe_with_privacy(name="wiki_synthesize_super_concept")
 def synthesize_super_concept(
     axis: str,
     axis_value: str,
@@ -438,10 +645,15 @@ doc마다 1행. Lot/불량유형/공정은 concept_id에서 추출. 없는 정�
 - <0.5: 1~2건 또는 모순 많음
 
 [citations] doc_id만 채워라. source_file은 절대 추측하지 말고 반드시 빈 문자열("")로 둘 것.
+
+[graph extraction]
+- entities에는 raw docs 근거에 명시된 엔티티만 넣고, 근거가 없으면 빈 목록으로 둔다.
+- relations에는 raw docs 근거에 명시된 관계만 넣는다. predicate는 `causes`, `contributes_to`, `resolved_by`, `prevents`, `associated_with` 중 하나만 사용한다.
+- 모든 relation의 source_doc_ids에는 해당 관계를 뒷받침하는, citations에 포함된 doc_id만 넣는다.
 """
 
 
-@observe(name="wiki_synthesize_concept_from_docs")
+@observe_with_privacy(name="wiki_synthesize_concept_from_docs")
 def synthesize_concept_from_docs(
     concept_id: str,
     raw_docs: list[dict],
@@ -525,4 +737,7 @@ def synthesize_concept_from_docs(
             for d in raw_docs[:10] if d.get("doc_id")
         ]
     out.citations = [_enrich(c) for c in out.citations]
-    return out
+    return restrict_concept_synthesis_sources(
+        out,
+        authoritative_citations_from_documents(raw_docs),
+    )

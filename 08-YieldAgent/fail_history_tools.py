@@ -20,6 +20,12 @@ import requests as http_requests
 from jinja2 import Environment, FileSystemLoader
 from langfuse import observe
 
+from wiki_config import resolve_wiki_paths
+from wiki_graph_models import GraphContext
+from wiki_graph_projection import build_graph_projection
+from wiki_sync import make_triple_key
+from lf_utils import lf_capture_disabled
+
 # ── Jinja2 템플릿 환경 ──────────────────────────────────────
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _jinja_env = Environment(
@@ -162,7 +168,7 @@ def _get_embedding_cached(text: str) -> tuple:
     raise RuntimeError("임베딩 API 호출 실패 (최대 재시도 초과)")
 
 
-@observe(name="fh_get_embedding")
+@observe(name="fh_get_embedding", capture_input=False, capture_output=False)
 def _get_embedding(text: str) -> List[float]:
     """OpenRouter API로 텍스트 임베딩 생성 (캐시 + 재시도 적용)"""
     return list(_get_embedding_cached(text))
@@ -190,29 +196,14 @@ def _normalize_fail_type(fail_type: str) -> str:
 
 
 # ── OpenSearch 하이브리드 검색 ────────────────────────────────
-@observe(name="fh_search_opensearch")
-def _search_opensearch(
+def _build_bm25_query(
     query: str,
     product: str = "",
     fail_type: str = "",
     cause_oper: str = "",
-    top_k: int = 5,
-) -> List[Dict[str, Any]]:
-    """BM25 + kNN 하이브리드 검색 실행"""
-    client = _get_opensearch_client()
-
+) -> tuple[str, list[Dict[str, Any]], Dict[str, Any]]:
     fail_type = _normalize_fail_type(fail_type)
-
-    # 약어 확장 후 임베딩 생성
     expanded_query = _expand_acronyms(query)
-    embedding = _get_embedding(expanded_query)
-
-    # 메타데이터 필터 구성
-    # product / fail_type은 text + .keyword 매핑 → 정확매칭 위해 .keyword 사용
-    # cause_oper는 keyword 단일 매핑 → 그대로 사용
-    # fail_type 값은 인덱스에 "EASY(W)" 또는 "pteidx_snc_n/o"처럼 접두/접미가 붙어
-    #   저장될 수 있음 → substring(wildcard) 매칭으로 사용자 입력("EASY","snc_no")이
-    #   인덱스 값 어디에 있든 잡히도록 처리. case_insensitive로 대소문자 차이도 수용.
     filters = []
     if product:
         filters.append({"term": {"product.keyword": product}})
@@ -237,6 +228,62 @@ def _search_opensearch(
     }
     if filters:
         bm25_query = {"bool": {"must": [bm25_query], "filter": filters}}
+    return expanded_query, filters, bm25_query
+
+
+def _format_search_results(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    results = []
+    for hit in response.get("hits", {}).get("hits", []):
+        src = hit.get("_source", {})
+        score = hit.get("_score", 0)
+        results.append({
+            "product": src.get("product", ""),
+            "cause_oper": src.get("cause_oper", ""),
+            "fail_type": src.get("fail_type", ""),
+            "cause": src.get("cause", ""),
+            "action": src.get("action", ""),
+            "comment": src.get("comment", ""),
+            "date": src.get("date", ""),
+            "source_file": src.get("source_file", ""),
+            "page_num": src.get("page_num", 0),
+            "doc_id": src.get("doc_id", ""),
+            "filenm": src.get("filenm", ""),
+            "download_url": src.get("download_url", ""),
+            "score": round(min(score * 100, 100.0), 1),
+            "content": src.get("content", "")[:200],
+        })
+    return results
+
+
+def _search_bm25(
+    query: str,
+    product: str = "",
+    fail_type: str = "",
+    cause_oper: str = "",
+    top_k: int = 5,
+) -> List[Dict[str, Any]]:
+    """Run the existing BM25 query without an embedding request."""
+    _, _, bm25_query = _build_bm25_query(query, product, fail_type, cause_oper)
+    response = _get_opensearch_client().search(
+        index=_OPENSEARCH_INDEX,
+        body={"size": top_k, "query": bm25_query},
+    )
+    return _format_search_results(response)
+
+
+def _search_opensearch_with_embedding(
+    query: str,
+    embedding: List[float],
+    product: str = "",
+    fail_type: str = "",
+    cause_oper: str = "",
+    top_k: int = 5,
+) -> tuple[List[Dict[str, Any]], str]:
+    """Run hybrid search, using BM25 only for known hybrid search-phase failures."""
+    _, filters, bm25_query = _build_bm25_query(
+        query, product, fail_type, cause_oper
+    )
+    client = _get_opensearch_client()
 
     # kNN 쿼리 (메타데이터 필터 포함)
     # ※ kNN + filter 조합에서 OpenSearch가 exact-kNN 경로로 떨어지면,
@@ -295,33 +342,70 @@ def _search_opensearch(
             logger.error("OpenSearch 검색 실패: %s", e, exc_info=True)
             raise
         logger.warning("[_search_opensearch] hybrid 실패 — BM25-only 폴백: %s", e)
-        bm25_only_body = {"size": top_k, "query": bm25_query}
         try:
-            response = client.search(index=_OPENSEARCH_INDEX, body=bm25_only_body)
+            return _search_bm25(
+                query=query,
+                product=product,
+                fail_type=fail_type,
+                cause_oper=cause_oper,
+                top_k=top_k,
+            ), "bm25_fallback"
         except Exception as e2:
             logger.error("OpenSearch BM25 폴백도 실패: %s", e2, exc_info=True)
             raise
 
-    results = []
-    for hit in response.get("hits", {}).get("hits", []):
-        src = hit.get("_source", {})
-        score = hit.get("_score", 0)
-        results.append({
-            "product": src.get("product", ""),
-            "cause_oper": src.get("cause_oper", ""),
-            "fail_type": src.get("fail_type", ""),
-            "cause": src.get("cause", ""),
-            "action": src.get("action", ""),
-            "comment": src.get("comment", ""),
-            "date": src.get("date", ""),
-            "source_file": src.get("source_file", ""),
-            "page_num": src.get("page_num", 0),
-            "doc_id": src.get("doc_id", ""),
-            "filenm": src.get("filenm", ""),
-            "score": round(min(score * 100, 100.0), 1),
-            "content": src.get("content", "")[:200],
-        })
+    return _format_search_results(response), "hybrid"
 
+
+def search_opensearch_with_mode(
+    query: str,
+    product: str = "",
+    fail_type: str = "",
+    cause_oper: str = "",
+    top_k: int = 5,
+    *,
+    allow_embedding_fallback: bool = False,
+) -> tuple[List[Dict[str, Any]], str]:
+    """Run OpenSearch and explicitly report hybrid or BM25 fallback retrieval."""
+    try:
+        embedding = _get_embedding(_expand_acronyms(query))
+    except Exception:
+        if not allow_embedding_fallback:
+            raise
+        return _search_bm25(
+            query=query,
+            product=product,
+            fail_type=fail_type,
+            cause_oper=cause_oper,
+            top_k=top_k,
+        ), "bm25_fallback"
+    return _search_opensearch_with_embedding(
+        query=query,
+        embedding=embedding,
+        product=product,
+        fail_type=fail_type,
+        cause_oper=cause_oper,
+        top_k=top_k,
+    )
+
+
+@observe(name="fh_search_opensearch", capture_input=False, capture_output=False)
+def _search_opensearch(
+    query: str,
+    product: str = "",
+    fail_type: str = "",
+    cause_oper: str = "",
+    top_k: int = 5,
+) -> List[Dict[str, Any]]:
+    """BM25 + kNN hybrid search preserving the legacy list-only contract."""
+    results, _ = search_opensearch_with_mode(
+        query,
+        product,
+        fail_type,
+        cause_oper,
+        top_k,
+        allow_embedding_fallback=False,
+    )
     return results
 
 
@@ -367,11 +451,7 @@ def _fetch_results_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
         "size": min(len(doc_ids), 20),
         "query": {"terms": {"doc_id": doc_ids}},
     }
-    try:
-        resp = client.search(index=_OPENSEARCH_INDEX, body=body)
-    except Exception as e:
-        logger.warning("[_fetch_results_by_doc_ids] terms query 실패: %s", e)
-        return []
+    resp = client.search(index=_OPENSEARCH_INDEX, body=body)
     results: List[Dict[str, Any]] = []
     for hit in resp.get("hits", {}).get("hits", []):
         src = hit.get("_source", {})
@@ -393,6 +473,87 @@ def _fetch_results_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+def _seed_concept_ids(
+    product: str,
+    fail_type: str,
+    cause_oper: str,
+    results: List[Dict[str, Any]],
+) -> List[str]:
+    seeds: List[str] = []
+    if product and fail_type and cause_oper:
+        seeds.append(
+            f"concept:{make_triple_key(product, fail_type, cause_oper).canonical}"
+        )
+    for result in results:
+        triple = make_triple_key(
+            str(result.get("product") or ""),
+            str(result.get("fail_type") or ""),
+            str(result.get("cause_oper") or ""),
+        )
+        if triple.product and triple.fail_type and triple.cause_oper:
+            seeds.append(f"concept:{triple.canonical}")
+    return list(dict.fromkeys(seeds))
+
+
+def _merge_evidence(
+    results: List[Dict[str, Any]], graph_results: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    merged = {
+        str(item.get("doc_id") or ""): item
+        for item in results
+        if item.get("doc_id")
+    }
+    for item in graph_results:
+        merged.setdefault(str(item.get("doc_id") or ""), item)
+    return list(merged.values())
+
+
+def _expand_graph_context(concept_ids: List[str]) -> GraphContext | None:
+    if not concept_ids:
+        return None
+    try:
+        projection = build_graph_projection(resolve_wiki_paths())
+        return projection.expand_concepts(concept_ids)
+    except Exception as exc:
+        logger.warning("[do_search] graph projection unavailable: %s", exc)
+        return None
+
+
+def _ground_graph_context(
+    graph_context: GraphContext,
+    results: List[Dict[str, Any]],
+) -> Dict[str, Any] | None:
+    resolved_doc_ids = {
+        str(result.get("doc_id") or "")
+        for result in results
+        if result.get("doc_id")
+    }
+    relations = []
+    for relation in graph_context.relations:
+        source_doc_ids = [
+            doc_id
+            for doc_id in relation.source_doc_ids
+            if doc_id in resolved_doc_ids
+        ]
+        if source_doc_ids:
+            relations.append(
+                relation.model_copy(update={"source_doc_ids": source_doc_ids})
+            )
+    if not relations:
+        return None
+    grounded = graph_context.model_copy(
+        update={
+            "relations": relations,
+            "source_doc_ids": [
+                doc_id
+                for doc_id in graph_context.source_doc_ids
+                if doc_id in resolved_doc_ids
+            ],
+        }
+    )
+    return grounded.model_dump(mode="json")
+
+
 # ── 함수형 노드 API (B2: ReAct 제거, 코드가 직접 호출) ────
 def do_search(
     query: str,
@@ -407,7 +568,12 @@ def do_search(
     wiki-first 시 rendered_answer(markdown) 포함 → 추가 합성 불요.
     """
     if not query or not query.strip():
-        return {"total": 0, "results": [], "retrieval_mode": "empty_query"}
+        return {
+            "total": 0,
+            "results": [],
+            "retrieval_mode": "empty_query",
+            "evidence_sensitive": False,
+        }
     top_k = max(1, min(top_k, 20))
 
     if not product and not fail_type and not cause_oper:
@@ -439,6 +605,11 @@ def do_search(
             })
         except Exception as e:
             logger.warning("[do_search] wiki gate lookup 실패: %s", e)
+
+    exact_seed_ids = _seed_concept_ids(product, fail_type, cause_oper, [])
+    graph_context = (
+        _expand_graph_context(exact_seed_ids) if exact_seed_ids else None
+    )
 
     if gate_result and gate_result.get("gate") == "wiki-first":
         logger.info("[do_search] WIKI-FIRST mode (confidence=%.2f, %s)",
@@ -473,13 +644,20 @@ def do_search(
         # 옵션 4: citations doc_id로 OpenSearch 단순 조회 → HTML 카드용 raw 채움.
         # LLM 합성은 안 거치므로 wiki-first 본질(LLM 0회)은 유지. 점수 의미 없음.
         doc_ids = [c.get("doc_id", "") for c in citations if c.get("doc_id")]
+        if graph_context is not None:
+            doc_ids = list(dict.fromkeys(doc_ids + graph_context.source_doc_ids))
         card_results = _fetch_results_by_doc_ids(doc_ids)
+        grounded_graph_context = (
+            _ground_graph_context(graph_context, card_results)
+            if graph_context is not None
+            else None
+        )
         rendered_answer = (
             f"{badge}{body}\n\n"
             f"**참고 자료 ({len(cit_lines)}건)**:\n{citations_md}\n\n"
             f"_wiki-first 응답 · confidence={confidence:.2f} · OpenSearch lookup {len(card_results)}건 (카드용, LLM 호출 0회)_"
         )
-        return {
+        output = {
             "total": len(card_results),
             "results": card_results,
             "wiki_memory": {"concepts": [], "aliases": [], "recent_episodes": []},
@@ -490,15 +668,20 @@ def do_search(
             "wiki_citations": citations,
             "rendered_answer": rendered_answer,
             "super_reference_body": _lookup_super_reference(product, fail_type, cause_oper),
+            "evidence_sensitive": True,
         }
+        if grounded_graph_context is not None:
+            output["graph_context"] = grounded_graph_context
+        return output
 
     try:
-        results = _search_opensearch(
+        results, opensearch_retrieval_mode = search_opensearch_with_mode(
             query=query,
             product=product,
             fail_type=fail_type,
             cause_oper=cause_oper,
             top_k=top_k,
+            allow_embedding_fallback=True,
         )
     except Exception as e:
         logger.error("[do_search] 검색 오류: %s", e, exc_info=True)
@@ -514,24 +697,65 @@ def do_search(
             fail_type,
         )
         try:
-            results = _search_opensearch(
+            results, retry_mode = search_opensearch_with_mode(
                 query=query,
                 product=product,
                 fail_type="",
                 cause_oper=cause_oper,
                 top_k=top_k,
+                allow_embedding_fallback=True,
             )
+            if retry_mode == "bm25_fallback":
+                opensearch_retrieval_mode = retry_mode
             fail_type_filter_dropped = True
         except Exception as e:
             logger.error("[do_search] fallback 검색 오류: %s", e, exc_info=True)
             raise
 
+    opensearch_results = results
+    if graph_context is None and not exact_seed_ids:
+        graph_context = _expand_graph_context(
+            _seed_concept_ids(product, fail_type, cause_oper, results)
+        )
+
+    if graph_context is not None:
+        existing_doc_ids = {
+            str(result.get("doc_id") or "")
+            for result in results
+            if result.get("doc_id")
+        }
+        graph_only_doc_ids = [
+            doc_id
+            for doc_id in graph_context.source_doc_ids
+            if doc_id not in existing_doc_ids
+        ]
+        graph_results = (
+            _fetch_results_by_doc_ids(graph_only_doc_ids)
+            if graph_only_doc_ids
+            else []
+        )
+        results = _merge_evidence(results, graph_results)
+        grounded_graph_context = _ground_graph_context(graph_context, results)
+    else:
+        grounded_graph_context = None
+
     if not results:
+        super_reference_body = _lookup_super_reference(
+            product, fail_type, cause_oper
+        )
         return {
             "total": 0,
             "results": [],
-            "retrieval_mode": "baseline",
-            "super_reference_body": _lookup_super_reference(product, fail_type, cause_oper),
+            "retrieval_mode": (
+                "bm25_fallback"
+                if opensearch_retrieval_mode == "bm25_fallback"
+                else "baseline"
+            ),
+            "opensearch_retrieval_mode": opensearch_retrieval_mode,
+            "super_reference_body": super_reference_body,
+            "evidence_sensitive": bool(
+                grounded_graph_context is not None or super_reference_body
+            ),
         }
 
     wiki_mem: Dict[str, Any] = {"concepts": [], "aliases": [], "recent_episodes": []}
@@ -550,14 +774,29 @@ def do_search(
     except Exception as e:
         logger.warning("[do_search] wiki lookup 실패: %s", e)
 
+    super_reference_body = _lookup_super_reference(product, fail_type, cause_oper)
+    evidence_sensitive = bool(
+        grounded_graph_context is not None
+        or any(wiki_mem.get(key) for key in ("concepts", "aliases", "recent_episodes"))
+        or (gate_result and gate_result.get("body"))
+        or super_reference_body
+    )
+
     enqueue_status = "skipped"
     try:
         from wiki_queue import wiki_queue
-        enqueue_status = wiki_queue.summarize_enqueue({
-            "query": query,
-            "filters": {"product": product, "fail_type": fail_type, "cause_oper": cause_oper},
-            "raw_results": results,
-        })
+        enqueue_status = wiki_queue.summarize_enqueue(
+            {
+                "query": query,
+                "filters": {
+                    "product": product,
+                    "fail_type": fail_type,
+                    "cause_oper": cause_oper,
+                },
+                "raw_results": opensearch_results,
+            },
+            private=lf_capture_disabled() or evidence_sensitive,
+        )
     except Exception as e:
         logger.warning("[do_search] wiki enqueue 실패: %s", e)
     ws = _get_wiki_payload()
@@ -568,8 +807,14 @@ def do_search(
         "total": len(results),
         "results": results,
         "wiki_memory": wiki_mem,
-        "retrieval_mode": "baseline",
+        "retrieval_mode": (
+            "bm25_fallback"
+            if opensearch_retrieval_mode == "bm25_fallback"
+            else "baseline"
+        ),
+        "opensearch_retrieval_mode": opensearch_retrieval_mode,
         "fail_type_filter_dropped": fail_type_filter_dropped,
+        "evidence_sensitive": evidence_sensitive,
     }
 
     if gate_result and gate_result.get("gate") == "wiki-assisted":
@@ -581,7 +826,11 @@ def do_search(
         logger.info("[do_search] WIKI-ASSISTED mode (confidence=%.2f)",
                     gate_result["confidence"])
 
-    output["super_reference_body"] = _lookup_super_reference(product, fail_type, cause_oper)
+    if grounded_graph_context is not None:
+        output["retrieval_mode"] = "graph-assisted"
+        output["graph_context"] = grounded_graph_context
+
+    output["super_reference_body"] = super_reference_body
     return output
 
 

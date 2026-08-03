@@ -235,7 +235,11 @@ def get_llm(model: str | None = None, temperature: float = 0) -> "ChatOpenAI":
         raise RuntimeError("OpenRouter LLM 설정 누락: OPENROUTER_API_KEY")
 
     return ChatOpenAI(
-        model="nvidia/nemotron-3-super-120b-a12b:free",
+        model=(
+            model
+            or os.getenv("RETRIEVE_CHAIN_MODEL")
+            or "nvidia/nemotron-3-super-120b-a12b:free"
+        ),
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
         temperature=temperature,

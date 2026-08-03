@@ -10,12 +10,12 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ── Request ──────────────────────────────────────────────
 
-class ChatRequest(BaseModel):
+class _ChatEnvelope(BaseModel):
     query: str
     session_id: str
     # interrupt resume — structured HITL contract: a {slot: value} dict (React form /
@@ -23,6 +23,33 @@ class ChatRequest(BaseModel):
     resume_value: str | dict[str, Any] | None = None
     # 로그인 신원: 멀티턴 '기억'이 아니라 매 요청에 프론트가 주입(없으면 ""). mining이 읽음.
     user_id: str = ""
+
+
+class ChatRequest(_ChatEnvelope):
+    """Public chat contract. Internal context must never be accepted from clients."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class WikiNoteContext(BaseModel):
+    id: str | None = None
+    path: str
+    metadata: dict[str, Any]
+    body: str
+
+
+class InternalChatRequest(_ChatEnvelope):
+    """Private envelope constructed only after the Plugin adapter reads the Vault."""
+
+    wiki_context: WikiNoteContext | None = None
+
+
+class PluginChatRequest(BaseModel):
+    query: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    resume_value: str | dict[str, Any] | None = None
+    user_id: str = ""
+    current_note_id: str | None = None
 
 
 # ── SSE Event Types ──────────────────────────────────────
@@ -47,11 +74,19 @@ class NodeCompleteEvent(BaseModel):
     elapsed: float = 0.0
 
 
+class CitationData(BaseModel):
+    doc_id: str
+    label: str
+    source_path: str | None = None
+    download_url: str = ""
+
+
 class MessageEvent(BaseModel):
     type: Literal["message"] = "message"
     role: Literal["assistant"] = "assistant"
     agent: str
     content: str
+    citations: list[CitationData] = Field(default_factory=list)
     step: int = 0
 
 
@@ -133,6 +168,7 @@ class HistoryMessage(BaseModel):
     agent: str = ""
     content: str = ""
     artifacts: list[ArtifactData] = []
+    citations: list[CitationData] = Field(default_factory=list)
     suggestion: str = ""
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -147,3 +183,94 @@ class SessionSummary(BaseModel):
     last_query: str = ""
     turn_count: int = 0
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class PluginEvidence(BaseModel):
+    doc_id: str = ""
+    content: str = ""
+    cause: str = ""
+    action: str = ""
+    comment: str = ""
+    source_file: str = ""
+    date: str = ""
+    score: float = 0.0
+    source_path: str | None = None
+    download_url: str = ""
+
+
+class PluginSearchResult(BaseModel):
+    concept_id: str | None = None
+    concept_path: str | None = None
+    concept_status: Literal["materialized", "source_only"]
+    product: str
+    fail_type: str
+    cause_oper: str
+    retrieval_mode: Literal["hybrid", "bm25_fallback"]
+    score: float
+    evidence: list[PluginEvidence] = Field(default_factory=list)
+
+
+class PluginSearchResponse(BaseModel):
+    query: str
+    retrieval_mode: Literal["hybrid", "bm25_fallback"]
+    results: list[PluginSearchResult] = Field(default_factory=list)
+
+
+class PluginNoteLink(BaseModel):
+    path: str
+    label: str
+    node_type: str = ""
+
+
+class PluginRelatedResponse(BaseModel):
+    note_path: str
+    outgoing: list[PluginNoteLink] = Field(default_factory=list)
+    backlinks: list[PluginNoteLink] = Field(default_factory=list)
+
+
+class PluginSourceResponse(BaseModel):
+    doc_id: str
+    source_path: str
+    source_file: str = ""
+    date: str = ""
+    page_num: int | None = None
+    download_url: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+ReviewStatus = Literal["pending", "approved", "rejected", "resolved"]
+
+
+class PluginReviewHistory(BaseModel):
+    changed_at: str
+    from_status: ReviewStatus
+    to_status: ReviewStatus
+    reviewer: str
+    comment: str = ""
+
+
+class PluginReview(BaseModel):
+    id: str
+    review_type: str
+    status: ReviewStatus
+    target_concept_id: str
+    version: int
+    created: str
+    updated: str
+    body_markdown: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    history: list[PluginReviewHistory] = Field(default_factory=list)
+
+
+class PluginReviewCreate(BaseModel):
+    target_concept_id: str
+    reviewer: str
+    comment: str
+    review_type: str = "operator_feedback"
+
+
+class PluginReviewUpdate(BaseModel):
+    status: Literal["approved", "rejected"]
+    reviewer: str
+    comment: str = ""
+    expected_version: int = Field(ge=1)

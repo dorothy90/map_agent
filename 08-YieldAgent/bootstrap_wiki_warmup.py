@@ -24,6 +24,7 @@ raw docs 직접 fetch → LLM 합성 1회 → wiki_store.upsert_concept 즉시 �
 from __future__ import annotations
 
 import argparse
+import datetime
 import os
 import sys
 import time
@@ -38,10 +39,23 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from fail_history_tools import _get_opensearch_client  # noqa: E402
 import wiki_store  # noqa: E402
-from wiki_summarizer import synthesize_concept_from_docs  # noqa: E402
+from wiki_config import resolve_wiki_paths  # noqa: E402
+from wiki_manifest import (  # noqa: E402
+    load_manifest,
+    record_success,
+    save_manifest,
+    set_projection_state,
+)
+from wiki_summarizer import (  # noqa: E402
+    authoritative_citations_from_documents,
+    restrict_concept_synthesis_sources,
+    synthesize_concept_from_docs,
+)
+from wiki_sync import build_triple_snapshot, make_triple_key, normalize_fail_type  # noqa: E402
 
 _OPENSEARCH_INDEX = os.getenv("OPENSEARCH_INDEX", "fail-history")
-_VAULT_PATH = Path(os.getenv("WIKI_VAULT_PATH", str(Path(__file__).parent / "wiki")))
+_VAULT_PATH = resolve_wiki_paths().root
+_MANIFEST_PATH = resolve_wiki_paths().manifest
 
 
 # ── seed 수집 ────────────────────────────────────────────
@@ -108,9 +122,11 @@ def merge_seeds(foundations: list[dict], aggregated: list[dict]) -> list[dict]:
     """foundations 우선 + aggregation에 있는 트리플 추가.
     fail_type alias 정규화 키 ("EASY(W)" → "EASY") 로 dedup."""
     def _norm_key(t: dict) -> tuple[str, str, str]:
-        f = t["fail_type"]
-        fnorm = f.split("(", 1)[0].strip() if "(" in f else f
-        return (t["product"], fnorm, t["cause_oper"])
+        return (
+            t["product"],
+            normalize_fail_type(t["fail_type"]),
+            t["cause_oper"],
+        )
 
     seen = {_norm_key(s) for s in foundations}
     out = list(foundations)
@@ -150,36 +166,101 @@ def fetch_docs_for_triple(
 def process_triple(t: dict[str, Any], max_docs: int) -> tuple[str, str]:
     """트리플 1개 처리 → (status, message)."""
     p, f, o = t["product"], t["fail_type"], t["cause_oper"]
-    cid = f"concept:{p}|{o}|{f}"
+    key = make_triple_key(p, f, o)
+    cid = f"concept:{key.canonical}"
     try:
-        docs = fetch_docs_for_triple(p, f, o, max_docs=max_docs)
+        docs = fetch_docs_for_triple(p, f, o, max_docs=10_000)
     except Exception as e:
         return ("fetch_fail", f"  ✗ docs fetch: {e}")
     if not docs:
         return ("no_docs", "  ⚠ docs 0건 (skip)")
+    snapshot = build_triple_snapshot(key, docs)
     try:
-        result = synthesize_concept_from_docs(cid, docs)
+        manifest = load_manifest(_MANIFEST_PATH, _OPENSEARCH_INDEX)
     except Exception as e:
-        return ("synth_fail", f"  ✗ synth: {e}")
-    if result is None:
-        return ("synth_none", "  ✗ synth None (LLM 실패 또는 응답 빈 채)")
+        return ("manifest_fail", f"  ✗ manifest: {e}")
     try:
-        wiki_store.upsert_concept(
-            filters={"product": p, "fail_type": f, "cause_oper": o},
+        result = synthesize_concept_from_docs(cid, docs[:max_docs])
+        if result is None:
+            return ("synth_none", "  ✗ synth None (LLM 실패 또는 응답 빈 채)")
+        result = restrict_concept_synthesis_sources(
+            result,
+            authoritative_citations_from_documents(snapshot.documents),
+        )
+    except Exception as e:
+        return ("synth_fail", f"  ✗ synth: {type(e).__name__}")
+    try:
+        projection_at = datetime.datetime.now(
+            datetime.timezone.utc
+        ).isoformat(timespec="seconds")
+        set_projection_state(manifest, "dirty", projection_at)
+        save_manifest(_MANIFEST_PATH, manifest)
+        stored = wiki_store.upsert_concept(
+            filters={
+                "product": key.product,
+                "fail_type": key.fail_type,
+                "cause_oper": key.cause_oper,
+            },
             source_episode_id=None,  # 직접 합성 — episode 단계 생략
             synthesized_body=result.body_markdown,
             confidence=result.confidence,
             citations=[c.model_dump() for c in result.citations],
+            entities=[
+                candidate.model_dump(mode="json")
+                for candidate in getattr(result, "entities", [])
+            ],
+            relations=[
+                candidate.model_dump(mode="json")
+                for candidate in getattr(result, "relations", [])
+            ],
             evidence={
                 "score": 1.0 if len(docs) >= 5 else len(docs) / 5.0,
                 "unique_doc_ids": len({d.get("doc_id") for d in docs if d.get("doc_id")}),
                 "n_episodes": 0,
                 "n_dates": len({d.get("date") for d in docs if d.get("date")}),
             },
+            sync_metadata={
+                "source_fingerprint": snapshot.source_fingerprint,
+                "source_doc_ids": list(snapshot.source_doc_ids),
+                "evidence_count": snapshot.evidence_count,
+                "evidence_scope": snapshot.evidence_scope,
+                "sync_job_id": f"bootstrap:{snapshot.source_fingerprint}",
+            },
+            materialize=False,
         )
     except Exception as e:
         return ("save_fail", f"  ✗ upsert: {e}")
+    if isinstance(stored, tuple) and stored:
+        stored_id = stored[0]
+        full_id = stored_id if stored_id.startswith("concept:") else f"concept:{stored_id}"
+        node = wiki_store.read_node(full_id)
+        if node is not None:
+            try:
+                success_at = datetime.datetime.now(
+                    datetime.timezone.utc
+                ).isoformat(timespec="seconds")
+                record_success(
+                    manifest,
+                    snapshot,
+                    concept_id=full_id,
+                    concept_version=int(node["frontmatter"].get("version", 1)),
+                    success_at=success_at,
+                )
+                save_manifest(_MANIFEST_PATH, manifest)
+            except Exception as e:
+                return ("save_fail", f"  ✗ manifest save: {e}")
     return ("ok", f"  ✓ conf={result.confidence:.2f}  docs={len(docs)}  cits={len(result.citations)}")
+
+
+def _finish_projection(status: str, *, error: str | None = None) -> None:
+    if not _MANIFEST_PATH.exists():
+        return
+    manifest = load_manifest(_MANIFEST_PATH, _OPENSEARCH_INDEX)
+    completed_at = datetime.datetime.now(
+        datetime.timezone.utc
+    ).isoformat(timespec="seconds")
+    set_projection_state(manifest, status, completed_at, error=error)
+    save_manifest(_MANIFEST_PATH, manifest)
 
 
 # ── main ────────────────────────────────────────────────
@@ -193,34 +274,53 @@ def main() -> int:
     p.add_argument("--skip-existing", action="store_true",
                    help="vault에 이미 합성된 concept(confidence>0)은 skip — 신규 트리플만")
     p.add_argument("--no-lint", action="store_true", help="끝에 lint 실행 안 함")
+    p.add_argument("--product", help="exact triple product")
+    p.add_argument("--fail-type", help="exact triple fail type")
+    p.add_argument("--cause-oper", help="exact triple cause operation")
     args = p.parse_args()
 
     if args.dry_run and args.apply:
         p.error("--dry-run 과 --apply 동시 지정 불가")
     if not (args.dry_run or args.apply):
         p.error("--dry-run 또는 --apply 둘 중 하나 필수")
+    exact_values = (args.product, args.fail_type, args.cause_oper)
+    if any(exact_values) and not all(exact_values):
+        p.error("--product, --fail-type, --cause-oper must be provided together")
 
     vault = _VAULT_PATH
     print(f"vault: {vault}")
     print(f"opensearch index: {_OPENSEARCH_INDEX}")
 
-    foundations = load_foundations(vault)
+    exact = all(exact_values)
+    foundations = [] if exact else load_foundations(vault)
     print(f"\n1) foundations.yaml seed: {len(foundations)}")
     for s in foundations:
         print(f"  - {s['product']}|{s['fail_type']}|{s['cause_oper']} (priority={s['priority']})")
 
-    try:
-        aggregated = fetch_opensearch_triples(top=args.top, min_docs=args.min_docs)
-    except Exception as e:
-        print(f"\n  ⚠️ OpenSearch aggregation 실패: {e}")
+    if exact:
         aggregated = []
+    else:
+        try:
+            aggregated = fetch_opensearch_triples(top=args.top, min_docs=args.min_docs)
+        except Exception as e:
+            print(f"\n  ⚠️ OpenSearch aggregation 실패: {e}")
+            aggregated = []
     print(f"\n2) OpenSearch aggregation top-{args.top} (min_docs={args.min_docs}): {len(aggregated)}")
     for t in aggregated[:10]:
         print(f"  - {t['product']}|{t['fail_type']}|{t['cause_oper']} (doc={t['doc_count']})")
     if len(aggregated) > 10:
         print(f"  ... and {len(aggregated) - 10} more")
 
-    seeds = merge_seeds(foundations, aggregated)
+    if exact:
+        seeds = [{
+            "product": args.product,
+            "fail_type": normalize_fail_type(args.fail_type),
+            "cause_oper": args.cause_oper,
+            "priority": "exact",
+            "source": "operator",
+        }]
+    else:
+        seeds = merge_seeds(foundations, aggregated)
     print(f"\n3) merged seeds: {len(seeds)}")
 
     if args.skip_existing:
@@ -245,7 +345,7 @@ def main() -> int:
     # ── 4) 트리플별 직접 합성 ─────────────────────────
     print(f"\n4) 트리플별 직접 합성 시작 — {len(seeds)}개")
     t0 = time.time()
-    counts = {"ok": 0, "no_docs": 0, "fetch_fail": 0, "synth_fail": 0, "synth_none": 0, "save_fail": 0}
+    counts = {"ok": 0, "no_docs": 0, "fetch_fail": 0, "manifest_fail": 0, "synth_fail": 0, "synth_none": 0, "save_fail": 0}
     for i, t in enumerate(seeds, 1):
         print(f"  [{i}/{len(seeds)}] {t['product']}|{t['fail_type']}|{t['cause_oper']}  (src={t['source']})")
         status, msg = process_triple(t, max_docs=args.max_docs)
@@ -254,6 +354,22 @@ def main() -> int:
     elapsed = time.time() - t0
     print(f"\n  완료: {elapsed:.1f}s ({elapsed/60:.1f}분)")
     print(f"  결과: {counts}")
+
+    try:
+        materialization = wiki_store.materialize_obsidian_wiki()
+    except Exception as exc:
+        _finish_projection("failed", error=str(exc))
+        print(f"\n  ✗ Obsidian graph materialization 실패: {exc}")
+        return 1
+    if materialization.errors:
+        _finish_projection(
+            "failed", error="; ".join(str(error) for error in materialization.errors)
+        )
+        print("\n  ✗ Obsidian graph materialization 실패:")
+        for error in materialization.errors:
+            print(f"    - {error}")
+        return 1
+    _finish_projection("clean")
 
     # ── 5) vault 요약 + lint ───────────────────────────
     vc = wiki_store.counts()

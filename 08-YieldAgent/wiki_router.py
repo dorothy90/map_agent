@@ -11,16 +11,17 @@ import logging
 import os
 import re
 import time
-from pathlib import Path
 from typing import Any
 
 import frontmatter
 from fastapi import APIRouter, HTTPException, Query
 
+from wiki_config import resolve_wiki_paths
+
 router = APIRouter()
 logger = logging.getLogger("yield_agent.wiki_router")
 
-_VAULT = Path(__file__).parent / "wiki"
+_VAULT = resolve_wiki_paths().root
 _CACHE_TTL_SEC = 5.0
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 

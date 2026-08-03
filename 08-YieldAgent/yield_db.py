@@ -408,7 +408,7 @@ def _get_period_date_ranges(ref_date: date, unit: str, n: int) -> list[dict]:
 DEFAULT_PERIODS = {"weekly": 4, "monthly": 3, "daily": 4}
 
 
-@observe(name="fetch_periods")
+@observe(name="fetch_periods", capture_input=False, capture_output=False)
 @timed
 def _fetch_periods(lotcd: str, ref_date: date,
                    unit: str = "weekly", periods: int = 0) -> list[dict]:
@@ -469,7 +469,7 @@ def _fetch_periods(lotcd: str, ref_date: date,
     return results
 
 
-@observe(name="fetch_4_weeks")
+@observe(name="fetch_4_weeks", capture_input=False, capture_output=False)
 @timed
 def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
     """[하위 호환] _fetch_periods(unit='weekly', periods=4)로 위임."""
@@ -627,7 +627,7 @@ def _parse_lot_specs(lot_ids: str = "", groupkey: str = "") -> list[tuple[str, i
     return result
 
 
-@observe(name="fetch_lot_sql")
+@observe(name="fetch_lot_sql", capture_input=False, capture_output=False)
 @timed
 def _fetch_lot_sql(lot_specs: list[tuple[str, int | None]], process: str) -> dict[str, dict]:
     """lot 단위 수율 비교 조회."""

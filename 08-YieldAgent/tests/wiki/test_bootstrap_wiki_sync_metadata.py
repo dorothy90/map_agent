@@ -1,0 +1,331 @@
+from types import SimpleNamespace
+
+import pytest
+
+import bootstrap_wiki_warmup as bootstrap
+from wiki_graph_models import EntityCandidate, RelationCandidate
+from wiki_manifest import empty_manifest, load_manifest, save_manifest
+from wiki_summarizer import EpisodeRef
+
+
+pytestmark = pytest.mark.no_server
+
+
+def _triple():
+    return {
+        "product": "4SS",
+        "fail_type": "EASY(W)",
+        "cause_oper": "PRE METAL CLN",
+        "source": "test",
+    }
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--apply", "--product", "4SS"],
+        ["--apply", "--product", "4SS", "--fail-type", "EASY"],
+        ["--apply", "--cause-oper", "PRE METAL CLN"],
+    ],
+)
+def test_exact_bootstrap_filters_are_all_or_none(monkeypatch, argv):
+    monkeypatch.setattr(bootstrap.sys, "argv", ["bootstrap_wiki_warmup.py", *argv])
+
+    with pytest.raises(SystemExit):
+        bootstrap.main()
+
+
+def test_exact_bootstrap_runs_only_the_requested_triple(monkeypatch):
+    processed = []
+    monkeypatch.setattr(
+        bootstrap.sys,
+        "argv",
+        [
+            "bootstrap_wiki_warmup.py",
+            "--apply",
+            "--product",
+            "4SS",
+            "--fail-type",
+            "EASY",
+            "--cause-oper",
+            "PRE METAL CLN",
+            "--no-lint",
+        ],
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "fetch_opensearch_triples",
+        lambda **kwargs: pytest.fail("aggregation must not run for exact bootstrap"),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "process_triple",
+        lambda triple, max_docs: processed.append(triple) or ("ok", "ok"),
+    )
+    monkeypatch.setattr(bootstrap.wiki_store, "counts", lambda: {})
+    monkeypatch.setattr(
+        bootstrap.wiki_store,
+        "materialize_obsidian_wiki",
+        lambda: SimpleNamespace(errors=()),
+    )
+
+    assert bootstrap.main() == 0
+    assert processed == [
+        {
+            "product": "4SS",
+            "fail_type": "EASY",
+            "cause_oper": "PRE METAL CLN",
+            "priority": "exact",
+            "source": "operator",
+        }
+    ]
+
+
+def test_successful_bootstrap_records_shared_fingerprint_metadata_and_manifest(
+    tmp_path, monkeypatch
+):
+    documents = [
+        {
+            "doc_id": "FH-1",
+            "content": "source",
+            "cause": "cause",
+            "action": "action",
+            "comment": "comment",
+            "date": "2026-08-01",
+            "source_file": "FH-1.pptx",
+            "product": "4SS",
+            "fail_type": "EASY(W)",
+            "cause_oper": "PRE METAL CLN",
+        }
+    ]
+    captured = []
+    manifest_path = tmp_path / ".yield-wiki" / "manifest.json"
+    monkeypatch.setattr(bootstrap, "_MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(
+        bootstrap, "fetch_docs_for_triple", lambda *args, **kwargs: documents
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "synthesize_concept_from_docs",
+        lambda *args: SimpleNamespace(
+            body_markdown="body",
+            confidence=0.8,
+            citations=[
+                EpisodeRef(
+                    episode_id="episode:forged",
+                    doc_id="FH-1",
+                    source_file="FORGED.pptx",
+                    date="2099-12-31",
+                    natural_label="FORGED LABEL",
+                    download_url="https://evil.example/FORGED.pptx",
+                ),
+                EpisodeRef(episode_id="", doc_id="FH-FORGED"),
+            ],
+            entities=[
+                EntityCandidate(
+                    canonical_name="Queue time 초과",
+                    entity_type="process_condition",
+                )
+            ],
+            relations=[
+                RelationCandidate(
+                    subject="Queue time 초과",
+                    predicate="causes",
+                    object="자연 산화",
+                    confidence=0.82,
+                    source_doc_ids=["FH-1"],
+                ),
+                RelationCandidate(
+                    subject="Queue time 초과",
+                    predicate="contributes_to",
+                    object="자연 산화",
+                    confidence=0.72,
+                    source_doc_ids=["FH-1", "FH-FORGED"],
+                ),
+                RelationCandidate(
+                    subject="Queue time 초과",
+                    predicate="associated_with",
+                    object="자연 산화",
+                    confidence=0.62,
+                    source_doc_ids=["FH-FORGED"],
+                ),
+            ],
+        ),
+    )
+    def upsert(*args, **kwargs):
+        captured.append(kwargs)
+        return "4SS|PRE METAL CLN|EASY", "created"
+
+    monkeypatch.setattr(bootstrap.wiki_store, "upsert_concept", upsert)
+    monkeypatch.setattr(
+        bootstrap.wiki_store,
+        "read_node",
+        lambda node_id: {"frontmatter": {"version": 1}},
+    )
+
+    status, _ = bootstrap.process_triple(_triple(), max_docs=15)
+
+    assert status == "ok"
+    metadata = captured[0]["sync_metadata"]
+    assert metadata["source_doc_ids"] == ["FH-1"]
+    assert metadata["evidence_count"] == 1
+    assert metadata["evidence_scope"] == "single_source"
+    assert metadata["sync_job_id"].startswith("bootstrap:sha256:")
+    assert [citation["doc_id"] for citation in captured[0]["citations"]] == [
+        "FH-1"
+    ]
+    citation = captured[0]["citations"][0]
+    assert citation["episode_id"] == ""
+    assert citation["source_file"] == "FH-1.pptx"
+    assert citation["date"] == "2026-08-01"
+    assert citation["natural_label"] == ""
+    assert citation["download_url"] == ""
+    assert captured[0]["entities"] == [
+        {"canonical_name": "Queue time 초과", "entity_type": "process_condition"}
+    ]
+    assert captured[0]["relations"] == [
+        {
+            "subject": "Queue time 초과",
+            "predicate": "causes",
+            "object": "자연 산화",
+            "confidence": 0.82,
+            "source_doc_ids": ["FH-1"],
+        }
+    ]
+    manifest = load_manifest(manifest_path, bootstrap._OPENSEARCH_INDEX)
+    assert manifest["triples"]["4SS|PRE METAL CLN|EASY"][
+        "source_fingerprint"
+    ] == metadata["source_fingerprint"]
+
+
+def test_bootstrap_persists_projection_dirty_before_concept_write(
+    tmp_path, monkeypatch
+):
+    documents = [
+        {
+            "doc_id": "FH-1",
+            "content": "source",
+            "product": "4SS",
+            "fail_type": "EASY(W)",
+            "cause_oper": "PRE METAL CLN",
+        }
+    ]
+    manifest_path = tmp_path / ".yield-wiki" / "manifest.json"
+    monkeypatch.setattr(bootstrap, "_MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(
+        bootstrap, "fetch_docs_for_triple", lambda *args, **kwargs: documents
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "synthesize_concept_from_docs",
+        lambda *args: SimpleNamespace(
+            body_markdown="body",
+            confidence=0.8,
+            citations=[],
+            entities=[],
+            relations=[],
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "restrict_concept_synthesis_sources",
+        lambda result, citations: result,
+    )
+
+    def terminate_during_write(*args, **kwargs):
+        manifest = load_manifest(manifest_path, bootstrap._OPENSEARCH_INDEX)
+        assert manifest["projection"]["status"] == "dirty"
+        raise KeyboardInterrupt("crash after dirty guard")
+
+    monkeypatch.setattr(
+        bootstrap.wiki_store, "upsert_concept", terminate_during_write
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="crash after dirty guard"):
+        bootstrap.process_triple(_triple(), max_docs=15)
+
+    manifest = load_manifest(manifest_path, bootstrap._OPENSEARCH_INDEX)
+    assert manifest["projection"]["status"] == "dirty"
+    assert manifest["triples"] == {}
+
+
+def test_bootstrap_materialization_error_marks_projection_failed(
+    tmp_path, monkeypatch
+):
+    manifest_path = tmp_path / ".yield-wiki" / "manifest.json"
+    manifest = empty_manifest(bootstrap._OPENSEARCH_INDEX)
+    manifest["projection"] = {
+        "status": "dirty",
+        "updated_at": "2026-08-01T00:00:00+00:00",
+    }
+    save_manifest(manifest_path, manifest)
+    monkeypatch.setattr(bootstrap, "_MANIFEST_PATH", manifest_path)
+    monkeypatch.setattr(
+        bootstrap.sys,
+        "argv",
+        [
+            "bootstrap_wiki_warmup.py",
+            "--apply",
+            "--product",
+            "4SS",
+            "--fail-type",
+            "EASY",
+            "--cause-oper",
+            "PRE METAL CLN",
+            "--no-lint",
+        ],
+    )
+    monkeypatch.setattr(
+        bootstrap, "process_triple", lambda *args, **kwargs: ("ok", "ok")
+    )
+    monkeypatch.setattr(
+        bootstrap.wiki_store,
+        "materialize_obsidian_wiki",
+        lambda: SimpleNamespace(errors=("projection failed",)),
+    )
+
+    assert bootstrap.main() == 1
+    failed = load_manifest(manifest_path, bootstrap._OPENSEARCH_INDEX)
+    assert failed["projection"]["status"] == "failed"
+    assert failed["projection"]["last_error"] == "projection failed"
+
+
+def test_bootstrap_rejects_unsupported_body_source_before_persistence(
+    tmp_path, monkeypatch
+):
+    documents = [
+        {
+            "doc_id": "FH-REAL",
+            "content": "source",
+            "product": "4SS",
+            "fail_type": "EASY(W)",
+            "cause_oper": "PRE METAL CLN",
+        }
+    ]
+    monkeypatch.setattr(
+        bootstrap, "_MANIFEST_PATH", tmp_path / ".yield-wiki" / "manifest.json"
+    )
+    monkeypatch.setattr(
+        bootstrap, "fetch_docs_for_triple", lambda *args, **kwargs: documents
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "synthesize_concept_from_docs",
+        lambda *args: SimpleNamespace(
+            body_markdown="unsupported bootstrap claim [FH-FORGED]",
+            confidence=0.8,
+            citations=[EpisodeRef(episode_id="", doc_id="FH-REAL")],
+            entities=[],
+            relations=[],
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap.wiki_store,
+        "upsert_concept",
+        lambda *args, **kwargs: pytest.fail("invalid synthesis must not persist"),
+    )
+
+    status, message = bootstrap.process_triple(_triple(), max_docs=15)
+
+    assert status == "synth_fail"
+    assert "UnsupportedSourceCitationError" in message

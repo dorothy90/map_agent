@@ -47,7 +47,7 @@ def _resolve_artifact_data(artifacts: list[dict]) -> list[dict]:
     return resolved
 
 
-@observe(name="ppt_export_node")
+@observe(name="ppt_export_node", capture_input=False, capture_output=False)
 @timed
 def ppt_export_node(state: Dict[str, Any], config: RunnableConfig) -> dict:
     """PPT Export 노드: state의 전체 아티팩트를 PPTX로 변환."""
