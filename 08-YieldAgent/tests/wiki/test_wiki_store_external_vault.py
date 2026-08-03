@@ -2,8 +2,10 @@ import json
 import os
 import subprocess
 import sys
+import hashlib
 from pathlib import Path
 
+import frontmatter
 import pytest
 
 
@@ -280,3 +282,115 @@ def test_v2_to_v3_cli_defaults_to_environment_vault_without_vault_option(tmp_pat
     assert "status: active" in migrated
     assert "stale_after_days:" in migrated
     assert _vault_snapshot(repository_vault) == repository_before
+
+
+def _load_store(monkeypatch, tmp_path):
+    vault = tmp_path / "YieldWiki"
+    monkeypatch.setenv("WIKI_VAULT_PATH", str(vault))
+    for name in ("wiki_store", "wiki_config"):
+        sys.modules.pop(name, None)
+    import wiki_store
+
+    return wiki_store
+
+
+def _filters(product="4SS"):
+    return {
+        "product": product,
+        "fail_type": "EASY",
+        "cause_oper": "PRE METAL CLN",
+    }
+
+
+def _evidence_item(doc_id="EVD-0123456789abcdef0123"):
+    content = "related source content"
+    return {
+        "doc_id": doc_id,
+        "source_index": "syld_gpt_2067627",
+        "source_file": "/private/uploads/deck.pptx",
+        "page_num": 3,
+        "download_url": "",
+        "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
+        "relevance": 0.91,
+        "relation": "supporting_context",
+    }
+
+
+def test_replace_related_evidence_preserves_concept_body_and_citations(
+    monkeypatch, tmp_path
+):
+    wiki_store = _load_store(monkeypatch, tmp_path)
+    wiki_store.upsert_concept(
+        _filters(),
+        synthesized_body="manual-safe body",
+        citations=[{"doc_id": "FH-1"}],
+        materialize=False,
+    )
+    path = next(wiki_store._PATHS.concepts.glob("*.md"))
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    changed = wiki_store.replace_related_evidence(
+        _filters(),
+        "syld_gpt_2067627",
+        [_evidence_item()],
+        expected,
+    )
+
+    post = frontmatter.load(path)
+    assert changed is True
+    assert post.content == "manual-safe body"
+    assert post["citations"] == [{"doc_id": "FH-1"}]
+    assert post["related_evidence"][0]["doc_id"].startswith("EVD-")
+    assert post["related_evidence"][0]["source_file"] == "deck.pptx"
+
+
+def test_replace_related_evidence_rejects_changed_snapshot(monkeypatch, tmp_path):
+    wiki_store = _load_store(monkeypatch, tmp_path)
+    wiki_store.upsert_concept(
+        _filters(), synthesized_body="before", materialize=False
+    )
+    path = next(wiki_store._PATHS.concepts.glob("*.md"))
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    path.write_text(path.read_text(encoding="utf-8") + "operator edit", encoding="utf-8")
+
+    with pytest.raises(wiki_store.ConceptEditConflict):
+        wiki_store.replace_related_evidence(
+            _filters(), "syld_gpt_2067627", [], expected
+        )
+
+
+def test_source_writer_uses_distinct_owner_and_refreshes_backlink(monkeypatch, tmp_path):
+    wiki_store = _load_store(monkeypatch, tmp_path)
+    wiki_store.upsert_concept(
+        _filters(), synthesized_body="body", materialize=False
+    )
+    concept_path = next(wiki_store._PATHS.concepts.glob("*.md"))
+    expected = hashlib.sha256(concept_path.read_bytes()).hexdigest()
+    item = _evidence_item()
+    wiki_store.replace_related_evidence(
+        _filters(), "syld_gpt_2067627", [item], expected
+    )
+
+    assert wiki_store.upsert_related_evidence_source(
+        item, "related source content"
+    ) is True
+    assert wiki_store.refresh_related_evidence_backlinks(item["doc_id"]) is True
+
+    source_path = wiki_store._PATHS.sources / f"{item['doc_id']}.md"
+    source = frontmatter.load(source_path)
+    assert source["generated_by"] == "yield-wiki-evidence-enricher"
+    assert source["source_file"] == "deck.pptx"
+    assert "/private/" not in source_path.read_text(encoding="utf-8")
+    assert "related source content" in source.content
+    assert "[[concepts/" in source.content
+
+
+def test_source_writer_rejects_manual_owner_collision(monkeypatch, tmp_path):
+    wiki_store = _load_store(monkeypatch, tmp_path)
+    wiki_store._ensure_dirs()
+    item = _evidence_item()
+    path = wiki_store._PATHS.sources / f"{item['doc_id']}.md"
+    path.write_text("# manual", encoding="utf-8")
+
+    with pytest.raises(Exception, match="ownership collision"):
+        wiki_store.upsert_related_evidence_source(item, "related source content")

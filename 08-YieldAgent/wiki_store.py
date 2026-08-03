@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 
 import frontmatter
-from wiki_config import initialize_wiki_vault, resolve_wiki_paths
+from wiki_config import (
+    WikiConfigurationError,
+    initialize_wiki_vault,
+    resolve_wiki_paths,
+)
 from wiki_safe_mutation import FileSnapshot, PinnedWikiMutation
 
 logger = logging.getLogger("yield_agent.wiki_store")
@@ -40,6 +44,15 @@ WIKI_FIRST_MAX_AGE_DAYS = int(os.getenv("WIKI_FIRST_MAX_AGE_DAYS", "30"))
 _KNOWLEDGE_LINKS_BLOCK_RE = re.compile(
     r"\n*<!-- yield-wiki:knowledge-links:start -->.*?"
     r"<!-- yield-wiki:knowledge-links:end -->\s*$",
+    re.DOTALL,
+)
+_EVIDENCE_OWNER = "yield-wiki-evidence-enricher"
+_EVIDENCE_ID_RE = re.compile(r"^EVD-[0-9a-f]{20}$")
+_EVIDENCE_BACKLINK_START = "<!-- yield-wiki:evidence-backlinks:start -->"
+_EVIDENCE_BACKLINK_END = "<!-- yield-wiki:evidence-backlinks:end -->"
+_EVIDENCE_BACKLINK_RE = re.compile(
+    rf"\n*{re.escape(_EVIDENCE_BACKLINK_START)}.*?"
+    rf"{re.escape(_EVIDENCE_BACKLINK_END)}\s*$",
     re.DOTALL,
 )
 
@@ -465,6 +478,181 @@ def upsert_concept(
     if materialize:
         materialize_obsidian_wiki()
     return cid, "updated"
+
+
+def _canonical_related_evidence_item(
+    item: dict[str, Any], source_index: str
+) -> dict[str, Any]:
+    doc_id = str(item.get("doc_id") or "").strip()
+    if not _EVIDENCE_ID_RE.fullmatch(doc_id):
+        raise WikiConfigurationError("invalid related evidence doc_id")
+    item_index = str(item.get("source_index") or "").strip()
+    if item_index != source_index:
+        raise WikiConfigurationError("related evidence source index mismatch")
+    if not source_index or any(value in source_index for value in ("*", "?", ",")):
+        raise WikiConfigurationError("an exact related evidence index is required")
+    content_sha256 = str(item.get("content_sha256") or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", content_sha256):
+        raise WikiConfigurationError("invalid related evidence content hash")
+    relation = str(item.get("relation") or "").strip()
+    if relation not in {
+        "supporting_context",
+        "possible_cause",
+        "possible_action",
+        "contradiction",
+    }:
+        raise WikiConfigurationError("invalid related evidence relation")
+    page_value = item.get("page_num")
+    return {
+        "doc_id": doc_id,
+        "source_index": source_index,
+        "source_file": Path(str(item.get("source_file") or "")).name,
+        "page_num": int(page_value) if page_value not in (None, "") else None,
+        "download_url": str(item.get("download_url") or ""),
+        "content_sha256": content_sha256,
+        "relevance": float(item.get("relevance") or 0.0),
+        "relation": relation,
+    }
+
+
+def replace_related_evidence(
+    filters: dict[str, str],
+    source_index: str,
+    items: list[dict[str, Any]],
+    expected_content_sha256: str,
+) -> bool:
+    """Replace one source index's related evidence without touching Concept prose."""
+    _ensure_dirs()
+    cid = _concept_key(filters)
+    path = _CONCEPTS / f"{_safe_filename(cid)}.md"
+    post, snapshot = _read_with_snapshot(path)
+    if post is None:
+        raise WikiConfigurationError(f"Concept does not exist: concept:{cid}")
+    if snapshot.sha256 != expected_content_sha256:
+        raise ConceptEditConflict(f"Concept changed after evidence planning: concept:{cid}")
+    canonical = sorted(
+        (_canonical_related_evidence_item(item, source_index) for item in items),
+        key=lambda value: value["doc_id"],
+    )
+    metadata = dict(post.metadata)
+    preserved = [
+        value
+        for value in (metadata.get("related_evidence") or [])
+        if isinstance(value, dict)
+        and str(value.get("source_index") or "") != source_index
+    ]
+    updated = sorted(
+        preserved + canonical,
+        key=lambda value: (str(value.get("source_index") or ""), str(value.get("doc_id") or "")),
+    )
+    current = metadata.get("related_evidence") or []
+    if current == updated:
+        return False
+    metadata["related_evidence"] = updated
+    _write(
+        path,
+        frontmatter.Post(content=post.content or "", **metadata),
+        expected=snapshot,
+    )
+    return True
+
+
+def _source_path(doc_id: str) -> Path:
+    if not _EVIDENCE_ID_RE.fullmatch(doc_id):
+        raise WikiConfigurationError("invalid related evidence doc_id")
+    return _PATHS.sources / f"{doc_id}.md"
+
+
+def upsert_related_evidence_source(
+    item: dict[str, Any], page_content: str
+) -> bool:
+    """Write one evidence-enricher-owned Source note without claiming citations."""
+    source_index = str(item.get("source_index") or "").strip()
+    canonical = _canonical_related_evidence_item(item, source_index)
+    content = str(page_content or "")
+    if hashlib.sha256(content.encode("utf-8")).hexdigest() != canonical["content_sha256"]:
+        raise WikiConfigurationError("related evidence content hash mismatch")
+    _ensure_dirs()
+    path = _source_path(canonical["doc_id"])
+    existing, snapshot = _read_with_snapshot(path)
+    backlink_block = ""
+    if existing is not None:
+        owner = (
+            existing.metadata.get("generated_by"),
+            existing.metadata.get("type"),
+            existing.metadata.get("id"),
+        )
+        expected_owner = (
+            _EVIDENCE_OWNER,
+            "source",
+            f"source:{canonical['doc_id']}",
+        )
+        if owner != expected_owner:
+            raise WikiConfigurationError("related evidence source ownership collision")
+        match = _EVIDENCE_BACKLINK_RE.search(existing.content or "")
+        if match:
+            backlink_block = match.group(0).strip()
+    metadata = {
+        "id": f"source:{canonical['doc_id']}",
+        "type": "source",
+        "generated_by": _EVIDENCE_OWNER,
+        **canonical,
+    }
+    title = canonical["source_file"] or canonical["doc_id"]
+    body = f"# {title}\n\n## Source Content\n\n{content.rstrip()}"
+    if backlink_block:
+        body += f"\n\n{backlink_block}"
+    rendered = frontmatter.dumps(frontmatter.Post(content=body + "\n", **metadata))
+    if snapshot.exists and snapshot.content.decode("utf-8") == rendered:
+        return False
+    with PinnedWikiMutation(_PATHS) as mutation:
+        mutation.replace_text(path, rendered, expected=snapshot)
+    return True
+
+
+def refresh_related_evidence_backlinks(doc_id: str) -> bool:
+    """Refresh explicit Concept backlinks on an enrichment-owned Source note."""
+    path = _source_path(doc_id)
+    post, snapshot = _read_with_snapshot(path)
+    if post is None:
+        raise WikiConfigurationError(f"related evidence Source does not exist: {doc_id}")
+    owner = (
+        post.metadata.get("generated_by"),
+        post.metadata.get("type"),
+        post.metadata.get("id"),
+    )
+    if owner != (_EVIDENCE_OWNER, "source", f"source:{doc_id}"):
+        raise WikiConfigurationError("related evidence source ownership collision")
+    links: list[str] = []
+    for concept_path in sorted(_CONCEPTS.glob("*.md")):
+        concept = frontmatter.load(concept_path)
+        evidence_ids = {
+            str(item.get("doc_id") or "")
+            for item in (concept.metadata.get("related_evidence") or [])
+            if isinstance(item, dict)
+        }
+        if doc_id not in evidence_ids:
+            continue
+        label = " ".join(
+            str(concept.metadata.get(key) or "").strip()
+            for key in ("product", "fail_type", "cause_oper")
+        ).strip()
+        links.append(f"- [[concepts/{concept_path.stem}|{label}]]")
+    block = (
+        f"{_EVIDENCE_BACKLINK_START}\n"
+        "## Related Concepts\n\n"
+        + ("\n".join(links) if links else "_No active Concept links._")
+        + f"\n{_EVIDENCE_BACKLINK_END}"
+    )
+    base = _EVIDENCE_BACKLINK_RE.sub("", post.content or "").rstrip()
+    rendered = frontmatter.dumps(
+        frontmatter.Post(content=f"{base}\n\n{block}\n", **dict(post.metadata))
+    )
+    if snapshot.content.decode("utf-8") == rendered:
+        return False
+    with PinnedWikiMutation(_PATHS) as mutation:
+        mutation.replace_text(path, rendered, expected=snapshot)
+    return True
 
 
 def _approved_sync_metadata(values: dict[str, Any] | None) -> dict[str, Any]:
