@@ -111,6 +111,30 @@ def test_manifest_round_trip_excludes_sensitive_payloads(tmp_path):
     assert store.load() == manifest
 
 
+def test_manifest_save_skips_identical_content(tmp_path):
+    from wiki_evidence_enrichment import EvidenceManifestStore
+
+    paths = _paths(tmp_path)
+    store = EvidenceManifestStore(paths, paths.state_dir / "evidence-manifest.json")
+    manifest = {"version": 1, "pairs": {}}
+
+    store.save(manifest)
+    before = {
+        path.relative_to(paths.state_dir): path.read_bytes()
+        for path in paths.state_dir.rglob("*")
+        if path.is_file()
+    }
+
+    store.save(manifest)
+
+    after = {
+        path.relative_to(paths.state_dir): path.read_bytes()
+        for path in paths.state_dir.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
 def test_manifest_rejects_unapproved_fields(tmp_path):
     from wiki_evidence_enrichment import EvidenceManifestStore
 

@@ -308,3 +308,71 @@ Computer Use 계층은 Obsidian의 최초 app-state 조회에서 응답하지
 SSE, canonical Source 해석 성공을 새로운 Desktop 클릭 성공으로 대체하지 않는다. 따라서
 현재 HEAD의 요구된 Gemma 구성과 Desktop Citation-click을 포함한 post-fix live E2E 전체
 판정은 **BLOCKED**다.
+
+## M7 content-only index Wiki enrichment E2E
+
+- 실행일: 2026-08-03 KST
+- source index: `syld_gpt_2067627`
+- live Vault: `/Users/daehwankim/SYLDAIX/YieldWiki`
+- 보존 백업: `/Users/daehwankim/SYLDAIX/YieldWiki.backup-20260803-content-enrichment`
+- 승인된 외부 범위: `4SS / EASY / PRE METAL CLN` 한 Concept
+- embedding model: `qwen/qwen3-embedding-8b`, 4096 dimensions
+- judgment model: `nvidia/nemotron-3-super-120b-a12b:free`
+
+백업 직후 `diff -qr`로 live Vault와 백업이 동일함을 확인했다. `--check`는 실제
+OpenSearch mapping과 live Vault의 Concept 3개를 읽고 다음 결과를 반환했으며, 실행 후에도
+백업과 차이가 없었다.
+
+```text
+status=checked
+concepts=3
+external model calls=0
+Vault changes=0
+```
+
+exact selector check는 대상 Concept가 1개임을 확인했다. 승인된 범위의 최초 apply에서는
+벡터 검색 후보 5개를 구조화 LLM 호출 한 번으로 판정했다.
+
+```text
+status=completed
+concepts=1
+candidates=5
+evaluated=5
+accepted=0
+rejected=5
+attached=0
+materialized=false
+errors=0
+```
+
+실제 보조 인덱스 후보들은 해당 Triple과 근거 관계가 성립하지 않아 모두 거절됐다.
+따라서 Source Markdown과 Concept `Related Evidence`를 만들지 않았으며, 임계값을 낮추거나
+관계를 발명하지 않았다. 같은 명령의 두 번째 실행은 다음과 같이 judgment LLM을 호출하지
+않았다. 멱등성 보강 후 재실행 전후 `.yield-wiki` 전체 파일의 SHA-256 목록도 동일했다.
+
+```text
+status=completed
+candidates=5
+evaluated=0
+skipped=5
+attached=0
+errors=0
+```
+
+원본 인덱스는 실행 후에도 12건이며 mapping SHA-256은
+`cdb7d5b0cfaa6f4ac584d58c1df1bd96959bef42b6cf30c31dfeef72f8d271af`였다.
+live Vault와 백업의 차이는 `.yield-wiki/evidence-manifest.json` 및 safe mutation의
+attempt/tombstone 기록뿐이며 Markdown 차이는 없다.
+
+materializer check는 `created=0 modified=0 deleted=0 errors=0`이고 기존 누락 Relation
+endpoint warning 7개만 유지됐다. Wiki lint는 기존 high-priority foundation gap 2개
+(`4SS|STI CMP|EASY`, `4SS|M0C ETCH|TWT`)만 보고했다. 이번 기능으로 추가된 lint나
+materializer 오류는 없다. Obsidian Plugin은 `45 passed` 및 production build 성공이다.
+Wiki 전체 자동화 테스트는 `423 passed, 10 failed`였고, 10건은 변경 전에도 동일하게
+발생한 system Python 3.13과 기존 statsmodels/pandas 조합의 호환성 실패다. 이번 기능의
+집중 테스트는 `25 passed`였다.
+
+실제 관련 Source가 없어 이번 E2E에서 새 Graph edge는 생성되지 않았다. 자동화 테스트에서
+승인된 related evidence의 Concept→Source link, enrichment owner 보존, owner collision 거부,
+본문/citation 보존을 검증했다. 실제 Graph edge의 Desktop 확인은 관련 문서가 인덱스에
+추가된 뒤 동일 명령에서 `accepted > 0`이 발생할 때 수행한다.

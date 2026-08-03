@@ -210,6 +210,8 @@ class EvidenceManifestStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with PinnedWikiMutation(self.paths) as mutation:
             snapshot = mutation.snapshot(self.path)
+            if snapshot.exists and snapshot.content == content.encode("utf-8"):
+                return
             mutation.replace_text(self.path, content, expected=snapshot)
 
 

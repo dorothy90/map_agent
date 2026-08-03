@@ -494,3 +494,61 @@ bootstrap 성공 결과에도 동일한 source fingerprint가 기록되므로 �
 근거를 다시 합성하지 않습니다. Concept 저장 후 manifest 저장 전에 중단된 경우에는
 다음 sync가 Concept frontmatter의 fingerprint를 확인하여 LLM을 다시 호출하지 않고
 manifest와 MongoDB job 상태만 복구합니다.
+
+---
+
+## M7. 메타데이터 없는 보조 인덱스로 기존 Wiki 보강
+
+`enrich_wiki.py`는 `syld_gpt_2067627`의 `page_content`와 4096차원
+`qwen/qwen3-embedding-8b` 벡터를 사용해 이미 존재하는 Triple Concept를 보강합니다.
+새 Triple을 추론하거나 Concept 본문과 `citations`를 다시 합성하지 않습니다.
+
+각 Concept별로 벡터 검색 상위 5개를 가져오고, 미처리 후보 전체를 구조화 LLM 호출
+한 번으로 판정합니다. 관련성이 검증된 후보만 `related_evidence`로 연결됩니다. 원본
+OpenSearch 인덱스는 읽기 전용이며 판정 상태는
+`$WIKI_VAULT_PATH/.yield-wiki/evidence-manifest.json`에 저장됩니다.
+
+먼저 외부 호출과 Vault 쓰기가 없는 preview를 실행합니다.
+
+```bash
+uv run --frozen python enrich_wiki.py --check \
+  --vault /Users/daehwankim/SYLDAIX/YieldWiki
+```
+
+전체 기존 Concept를 보강하는 한 줄 명령은 다음과 같습니다.
+
+```bash
+uv run --frozen python enrich_wiki.py --apply --allow-external-llm --vault /Users/daehwankim/SYLDAIX/YieldWiki
+```
+
+`--allow-external-llm`은 bounded Concept 문맥과 검색된 후보 본문이 현재 설정된 embedding 및
+chat provider로 전송됨을 명시적으로 승인하는 옵션입니다. 사내 승인 범위를 제한하려면
+정확한 Triple 세 옵션을 함께 사용합니다.
+
+```bash
+uv run --frozen python enrich_wiki.py --apply --allow-external-llm \
+  --vault /Users/daehwankim/SYLDAIX/YieldWiki \
+  --product 4SS --fail-type EASY --cause-oper 'PRE METAL CLN'
+```
+
+두 번째 실행에서 Concept semantic hash, 후보 content hash, embedding model, judgment model이
+모두 같으면 해당 후보의 LLM 판정은 생략되고 `skipped`로 집계됩니다. 후보 검색을 위한
+Concept embedding은 현재 실행마다 한 번 호출됩니다. manifest 내용도 동일하면 안전
+writer를 실행하지 않으므로 attempt/tombstone 파일을 추가하지 않습니다.
+
+관련 후보가 승인되면 `sources/EVD-<hash>.md`가 생성되고 Concept의 Knowledge Links에
+`Related Evidence`가 별도 표시됩니다. 이 Source는
+`generated_by: yield-wiki-evidence-enricher` 소유이므로 기존 materializer가 덮어쓰거나
+삭제하지 않습니다. 후보가 모두 무관하면 Source Markdown이나 Concept 링크를 억지로
+생성하지 않습니다.
+
+Cron은 다른 Vault writer와 겹치지 않는 maintenance window에 등록합니다.
+
+```bash
+# 운영 절대 경로와 승인된 환경 파일로 교체
+15 * * * * cd /path/to/08-YieldAgent && /path/to/uv run --frozen python enrich_wiki.py --apply --allow-external-llm --vault /path/to/YieldWiki >> /path/to/logs/wiki-enrich.log 2>&1
+```
+
+안전 writer는 manifest가 실제로 바뀔 때 `.yield-wiki` 아래 attempt/tombstone 파일을 남길
+수 있습니다. 이는 실패 복구 기록이며 임의 삭제하지 않습니다. 운영 보존 기간과 정리
+정책은 별도로 정한 뒤 적용합니다.
