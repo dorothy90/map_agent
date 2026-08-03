@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 import frontmatter
 import pytest
@@ -367,3 +368,187 @@ def test_judge_rejects_missing_duplicate_or_unknown_decision_ids(decision_ids):
             _concept_snapshot(),
             (_candidate("EVD-abc"), _candidate("EVD-def")),
         )
+
+
+class _MemoryManifest:
+    def __init__(self):
+        self.value = {"version": 1, "pairs": {}}
+
+    def load(self):
+        return json.loads(json.dumps(self.value))
+
+    def save(self, value):
+        self.value = json.loads(json.dumps(value))
+
+
+class _FakeRetriever:
+    EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
+
+    def __init__(self, candidates):
+        self.candidates = tuple(candidates)
+        self.calls = []
+
+    def validate(self):
+        return 4096
+
+    def search(self, concept):
+        self.calls.append(concept.concept_id)
+        return self.candidates
+
+
+class _FakeJudge:
+    model_name = "test-model"
+    minimum_confidence = 0.8
+
+    def __init__(self, decisions):
+        self.decisions = tuple(decisions)
+        self.calls = []
+
+    def decide_batch(self, concept, candidates):
+        self.calls.append((concept.concept_id, tuple(item.doc_id for item in candidates)))
+        by_id = {decision.doc_id: decision for decision in self.decisions}
+        return tuple(by_id[item.doc_id] for item in candidates)
+
+
+def _service(tmp_path, decisions):
+    from wiki_evidence_enrichment import (
+        ConceptEvidenceSnapshot,
+        WikiEvidenceEnrichmentService,
+    )
+
+    concept = ConceptEvidenceSnapshot(
+        path=Path(tmp_path) / "concept.md",
+        concept_id="concept:4SS|PRE METAL CLN|EASY",
+        product="4SS",
+        fail_type="EASY",
+        cause_oper="PRE METAL CLN",
+        body="concept body",
+        file_sha256="a" * 64,
+        semantic_sha256="b" * 64,
+    )
+    candidates = (
+        _candidate("EVD-abc", "candidate one"),
+        _candidate("EVD-def", "candidate two"),
+    )
+    state = {
+        "items": [],
+        "source_writes": [],
+        "refreshes": [],
+        "materialize": 0,
+    }
+
+    def replace(filters, source_index, items, expected):
+        changed = state["items"] != items
+        state["items"] = list(items)
+        return changed
+
+    def write_source(item, content):
+        state["source_writes"].append((item["doc_id"], content))
+        return True
+
+    def refresh(doc_id):
+        state["refreshes"].append(doc_id)
+        return True
+
+    def materialize():
+        state["materialize"] += 1
+        return type("Report", (), {"errors": ()})()
+
+    manifest = _MemoryManifest()
+    retriever = _FakeRetriever(candidates)
+    judge = _FakeJudge(decisions)
+    service = WikiEvidenceEnrichmentService(
+        source_index="syld_gpt_2067627",
+        retriever=retriever,
+        judge=judge,
+        manifest_store=manifest,
+        read_concepts=lambda selector: (concept,),
+        replace_related_evidence=replace,
+        write_source=write_source,
+        refresh_backlinks=refresh,
+        materialize=materialize,
+    )
+    return service, state, manifest, retriever, judge
+
+
+def test_service_batches_pending_candidates_and_attaches_only_accepted(tmp_path):
+    from wiki_evidence_enrichment import EvidenceDecision
+
+    service, state, _, _, judge = _service(
+        tmp_path,
+        (
+            EvidenceDecision(
+                doc_id="EVD-abc",
+                relevant=True,
+                confidence=0.91,
+                relation="supporting_context",
+                reason="grounded",
+            ),
+            EvidenceDecision(
+                doc_id="EVD-def",
+                relevant=False,
+                confidence=0.99,
+                relation="supporting_context",
+                reason="unrelated",
+            ),
+        ),
+    )
+
+    result = service.apply(limit=10, selector=None)
+
+    assert result.status == "completed"
+    assert result.evaluated == 2
+    assert result.accepted == 1
+    assert result.rejected == 1
+    assert result.attached == 1
+    assert judge.calls == [
+        ("concept:4SS|PRE METAL CLN|EASY", ("EVD-abc", "EVD-def"))
+    ]
+    assert [item["doc_id"] for item in state["items"]] == ["EVD-abc"]
+    assert state["source_writes"] == [("EVD-abc", "candidate one")]
+    assert state["materialize"] == 1
+
+
+def test_service_second_apply_reuses_pair_decisions(tmp_path):
+    from wiki_evidence_enrichment import EvidenceDecision
+
+    service, state, _, _, judge = _service(
+        tmp_path,
+        (
+            EvidenceDecision(
+                doc_id="EVD-abc",
+                relevant=False,
+                confidence=0.9,
+                relation="supporting_context",
+                reason="unrelated",
+            ),
+            EvidenceDecision(
+                doc_id="EVD-def",
+                relevant=False,
+                confidence=0.9,
+                relation="supporting_context",
+                reason="unrelated",
+            ),
+        ),
+    )
+    first = service.apply(limit=10, selector=None)
+    judge.calls.clear()
+
+    second = service.apply(limit=10, selector=None)
+
+    assert first.rejected == 2
+    assert second.skipped == 2
+    assert second.evaluated == 0
+    assert judge.calls == []
+    assert state["materialize"] == 0
+
+
+def test_service_check_never_searches_or_judges(tmp_path):
+    service, _, _, retriever, judge = _service(tmp_path, ())
+
+    result = service.check(selector=None)
+
+    assert result.status == "checked"
+    assert result.concepts == 1
+    assert retriever.calls == []
+    assert judge.calls == []

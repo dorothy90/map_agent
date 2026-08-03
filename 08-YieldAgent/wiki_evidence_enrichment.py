@@ -48,6 +48,7 @@ class ConceptEvidenceSnapshot:
     body: str = field(repr=False)
     file_sha256: str
     semantic_sha256: str
+    related_evidence: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,11 @@ def read_concept_snapshots(
                 file_sha256=hashlib.sha256(raw).hexdigest(),
                 semantic_sha256=_semantic_hash(
                     product, fail_type, cause_oper, body
+                ),
+                related_evidence=tuple(
+                    item
+                    for item in (metadata.get("related_evidence") or [])
+                    if isinstance(item, dict)
                 ),
             )
         )
@@ -385,3 +391,193 @@ class StructuredEvidenceJudge:
             raise ValueError("structured evidence decision IDs do not match candidates")
         by_id = {decision.doc_id: decision for decision in batch.decisions}
         return tuple(by_id[doc_id] for doc_id in requested)
+
+
+def _pair_key(concept_id: str, doc_id: str) -> str:
+    return f"{concept_id}\0{doc_id}"
+
+
+def _sanitized_error(exc: Exception) -> str:
+    return " ".join(str(exc).split())[:500]
+
+
+class WikiEvidenceEnrichmentService:
+    def __init__(
+        self,
+        *,
+        source_index: str,
+        retriever: OpenSearchEvidenceRetriever,
+        judge: StructuredEvidenceJudge | None,
+        manifest_store: EvidenceManifestStore,
+        read_concepts: Callable[
+            [EvidenceSelector | None], tuple[ConceptEvidenceSnapshot, ...]
+        ],
+        replace_related_evidence: Callable[..., bool],
+        write_source: Callable[[dict[str, Any], str], bool],
+        refresh_backlinks: Callable[[str], bool],
+        materialize: Callable[[], Any],
+    ) -> None:
+        self.source_index = _exact_index_name(source_index)
+        self.retriever = retriever
+        self.judge = judge
+        self.manifest_store = manifest_store
+        self.read_concepts = read_concepts
+        self.replace_related_evidence = replace_related_evidence
+        self.write_source = write_source
+        self.refresh_backlinks = refresh_backlinks
+        self.materialize = materialize
+
+    def check(self, selector: EvidenceSelector | None) -> EnrichmentRunResult:
+        self.retriever.validate()
+        concepts = self.read_concepts(selector)
+        return EnrichmentRunResult(status="checked", concepts=len(concepts))
+
+    @staticmethod
+    def _state_matches(
+        state: Mapping[str, Any] | None,
+        concept: ConceptEvidenceSnapshot,
+        candidate: EvidenceCandidate,
+        retrieval_model: str,
+        judgment_model: str,
+    ) -> bool:
+        return bool(
+            state
+            and state.get("concept_sha256") == concept.semantic_sha256
+            and state.get("content_sha256") == candidate.content_sha256
+            and state.get("retrieval_model") == retrieval_model
+            and state.get("judgment_model") == judgment_model
+        )
+
+    def apply(
+        self,
+        limit: int,
+        selector: EvidenceSelector | None,
+    ) -> EnrichmentRunResult:
+        if self.judge is None:
+            raise RuntimeError("external evidence judge is not configured")
+        concepts = self.read_concepts(selector)[:limit]
+        manifest = self.manifest_store.load()
+        pairs = manifest["pairs"]
+        counters = {
+            "candidates": 0,
+            "evaluated": 0,
+            "accepted": 0,
+            "rejected": 0,
+            "skipped": 0,
+            "attached": 0,
+        }
+        errors: list[str] = []
+        changed = False
+        affected_doc_ids: set[str] = set()
+        retrieval_model = self.retriever.EMBEDDING_MODEL
+        judgment_model = self.judge.model_name
+
+        for concept in concepts:
+            try:
+                candidates = self.retriever.search(concept)
+                counters["candidates"] += len(candidates)
+                pending = [
+                    candidate
+                    for candidate in candidates
+                    if not self._state_matches(
+                        pairs.get(_pair_key(concept.concept_id, candidate.doc_id)),
+                        concept,
+                        candidate,
+                        retrieval_model,
+                        judgment_model,
+                    )
+                ]
+                counters["skipped"] += len(candidates) - len(pending)
+                if pending:
+                    decisions = self.judge.decide_batch(concept, pending)
+                    counters["evaluated"] += len(decisions)
+                    for candidate, decision in zip(pending, decisions, strict=True):
+                        accepted = bool(
+                            decision.relevant
+                            and decision.confidence >= self.judge.minimum_confidence
+                        )
+                        counters["accepted" if accepted else "rejected"] += 1
+                        pairs[_pair_key(concept.concept_id, candidate.doc_id)] = {
+                            "concept_sha256": concept.semantic_sha256,
+                            "content_sha256": candidate.content_sha256,
+                            "accepted": accepted,
+                            "confidence": float(decision.confidence),
+                            "relation": decision.relation,
+                            "retrieval_model": retrieval_model,
+                            "judgment_model": judgment_model,
+                        }
+
+                accepted_items: list[dict[str, Any]] = []
+                for candidate in candidates:
+                    state = pairs.get(_pair_key(concept.concept_id, candidate.doc_id))
+                    if not state or not state.get("accepted"):
+                        continue
+                    item = {
+                        "doc_id": candidate.doc_id,
+                        "source_index": self.source_index,
+                        "source_file": candidate.source_file,
+                        "page_num": candidate.page_num,
+                        "download_url": candidate.download_url,
+                        "content_sha256": candidate.content_sha256,
+                        "relevance": float(state["confidence"]),
+                        "relation": str(state["relation"]),
+                    }
+                    self.write_source(item, candidate.page_content)
+                    accepted_items.append(item)
+
+                previous = [
+                    item
+                    for item in concept.related_evidence
+                    if str(item.get("source_index") or "") == self.source_index
+                ]
+                if accepted_items or previous:
+                    concept_changed = self.replace_related_evidence(
+                        {
+                            "product": concept.product,
+                            "fail_type": concept.fail_type,
+                            "cause_oper": concept.cause_oper,
+                        },
+                        self.source_index,
+                        accepted_items,
+                        concept.file_sha256,
+                    )
+                    if concept_changed:
+                        changed = True
+                        counters["attached"] += len(accepted_items)
+                        affected_doc_ids.update(
+                            str(item.get("doc_id") or "")
+                            for item in previous + accepted_items
+                        )
+            except Exception as exc:
+                errors.append(
+                    f"{concept.concept_id}: {_sanitized_error(exc)}"
+                )
+
+        try:
+            self.manifest_store.save(manifest)
+        except Exception as exc:
+            errors.append(f"manifest: {_sanitized_error(exc)}")
+        for doc_id in sorted(value for value in affected_doc_ids if value):
+            try:
+                self.refresh_backlinks(doc_id)
+            except Exception as exc:
+                errors.append(f"source:{doc_id}: {_sanitized_error(exc)}")
+        materialized = False
+        if changed:
+            try:
+                report = self.materialize()
+                report_errors = tuple(getattr(report, "errors", ()) or ())
+                errors.extend(
+                    f"materialize: {' '.join(str(error).split())[:400]}"
+                    for error in report_errors
+                )
+                materialized = not report_errors
+            except Exception as exc:
+                errors.append(f"materialize: {_sanitized_error(exc)}")
+        return EnrichmentRunResult(
+            status="completed_with_errors" if errors else "completed",
+            concepts=len(concepts),
+            materialized=materialized,
+            errors=tuple(errors),
+            **counters,
+        )
