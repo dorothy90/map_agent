@@ -41,7 +41,7 @@ The enrichment process must never update, delete, or add documents in `syld_gpt_
 
 - Expand already-materialized triple Concepts.
 - Retrieve semantically similar `page_content` chunks.
-- Use structured LLM output to accept or reject each candidate.
+- Use one structured LLM call per Concept to accept or reject its candidate batch.
 - Store accepted chunks as generated Source Markdown.
 - Add Obsidian links between Concepts and accepted Sources.
 - Skip unchanged Concept/source pairs on later runs.
@@ -200,16 +200,17 @@ The body is bounded before embedding. No keyword lists, regex semantic rules, pr
 
 ### Structured relevance decision
 
-For each candidate, the configured chat model returns a validated schema:
+For each Concept, the configured chat model receives at most five candidates and returns one validated decision per candidate in a single structured response:
 
 ```text
+doc_id: EVD-...
 relevant: boolean
 confidence: number from 0 to 1
 relation: supporting_context | possible_cause | possible_action | contradiction
 reason: bounded text grounded only in the supplied Concept and candidate
 ```
 
-Only `relevant=true` and confidence meeting the configured fixed operational threshold are attached. The threshold is numeric safety policy, not a natural-language semantic rule.
+The response must contain each requested `doc_id` exactly once and no unknown IDs. Only `relevant=true` and confidence meeting the configured fixed operational threshold are attached. The threshold is numeric safety policy, not a natural-language semantic rule.
 
 The model must abstain when the supplied content does not establish a relationship. It must not invent the missing triple metadata.
 

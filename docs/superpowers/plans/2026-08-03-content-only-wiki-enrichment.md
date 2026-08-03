@@ -174,6 +174,7 @@ class EvidencePairState:
 
 
 class EvidenceDecision(BaseModel):
+    doc_id: str
     relevant: bool
     confidence: float = Field(ge=0.0, le=1.0)
     relation: Literal[
@@ -183,6 +184,10 @@ class EvidenceDecision(BaseModel):
         "contradiction",
     ]
     reason: str = Field(max_length=500)
+
+
+class EvidenceDecisionBatch(BaseModel):
+    decisions: list[EvidenceDecision]
 ```
 
 `file_sha256` covers the complete Concept bytes and is used only for stale-write rejection. `semantic_sha256` covers the exact retrieval input: canonical triple plus Concept body after removing the materializer-owned Knowledge Links block. Store only `semantic_sha256` as `concept_sha256` in the manifest so the enrichment's own materialization does not force a second judgment. Reject malformed manifest versions and any manifest value containing unapproved pair-state keys. Sanitize `source_file` with `Path(value).name`; do not serialize `raw_id`, `body`, or `page_content`.
@@ -210,7 +215,7 @@ git commit -m "feat(wiki): add evidence enrichment state"
 - Consumes: Task 1 snapshot and candidate models.
 - Produces: `OpenSearchEvidenceRetriever(client: Any, source_index: str, embed: Callable[[str], list[float]], top_k: int = 5)`.
 - Produces: `OpenSearchEvidenceRetriever.validate() -> int` and `.search(concept: ConceptEvidenceSnapshot) -> tuple[EvidenceCandidate, ...]`.
-- Produces: `StructuredEvidenceJudge(llm: Any, model_name: str, minimum_confidence: float = 0.8).decide(concept, candidate) -> EvidenceDecision`.
+- Produces: `StructuredEvidenceJudge(llm: Any, model_name: str, minimum_confidence: float = 0.8).decide_batch(concept, candidates) -> tuple[EvidenceDecision, ...]`.
 
 - [ ] **Step 1: Write failing retrieval and judgment tests**
 
@@ -239,15 +244,19 @@ def test_retriever_uses_knn_and_redacts_raw_id():
 
 def test_judge_rejects_unrelated_candidate_even_with_high_vector_score():
     judge = StructuredEvidenceJudge(
-        FakeStructuredLLM(EvidenceDecision(
+        FakeStructuredLLM(EvidenceDecisionBatch(decisions=[EvidenceDecision(
+            doc_id="EVD-abc",
             relevant=False,
             confidence=0.99,
             relation="supporting_context",
             reason="The candidate is about an unrelated programming project.",
-        )),
+        )])),
         "test-model",
     )
-    decision = judge.decide(concept_snapshot(), candidate(score=0.99))
+    decision = judge.decide_batch(
+        concept_snapshot(),
+        (candidate(doc_id="EVD-abc", score=0.99),),
+    )[0]
     assert decision.relevant is False
 ```
 
@@ -276,7 +285,7 @@ body = {
 }
 ```
 
-Build the embedding query from the exact structured triple plus a bounded Concept body. The structured judge must call `llm.with_structured_output(EvidenceDecision, method="function_calling")` and supply only the bounded Concept context and bounded candidate content. The system message must explicitly require abstention and prohibit inventing missing triple metadata. A decision is attachable only when `relevant` is true and `confidence >= minimum_confidence`; do not alter the model's semantic result with keyword rules.
+Build the embedding query from the exact structured triple plus a bounded Concept body. The structured judge must call `llm.with_structured_output(EvidenceDecisionBatch, method="function_calling")` once for the pending candidates of one Concept and supply only the bounded Concept context plus at most five bounded candidate contents. Validate that the response contains every requested safe `doc_id` exactly once and no unknown IDs. The system message must explicitly require abstention and prohibit inventing missing triple metadata. A decision is attachable only when `relevant` is true and `confidence >= minimum_confidence`; do not alter the model's semantic result with keyword rules.
 
 - [ ] **Step 4: Run Task 1 and Task 2 tests**
 
@@ -493,6 +502,7 @@ Use injected fake retriever, judge, manifest store, Vault callbacks, and materia
 ```python
 def test_apply_rejects_irrelevant_candidate_without_vault_attachment(deps):
     deps.judge.decision = EvidenceDecision(
+        doc_id="EVD-abc",
         relevant=False,
         confidence=0.99,
         relation="supporting_context",
@@ -507,6 +517,7 @@ def test_apply_rejects_irrelevant_candidate_without_vault_attachment(deps):
 
 def test_apply_attaches_accepted_candidate_and_materializes_once(deps):
     deps.judge.decision = EvidenceDecision(
+        doc_id="EVD-abc",
         relevant=True,
         confidence=0.91,
         relation="supporting_context",
@@ -556,10 +567,10 @@ Run both enrichment test modules. Expected: missing service/CLI symbols.
 
 For each bounded Concept job:
 
-1. retrieve candidates;
+1. retrieve at most five candidates;
 2. compute pair key `concept_id + NUL + doc_id`;
 3. reuse a manifest decision only when Concept semantic hash, source hash, retrieval model, and judgment model all match;
-4. judge otherwise;
+4. submit all candidates without reusable state in one structured judgment call;
 5. write sanitized pair state;
 6. derive the complete accepted set for that Concept/source index from current manifest state;
 7. write accepted Source notes;
