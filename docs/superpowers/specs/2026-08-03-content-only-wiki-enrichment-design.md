@@ -106,17 +106,18 @@ Contains the focused enrichment service:
 - content hashing and stable source identity
 - incremental pair-state planning
 - accepted-evidence attachment
+- owned Source Markdown rendering
 - final materialization orchestration
 
 ### Existing production files changed
 
 #### `08-YieldAgent/wiki_store.py`
 
-Add one safe operation that updates only the generated `related_evidence` metadata of a Concept. It must use the existing pinned/snapshot-safe mutation conventions, preserve the complete body and unrelated frontmatter, and remain idempotent.
+Add safe operations that update only the generated `related_evidence` metadata of a Concept and write enrichment-owned Source Markdown. They must use the existing pinned/snapshot-safe mutation conventions, preserve the complete Concept body and unrelated frontmatter, reject source-note ownership collisions, and remain idempotent.
 
 #### `08-YieldAgent/wiki_materializer.py`
 
-Read `related_evidence`, generate Source Markdown, and render a separate `Related Evidence` section in the existing managed Concept block. Existing `Sources` generated from citations remain unchanged.
+Read `related_evidence`, validate that each enrichment-owned Source Markdown file exists with the expected owner, and render a separate `Related Evidence` section in the existing managed Concept block. Existing `Sources` generated from citations remain unchanged.
 
 ### New tests
 
@@ -226,7 +227,9 @@ The note contains:
 - page number when present
 - source content copied from OpenSearch
 - generated backlinks to every accepted Concept
-- generated ownership metadata so the existing materializer can validate and update it
+- `generated_by: yield-wiki-evidence-enricher` ownership metadata so the existing materializer can validate it without taking ownership
+
+The enrichment service writes this note through the existing pinned mutation boundary before attaching it to a Concept. The note itself is the only Vault copy of `page_content`; neither Concept frontmatter nor the incremental manifest duplicates the content. The existing materializer owns the link projection but does not overwrite or delete enrichment-owned Source notes.
 
 The related Concept managed block contains a distinct section:
 
@@ -253,7 +256,7 @@ uv run --frozen python enrich_wiki.py --check --vault /Users/daehwankim/SYLDAIX/
 uv run --frozen python enrich_wiki.py --apply --allow-external-llm --vault /Users/daehwankim/SYLDAIX/YieldWiki
 ```
 
-`--apply` performs retrieval and judgment, writes accepted relationships and the manifest atomically, then calls the existing Obsidian materializer once after all successful Concept updates.
+`--apply` performs retrieval and judgment, safely writes accepted Source notes and Concept relationships, writes the manifest atomically, then calls the existing Obsidian materializer once after all successful Concept updates.
 
 The explicit `--allow-external-llm` flag documents that Concept data and bounded candidate page content are sent to the configured external provider. Without the flag, apply fails before any external call or mutation.
 
@@ -279,6 +282,7 @@ No other company Concept or source content will be sent externally during implem
 - Never log source page content, Concept body text, embeddings, prompts, tokens, or raw source `_id` values.
 - Write the manifest atomically.
 - Use pinned file mutation to prevent concurrent or stale Concept overwrites.
+- Give enrichment Source notes a distinct generated owner and reject collisions with manual or materializer-owned notes.
 - If a Concept changes after planning, do not attach evidence; leave it eligible for the next run.
 - If some jobs fail, preserve successful jobs and return `completed_with_errors`.
 - Run materialization once only when at least one Concept changed.
