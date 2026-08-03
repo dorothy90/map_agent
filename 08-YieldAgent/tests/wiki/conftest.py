@@ -15,12 +15,5 @@ def pytest_configure(config):
 @pytest.fixture(autouse=True)
 def clear_wiki_modules():
     yield
-    for name in (
-        "wiki_config",
-        "wiki_evidence_enrichment",
-        "wiki_materializer",
-        "wiki_router",
-        "wiki_safe_mutation",
-        "wiki_store",
-    ):
+    for name in ("wiki_config", "wiki_store", "wiki_router"):
         sys.modules.pop(name, None)
