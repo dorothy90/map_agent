@@ -14,7 +14,14 @@ from wiki_config import initialize_wiki_vault, resolve_wiki_paths
 pytestmark = pytest.mark.no_server
 
 
-def _write_concept(paths, *, citations=None, entities=None, relations=None):
+def _write_concept(
+    paths,
+    *,
+    citations=None,
+    entities=None,
+    relations=None,
+    related_evidence=None,
+):
     if entities is None:
         entities = [
             {
@@ -60,11 +67,49 @@ def _write_concept(paths, *, citations=None, entities=None, relations=None):
         ],
         entities=entities,
         relations=relations,
+        related_evidence=related_evidence or [],
         source_fingerprint="sha256:concept-source-set",
     )
     path = paths.concepts / "4SS_PRE_METAL_CLN_EASY.md"
     path.write_text(frontmatter.dumps(post), encoding="utf-8")
     return path
+
+
+def _write_enrichment_source(paths, doc_id="EVD-0123456789abcdef0123", **overrides):
+    metadata = {
+        "id": f"source:{doc_id}",
+        "type": "source",
+        "generated_by": "yield-wiki-evidence-enricher",
+        "doc_id": doc_id,
+        "source_index": "syld_gpt_2067627",
+        "source_file": "deck.pptx",
+        "page_num": 3,
+        "content_sha256": "a" * 64,
+        "relevance": 0.91,
+        "relation": "supporting_context",
+    }
+    metadata.update(overrides)
+    path = paths.sources / f"{doc_id}.md"
+    path.write_text(
+        frontmatter.dumps(
+            frontmatter.Post(content="# deck\n\nsource body\n", **metadata)
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _related_evidence(doc_id="EVD-0123456789abcdef0123"):
+    return {
+        "doc_id": doc_id,
+        "source_index": "syld_gpt_2067627",
+        "source_file": "deck.pptx",
+        "page_num": 3,
+        "download_url": "",
+        "content_sha256": "a" * 64,
+        "relevance": 0.91,
+        "relation": "supporting_context",
+    }
 
 
 def _snapshot(vault):
@@ -173,6 +218,54 @@ def test_materializes_product_to_source_topology_and_preserves_concept_body(
     assert "[[sources/FH-000238|FH-000238]]" in relation_body
     assert "[[concepts/4SS_PRE_METAL_CLN_EASY|4SS EASY]]" in relation_body
     assert "[[entities/" in relation_body
+
+
+def test_materializer_links_related_evidence_without_claiming_source_ownership(
+    tmp_path,
+):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    source = _write_enrichment_source(paths)
+    source_before = source.read_bytes()
+    concept = _write_concept(paths, related_evidence=[_related_evidence()])
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert report.errors == ()
+    body = concept.read_text(encoding="utf-8")
+    assert "Related Evidence:" in body
+    assert "[[sources/EVD-0123456789abcdef0123|deck.pptx · p.3]]" in body
+    assert source.read_bytes() == source_before
+    assert frontmatter.load(source)["generated_by"] == "yield-wiki-evidence-enricher"
+
+
+@pytest.mark.parametrize(
+    "source_setup, expected",
+    [
+        ("missing", "missing related evidence Source"),
+        ("manual", "invalid related evidence Source owner"),
+        ("wrong_hash", "related evidence metadata mismatch"),
+    ],
+)
+def test_materializer_rejects_invalid_related_evidence_source(
+    tmp_path, source_setup, expected
+):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    if source_setup == "manual":
+        path = paths.sources / "EVD-0123456789abcdef0123.md"
+        path.write_text("# manual", encoding="utf-8")
+    elif source_setup == "wrong_hash":
+        _write_enrichment_source(paths, content_sha256="b" * 64)
+    _write_concept(paths, related_evidence=[_related_evidence()])
+
+    report = materialize_wiki(paths, apply=False)
+
+    assert any(expected in error for error in report.errors)
 
 
 def test_graph_filenames_preserve_unicode_and_bound_unsafe_long_labels(tmp_path):

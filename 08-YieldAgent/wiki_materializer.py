@@ -26,10 +26,12 @@ from wiki_safe_mutation import GeneratedOwner, PinnedWikiMutation
 
 
 _GENERATED_BY = "yield-wiki-materializer"
+_EVIDENCE_GENERATED_BY = "yield-wiki-evidence-enricher"
 _BLOCK_START = "<!-- yield-wiki:knowledge-links:start -->"
 _BLOCK_END = "<!-- yield-wiki:knowledge-links:end -->"
 _GRAPH_FILENAME_MAX_BYTES = 179
 _UNSAFE_GRAPH_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_EVIDENCE_ID = re.compile(r"^EVD-[0-9a-f]{20}$")
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ class _Concept:
     fail_type: str
     cause_oper: str
     citations: tuple[dict[str, Any], ...]
+    related_evidence: tuple[dict[str, Any], ...]
     entities: tuple[Any, ...]
     relations: tuple[Any, ...]
     source_fingerprint: str
@@ -309,6 +312,11 @@ def _read_concepts(paths: WikiPaths) -> tuple[list[_Concept], list[str]]:
             for citation in (metadata.get("citations") or [])
             if isinstance(citation, dict)
         )
+        related_evidence = tuple(
+            item
+            for item in (metadata.get("related_evidence") or [])
+            if isinstance(item, dict)
+        )
         raw_entities = metadata.get("entities") or []
         entities = tuple(raw_entities if isinstance(raw_entities, list) else [raw_entities])
         raw_relations = metadata.get("relations") or []
@@ -324,6 +332,7 @@ def _read_concepts(paths: WikiPaths) -> tuple[list[_Concept], list[str]]:
                 fail_type=required["fail_type"],
                 cause_oper=required["cause_oper"],
                 citations=citations,
+                related_evidence=related_evidence,
                 entities=entities,
                 relations=relations,
                 source_fingerprint=str(metadata.get("source_fingerprint") or "").strip(),
@@ -382,6 +391,7 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
     operations: dict[str, set[tuple[str, str]]] = {}
     operation_concepts: dict[str, list[_Concept]] = {}
     sources: dict[str, dict[str, Any]] = {}
+    related_sources: dict[str, dict[str, Any]] = {}
     concepts_by_id = {concept.concept_id: concept for concept in concepts}
     concept_super_links: dict[str, list[_SuperConcept]] = {}
 
@@ -421,6 +431,85 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
                     elif incoming not in (None, ""):
                         source[key] = incoming
             source["concepts"].append(concept)
+        for item in concept.related_evidence:
+            doc_id = str(item.get("doc_id") or "").strip()
+            source_index = str(item.get("source_index") or "").strip()
+            content_sha256 = str(item.get("content_sha256") or "").strip()
+            source_file = str(item.get("source_file") or "").strip()
+            relation = str(item.get("relation") or "").strip()
+            if (
+                not _EVIDENCE_ID.fullmatch(doc_id)
+                or not source_index
+                or any(value in source_index for value in ("*", "?", ","))
+                or not re.fullmatch(r"[0-9a-f]{64}", content_sha256)
+                or Path(source_file).name != source_file
+                or relation
+                not in {
+                    "supporting_context",
+                    "possible_cause",
+                    "possible_action",
+                    "contradiction",
+                }
+            ):
+                errors.append(
+                    f"{_relative(paths, concept.path)}: invalid related evidence metadata"
+                )
+                continue
+            source_path = paths.sources / f"{_stable_filename(doc_id)}.md"
+            try:
+                info = source_path.lstat()
+            except FileNotFoundError:
+                errors.append(
+                    f"{_relative(paths, concept.path)}: missing related evidence Source: {doc_id}"
+                )
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                errors.append(
+                    f"{_relative(paths, concept.path)}: invalid related evidence Source owner: {doc_id}"
+                )
+                continue
+            try:
+                source_post = frontmatter.load(source_path)
+            except Exception:
+                errors.append(
+                    f"{_relative(paths, concept.path)}: invalid related evidence Source owner: {doc_id}"
+                )
+                continue
+            owner = (
+                source_post.metadata.get("generated_by"),
+                source_post.metadata.get("type"),
+                source_post.metadata.get("id"),
+            )
+            if owner != (
+                _EVIDENCE_GENERATED_BY,
+                "source",
+                f"source:{doc_id}",
+            ):
+                errors.append(
+                    f"{_relative(paths, concept.path)}: invalid related evidence Source owner: {doc_id}"
+                )
+                continue
+            compared = {
+                "doc_id": doc_id,
+                "source_index": source_index,
+                "source_file": source_file,
+                "page_num": item.get("page_num"),
+                "content_sha256": content_sha256,
+            }
+            observed = {key: source_post.metadata.get(key) for key in compared}
+            if observed != compared:
+                errors.append(
+                    f"{_relative(paths, concept.path)}: related evidence metadata mismatch: {doc_id}"
+                )
+                continue
+            existing = related_sources.get(doc_id)
+            if existing is not None and existing["metadata"] != compared:
+                errors.append(f"source:{doc_id}: conflicting related evidence metadata")
+                continue
+            related_sources.setdefault(
+                doc_id,
+                {"path": source_path, "metadata": compared},
+            )
 
     if errors:
         return _MaterializationPlan({}, (), (), tuple(sorted(set(errors))))
@@ -763,6 +852,24 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         if source_links:
             lines.append("- Sources:")
             lines.extend(f"  - {link}" for link in source_links)
+        related_links = []
+        for item in sorted(
+            concept.related_evidence,
+            key=lambda value: str(value.get("doc_id") or ""),
+        ):
+            doc_id = str(item.get("doc_id") or "").strip()
+            record = related_sources.get(doc_id)
+            if record is None:
+                continue
+            source_file = str(item.get("source_file") or "").strip()
+            page_num = item.get("page_num")
+            label = source_file or doc_id
+            if page_num not in (None, ""):
+                label = f"{label} · p.{page_num}"
+            related_links.append(_wikilink(paths, record["path"], label))
+        if related_links:
+            lines.append("- Related Evidence:")
+            lines.extend(f"  - {link}" for link in related_links)
         entity_links = [
             _wikilink(
                 paths,
