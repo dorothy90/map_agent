@@ -39,8 +39,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--product, --fail-type, and --cause-oper must be supplied together")
     if any(token in args.source_index for token in ("*", "?", ",")):
         parser.error("--source-index must be one exact index name")
-    if args.apply and args.limit is None:
-        args.limit = 10
     return args
 
 

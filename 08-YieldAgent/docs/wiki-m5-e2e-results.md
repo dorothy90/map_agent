@@ -368,9 +368,9 @@ materializer check는 `created=0 modified=0 deleted=0 errors=0`이고 기존 누
 endpoint warning 7개만 유지됐다. Wiki lint는 기존 high-priority foundation gap 2개
 (`4SS|STI CMP|EASY`, `4SS|M0C ETCH|TWT`)만 보고했다. 이번 기능으로 추가된 lint나
 materializer 오류는 없다. Obsidian Plugin은 `45 passed` 및 production build 성공이다.
-Wiki 전체 자동화 테스트는 `423 passed, 10 failed`였고, 10건은 변경 전에도 동일하게
+Wiki 전체 자동화 테스트는 `424 passed, 10 failed`였고, 10건은 변경 전에도 동일하게
 발생한 system Python 3.13과 기존 statsmodels/pandas 조합의 호환성 실패다. 이번 기능의
-집중 테스트는 `25 passed`였다.
+집중 테스트는 `26 passed`였다.
 
 실제 관련 Source가 없어 이번 E2E에서 새 Graph edge는 생성되지 않았다. 자동화 테스트에서
 승인된 related evidence의 Concept→Source link, enrichment owner 보존, owner collision 거부,

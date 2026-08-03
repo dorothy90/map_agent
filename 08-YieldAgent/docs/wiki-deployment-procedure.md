@@ -521,6 +521,9 @@ uv run --frozen python enrich_wiki.py --check \
 uv run --frozen python enrich_wiki.py --apply --allow-external-llm --vault /Users/daehwankim/SYLDAIX/YieldWiki
 ```
 
+`--limit`을 생략하면 현재 존재하는 Triple Concept 전체를 처리합니다. 한 번의 실행 범위를
+제한하려면 `--limit N`을 추가합니다.
+
 `--allow-external-llm`은 bounded Concept 문맥과 검색된 후보 본문이 현재 설정된 embedding 및
 chat provider로 전송됨을 명시적으로 승인하는 옵션입니다. 사내 승인 범위를 제한하려면
 정확한 Triple 세 옵션을 함께 사용합니다.

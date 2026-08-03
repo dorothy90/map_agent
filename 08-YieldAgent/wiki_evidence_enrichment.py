@@ -452,7 +452,7 @@ class WikiEvidenceEnrichmentService:
 
     def apply(
         self,
-        limit: int,
+        limit: int | None,
         selector: EvidenceSelector | None,
     ) -> EnrichmentRunResult:
         if self.judge is None:

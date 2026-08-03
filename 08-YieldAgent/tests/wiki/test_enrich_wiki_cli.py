@@ -81,3 +81,19 @@ def test_cli_apply_passes_exact_selector_and_limit(monkeypatch, capsys):
         "PRE METAL CLN",
     )
     assert json.loads(capsys.readouterr().out)["status"] == "completed"
+
+
+def test_cli_apply_without_limit_processes_all_concepts(monkeypatch, capsys):
+    calls = []
+    service = SimpleNamespace(
+        apply=lambda limit, selector: calls.append((limit, selector))
+        or SimpleNamespace(status="completed", errors=()),
+    )
+    monkeypatch.setattr(enrich_wiki, "_build_service", lambda args, read_only: service)
+
+    code = enrich_wiki.main(
+        ["--apply", "--allow-external-llm", "--vault", "/tmp/vault"]
+    )
+
+    assert code == 0
+    assert calls == [(None, None)]
