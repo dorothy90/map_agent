@@ -142,3 +142,228 @@ def test_empty_manifest_is_versioned(tmp_path):
     store = EvidenceManifestStore(paths, paths.state_dir / "evidence-manifest.json")
     assert store.load() == {"version": 1, "pairs": {}}
     assert not store.path.exists()
+
+
+class _FakeIndices:
+    def __init__(self, dimension=4096):
+        self.dimension = dimension
+
+    def get_mapping(self, *, index):
+        return {
+            index: {
+                "mappings": {
+                    "properties": {
+                        "embedding": {
+                            "type": "knn_vector",
+                            "dimension": self.dimension,
+                        }
+                    }
+                }
+            }
+        }
+
+
+class _FakeOpenSearch:
+    def __init__(self, *, dimension=4096, hits=None):
+        self.indices = _FakeIndices(dimension)
+        self.hits = list(hits or [])
+        self.last_search = None
+
+    def search(self, *, index, body):
+        self.last_search = (index, body)
+        return {"hits": {"hits": self.hits}}
+
+
+def _concept_snapshot():
+    from wiki_evidence_enrichment import ConceptEvidenceSnapshot
+
+    return ConceptEvidenceSnapshot(
+        path=None,
+        concept_id="concept:4SS|PRE METAL CLN|EASY",
+        product="4SS",
+        fail_type="EASY",
+        cause_oper="PRE METAL CLN",
+        body="oxide leakage investigation",
+        file_sha256="a" * 64,
+        semantic_sha256="b" * 64,
+    )
+
+
+def test_retriever_validates_exact_index_and_vector_dimension():
+    from wiki_evidence_enrichment import OpenSearchEvidenceRetriever
+
+    client = _FakeOpenSearch()
+    retriever = OpenSearchEvidenceRetriever(
+        client,
+        "syld_gpt_2067627",
+        lambda _: [0.0] * 4096,
+    )
+
+    assert retriever.validate() == 4096
+    with pytest.raises(ValueError, match="exact source index"):
+        OpenSearchEvidenceRetriever(client, "syld_*", lambda _: [0.0] * 4096)
+    with pytest.raises(ValueError, match="4096"):
+        OpenSearchEvidenceRetriever(
+            _FakeOpenSearch(dimension=1024),
+            "syld_gpt_2067627",
+            lambda _: [0.0] * 4096,
+        ).validate()
+
+
+def test_retriever_uses_knn_and_redacts_raw_id():
+    from wiki_evidence_enrichment import OpenSearchEvidenceRetriever
+
+    client = _FakeOpenSearch(
+        hits=[
+            {
+                "_id": "/private/company.pptx_p1_0",
+                "_score": 0.99,
+                "_source": {
+                    "page_content": "unrelated text",
+                    "source_file": "/private/company.pptx",
+                    "page_num": 1,
+                    "download_url": "https://example.invalid/a",
+                },
+            }
+        ]
+    )
+    retriever = OpenSearchEvidenceRetriever(
+        client,
+        "syld_gpt_2067627",
+        lambda _: [0.0] * 4096,
+    )
+
+    candidate = retriever.search(_concept_snapshot())[0]
+
+    index, body = client.last_search
+    assert index == "syld_gpt_2067627"
+    assert body["query"]["knn"]["embedding"]["vector"] == [0.0] * 4096
+    assert body["_source"] == [
+        "page_content",
+        "source_file",
+        "page_num",
+        "download_url",
+    ]
+    assert candidate.source_file == "company.pptx"
+    assert "/private/" not in repr(candidate)
+
+
+def test_retriever_rejects_wrong_query_vector_dimension():
+    from wiki_evidence_enrichment import OpenSearchEvidenceRetriever
+
+    retriever = OpenSearchEvidenceRetriever(
+        _FakeOpenSearch(),
+        "syld_gpt_2067627",
+        lambda _: [0.0] * 3,
+    )
+    with pytest.raises(ValueError, match="4096"):
+        retriever.search(_concept_snapshot())
+
+
+class _FakeStructuredChain:
+    def __init__(self, output):
+        self.output = output
+        self.calls = []
+
+    def invoke(self, messages):
+        self.calls.append(messages)
+        return self.output
+
+
+class _FakeStructuredLLM:
+    def __init__(self, output):
+        self.chain = _FakeStructuredChain(output)
+        self.schemas = []
+
+    def with_structured_output(self, schema, method):
+        self.schemas.append((schema, method))
+        return self.chain
+
+
+def _candidate(doc_id="EVD-abc", content="unrelated programming project"):
+    from wiki_evidence_enrichment import EvidenceCandidate
+
+    return EvidenceCandidate(
+        raw_id="/private/producer-path",
+        doc_id=doc_id,
+        page_content=content,
+        content_sha256=hashlib.sha256(content.encode()).hexdigest(),
+        source_file="deck.pptx",
+        page_num=1,
+        download_url="",
+        score=0.99,
+    )
+
+
+def test_judge_batches_candidates_in_one_structured_call():
+    from wiki_evidence_enrichment import (
+        EvidenceDecision,
+        EvidenceDecisionBatch,
+        StructuredEvidenceJudge,
+    )
+
+    output = EvidenceDecisionBatch(
+        decisions=[
+            EvidenceDecision(
+                doc_id="EVD-abc",
+                relevant=False,
+                confidence=0.99,
+                relation="supporting_context",
+                reason="The candidate is unrelated.",
+            ),
+            EvidenceDecision(
+                doc_id="EVD-def",
+                relevant=True,
+                confidence=0.91,
+                relation="possible_action",
+                reason="The candidate contains related action evidence.",
+            ),
+        ]
+    )
+    llm = _FakeStructuredLLM(output)
+    judge = StructuredEvidenceJudge(llm, "test-model")
+
+    decisions = judge.decide_batch(
+        _concept_snapshot(),
+        (_candidate("EVD-abc"), _candidate("EVD-def", "related action")),
+    )
+
+    assert [decision.doc_id for decision in decisions] == ["EVD-abc", "EVD-def"]
+    assert len(llm.chain.calls) == 1
+    assert llm.schemas[0][1] == "function_calling"
+
+
+@pytest.mark.parametrize(
+    "decision_ids",
+    [
+        ["EVD-abc"],
+        ["EVD-abc", "EVD-abc"],
+        ["EVD-abc", "EVD-unknown"],
+    ],
+)
+def test_judge_rejects_missing_duplicate_or_unknown_decision_ids(decision_ids):
+    from wiki_evidence_enrichment import (
+        EvidenceDecision,
+        EvidenceDecisionBatch,
+        StructuredEvidenceJudge,
+    )
+
+    output = EvidenceDecisionBatch(
+        decisions=[
+            EvidenceDecision(
+                doc_id=doc_id,
+                relevant=False,
+                confidence=0.9,
+                relation="supporting_context",
+                reason="No grounded relationship.",
+            )
+            for doc_id in decision_ids
+        ]
+    )
+    judge = StructuredEvidenceJudge(_FakeStructuredLLM(output), "test-model")
+
+    with pytest.raises(ValueError, match="decision IDs"):
+        judge.decide_batch(
+            _concept_snapshot(),
+            (_candidate("EVD-abc"), _candidate("EVD-def")),
+        )

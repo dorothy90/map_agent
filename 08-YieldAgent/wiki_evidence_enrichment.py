@@ -6,7 +6,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 import frontmatter
 from pydantic import BaseModel, Field
@@ -205,3 +205,183 @@ class EvidenceManifestStore:
         with PinnedWikiMutation(self.paths) as mutation:
             snapshot = mutation.snapshot(self.path)
             mutation.replace_text(self.path, content, expected=snapshot)
+
+
+def _exact_index_name(value: str) -> str:
+    name = str(value or "").strip()
+    if not name or any(token in name for token in ("*", "?", ",")):
+        raise ValueError("an exact source index name is required")
+    return name
+
+
+class OpenSearchEvidenceRetriever:
+    EMBEDDING_DIMENSION = 4096
+    EMBEDDING_MODEL = "qwen/qwen3-embedding-8b"
+
+    def __init__(
+        self,
+        client: Any,
+        source_index: str,
+        embed: Callable[[str], list[float]],
+        top_k: int = 5,
+    ) -> None:
+        self.client = client
+        self.source_index = _exact_index_name(source_index)
+        self.embed = embed
+        self.top_k = min(max(int(top_k), 1), 5)
+
+    def validate(self) -> int:
+        response = self.client.indices.get_mapping(index=self.source_index)
+        if set(response) != {self.source_index}:
+            raise ValueError("source index must resolve to one exact index")
+        embedding = (
+            response[self.source_index]
+            .get("mappings", {})
+            .get("properties", {})
+            .get("embedding", {})
+        )
+        if (
+            embedding.get("type") != "knn_vector"
+            or embedding.get("dimension") != self.EMBEDDING_DIMENSION
+        ):
+            raise ValueError("source embedding must be a 4096-dimension knn_vector")
+        return self.EMBEDDING_DIMENSION
+
+    @staticmethod
+    def _query(concept: ConceptEvidenceSnapshot) -> str:
+        body = _BLOCK_RE.sub("", concept.body).strip()[:4000]
+        return (
+            f"product: {concept.product}\n"
+            f"fail_type: {concept.fail_type}\n"
+            f"cause_oper: {concept.cause_oper}\n"
+            f"concept:\n{body}"
+        )
+
+    def search(
+        self,
+        concept: ConceptEvidenceSnapshot,
+    ) -> tuple[EvidenceCandidate, ...]:
+        self.validate()
+        vector = list(self.embed(self._query(concept)))
+        if len(vector) != self.EMBEDDING_DIMENSION:
+            raise ValueError("query embedding must contain exactly 4096 values")
+        body = {
+            "size": self.top_k,
+            "_source": [
+                "page_content",
+                "source_file",
+                "page_num",
+                "download_url",
+            ],
+            "query": {
+                "knn": {
+                    "embedding": {
+                        "vector": vector,
+                        "k": self.top_k,
+                    }
+                }
+            },
+        }
+        response = self.client.search(index=self.source_index, body=body)
+        candidates: list[EvidenceCandidate] = []
+        for hit in response.get("hits", {}).get("hits", []):
+            raw_id = str(hit.get("_id") or "")
+            source = hit.get("_source") or {}
+            content = str(source.get("page_content") or "")
+            if not raw_id or not content.strip():
+                continue
+            raw_page = source.get("page_num")
+            page_num = int(raw_page) if raw_page not in (None, "") else None
+            candidates.append(
+                EvidenceCandidate(
+                    raw_id=raw_id,
+                    doc_id=stable_evidence_id(self.source_index, raw_id),
+                    page_content=content,
+                    content_sha256=hashlib.sha256(
+                        content.encode("utf-8")
+                    ).hexdigest(),
+                    source_file=Path(str(source.get("source_file") or "")).name,
+                    page_num=page_num,
+                    download_url=str(source.get("download_url") or ""),
+                    score=float(hit.get("_score") or 0.0),
+                )
+            )
+        return tuple(candidates)
+
+
+_JUDGMENT_SYSTEM = """You assess whether content-only evidence is related to one existing Wiki Concept.
+Use only the supplied Concept and candidates. Do not infer missing product, fail type, or operation metadata.
+Return one decision for every supplied safe doc_id, exactly once, and no other IDs.
+Set relevant=false whenever the relationship is not established by the supplied text.
+Reasons must be short and grounded in that candidate only."""
+
+
+class StructuredEvidenceJudge:
+    def __init__(
+        self,
+        llm: Any,
+        model_name: str,
+        minimum_confidence: float = 0.8,
+    ) -> None:
+        self.llm = llm
+        self.model_name = model_name
+        self.minimum_confidence = minimum_confidence
+
+    @staticmethod
+    def _payload(
+        concept: ConceptEvidenceSnapshot,
+        candidates: Sequence[EvidenceCandidate],
+    ) -> str:
+        concept_body = _BLOCK_RE.sub("", concept.body).strip()[:4000]
+        candidate_payload = [
+            {
+                "doc_id": item.doc_id,
+                "content": item.page_content.strip()[:6000],
+            }
+            for item in candidates
+        ]
+        return json.dumps(
+            {
+                "concept": {
+                    "product": concept.product,
+                    "fail_type": concept.fail_type,
+                    "cause_oper": concept.cause_oper,
+                    "body": concept_body,
+                },
+                "candidates": candidate_payload,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    def decide_batch(
+        self,
+        concept: ConceptEvidenceSnapshot,
+        candidates: Sequence[EvidenceCandidate],
+    ) -> tuple[EvidenceDecision, ...]:
+        items = tuple(candidates)
+        if not items:
+            return ()
+        if len(items) > 5:
+            raise ValueError("at most five evidence candidates may be judged")
+        chain = self.llm.with_structured_output(
+            EvidenceDecisionBatch,
+            method="function_calling",
+        )
+        output = chain.invoke(
+            [
+                ("system", _JUDGMENT_SYSTEM),
+                ("human", self._payload(concept, items)),
+            ]
+        )
+        batch = (
+            output
+            if isinstance(output, EvidenceDecisionBatch)
+            else EvidenceDecisionBatch.model_validate(output)
+        )
+        requested = [item.doc_id for item in items]
+        returned = [decision.doc_id for decision in batch.decisions]
+        if len(returned) != len(set(returned)) or set(returned) != set(requested):
+            raise ValueError("structured evidence decision IDs do not match candidates")
+        by_id = {decision.doc_id: decision for decision in batch.decisions}
+        return tuple(by_id[doc_id] for doc_id in requested)
