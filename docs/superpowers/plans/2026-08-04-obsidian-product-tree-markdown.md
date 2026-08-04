@@ -92,7 +92,9 @@ assert "[[concepts/" not in leaf
 assert "[[sources/" not in leaf
 ```
 
-Also assert the three exact frontmatter types and the leaf `concept_id`.
+Also put `[[sources/FH-1|FH-1]]` in the Concept body and assert the leaf contains
+plain `FH-1` without the internal link. Assert the three exact frontmatter types
+and the leaf `concept_id`.
 
 - [ ] **Step 2: Write failing isolation, cleanup, and idempotency tests**
 
@@ -124,8 +126,9 @@ oper_path = paths.product_tree / (
 ```
 
 Render parent-to-child Wiki links only. Render the operation leaf with its
-canonical product/fail/operation metadata, `concept_id`, title, and exact
-current Concept body. Do not render any internal Wiki link in the leaf.
+canonical product/fail/operation metadata, `concept_id`, title, and current
+Concept body. Convert `[[target|label]]` to `label` and `[[target]]` to `target`
+before rendering the leaf so it contains no internal Wiki link.
 
 - [ ] **Step 5: Extend exact owner validation and stale cleanup**
 

@@ -45,10 +45,12 @@ The graph topology is expressed only by parent-to-child Wiki links:
 ```
 
 The leaf does not link to the canonical Concept, Sources, Entities, Relations,
-Reviews, or Super Concepts. It copies the current generated Concept body and
-records the canonical `concept_id` in frontmatter as non-link metadata. This
-keeps the native Graph at exactly three tiers while the canonical files remain
-the source of truth.
+Reviews, or Super Concepts. It copies the current generated Concept body,
+converting any internal Wiki link to its visible plain-text label, and records
+the canonical `concept_id` in frontmatter as non-link metadata. Normal prose,
+tables, Mermaid blocks, and citation IDs remain unchanged. This keeps the
+native Graph at exactly three tiers while the canonical files remain the source
+of truth.
 
 ## Ownership and Incremental Behavior
 
