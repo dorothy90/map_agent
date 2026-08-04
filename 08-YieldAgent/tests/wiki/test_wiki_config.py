@@ -34,6 +34,7 @@ def test_resolve_paths_includes_m2_materialized_graph(tmp_path):
     assert paths.products == root / "products"
     assert paths.product_fails == root / "product_fails"
     assert paths.operations == root / "operations"
+    assert paths.product_tree == root / "product_tree"
     assert paths.entities == root / "entities"
     assert paths.relations == root / "relations"
     assert paths.purpose == root / "purpose.md"
@@ -63,6 +64,7 @@ def test_initialize_creates_m2_directories_without_overwriting_operator_docs(
             paths.products,
             paths.product_fails,
             paths.operations,
+            paths.product_tree,
             paths.entities,
             paths.relations,
             paths.obsidian,
@@ -181,6 +183,7 @@ def test_validate_probes_every_managed_writer_directory(tmp_path, monkeypatch):
             paths.products,
             paths.product_fails,
             paths.operations,
+            paths.product_tree,
             paths.entities,
             paths.relations,
             paths.sources,

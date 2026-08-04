@@ -35,6 +35,7 @@ class WikiPaths:
     products: Path
     product_fails: Path
     operations: Path
+    product_tree: Path
     entities: Path
     relations: Path
     sources: Path
@@ -82,6 +83,7 @@ def resolve_wiki_paths(
         products=root / "products",
         product_fails=root / "product_fails",
         operations=root / "operations",
+        product_tree=root / "product_tree",
         entities=root / "entities",
         relations=root / "relations",
         sources=root / "sources",
@@ -123,6 +125,7 @@ def initialize_wiki_vault(paths: WikiPaths) -> None:
         paths.products,
         paths.product_fails,
         paths.operations,
+        paths.product_tree,
         paths.entities,
         paths.relations,
         paths.sources,
@@ -149,6 +152,7 @@ def _managed_writer_directories(paths: WikiPaths) -> tuple[Path, ...]:
         paths.products,
         paths.product_fails,
         paths.operations,
+        paths.product_tree,
         paths.entities,
         paths.relations,
         paths.sources,
