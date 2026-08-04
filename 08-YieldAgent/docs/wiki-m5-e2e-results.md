@@ -376,3 +376,21 @@ Wiki 전체 자동화 테스트는 `424 passed, 10 failed`였고, 10건은 변�
 승인된 related evidence의 Concept→Source link, enrichment owner 보존, owner collision 거부,
 본문/citation 보존을 검증했다. 실제 Graph edge의 Desktop 확인은 관련 문서가 인덱스에
 추가된 뒤 동일 명령에서 `accepted > 0`이 발생할 때 수행한다.
+
+## Obsidian product tree Markdown E2E
+
+- 실행일: 2026-08-04 KST
+- live Vault: `/Users/daehwankim/SYLDAIX/YieldWiki`
+- 보존 백업: `/Users/daehwankim/SYLDAIX/YieldWiki.backup-20260804-product-tree`
+
+기존 Concept 3개의 구조화 메타데이터로 `product_tree/` Markdown 7개를 실제 생성했다.
+생성된 링크는 `4SS → EASY → PRE METAL CLN`, `4SS → IDSAT → ILD CMP`,
+`4SS → JUNCTION → BG CMP` 구조다. 공정 leaf에는 해당 Concept의 합성 Wiki 본문을
+포함하되 다른 Wiki link는 일반 텍스트로 투영하여 전용 그래프에 추가 edge가 생기지
+않게 했다.
+
+apply 직전 check는 `created=7 modified=0 deleted=0 errors=0`이었고, 적용 후 같은 명령의
+두 번째 실행은 `created=0 modified=0 deleted=0 errors=0`이었다. 기존 누락 Relation
+endpoint warning 7개만 유지됐다. 백업과 live Vault의 차이는 새 `product_tree/`, Graph
+filter 설정, 실행 중 Obsidian이 갱신한 `workspace.json`뿐이다. Graph filter는
+`path:product_tree`, `showOrphans=false`로 설정했다.
