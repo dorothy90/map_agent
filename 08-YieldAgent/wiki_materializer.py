@@ -32,6 +32,7 @@ _BLOCK_END = "<!-- yield-wiki:knowledge-links:end -->"
 _GRAPH_FILENAME_MAX_BYTES = 179
 _UNSAFE_GRAPH_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _EVIDENCE_ID = re.compile(r"^EVD-[0-9a-f]{20}$")
+_WIKILINK = re.compile(r"!?\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ class _Concept:
     product: str
     fail_type: str
     cause_oper: str
+    body: str
     citations: tuple[dict[str, Any], ...]
     related_evidence: tuple[dict[str, Any], ...]
     entities: tuple[Any, ...]
@@ -132,6 +134,24 @@ def _wikilink(paths: WikiPaths, path: Path, label: str) -> str:
 
 def _render_post(metadata: dict[str, Any], body: str) -> str:
     return frontmatter.dumps(frontmatter.Post(content=body.rstrip() + "\n", **metadata))
+
+
+def _concept_body_without_managed_links(body: str) -> str:
+    start = body.find(_BLOCK_START)
+    end = body.find(_BLOCK_END)
+    if start == -1 and end == -1:
+        return body.rstrip()
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("unbalanced managed Knowledge Links markers")
+    end += len(_BLOCK_END)
+    return (body[:start] + body[end:]).strip()
+
+
+def _plain_wikilinks(body: str) -> str:
+    return _WIKILINK.sub(
+        lambda match: (match.group(2) or match.group(1)).strip(),
+        body,
+    )
 
 
 def _generated_metadata(node_id: str, node_type: str, **values: Any) -> dict[str, Any]:
@@ -242,6 +262,26 @@ def _namespace_deletion_owner(
         doc_id = str(metadata.get("doc_id") or "")
         node_id = f"source:{doc_id}"
         expected_path = paths.sources / f"{_stable_filename(doc_id)}.md"
+    elif node_type == "product_tree_product":
+        product = str(metadata.get("product") or "")
+        node_id = f"product_tree_product:{product}"
+        expected_path = paths.product_tree / f"{_stable_filename(product)}.md"
+    elif node_type == "product_tree_fail":
+        product = str(metadata.get("product") or "")
+        fail_type = str(metadata.get("fail_type") or "")
+        node_id = f"product_tree_fail:{product}|{fail_type}"
+        expected_path = paths.product_tree / (
+            f"{_stable_filename(product)}__{_stable_filename(fail_type)}.md"
+        )
+    elif node_type == "product_tree_oper":
+        product = str(metadata.get("product") or "")
+        fail_type = str(metadata.get("fail_type") or "")
+        cause_oper = str(metadata.get("cause_oper") or "")
+        node_id = f"product_tree_oper:{product}|{fail_type}|{cause_oper}"
+        expected_path = paths.product_tree / (
+            f"{_stable_filename(product)}__{_stable_filename(fail_type)}"
+            f"__{_stable_filename(cause_oper)}.md"
+        )
     else:
         return None
     if not node_id.split(":", 1)[1] or path != expected_path or metadata.get("id") != node_id:
@@ -323,6 +363,11 @@ def _read_concepts(paths: WikiPaths) -> tuple[list[_Concept], list[str]]:
         relations = tuple(
             raw_relations if isinstance(raw_relations, list) else [raw_relations]
         )
+        try:
+            body = _concept_body_without_managed_links(post.content or "")
+        except ValueError as exc:
+            errors.append(f"{_relative(paths, path)}: {exc}")
+            continue
         concepts.append(
             _Concept(
                 path=path,
@@ -331,6 +376,7 @@ def _read_concepts(paths: WikiPaths) -> tuple[list[_Concept], list[str]]:
                 product=required["product"],
                 fail_type=required["fail_type"],
                 cause_oper=required["cause_oper"],
+                body=body,
                 citations=citations,
                 related_evidence=related_evidence,
                 entities=entities,
@@ -531,6 +577,28 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         doc_id: paths.sources / f"{_stable_filename(doc_id)}.md"
         for doc_id in sources
     }
+    product_tree_product_paths = {
+        product: paths.product_tree / f"{_stable_filename(product)}.md"
+        for product in products
+    }
+    product_tree_fail_paths = {
+        key: paths.product_tree
+        / f"{_stable_filename(key[0])}__{_stable_filename(key[1])}.md"
+        for key in product_fails
+    }
+    product_tree_oper_paths = {
+        (concept.product, concept.fail_type, concept.cause_oper): paths.product_tree
+        / (
+            f"{_stable_filename(concept.product)}"
+            f"__{_stable_filename(concept.fail_type)}"
+            f"__{_stable_filename(concept.cause_oper)}.md"
+        )
+        for concept in concepts
+    }
+    concepts_by_triple = {
+        (concept.product, concept.fail_type, concept.cause_oper): concept
+        for concept in concepts
+    }
 
     entity_records: dict[str, dict[str, Any]] = {}
     concept_entity_names: dict[str, set[str]] = {}
@@ -694,6 +762,9 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         product_fail_paths,
         operation_paths,
         source_paths,
+        product_tree_product_paths,
+        product_tree_fail_paths,
+        product_tree_oper_paths,
     ):
         owners: dict[Path, object] = {}
         for owner, path in path_map.items():
@@ -763,6 +834,54 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         targets[operation_paths[operation]] = _render_post(
             _generated_metadata(
                 f"operation:{operation}", "operation", cause_oper=operation
+            ),
+            body,
+        )
+
+    for product in sorted(products):
+        links = [
+            f"- {_wikilink(paths, product_tree_fail_paths[key], key[1])}"
+            for key in sorted(products[product])
+        ]
+        targets[product_tree_product_paths[product]] = _render_post(
+            _generated_metadata(
+                f"product_tree_product:{product}",
+                "product_tree_product",
+                product=product,
+            ),
+            f"# {product}\n\n## Fails\n\n" + "\n".join(links),
+        )
+
+    for key in sorted(product_fails):
+        product, fail_type = key
+        links = [
+            f"- {_wikilink(paths, product_tree_oper_paths[(product, fail_type, operation)], operation)}"
+            for operation in sorted(product_fails[key])
+        ]
+        targets[product_tree_fail_paths[key]] = _render_post(
+            _generated_metadata(
+                f"product_tree_fail:{product}|{fail_type}",
+                "product_tree_fail",
+                product=product,
+                fail_type=fail_type,
+            ),
+            f"# {product} / {fail_type}\n\n## Cause Operations\n\n"
+            + "\n".join(links),
+        )
+
+    for triple in sorted(product_tree_oper_paths):
+        product, fail_type, cause_oper = triple
+        concept = concepts_by_triple[triple]
+        wiki_body = _plain_wikilinks(concept.body)
+        body = f"# {cause_oper}\n\n## Wiki\n\n{wiki_body}" if wiki_body else f"# {cause_oper}"
+        targets[product_tree_oper_paths[triple]] = _render_post(
+            _generated_metadata(
+                f"product_tree_oper:{product}|{fail_type}|{cause_oper}",
+                "product_tree_oper",
+                product=product,
+                fail_type=fail_type,
+                cause_oper=cause_oper,
+                concept_id=concept.concept_id,
             ),
             body,
         )
@@ -1070,11 +1189,11 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
         targets[paths.graph_config] = json.dumps(
             {
                 "collapse-filter": True,
-                "search": "-file:index -file:log -path:lint_logs",
+                "search": "path:product_tree",
                 "showTags": False,
                 "showAttachments": False,
                 "hideUnresolved": False,
-                "showOrphans": True,
+                "showOrphans": False,
                 "collapse-color-groups": True,
                 "colorGroups": [],
                 "collapse-display": True,
@@ -1122,6 +1241,32 @@ def _build_plan(paths: WikiPaths) -> _MaterializationPlan:
                 continue
             deletions.append(path)
             deletion_owners[path] = owner
+
+    product_tree_types = {
+        "product_tree_product",
+        "product_tree_fail",
+        "product_tree_oper",
+    }
+    for path in sorted(paths.product_tree.glob("*.md")):
+        if path in target_paths:
+            continue
+        try:
+            metadata = dict(frontmatter.load(path).metadata)
+        except Exception:
+            continue
+        if metadata.get("generated_by") != _GENERATED_BY:
+            continue
+        node_type = str(metadata.get("type") or "")
+        if node_type not in product_tree_types:
+            continue
+        owner = _namespace_deletion_owner(paths, path, node_type, metadata)
+        if owner is None:
+            errors.append(
+                f"generated path collision: {_relative(paths, path)} has invalid ownership"
+            )
+            continue
+        deletions.append(path)
+        deletion_owners[path] = owner
 
     target_owners, owner_errors = _preflight_generated_targets(paths, targets)
     errors.extend(owner_errors)

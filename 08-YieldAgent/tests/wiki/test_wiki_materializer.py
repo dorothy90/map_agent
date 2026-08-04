@@ -21,6 +21,11 @@ def _write_concept(
     entities=None,
     relations=None,
     related_evidence=None,
+    product="4SS",
+    fail_type="EASY",
+    cause_oper="PRE METAL CLN",
+    body="## Analysis\n\nLLM BODY SENTINEL\n",
+    filename="4SS_PRE_METAL_CLN_EASY.md",
 ):
     if entities is None:
         entities = [
@@ -44,12 +49,12 @@ def _write_concept(
             }
         ]
     post = frontmatter.Post(
-        content="## Analysis\n\nLLM BODY SENTINEL\n",
-        id="concept:4SS|PRE METAL CLN|EASY",
+        content=body,
+        id=f"concept:{product}|{cause_oper}|{fail_type}",
         type="concept",
-        product="4SS",
-        fail_type="EASY",
-        cause_oper="PRE METAL CLN",
+        product=product,
+        fail_type=fail_type,
+        cause_oper=cause_oper,
         citations=citations
         or [
             {
@@ -70,7 +75,7 @@ def _write_concept(
         related_evidence=related_evidence or [],
         source_fingerprint="sha256:concept-source-set",
     )
-    path = paths.concepts / "4SS_PRE_METAL_CLN_EASY.md"
+    path = paths.concepts / filename
     path.write_text(frontmatter.dumps(post), encoding="utf-8")
     return path
 
@@ -218,6 +223,101 @@ def test_materializes_product_to_source_topology_and_preserves_concept_body(
     assert "[[sources/FH-000238|FH-000238]]" in relation_body
     assert "[[concepts/4SS_PRE_METAL_CLN_EASY|4SS EASY]]" in relation_body
     assert "[[entities/" in relation_body
+
+
+def test_materializes_markdown_product_tree_with_isolated_oper_leaf(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(
+        paths,
+        body=(
+            "## Analysis\n\nLLM BODY SENTINEL\n\n"
+            "Evidence [[sources/FH-1|FH-1]] and [[entities/Oxide]].\n"
+        ),
+    )
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert report.errors == ()
+    product_path = paths.product_tree / "4SS.md"
+    fail_path = paths.product_tree / "4SS__EASY.md"
+    oper_path = paths.product_tree / "4SS__EASY__PRE_METAL_CLN.md"
+    assert "[[product_tree/4SS__EASY|EASY]]" in product_path.read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "[[product_tree/4SS__EASY__PRE_METAL_CLN|PRE METAL CLN]]"
+        in fail_path.read_text(encoding="utf-8")
+    )
+    leaf = oper_path.read_text(encoding="utf-8")
+    assert "LLM BODY SENTINEL" in leaf
+    assert "Evidence FH-1 and entities/Oxide." in leaf
+    assert "[[" not in leaf
+
+    assert frontmatter.load(product_path).metadata["type"] == "product_tree_product"
+    assert frontmatter.load(fail_path).metadata["type"] == "product_tree_fail"
+    leaf_metadata = frontmatter.load(oper_path).metadata
+    assert leaf_metadata["type"] == "product_tree_oper"
+    assert leaf_metadata["concept_id"] == "concept:4SS|PRE METAL CLN|EASY"
+
+
+def test_product_tree_operation_leaf_is_scoped_to_the_complete_triple(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    _write_concept(
+        paths,
+        product="8SS",
+        fail_type="HARD",
+        cause_oper="PRE METAL CLN",
+        filename="8SS_PRE_METAL_CLN_HARD.md",
+    )
+
+    report = materialize_wiki(paths, apply=True)
+
+    assert report.errors == ()
+    assert (paths.product_tree / "4SS__EASY__PRE_METAL_CLN.md").is_file()
+    assert (paths.product_tree / "8SS__HARD__PRE_METAL_CLN.md").is_file()
+
+
+def test_product_tree_prunes_owned_stale_files_and_is_idempotent(tmp_path):
+    from wiki_materializer import materialize_wiki
+
+    paths = resolve_wiki_paths({"WIKI_VAULT_PATH": str(tmp_path / "YieldWiki")})
+    initialize_wiki_vault(paths)
+    _write_concept(paths)
+    stale = paths.product_tree / "OLD__FAIL__OPER.md"
+    stale.write_text(
+        frontmatter.dumps(
+            frontmatter.Post(
+                content="# stale\n",
+                id="product_tree_oper:OLD|FAIL|OPER",
+                type="product_tree_oper",
+                generated_by="yield-wiki-materializer",
+                product="OLD",
+                fail_type="FAIL",
+                cause_oper="OPER",
+                concept_id="concept:OLD|OPER|FAIL",
+            )
+        ),
+        encoding="utf-8",
+    )
+    foreign = paths.product_tree / "operator-note.md"
+    foreign.write_text("operator note\n", encoding="utf-8")
+
+    first = materialize_wiki(paths, apply=True)
+    before_second = _snapshot(paths.root)
+    second = materialize_wiki(paths, apply=True)
+
+    assert first.errors == ()
+    assert not stale.exists()
+    assert foreign.read_text(encoding="utf-8") == "operator note\n"
+    assert second.changed_count == 0
+    assert _snapshot(paths.root) == before_second
 
 
 def test_materializer_links_related_evidence_without_claiming_source_ownership(
@@ -410,7 +510,8 @@ def test_creates_default_graph_filter_only_when_config_is_missing(tmp_path):
 
     assert report.errors == ()
     config = json.loads(paths.graph_config.read_text(encoding="utf-8"))
-    assert config["search"] == "-file:index -file:log -path:lint_logs"
+    assert config["search"] == "path:product_tree"
+    assert config["showOrphans"] is False
 
 
 def test_validation_error_changes_no_file_for_conflicting_source_metadata(tmp_path):
