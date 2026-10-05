@@ -1,7 +1,7 @@
 """
 PPT LLM Designer
 =================
-GLM-4.7 (OpenRouter 경유) 을 사용하여 수율 분석 PPT의
+설정된 OpenAI 호환 모델을 사용하여 수율 분석 PPT의
 슬라이드 구조 및 디자인을 JSON으로 생성합니다.
 
 파이프라인: raw data → LLM → PresentationDesign(JSON) → ppt_renderer
@@ -16,8 +16,6 @@ from pydantic import BaseModel, Field
 from common import get_llm, extract_json_from_llm
 
 logger = logging.getLogger("yield_agent.ppt_llm_designer")
-
-PPT_DESIGN_MODEL = "glm-4.7"
 
 # ── Pydantic 스키마 ──────────────────────────────────────────
 
@@ -147,7 +145,7 @@ PresentationDesign JSON 스키마:
 
 def generate_slide_design(state: dict[str, Any]) -> PresentationDesign:
     """GLM-4.7로 슬라이드 디자인 JSON을 생성하고 PresentationDesign으로 파싱."""
-    llm = get_llm(model=PPT_DESIGN_MODEL, temperature=0.7)
+    llm = get_llm(temperature=0.7)
     user_prompt = _build_user_prompt(state)
 
     logger.info("[PPT Designer] GLM-4.7 호출 시작")
@@ -237,7 +235,7 @@ def generate_extra_slide(state: dict[str, Any], section_type: str,
 
     # LLM으로 요약 생성
     try:
-        llm = get_llm(model=PPT_DESIGN_MODEL, temperature=0.3)
+        llm = get_llm(temperature=0.3)
         summary_prompt = f"""{config['prompt']}
 
 ## 원본 데이터

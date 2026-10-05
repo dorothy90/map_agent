@@ -1,0 +1,12 @@
+[
+  {"id":"greeting","queries":["안녕"],"expected_outcome":"success","no_data_tools":true},
+  {"id":"yield","queries":["최근 4주 4SS 수율을 표로 보여줘"],"expected_outcome":"success","requires_live_result":true,"requires_tools":["query_yield"]},
+  {"id":"cause","queries":["최근 4주 4SS 수율을 보여주고 열화 원인을 근거와 가설로 구분해 조사해줘"],"expected_outcome":"success","requires_live_result":true,"requires_tools":["query_yield"]},
+  {"id":"empty","queries":["최근 4주 NO_SUCH_PRODUCT 수율을 보여줘. 자료가 없으면 없다고 알려줘"],"expected_outcome":"success","requires_live_result":true},
+  {"id":"followup","queries":["최근 4주 4SS 수율을 조회해줘","같은 제품을 최근 8주로 바꾸어 다시 조회하고 앞선 결과와 비교해줘"],"expected_outcome":"success","requires_live_result":true,"requires_tools":["query_yield"]},
+  {"id":"waiting_input","turns":[{"action":"query","value":"웨이퍼 불량 맵을 보여줘"},{"action":"input","value":"제품은 4SS, 최근 4주로 해줘"}],"expected_outcome":"success","requires_live_result":true},
+  {"id":"python","queries":["최근 4주 4SS 수율 자료를 Python으로 계산해 기간 수를 검산하고 차트를 만들어줘"],"expected_outcome":"success","requires_tools":["run_python"]},
+  {"id":"ppt","queries":["최근 4주 4SS 수율을 조회해서 PPT로 만들어줘"],"expected_outcome":"success","requires_tools":["export_report"]},
+  {"id":"budget_fault","automated":false,"expected_outcome":"failure","expected_statuses":["partial"],"fault":"token_budget"},
+  {"id":"provider_fault","automated":false,"expected_outcome":"failure","expected_statuses":["failed"],"fault":"provider_429"}
+]

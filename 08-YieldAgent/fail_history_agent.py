@@ -33,7 +33,7 @@ load_dotenv(override=True)
 
 logger = logging.getLogger("yield_agent.fail_history_agent")
 
-_fh_model = get_llm(model="z-ai/glm-5.1")
+_fh_model = get_llm()
 
 _PRODUCT_CODE_RE = re.compile(r"^[0-9][A-Za-z0-9]{2}$")
 _LOT_ID_RE = re.compile(r"^[A-Za-z0-9]{7}$")

@@ -18,6 +18,11 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     query: str
     session_id: str
+    request_id: str | None = None
+    run_id: str | None = None
+    after_sequence: int = 0
+    goal_revision: int | None = None
+    interrupt_id: str | None = None
     # interrupt resume — structured HITL contract: a {slot: value} dict (React form /
     # e2e). A bare str is the degraded Streamlit fallback (fills only the first slot).
     resume_value: str | dict[str, Any] | None = None
@@ -28,6 +33,7 @@ class ChatRequest(BaseModel):
 # ── SSE Event Types ──────────────────────────────────────
 
 class ArtifactType(str, Enum):
+    table = "table"
     html = "html"
     image = "image"
     markdown = "markdown"
@@ -90,6 +96,10 @@ class StatusEvent(BaseModel):
     type: Literal["status"] = "status"
     message: str
     node: str = ""
+    invocation_id: str | None = None
+    parent_invocation_id: str | None = None
+    state: Literal["running", "success", "partial", "empty", "error", "cancelled"] = "running"
+    elapsed: float = 0.0
 
 
 class StreamEndEvent(BaseModel):
@@ -130,6 +140,7 @@ class ArtifactData(BaseModel):
 
 class HistoryMessage(BaseModel):
     role: Literal["user", "assistant"]
+    phase: Literal["commentary"] | None = None
     agent: str = ""
     content: str = ""
     artifacts: list[ArtifactData] = []
@@ -140,6 +151,8 @@ class HistoryMessage(BaseModel):
 class SessionHistory(BaseModel):
     session_id: str
     turns: list[HistoryMessage] = []
+    latest_run: dict[str, Any] | None = None
+    through_sequence: int = 0
 
 
 class SessionSummary(BaseModel):

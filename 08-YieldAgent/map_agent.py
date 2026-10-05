@@ -84,6 +84,7 @@ def _query_wafer_data(
     oper: Optional[str] = None,
     wf_mod: int = 0,
     wf_rem: int = 0,
+    strict: bool = False,
 ) -> list:
     """Oracle DB에서 wafer 데이터 조회
 
@@ -103,6 +104,8 @@ def _query_wafer_data(
         conn = _get_oracle_connection_common()
     except Exception as e:
         logger.error("[MapAgent] Oracle 연결 실패: %s", e)
+        if strict:
+            raise
         return []
 
     try:
@@ -230,6 +233,8 @@ def _query_wafer_data(
         return results
     except Exception as e:
         logger.error("[MapAgent] wafer 데이터 조회 실패: %s", e, exc_info=True)
+        if strict:
+            raise
         return []
     finally:
         try:
@@ -307,16 +312,15 @@ def _parse_wafer_for_binmap(map_val_json) -> dict:
 
 
 def _get_map_bounds(map_data_list: list) -> tuple:
-    """가장 많은 좌표를 가진 wafer에서 경계값 계산"""
-    if not map_data_list:
-        return 0, 0, 0, 0
-    longest = max(map_data_list, key=lambda d: len(d["map_val_json"]))
-    map_json = _parse_map_json(longest["map_val_json"])
+    """Bounds across every observed coordinate, including differently shaped wafers."""
     rows, cols = [], []
-    for key in map_json:
-        r, c = map(int, key.split("_"))
-        rows.append(r)
-        cols.append(c)
+    for record in map_data_list:
+        for key in _parse_map_json(record["map_val_json"]):
+            r, c = map(int, key.split("_"))
+            rows.append(r)
+            cols.append(c)
+    if not rows:
+        return 0, 0, 0, 0
     return min(rows), max(rows), min(cols), max(cols)
 
 
@@ -430,6 +434,7 @@ def _visualize_cummap_inner(
     oper: Optional[str] = None,
 ) -> tuple:
     n_wafers = len(map_data_list)
+    unique_wafer_count = len({(d["lot_id"], d["wf_id"]) for d in map_data_list})
     min_row, max_row, min_col, max_col = _get_map_bounds(map_data_list)
     height = max_row - min_row + 1
     width = max_col - min_col + 1
@@ -509,9 +514,9 @@ def _visualize_cummap_inner(
     cat_label = f" [{category_name}]" if category_name else ""
     oper_label = f"[{oper}] " if oper else ""
     if len(unique_lots) == 1:
-        title = f"{oper_label}Cummap{cat_label} ({bin_type}) - Lot: {unique_lots[0]}\n({n_wafers} wafers, Avg Pass Rate: {avg_pass_rate:.1f}%)"
+        title = f"{oper_label}Cummap{cat_label} ({bin_type}) - Lot: {unique_lots[0]}\n({n_wafers} measurements, {unique_wafer_count} unique wafers, Avg Pass Rate: {avg_pass_rate:.1f}%)"
     else:
-        title = f"{oper_label}Cummap{cat_label} ({bin_type}) - {len(unique_lots)} Lots\n({n_wafers} wafers, Avg Pass Rate: {avg_pass_rate:.1f}%)"
+        title = f"{oper_label}Cummap{cat_label} ({bin_type}) - {len(unique_lots)} Lots\n({n_wafers} measurements, {unique_wafer_count} unique wafers, Avg Pass Rate: {avg_pass_rate:.1f}%)"
     if subtitle:
         title += f"\n{subtitle}"
         
@@ -541,6 +546,7 @@ def _visualize_cummap_inner(
 
 def _query_wafer_data_by_date(
     lotcd: str, start_date: str, end_date: str, category: str | None = None,
+    *, strict: bool = False, limit: int | None = 5000,
 ) -> list:
     """날짜 범위(end_tm 기준)로 wafer 데이터 직접 조회 (lot_ids 2단계 불필요).
 
@@ -550,10 +556,14 @@ def _query_wafer_data_by_date(
         end_date: 종료일 'YYYYMMDD' (exclusive)
         category: 'VTH', 'PT1C' 등. None이면 전체 조회.
     """
+    if limit is not None and limit < 1:
+        raise ValueError('limit must be positive or None')
     try:
         conn = _get_oracle_connection_common()
     except Exception as e:
         logger.error("[MapAgent] Oracle 연결 실패 (wafer_by_date): %s", e)
+        if strict:
+            raise
         return []
     try:
         cur = conn.cursor()
@@ -568,7 +578,10 @@ def _query_wafer_data_by_date(
         if category:
             sql += "  AND OPER_DET_DESC = :cat"
             params["cat"] = category
-        sql += "\n            ORDER BY lot_id, wf_id\n            FETCH FIRST 5000 ROWS ONLY"
+        sql += "\n ORDER BY lot_id, wf_id, end_tm"
+        if limit is not None:
+            sql += " FETCH FIRST :row_limit ROWS ONLY"
+            params["row_limit"] = limit
         cur.execute(sql, params)
         columns = [desc[0].lower() for desc in cur.description]
         results = []
@@ -580,6 +593,8 @@ def _query_wafer_data_by_date(
         return results
     except Exception as e:
         logger.error("[MapAgent] wafer_by_date 조회 실패: %s", e)
+        if strict:
+            raise
         return []
     finally:
         try:

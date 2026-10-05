@@ -1,0 +1,218 @@
+{
+  "schema_version": "harness-capabilities/v1",
+  "runtime_use": false,
+  "audit_links": {
+    "A1-A6": [
+      "cause",
+      "python",
+      "ppt",
+      "waiting_input"
+    ],
+    "C1-C8": [
+      "followup",
+      "waiting_input",
+      "cancel_recover"
+    ],
+    "D1-D4": [
+      "yield",
+      "wafer_map",
+      "wads_document",
+      "comparison_report",
+      "provider_fault",
+      "budget_fault"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "yield",
+      "tools": [
+        "query_yield"
+      ],
+      "required_services": [
+        "oracle"
+      ],
+      "cases": [
+        "yield",
+        "cause"
+      ]
+    },
+    {
+      "id": "python",
+      "tools": [
+        "run_python"
+      ],
+      "required_services": [
+        "docker"
+      ],
+      "cases": [
+        "python"
+      ]
+    },
+    {
+      "id": "report",
+      "tools": [
+        "export_report"
+      ],
+      "required_services": [
+        "mongo"
+      ],
+      "cases": [
+        "ppt",
+        "comparison_report"
+      ]
+    },
+    {
+      "id": "conversation_control",
+      "tools": [],
+      "required_services": [
+        "mongo"
+      ],
+      "cases": [
+        "waiting_input",
+        "cancel_recover"
+      ]
+    },
+    {
+      "id": "wafer_metrics",
+      "functions": [
+        "yield_db._fetch_wafer_values",
+        "map_agent._query_wafer_data_by_date"
+      ],
+      "tools": [
+        "inspect_yield_coverage",
+        "query_wafer_yield",
+        "analyze_yield",
+        "render_yield_scatter"
+      ],
+      "required_services": [
+        "oracle"
+      ],
+      "cases": [
+        "wafer_map"
+      ]
+    },
+    {
+      "id": "wads",
+      "functions": [
+        "wads_tools._query_wads_data",
+        "wads_tools._wafer_groups_for_reports"
+      ],
+      "tools": [
+        "query_wads",
+        "inspect_wads_coverage",
+        "get_wads_report"
+      ],
+      "required_services": [
+        "oracle"
+      ],
+      "cases": [
+        "wads_document"
+      ]
+    },
+    {
+      "id": "lot",
+      "functions": [
+        "lot_history_tools._query_lot",
+        "lot_history_agent._render_lot_history_html"
+      ],
+      "tools": [
+        "query_lot_history"
+      ],
+      "required_services": [
+        "oracle"
+      ],
+      "cases": [
+        "domain_history"
+      ]
+    },
+    {
+      "id": "maps",
+      "functions": [
+        "map_agent._get_map_bounds",
+        "map_agent._query_wafer_data_by_date"
+      ],
+      "tools": [
+        "render_wafer_map",
+        "compare_wafer_maps"
+      ],
+      "required_services": [
+        "oracle"
+      ],
+      "cases": [
+        "wafer_map"
+      ]
+    },
+    {
+      "id": "history",
+      "functions": [
+        "fail_history_tools._fetch_results_by_doc_ids"
+      ],
+      "tools": [
+        "search_fail_history",
+        "get_history_document",
+        "read_artifact_text"
+      ],
+      "required_services": [
+        "opensearch",
+        "mongo"
+      ],
+      "cases": [
+        "cause",
+        "wads_document"
+      ]
+    },
+    {
+      "id": "relations",
+      "tools": [
+        "query_relation"
+      ],
+      "required_services": [
+        "oracle"
+      ],
+      "cases": [
+        "domain_history"
+      ]
+    },
+    {
+      "id": "groups",
+      "tools": [
+        "query_good_bad_groups"
+      ],
+      "required_services": [
+        "oracle"
+      ],
+      "cases": [
+        "domain_history"
+      ]
+    },
+    {
+      "id": "mining",
+      "tools": [
+        "analyze_mining"
+      ],
+      "required_services": [
+        "HARNESS_MINING_API_URL"
+      ],
+      "availability": "optional; unavailable without configured service",
+      "cases": [
+        "mining_unavailable"
+      ]
+    },
+    {
+      "id": "memory",
+      "functions": [
+        "harness.memory.load_profile",
+        "harness.memory.update_memory"
+      ],
+      "tools": [
+        "recall_session"
+      ],
+      "required_services": [
+        "mongo"
+      ],
+      "cases": [
+        "memory_bridge"
+      ]
+    }
+  ]
+}

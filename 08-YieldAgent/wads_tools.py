@@ -277,22 +277,24 @@ def _wafer_groups_for_reports(
     start_tm: Optional[str],
     parameter: Optional[str],
     category: Optional[str] = None,
+    wafer_df: Optional[pd.DataFrame] = None,
 ) -> dict[tuple[str, str, str, str], dict[str, list[str]]]:
-    try:
-        wafer_df = _query_wads_data(
-            lotcd=lotcd,
-            end_tm=end_tm,
-            start_tm=start_tm,
-            parameter=parameter,
-            category=category,
-            columns=(
-                f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, {_wf_groupkey_expr()}"
-            ),
-            join_wafers=True,
-        )
-    except Exception as exc:
-        logger.warning("[wads_get_html_report] wafer groupkey 조회 실패: %s", exc)
-        return {}
+    if wafer_df is None:
+        try:
+            wafer_df = _query_wads_data(
+                lotcd=lotcd,
+                end_tm=end_tm,
+                start_tm=start_tm,
+                parameter=parameter,
+                category=category,
+                columns=(
+                    f"r.LOTCD, r.CATEGORY, r.PARAMETER, {_end_tm_expr('r')}, {_wf_groupkey_expr()}"
+                ),
+                join_wafers=True,
+            )
+        except Exception as exc:
+            logger.warning("[wads_get_html_report] wafer groupkey 조회 실패: %s", exc)
+            return {}
 
     grouped: dict[tuple[str, str, str, str], dict[str, list[str]]] = {}
     for row in wafer_df.to_dict(orient="records"):
@@ -316,6 +318,8 @@ def _query_wads_data(
     category: Optional[str] = None,
     columns: str = "*",
     join_wafers: bool = False,
+    row_limit: Optional[int] = None,
+    exact_key: Optional[tuple] = None,
 ) -> pd.DataFrame:
     """Oracle에서 WADS 데이터 조회 (report 기준 필터 + 필요 시 wafer list 조인)"""
     logger.debug(
@@ -359,6 +363,15 @@ def _query_wads_data(
             conditions.append("UPPER(r.CATEGORY) LIKE :category")
             bind_vars["category"] = f"%{oper}%"
 
+    if start_tm and not end_tm:
+        conditions.append("CAST(r.END_TM AS DATE) >= TO_DATE(:start_only, 'YYYY-MM-DD')")
+        bind_vars["start_only"] = start_tm
+    if exact_key:
+        for column, value in zip(("LOTCD", "CATEGORY", "PARAMETER"), exact_key[:3]):
+            conditions.append(f"r.{column} = :exact_{column}")
+            bind_vars[f"exact_{column}"] = value
+        conditions.append("TO_CHAR(r.END_TM, 'YYYY-MM-DD HH24:MI:SS') = :exact_timestamp")
+        bind_vars["exact_timestamp"] = exact_key[3]
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     from_clause = f"FROM {_ORACLE_REPORT_TABLE} r"
     if join_wafers:
@@ -369,6 +382,11 @@ def _query_wads_data(
             f" AND {_END_TM_DATE_JOIN_EXPR}"
         )
     sql = f"SELECT {columns} {from_clause} WHERE {where_clause} ORDER BY r.END_TM DESC"
+    if row_limit is not None:
+        if not 1 <= row_limit <= 100001:
+            raise ValueError("Invalid WADS row limit")
+        sql = f"SELECT * FROM ({sql}) WHERE ROWNUM <= :harness_row_limit"
+        bind_vars["harness_row_limit"] = row_limit
     logger.debug(
         "[_query_wads_data] SQL prepared len=%d bind_keys=%s",
         len(sql),
@@ -975,7 +993,7 @@ def wads_query_sql(query_description: str) -> str:
 
     # 1. LLM으로 SQL 생성
     try:
-        llm = get_llm(model="z-ai/glm-5.1")
+        llm = get_llm(model=_SQL_GEN_MODEL)
         prompt = _SQL_GEN_PROMPT.format(
             report_table=_ORACLE_REPORT_TABLE,
             wf_table=_ORACLE_WF_TABLE,

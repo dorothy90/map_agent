@@ -526,3 +526,46 @@ def synthesize_concept_from_docs(
         ]
     out.citations = [_enrich(c) for c in out.citations]
     return out
+
+
+async def summarize_harness(ctx, model, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """The existing episode policy, using the owning run's metered model boundary."""
+    from harness.memory import structured_memory_call
+    raw = payload.get('raw_results') or []
+    if not raw:
+        return None
+    filters = payload.get('filters') or {}
+    evidence = [{'doc_id': row.get('doc_id', ''), 'cause': str(row.get('cause') or '')[:200],
+        'action': str(row.get('action') or '')[:200], 'comment': str(row.get('comment') or '')[:120]} for row in raw[:5]]
+    out = await structured_memory_call(ctx, model, SummarizeOut, _SYSTEM_PROMPT,
+        {'query': payload.get('query', ''), 'filters': filters, 'raw_results': evidence})
+    return {'episode': {'query': payload.get('query', ''), 'filters': filters,
+        'doc_ids': [row['doc_id'] for row in raw if row.get('doc_id')],
+        'source_files': [row['source_file'] for row in raw if row.get('source_file')],
+        'body': out.episode_body_md, 'summary': out.episode_summary, 'links': []},
+        'concept_filters': filters if all(filters.get(key) for key in ('product', 'fail_type', 'cause_oper')) else None,
+        'alias_pairs': [(pair.canonical, pair.variant) for pair in out.alias_pairs if pair.canonical and pair.variant]}
+
+
+async def synthesize_concept_harness(ctx, model, concept_id, episodes):
+    from harness.memory import structured_memory_call
+    if len(episodes) < 2:
+        return None
+    sources = [{'id': episode['id'], 'frontmatter': episode.get('frontmatter', {}), 'body': episode.get('body', '')[:500]} for episode in episodes[:10]]
+    out = await structured_memory_call(ctx, model, ConceptSynthesis, _SYNTHESIZE_SYSTEM, {'concept_id': concept_id, 'episodes': sources})
+    known = {episode['id'].removeprefix('episode:'): episode for episode in sources}
+    if not out.citations or any(citation.episode_id.removeprefix('episode:') not in known for citation in out.citations):
+        raise ValueError('Wiki synthesis citations must reference supplied episodes')
+    for citation in out.citations:
+        metadata = known[citation.episode_id.removeprefix('episode:')]['frontmatter']
+        doc_ids = metadata.get('doc_ids') or []
+        files = metadata.get('source_files') or []
+        if citation.doc_id and citation.doc_id not in doc_ids:
+            raise ValueError('Wiki citation document is not in its episode')
+        if not citation.doc_id and doc_ids:
+            citation.doc_id = doc_ids[0]
+        if not citation.source_file and files:
+            citation.source_file = files[0]
+        if not citation.date:
+            citation.date = str(metadata.get('created', ''))[:10]
+    return out

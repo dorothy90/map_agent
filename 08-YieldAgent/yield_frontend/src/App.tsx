@@ -8,13 +8,14 @@ import { HitlCard } from "@/components/Hitl";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { createSession, streamChat } from "@/lib/stream";
+import { cancelRun, createSession, steerRun, streamChat } from "@/lib/stream";
 import type { CanvasCard, ChatItem, ExecStep, RealStreamEvent } from "@/types";
 
 const PRESETS = [
   "최근 4주 4SS 수율 보여주고 열화 원인 알려줘",
   "원인 관계도 보여줘",
   "PPT 리포트로 정리해줘",
+  "4SS 제품의 2026-08-28부터 2026-08-31까지 PT1H cummap 그려줘",
 ];
 
 type ResumeValue = string | Record<string, unknown>;
@@ -36,25 +37,53 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(false); // 미응답 interrupt 존재 → 다음 전송은 resume
   const [elapsed, setElapsed] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(null);
+  const runRevision = useRef(1);
+  const interruptId = useRef<string | undefined>(undefined);
+  const streamGeneration = useRef(0);
   const cardSeq = useRef(0);
   const stepSeq = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    createSession()
-      .then(setSessionId)
-      .catch(() =>
-        setChat((xs) => [
-          ...xs,
-          { kind: "error", text: "세션 생성 실패 — 백엔드(:8001)가 떠 있는지 확인하세요." },
-        ]),
-      );
+    let mounted = true;
+    async function restore() {
+      const saved = sessionStorage.getItem("yield-session");
+      const id = saved || await createSession();
+      if (!mounted) return;
+      sessionStorage.setItem("yield-session", id);
+      setSessionId(id);
+      if (!saved) return;
+      const historyResponse = await fetch(`/session/${encodeURIComponent(id)}/history`);
+      if (!historyResponse.ok || !mounted) return;
+      const history = await historyResponse.json();
+      if (!mounted) return;
+      setChat(history.turns.map((turn: { role: string; content: string; agent: string; phase?: string }) => turn.role === "user"
+        ? { kind: "user", text: turn.content }
+        : turn.phase === "commentary" ? { kind: "commentary", text: turn.content }
+        : { kind: "assistant", agent: turn.agent, text: turn.content, streaming: false }));
+      setCards(history.turns.flatMap((turn: { artifacts?: { artifact_id: string; agent: string; title: string; artifact_type: CanvasCard["artifactType"]; mime: string; data: string }[] }) => (turn.artifacts || []).map((artifact) => ({
+        id: artifact.artifact_id, agent: artifact.agent, title: artifact.title, artifactType: artifact.artifact_type, mime: artifact.mime, data: artifact.data,
+      }))));
+      if (history.latest_run) {
+        const active = ["created", "running", "waiting_user", "cancelling"].includes(history.latest_run.status) ? history.latest_run : null;
+        if (active && mounted) {
+          const generation = ++streamGeneration.current;
+          setBusy(true);
+          try { await consume(streamChat({ query: active.query, sessionId: id, runId: active.run_id, afterSequence: history.through_sequence }), generation); }
+          finally { if (mounted && generation === streamGeneration.current) { setBusy(false); setProgress(null); } }
+        }
+      }
+    }
+    restore().catch(() => { if (mounted) push({ kind: "error", text: "대화 연결에 실패했습니다. 서버 연결을 확인하고 새로고침해 주세요." }); });
+    return () => { mounted = false; streamGeneration.current++; };
   }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [chat]);
+  }, [chat, progress]);
   useEffect(() => {
     canvasRef.current?.scrollTo({ top: canvasRef.current.scrollHeight, behavior: "smooth" });
   }, [cards]);
@@ -63,8 +92,12 @@ export default function App() {
     setChat((xs) => [...xs, item]);
   }
 
+  function closeQuestions() {
+    setChat(items => items.map(item => item.kind === "interrupt" ? { ...item, closed: true } : item));
+  }
+
   // 실제 SSE 이벤트 → UI 상태 reduce.
-  async function consume(stream: AsyncGenerator<RealStreamEvent>) {
+  async function consume(stream: AsyncGenerator<RealStreamEvent>, generation: number) {
     function appendToken(agent: string, content: string) {
       setChat((xs) => {
         const next = [...xs];
@@ -92,17 +125,27 @@ export default function App() {
     const dropThinking = () => setChat((xs) => xs.filter((m) => m.kind !== "thinking"));
 
     for await (const evt of stream) {
+      if (generation !== streamGeneration.current) break;
       switch (evt.type) {
         case "node_complete":
           setElapsed(`${evt.node} · ${evt.elapsed.toFixed(1)}s`);
-          setSteps((s) => [...s, { id: `s${stepSeq.current++}`, node: evt.node, elapsed: evt.elapsed }]);
+          setSteps((s) => [...s, { id: `s${stepSeq.current++}`, node: evt.node, elapsed: evt.elapsed, state: "success" }]);
           break;
         case "status":
-          setSteps((s) =>
-            s.length && evt.node && s[s.length - 1].node === evt.node
-              ? s.map((x, i) => (i === s.length - 1 ? { ...x, detail: evt.message } : x))
-              : s,
-          );
+          setProgress(evt.message);
+          // Phase notices have no completion event; only tracked invocations belong in the timeline.
+          if (!evt.invocation_id) break;
+          setSteps((s) => {
+            const id = evt.invocation_id ? `${evt.run_id}:${evt.invocation_id}` : `s${stepSeq.current++}`;
+            const step: ExecStep = { id, node: evt.node || "harness", elapsed: evt.elapsed || 0, detail: evt.message, state: evt.state || "running", parentInvocationId: evt.parent_invocation_id };
+            return s.some(x => x.id === id) ? s.map(x => x.id === id ? step : x) : [...s, step];
+          });
+          break;
+        case "user_input":
+          push({ kind: "user", text: evt.content });
+          break;
+        case "commentary":
+          push({ kind: "commentary", text: evt.content });
           break;
         case "thinking":
           setChat((xs) => {
@@ -124,18 +167,18 @@ export default function App() {
           break;
         case "artifact": {
           if (!evt.data) break;
-          const id = `c${cardSeq.current++}`;
-          setCards((cs) => [
-            ...cs,
-            {
+          const id = evt.artifact_id || `c${cardSeq.current++}`;
+          setCards((cs) => {
+            const card = {
               id,
               agent: evt.agent,
               title: evt.title,
               artifactType: evt.artifact_type,
               mime: evt.mime,
               data: evt.data,
-            },
-          ]);
+            };
+            return cs.some(item => item.id === id) ? cs.map(item => item.id === id ? card : item) : [...cs, card];
+          });
           break;
         }
         case "suggestion":
@@ -143,7 +186,10 @@ export default function App() {
           push({ kind: "suggestion", text: evt.content });
           break;
         case "interrupt":
+          setProgress(null);
+          interruptId.current = evt.interrupt_id;
           dropThinking();
+          closeQuestions();
           push({
             kind: "interrupt",
             payload: {
@@ -158,45 +204,99 @@ export default function App() {
           setPending(true);
           break;
         case "error":
+          setProgress(null);
           push({ kind: "error", text: evt.message });
           break;
         case "stream_start":
+          setProgress("요청을 확인하고 있습니다.");
+          if (evt.run_id) setRunId(evt.run_id);
+          if (evt.goal_revision) runRevision.current = evt.goal_revision;
+          break;
         case "stream_end":
+          setProgress(null);
+          setPending(false);
+          setRunId(null);
+          closeQuestions();
+          setSteps(items => items.map(item => item.state === "running" ? { ...item,
+            state: evt.status === "cancelled" ? "cancelled" : evt.status === "failed" ? "error" : "partial" } : item));
+          if (evt.status) setElapsed(({ completed: "완료", partial: "일부 완료", failed: "실행 실패", cancelled: "중지됨" } as Record<string, string>)[evt.status] || evt.status);
           break;
       }
     }
   }
 
+  async function stopRun() {
+    if (!runId || !sessionId) return;
+    try {
+      const stopped = await cancelRun(runId);
+      closeQuestions();
+      if (pending) {
+        setPending(false);
+        setBusy(true);
+        const generation = ++streamGeneration.current;
+        if (generation === streamGeneration.current) {
+          push({ kind: "assistant", agent: "harness", text: stopped.answer || "작업을 중지했습니다.", streaming: false });
+          setRunId(null);
+          setElapsed("중지됨");
+        }
+      }
+    } catch (error) { push({ kind: "error", text: String(error) }); }
+    finally { if (pending) setBusy(false); }
+  }
+
   async function run(userText: string, resumeValue?: ResumeValue) {
     if (!sessionId || busy) return;
+    if (resumeValue !== undefined) {
+      setChat(items => items.map(item => item.kind === "interrupt" && !item.closed && !item.answered
+        ? { ...item, answered: userText, closed: true } : item));
+    }
     push({ kind: "user", text: userText });
     setBusy(true);
     setPending(false);
     setElapsed(null);
+    const generation = ++streamGeneration.current;
     try {
-      await consume(streamChat({ query: userText, sessionId, resumeValue }));
+      await consume(streamChat({ query: userText, sessionId, resumeValue, goalRevision: runRevision.current, interruptId: interruptId.current }), generation);
     } catch (e) {
       push({ kind: "error", text: e instanceof Error ? e.message : String(e) });
     } finally {
-      setBusy(false);
+      if (generation === streamGeneration.current) { setBusy(false); setProgress(null); }
     }
   }
 
-  function submitInput() {
+  async function submitInput() {
     const text = input.trim();
-    if (!text || busy) return;
+    if (!text || !sessionId) return;
     setInput("");
+    if (busy && runId) {
+      let generation: number | undefined;
+      try {
+        const nextId = await steerRun(runId, runRevision.current, text);
+        generation = ++streamGeneration.current;
+        push({ kind: "user", text });
+        setRunId(nextId);
+        setBusy(true);
+        await consume(streamChat({ query: text, sessionId, runId: nextId }), generation);
+      } catch (error) {
+        push({ kind: "error", text: String(error) });
+      } finally {
+        if (generation !== undefined && generation === streamGeneration.current) { setBusy(false); setProgress(null); }
+      }
+      return;
+    }
+    if (busy) return;
     if (pending) run(text, text);
     else run(text);
   }
 
   // HITL 카드 응답 → 해당 interrupt 를 answered 표시 후 resume.
   function answerInterrupt(value: ResumeValue, label: string) {
+    if (!pending || busy) return;
     setChat((xs) => {
       const next = [...xs];
       for (let i = next.length - 1; i >= 0; i--) {
         const m = next[i];
-        if (m.kind === "interrupt" && !m.answered) {
+        if (m.kind === "interrupt" && !m.closed && !m.answered) {
           next[i] = { ...m, answered: label };
           break;
         }
@@ -208,6 +308,15 @@ export default function App() {
 
   const empty = chat.length === 0;
 
+  async function newConversation() {
+    try {
+      const id = await createSession();
+      sessionStorage.setItem("yield-session", id);
+      setSessionId(id); setChat([]); setCards([]); setSteps([]); setPending(false); setRunId(null); setElapsed(null); setProgress(null);
+      runRevision.current = 1; interruptId.current = undefined;
+    } catch { push({ kind: "error", text: "새 대화를 만들지 못했습니다." }); }
+  }
+
   return (
     <div className="flex h-screen flex-col">
       {/* ── 상단바 ── */}
@@ -217,11 +326,13 @@ export default function App() {
           <div>
             <h1 className="font-serif text-base font-semibold tracking-tight">Yield Agent — 검증 콘솔</h1>
             <p className="text-xs text-muted-foreground">
-              멀티에이전트 실행과 HITL을 실제 백엔드(:8001)로 검증합니다
+              조회 결과에 따라 분석을 이어가고 근거를 확인합니다
             </p>
           </div>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <Button variant="outline" size="sm" disabled={busy} onClick={newConversation}>새 대화</Button>
+          {(busy || pending) && runId && <Button variant="outline" size="sm" onClick={stopRun}>중지</Button>}
           {elapsed && (
             <span className="flex items-center gap-1 tabular-nums">
               <Timer className="size-3.5" /> {elapsed}
@@ -254,8 +365,8 @@ export default function App() {
                   수율 데이터에 무엇이든 물어보세요
                 </h2>
                 <p className="text-sm">
-                  Supervisor 가 계획을 세우고, 계획 확인(plan_review)·누락 파라미터(missing_param)에서
-                  멈춰 HITL 응답을 받습니다.
+                  목표를 나누어 조회하고, 확인된 결과에 따라 분석을 이어갑니다.
+                  필요한 정보가 부족하면 한 번에 질문합니다.
                 </p>
               </div>
             )}
@@ -280,6 +391,13 @@ export default function App() {
                       {m.streaming && <span className="animate-pulse text-primary">▍</span>}
                     </div>
                   );
+                case "commentary":
+                  return (
+                    <div key={i} className="w-full self-start px-2 py-1 text-sm text-muted-foreground">
+                      <div className="mb-1 text-[0.65rem] font-medium">진행 안내</div>
+                      <p className="whitespace-pre-wrap break-words">{m.text}</p>
+                    </div>
+                  );
                 case "thinking":
                   return (
                     <div key={i} className="self-start px-2 py-1 text-[0.82rem] italic text-muted-foreground">
@@ -293,6 +411,7 @@ export default function App() {
                       key={i}
                       payload={m.payload}
                       answered={m.answered}
+                      closed={m.closed || (!pending && !busy)}
                       busy={busy}
                       onResume={answerInterrupt}
                     />
@@ -315,6 +434,12 @@ export default function App() {
                   );
               }
             })}
+            {busy && !pending && progress && (
+              <div role="status" aria-live="polite" className="flex items-start gap-2 px-2 py-2 text-sm text-muted-foreground">
+                <span className="mt-1.5 size-2 shrink-0 animate-pulse rounded-full bg-primary" />
+                <span className="whitespace-pre-wrap break-words">{progress}</span>
+              </div>
+            )}
           </div>
 
           <AgentPlan steps={steps} />
@@ -336,11 +461,11 @@ export default function App() {
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={pending ? "HITL 응답 입력 (resume)" : "예: 최근 4주 4SS 수율 보여줘"}
-              disabled={busy || !sessionId}
+              placeholder={busy && runId ? "진행 중인 작업에 수정 사항 입력" : pending ? "추가 정보 입력" : "예: 최근 4주 4SS 수율 보여줘"}
+              disabled={!sessionId || (busy && !runId)}
               className="h-10 flex-1 rounded-lg border bg-card px-3.5 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-ring disabled:opacity-50"
             />
-            <Button type="submit" size="icon" className="h-10 w-10" disabled={busy || !sessionId || !input.trim()}>
+            <Button type="submit" size="icon" className="h-10 w-10" aria-label={busy ? "작업 수정" : "보내기"} disabled={(busy && !runId) || !sessionId || !input.trim()}>
               <Send className="size-4" />
             </Button>
           </form>

@@ -99,6 +99,50 @@ class WikiQueue:
         self._running = True
         logger.info("[wiki_queue] started (maxsize=%d, max_retry=%d)", self._maxsize, self._max_retry)
 
+    async def ingest_harness(self, ctx, model, payload):
+        """Await a metered summary and the shared single writer; no background LLM call."""
+        from wiki_summarizer import summarize_harness
+        if not self._running or self._persist_q is None:
+            return 'skipped'
+        await ctx.check()
+        summary = await summarize_harness(ctx, model, payload)
+        if summary is None:
+            return 'skipped'
+        await ctx.check()
+        completion = asyncio.get_running_loop().create_future()
+        self._persist_q.put_nowait(('harness', (ctx, model, summary, completion)))
+        return await asyncio.wait_for(completion, timeout=ctx.remaining_seconds())
+
+    async def _fenced_write(self, ctx, fn, *args, **kwargs):
+        await ctx.check()
+        pending = asyncio.create_task(asyncio.to_thread(fn, *args, **kwargs))
+        try:
+            return await asyncio.shield(pending)
+        except asyncio.CancelledError:
+            # A filesystem write already in flight cannot be interrupted. Drain it
+            # before releasing the single writer, then stop all subsequent writes.
+            await pending
+            raise
+
+    async def _persist_harness(self, ctx, model, summary):
+        async def write(fn, *args):
+            return await self._fenced_write(ctx, fn, *args)
+        episode = summary.get('episode')
+        source_id = None
+        if episode:
+            eid, status = await write(wiki_store.upsert_episode, episode)
+            source_id = f'episode:{eid}'
+            self.commits[f'episode_{status}'] += 1
+        filters = summary.get('concept_filters')
+        if filters:
+            cid, status = await write(wiki_store.upsert_concept, filters, source_id, None)
+            self.commits[f'concept_{status}'] += 1
+            await self._maybe_trigger_synthesis(f'concept:{cid}', filters, context=(ctx, model))
+        for canonical, variant in summary.get('alias_pairs') or []:
+            for _, status in await write(wiki_store.upsert_alias, canonical, variant):
+                self.commits[f'alias_{status}'] += 1
+        return 'persisted'
+
     async def stop(self, timeout: float = 10.0) -> None:
         if not self._running:
             return
@@ -217,6 +261,22 @@ class WikiQueue:
         while True:
             kind, args = await self._persist_q.get()
             try:
+                if kind == 'harness':
+                    ctx, model, summary, completion = args
+                    if completion.cancelled():
+                        continue
+                    task = asyncio.create_task(self._persist_harness(ctx, model, summary))
+                    completion.add_done_callback(lambda future, active=task: active.cancel() if future.cancelled() else None)
+                    try:
+                        result = await task
+                        if not completion.done():
+                            completion.set_result(result)
+                    except BaseException as exc:
+                        if not completion.done():
+                            completion.set_exception(exc)
+                        if isinstance(exc, asyncio.CancelledError) and not self._running:
+                            raise
+                    continue
                 attempt = 0
                 while attempt < self._max_retry:
                     try:
@@ -266,7 +326,7 @@ class WikiQueue:
             finally:
                 self._persist_q.task_done()
 
-    async def _maybe_trigger_synthesis(self, concept_id: str, filters: dict[str, Any]) -> None:
+    async def _maybe_trigger_synthesis(self, concept_id: str, filters: dict[str, Any], context=None) -> None:
         """plan v3 §A: evidence_diversity 임계 통과 시 concept_synthesis task 발행.
 
         같은 raw 반복은 score 낮아 트리거 X (사용자 비판 정면 가드).
@@ -310,7 +370,10 @@ class WikiQueue:
         episodes, evidence = check
 
         # 진단 가시성 — evidence 결과를 concept frontmatter에 항상 갱신
-        await loop.run_in_executor(None, wiki_store.update_concept_evidence, concept_id, evidence)
+        if context is not None:
+            await self._fenced_write(context[0], wiki_store.update_concept_evidence, concept_id, evidence)
+        else:
+            await loop.run_in_executor(None, wiki_store.update_concept_evidence, concept_id, evidence)
 
         # Karpathy 회귀: unique_doc_ids 가드 제거.
         # episode 2건 이상이면 합성 시도하되, evidence_diversity가 매우 낮은(<0.3)
@@ -319,6 +382,19 @@ class WikiQueue:
             self.drops["synthesis_skip_low_diversity"] += 1
             logger.info("[wiki_queue] synthesis skip — same-raw repetition %s: %s",
                         concept_id, evidence)
+            return
+
+        if context is not None:
+            from wiki_summarizer import synthesize_concept_harness
+            ctx, model = context
+            await ctx.check()
+            result = await synthesize_concept_harness(ctx, model, concept_id, episodes)
+            if result is not None:
+                await ctx.check()
+                await self._fenced_write(ctx, wiki_store.upsert_concept, filters, source_episode_id=None, links=None,
+                    synthesized_body=result.body_markdown, confidence=float(result.confidence),
+                    citations=[citation.model_dump() for citation in result.citations], evidence=evidence)
+                self.commits['synthesis_persisted'] += 1
             return
 
         # 트리거 발행

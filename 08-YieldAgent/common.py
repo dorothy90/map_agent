@@ -104,6 +104,7 @@ def _get_oracle_pool() -> oracledb.ConnectionPool:
                     min=2,
                     max=10,
                     increment=1,
+                    tcp_connect_timeout=5,
                 )
                 logger.info("Oracle 커넥션 풀 생성 (min=2, max=10)")
     return _pool
@@ -119,6 +120,7 @@ def get_oracle_connection() -> oracledb.Connection:
         pool.max,
     )
     conn = pool.acquire()
+    conn.call_timeout = int(os.getenv("ORACLE_CALL_TIMEOUT_MS", "30000"))
     logger.info("Oracle 커넥션 획득 완료")
     return conn
 
@@ -226,20 +228,22 @@ CATEGORY_TO_BIN: dict[str, str] = {
 # ============================================================
 # timed 데코레이터
 # ============================================================
-def get_llm(model: str | None = None, temperature: float = 0) -> "ChatOpenAI":
-    """OpenRouter Nemotron 3 Super free 전용 ChatOpenAI 팩토리."""
+def get_llm(model: str | None = None, temperature: float | None = None) -> "ChatOpenAI":
+    """하네스와 같은 OpenAI 호환 공급자 설정을 사용하는 팩토리."""
     from langchain_openai import ChatOpenAI
+    from harness.config import Settings
 
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("OpenRouter LLM 설정 누락: OPENROUTER_API_KEY")
+    settings = Settings.from_env()
+    if not settings.api_key.get_secret_value().strip():
+        raise RuntimeError("LLM API key is required for the configured provider")
 
     return ChatOpenAI(
-        model="nvidia/nemotron-3-super-120b-a12b:free",
-        base_url="https://openrouter.ai/api/v1",
-        api_key=api_key,
-        temperature=temperature,
-        max_tokens=4096,
+        model=model or settings.model,
+        base_url=settings.base_url,
+        api_key=settings.api_key,
+        temperature=settings.temperature if temperature is None else temperature,
+        max_tokens=settings.max_output_tokens,
+        **({"reasoning_effort": settings.reasoning_effort} if settings.reasoning_effort else {}),
     )
 
 

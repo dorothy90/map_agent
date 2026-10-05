@@ -1,4 +1,5 @@
 import ReactMarkdown from "react-markdown";
+import { useState } from "react";
 import remarkGfm from "remark-gfm";
 import { Download, FileText } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -34,7 +35,7 @@ function HtmlArtifact({ title, data }: { title: string; data: string }) {
     <iframe
       title={title || "html-artifact"}
       srcDoc={data}
-      sandbox="allow-same-origin allow-scripts allow-popups"
+      sandbox="allow-scripts"
       className="w-full rounded-md border bg-white"
       style={{ height: iframeHeight(title, data) }}
     />
@@ -60,6 +61,31 @@ function PptxArtifact({ data, title }: { data: string; title: string }) {
 }
 
 // 단일 아티팩트 (카드 박스 없이 full-width 로 흐르게 — Streamlit 식)
+function TableArtifact({ data }: { data: string }) {
+  const [table] = useState(() => JSON.parse(data) as { result_id: string; session_id: string; table_id: string; columns: string[]; units: Record<string, string>; preview_rows: Record<string, unknown>[]; total_rows: number; complete: boolean; missing_reason?: string });
+  const [rows, setRows] = useState(table.preview_rows);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  async function more() {
+    setLoading(true); setError("");
+    try {
+      const query = new URLSearchParams({ session_id: table.session_id, table_id: table.table_id, offset: String(rows.length), limit: "50" });
+      const response = await fetch(`/harness/results/${encodeURIComponent(table.result_id)}?${query}`);
+      if (!response.ok) throw new Error("표를 더 불러오지 못했습니다.");
+      const page = await response.json();
+      setRows(current => [...current, ...page.rows]);
+    } catch (cause) { setError(String(cause)); }
+    finally { setLoading(false); }
+  }
+  return <div className="overflow-x-auto text-sm">
+    <table className="w-full"><thead><tr>{table.columns.map(column => <th className="border-b p-2 text-left" key={column}>{column}{table.units[column] ? ` (${table.units[column]})` : ""}</th>)}</tr></thead>
+      <tbody>{rows.map((row, index) => <tr key={index}>{table.columns.map(column => <td className="border-b p-2" key={column}>{row[column] == null ? "" : typeof row[column] === "object" ? JSON.stringify(row[column]) : String(row[column])}</td>)}</tr>)}</tbody></table>
+    <p className="py-2 text-xs text-muted-foreground">{rows.length} / {table.total_rows}행{!table.complete ? ` · 일부 자료: ${table.missing_reason || "완전성 미확인"}` : ""}</p>
+    {rows.length < table.total_rows && <button disabled={loading} onClick={more} className="rounded border px-3 py-1">{loading ? "불러오는 중" : "더 보기"}</button>}
+    {error && <p role="alert">{error}</p>}
+  </div>;
+}
+
 function OneArtifact({ card }: { card: CanvasCard }) {
   return (
     <div>
@@ -69,6 +95,7 @@ function OneArtifact({ card }: { card: CanvasCard }) {
         </div>
       )}
       {card.artifactType === "html" && <HtmlArtifact title={card.title} data={card.data} />}
+      {card.artifactType === "table" && <TableArtifact data={card.data} />}
       {card.artifactType === "markdown" && (
         <div className="overflow-x-auto text-sm leading-relaxed [&_h3]:mt-3 [&_h3]:font-semibold [&_table]:my-2 [&_table]:w-full [&_th]:border-b [&_th]:border-border [&_th]:py-1 [&_th]:text-left [&_td]:border-t [&_td]:border-border/60 [&_td]:py-1">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{card.data}</ReactMarkdown>

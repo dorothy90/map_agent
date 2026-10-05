@@ -6,7 +6,7 @@
 
 // ── 실제 SSE 이벤트 (models.py) ─────────────────────────────────────────────
 
-export type ArtifactType = "html" | "image" | "markdown" | "pptx";
+export type ArtifactType = "html" | "image" | "markdown" | "pptx" | "table";
 
 export interface RealArtifact {
   artifact_id: string;
@@ -41,18 +41,20 @@ export interface InterruptPayload {
   fields: HitlField[];
 }
 
-export type RealStreamEvent =
-  | { type: "stream_start"; session_id: string; query: string }
+export type RealStreamEvent = { event_id?: string; sequence?: number; run_id?: string; goal_revision?: number; interrupt_id?: string } & (
+  | { type: "stream_start"; session_id: string; query: string; after_sequence?: number }
   | { type: "node_complete"; node: string; step: number; elapsed: number }
   | { type: "message"; role: "assistant"; agent: string; content: string; step: number }
+  | { type: "commentary"; agent: string; content: string }
+  | { type: "user_input"; content: string; request_id?: string }
   | { type: "token"; content: string; agent: string; node: string }
   | { type: "thinking"; content: string; agent: string; node: string }
-  | { type: "status"; message: string; node: string }
+  | { type: "status"; message: string; node: string; invocation_id?: string; parent_invocation_id?: string; state?: ExecStep["state"]; elapsed?: number }
   | ({ type: "artifact" } & RealArtifact & { step: number })
   | { type: "suggestion"; content: string; step: number }
   | ({ type: "interrupt" } & InterruptPayload)
   | { type: "error"; message: string; node: string }
-  | { type: "stream_end"; total_steps: number; elapsed: number };
+  | { type: "stream_end"; total_steps: number; elapsed: number; status?: string; reason?: string });
 
 // ── UI 상태 모델 ────────────────────────────────────────────────────────────
 
@@ -62,13 +64,16 @@ export interface ExecStep {
   node: string;
   elapsed: number;
   detail?: string; // status 메시지
+  state?: "running" | "success" | "partial" | "empty" | "error" | "cancelled";
+  parentInvocationId?: string;
 }
 
 export type ChatItem =
   | { kind: "user"; text: string }
   | { kind: "assistant"; agent: string; text: string; streaming: boolean }
+  | { kind: "commentary"; text: string }
   | { kind: "thinking"; text: string }
-  | { kind: "interrupt"; payload: InterruptPayload; answered?: string }
+  | { kind: "interrupt"; payload: InterruptPayload; answered?: string; closed?: boolean }
   | { kind: "suggestion"; text: string }
   | { kind: "error"; text: string };
 

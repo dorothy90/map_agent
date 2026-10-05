@@ -242,8 +242,105 @@ class YieldReportPPTBuilder:
                      fname, len(pptx_bytes), len(self.prs.slides))
         return pptx_bytes, fpath
 
+    def build_sections(self, sections: list[dict], title: str) -> tuple[bytes, str]:
+        """Render each source independently; never overwrite another product's state."""
+        import json
+        import unicodedata
+        from bs4 import BeautifulSoup
+        labels = {"not_run": "분석 미실행", "no_findings": "분석 결과: 이상 없음",
+                  "findings": "분석 결과 있음", "partial": "부분 결과: 제한 확인 필요"}
+        self._add_section_divider(title)
+
+        def slide_for(section):
+            slide = self._add_blank_slide()
+            self._add_slide_header(slide, section["title"][:100])
+            label = labels[section["analysis_status"]]
+            self._add_textbox(slide, label, Inches(.5), Inches(1.14), Inches(12), Inches(.35), font_size=Pt(11))
+            source = " · ".join(section["result_ids"] + section["table_ids"])
+            self._add_textbox(slide, source, Inches(.5), Inches(7.05), Inches(12), Inches(.25), font_size=Pt(8))
+            return slide
+
+        def wrap_visible(text, width):
+            chunks, current, used = [], "", 0
+            for char in text:
+                size = 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+                if current and used + size > width:
+                    chunks.append(current)
+                    current, used = "", 0
+                current += char
+                used += size
+            return chunks + [current]
+
+        def text_pages(section, text):
+            lines = []
+            for line in text.splitlines():
+                lines.extend(wrap_visible(line, 85))
+            for offset in range(0, max(1, len(lines)), 18):
+                slide = slide_for(section)
+                self._add_textbox(slide, "\n".join(lines[offset:offset+18]), Inches(.6), Inches(1.5), Inches(12), Inches(5.3), font_size=Pt(13))
+
+        for section in sections:
+            content = section["content"]
+            if section["kind"] == "table":
+                columns = content["columns"] or list(dict.fromkeys(k for r in content["rows"] for k in r))
+                if not columns or not content["rows"]:
+                    text_pages(section, "조회 결과 0행" + ("\n" + str(content["missing_reason"]) if content.get("missing_reason") else ""))
+                    continue
+                # Page columns and long cell values as well as rows. No head()/ellipsis loss.
+                for c in range(0, len(columns), 5):
+                    names = columns[c:c+5]
+                    expanded = []
+                    for row in content["rows"]:
+                        cells = [json.dumps(row.get(k), ensure_ascii=False) if isinstance(row.get(k), (dict,list)) else str(row.get(k, "")) for k in names]
+                        chunks = [wrap_visible(value, 70) for value in cells]
+                        for offset in range(max(map(len, chunks))):
+                            expanded.append([parts[offset] if offset < len(parts) else "" for parts in chunks])
+                    for r in range(0, len(expanded), 6):
+                        slide = slide_for(section)
+                        headers = [k + (" (" + content["units"][k] + ")" if k in content["units"] else "") for k in names]
+                        page = [headers] + expanded[r:r+6]
+                        shape = slide.shapes.add_table(len(page), len(names), Inches(.5), Inches(1.6), Inches(12), Inches(.65*len(page)))
+                        for i, row in enumerate(page):
+                            for j, value in enumerate(row):
+                                cell = shape.table.cell(i,j)
+                                cell.text = value
+                                self._style_cell(cell, font_size=Pt(10), bold=i==0,
+                                    font_color=COLOR_WHITE if i==0 else COLOR_PRIMARY,
+                                    fill_color=COLOR_PRIMARY if i==0 else COLOR_WHITE)
+                        if content.get("missing_reason"):
+                            self._add_textbox(slide, str(content["missing_reason"]), Inches(.5), Inches(6.45), Inches(12), Inches(.5), font_size=Pt(10))
+            elif section["kind"] == "image":
+                slide = slide_for(section)
+                self._place_image(slide, content["data"], Inches(.5), Inches(1.5), Inches(12), Inches(5.3))
+            elif section["kind"] == "html":
+                html = content["data"].decode("utf-8")
+                soup = BeautifulSoup(html, "html.parser")
+                for hidden in soup(["script", "style"]):
+                    hidden.decompose()
+                first = len(self.prs.slides)
+                text_pages(section, soup.get_text("\n", strip=True))
+                # Preserve the exact source markup alongside its readable slide projection.
+                self.prs.slides[first].notes_slide.notes_text_frame.text = html
+                for image in self._extract_base64_images(html):
+                    slide = slide_for(section)
+                    self._place_image(slide, image, Inches(.5), Inches(1.5), Inches(12), Inches(5.3))
+            else:
+                text = content.get("text", "")
+                if content.get("scope"):
+                    text += "\n" + json.dumps(content["scope"], ensure_ascii=False, indent=2, default=str)
+                text_pages(section, text)
+        buf = io.BytesIO()
+        self.prs.save(buf)
+        payload = buf.getvalue()
+        path = os.path.join(OUTPUT_DIR, f"yield_report_{uuid.uuid4().hex}.pptx")
+        with open(path, "wb") as stream:
+            stream.write(payload)
+        return payload, path
+
     def build(self, state: dict[str, Any]) -> tuple[bytes, str]:
         """state 전체를 받아 PPT를 생성하고 (bytes, file_path)를 반환."""
+        if "report_sections" in state:
+            return self.build_sections(state["report_sections"], state.get("title", "분석 보고서"))
         lotcd = state.get("lotcd", "Unknown")
         ref_date = state.get("ref_date", date.today().strftime("%Y%m%d"))
         unit = state.get("unit", "weekly")
@@ -256,7 +353,7 @@ class YieldReportPPTBuilder:
 
         # 2) 수율 요약
         if anomaly_params or weeks_data:
-            self._add_yield_summary_slide(lotcd, weeks_data, anomaly_params, unit)
+            self._add_yield_summary_slide(lotcd, weeks_data, anomaly_params, unit, state.get("analysis_status", "findings" if anomaly_params else "not_run"))
 
         # 3) 수율 데이터 테이블 (네이티브)
         if weeks_data:
@@ -845,7 +942,7 @@ class YieldReportPPTBuilder:
 
     def _add_yield_summary_slide(
         self, lotcd: str, weeks_data: list[dict],
-        anomaly_params: list[dict], unit: str,
+        anomaly_params: list[dict], unit: str, analysis_status: str = "not_run",
     ):
         slide = self._add_blank_slide()
         self._add_slide_header(slide, f"{lotcd} 수율 요약")
@@ -898,7 +995,7 @@ class YieldReportPPTBuilder:
                     self._style_cell(cell, font_size=Pt(9), font_color=fc, fill_color=bg)
         else:
             self._add_textbox(
-                slide, "이상 파라미터 없음 (±10% 기준)",
+                slide, "분석 결과: 이상 파라미터 없음" if analysis_status == "no_findings" else "분석 미실행" if analysis_status == "not_run" else "부분 분석: 제한 확인 필요",
                 left=Inches(0.8), top=Inches(3.5), width=Inches(11), height=Inches(0.5),
                 font_size=Pt(18), font_color=COLOR_GREEN, bold=True,
             )

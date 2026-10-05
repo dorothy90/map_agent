@@ -1,5 +1,21 @@
 # 08-YieldAgent Architecture
 
+## Goal-driven harness v2 (2026-09-19)
+
+`harness/` contains the new runtime behind `HARNESS_ENABLED` for new sessions.
+Use [harness/README.md](harness/README.md) and the design/implementation plan in
+`../docs/superpowers/` for its current contracts. The sections below describe the
+legacy engine retained for existing sessions and rollback.
+
+- The model selects tools via native calls and `load_tools`; do not add semantic keyword routing.
+- Use the configured OpenAI-compatible provider consistently. Current user selection is OpenRouter `z-ai/glm-5.3-flash` with `OPENROUTER_API_KEY`. Groq and lowercase `groq_api_key` remain supported when explicitly selected.
+- Preserve complete results and provenance in the harness store. Never calculate from a truncated preview.
+- A `finish` submission uses answer/result_ids and optional scope/limitations. Resolve owned stored evidence and lineage, then review semantic completion; do not reintroduce manual claims/coverage proof fields. Work notes are optional and replaceable, never authoritative user constraints. Preserve useful scoped tables under narrative failure and report partial outcomes honestly.
+- Runtime, principal, session, run and epoch boundaries apply to recovery and artifacts.
+- New runs pin skill hashes and use a shared 300-second active deadline including answer/review. Active v1 checkpoints require the old runtime or explicit cancellation; only completed history is adapted.
+- Named tables preserve schema/completeness separately. Missing heterogeneous scope metadata is reviewed semantically, not rejected solely for absent keys.
+- Distinguish scripted tests from actual model/DB/browser evaluations. Full rollout requires the plan's release gate.
+
 ## Architecture Overview
 
 ```

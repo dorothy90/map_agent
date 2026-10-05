@@ -75,7 +75,7 @@ def _get_n_days(ref: date, n: int) -> list[date]:
 
 
 # ── SQL 조회 함수 ─────────────────────────────────────────────
-def _fetch_weekly_sql(lotcd: str, week_strs: list[str], process: str) -> dict[str, dict]:
+def _fetch_weekly_sql(lotcd: str, week_strs: list[str], process: str, strict=False) -> dict[str, dict]:
     """pt1h 또는 pt1c 프로세스의 n주 데이터를 Oracle SQL 한 번으로 조회."""
     process = _process_to_db(process)
     db_weeks = [_week_to_db_yld(w) for w in week_strs]
@@ -123,11 +123,13 @@ def _fetch_weekly_sql(lotcd: str, week_strs: list[str], process: str) -> dict[st
             conn.close()
     except Exception as e:
         logger.error("[%s/%s] Oracle 조회 실패: %s", process, lotcd, e)
+        if strict:
+            raise
 
     return result
 
 
-def _fetch_gms_sql(lotcd: str, week_strs: list[str]) -> dict[str, dict]:
+def _fetch_gms_sql(lotcd: str, week_strs: list[str], strict=False) -> dict[str, dict]:
     """GMS 주차별 yield 조회 (DF_GMS_YIELD_WEEKLY)."""
     db_periods = [_week_to_db_gms(w) for w in week_strs]
     placeholders = ", ".join(f":p{i}" for i in range(len(week_strs)))
@@ -163,11 +165,13 @@ def _fetch_gms_sql(lotcd: str, week_strs: list[str]) -> dict[str, dict]:
             conn.close()
     except Exception as e:
         logger.error("[gms/%s] Oracle 조회 실패: %s", lotcd, e)
+        if strict:
+            raise
 
     return result
 
 
-def _fetch_monthly_sql(lotcd: str, month_strs: list[str], process: str) -> dict[str, dict]:
+def _fetch_monthly_sql(lotcd: str, month_strs: list[str], process: str, strict=False) -> dict[str, dict]:
     """YEAR + MONTH 컬럼 기반 월별 조회 (DF_DIE_TO_WF_YLD)."""
     process = _process_to_db(process)
     params = {"lot_cd": lotcd, "process": process}
@@ -221,11 +225,13 @@ def _fetch_monthly_sql(lotcd: str, month_strs: list[str], process: str) -> dict[
             conn.close()
     except Exception as e:
         logger.error("[%s/%s] monthly Oracle 조회 실패: %s", process, lotcd, e)
+        if strict:
+            raise
 
     return result
 
 
-def _fetch_daily_sql(lotcd: str, days: list[date], process: str) -> dict[str, dict]:
+def _fetch_daily_sql(lotcd: str, days: list[date], process: str, strict=False) -> dict[str, dict]:
     """MEASURETIME_START 범위 조건 기반 일별 조회 (DF_DIE_TO_WF_YLD, range scan)."""
     process = _process_to_db(process)
     start_dt = datetime.combine(min(days), datetime.min.time())
@@ -281,11 +287,13 @@ def _fetch_daily_sql(lotcd: str, days: list[date], process: str) -> dict[str, di
             conn.close()
     except Exception as e:
         logger.error("[%s/%s] daily Oracle 조회 실패: %s", process, lotcd, e)
+        if strict:
+            raise
 
     return result
 
 
-def _fetch_gms_monthly_sql(lotcd: str, month_strs: list[str]) -> dict[str, dict]:
+def _fetch_gms_monthly_sql(lotcd: str, month_strs: list[str], strict=False) -> dict[str, dict]:
     """GMS 월별 yield 조회 (DF_GMS_YIELD_MONTHLY)."""
     db_periods = [m.replace("-", "") for m in month_strs]
     db_to_agent = {db: agent for db, agent in zip(db_periods, month_strs)}
@@ -321,11 +329,13 @@ def _fetch_gms_monthly_sql(lotcd: str, month_strs: list[str]) -> dict[str, dict]
             conn.close()
     except Exception as e:
         logger.error("[gms-monthly/%s] Oracle 조회 실패: %s", lotcd, e)
+        if strict:
+            raise
 
     return result
 
 
-def _fetch_gms_daily_sql(lotcd: str, days: list[date]) -> dict[str, dict]:
+def _fetch_gms_daily_sql(lotcd: str, days: list[date], strict=False) -> dict[str, dict]:
     """GMS 일별 yield 조회 (DF_GMS_YIELD_DAILY)."""
     db_periods = [d.strftime("%Y%m%d") for d in days]
     db_to_agent = {db: d.strftime("%Y-%m-%d") for db, d in zip(db_periods, days)}
@@ -361,6 +371,8 @@ def _fetch_gms_daily_sql(lotcd: str, days: list[date]) -> dict[str, dict]:
             conn.close()
     except Exception as e:
         logger.error("[gms-daily/%s] Oracle 조회 실패: %s", lotcd, e)
+        if strict:
+            raise
 
     return result
 
@@ -411,30 +423,30 @@ DEFAULT_PERIODS = {"weekly": 4, "monthly": 3, "daily": 4}
 @observe(name="fetch_periods")
 @timed
 def _fetch_periods(lotcd: str, ref_date: date,
-                   unit: str = "weekly", periods: int = 0) -> list[dict]:
+                   unit: str = "weekly", periods: int = 0, strict=False) -> list[dict]:
     """unit(weekly/monthly/daily) + periods 기반 데이터 조회."""
     n = periods if periods > 0 else DEFAULT_PERIODS.get(unit, 4)
 
     with ThreadPoolExecutor(max_workers=3) as ex:
         if unit == "monthly":
             month_strs = _get_n_months(ref_date, n)
-            f_pt1h = ex.submit(_fetch_monthly_sql, lotcd, month_strs, "pt1h")
-            f_pt1c = ex.submit(_fetch_monthly_sql, lotcd, month_strs, "pt1c")
-            f_gms  = ex.submit(_fetch_gms_monthly_sql, lotcd, month_strs)
+            f_pt1h = ex.submit(_fetch_monthly_sql, lotcd, month_strs, "pt1h", strict=strict)
+            f_pt1c = ex.submit(_fetch_monthly_sql, lotcd, month_strs, "pt1c", strict=strict)
+            f_gms  = ex.submit(_fetch_gms_monthly_sql, lotcd, month_strs, strict=strict)
             period_labels = month_strs
         elif unit == "daily":
             days = _get_n_days(ref_date, n)
-            f_pt1h = ex.submit(_fetch_daily_sql, lotcd, days, "pt1h")
-            f_pt1c = ex.submit(_fetch_daily_sql, lotcd, days, "pt1c")
-            f_gms  = ex.submit(_fetch_gms_daily_sql, lotcd, days)
+            f_pt1h = ex.submit(_fetch_daily_sql, lotcd, days, "pt1h", strict=strict)
+            f_pt1c = ex.submit(_fetch_daily_sql, lotcd, days, "pt1c", strict=strict)
+            f_gms  = ex.submit(_fetch_gms_daily_sql, lotcd, days, strict=strict)
             period_labels = [d.strftime("%Y-%m-%d") for d in days]
         else:
             # weekly (기본값)
             mondays = _get_n_weeks(ref_date, n)
             week_strs = [_iso_week_str(m) for m in mondays]
-            f_pt1h = ex.submit(_fetch_weekly_sql, lotcd, week_strs, "pt1h")
-            f_pt1c = ex.submit(_fetch_weekly_sql, lotcd, week_strs, "pt1c")
-            f_gms  = ex.submit(_fetch_gms_sql, lotcd, week_strs)
+            f_pt1h = ex.submit(_fetch_weekly_sql, lotcd, week_strs, "pt1h", strict=strict)
+            f_pt1c = ex.submit(_fetch_weekly_sql, lotcd, week_strs, "pt1c", strict=strict)
+            f_gms  = ex.submit(_fetch_gms_sql, lotcd, week_strs, strict=strict)
             period_labels = week_strs
         pt1h_data = f_pt1h.result()
         pt1c_data = f_pt1c.result()
@@ -478,7 +490,7 @@ def _fetch_4_weeks(lotcd: str, ref_date: date) -> list[dict]:
 
 # ── Wafer-level scatter 데이터 조회 ──────────────────────────
 def _fetch_wafer_scatter(
-    lotcd: str, ref_date: date, unit: str, periods: int, process: str,
+    lotcd: str, ref_date: date, unit: str, periods: int, process: str, *, strict: bool = False,
 ) -> list[dict]:
     """기간별 wafer-level raw 데이터 조회 (scatter plot용)."""
     process = _process_to_db(process)
@@ -585,6 +597,8 @@ def _fetch_wafer_scatter(
             conn.close()
     except Exception as e:
         logger.error("[wafer-scatter/%s/%s] Oracle 조회 실패: %s", process, lotcd, e)
+        if strict:
+            raise
 
     return rows
 
@@ -709,3 +723,39 @@ def _merge_lot_data(pt1h: dict[str, dict], pt1c: dict[str, dict]) -> dict[str, d
         for param, val in (pt1c.get(key) or {}).items():
             merged[key][f"pt1c_{param}"] = val
     return merged
+
+
+def _inspect_yield_coverage(lotcd: str | None = None) -> list[dict]:
+    """Coverage of parameter measurements; never substitutes dates in a request."""
+    conn = _get_oracle_connection()
+    try:
+        cur = conn.cursor()
+        where = 'WHERE LOT_CD = :lotcd' if lotcd else ''
+        cur.execute(f'''SELECT LOT_CD, PROCESS, MIN(MEASURETIME_START),
+            MAX(MEASURETIME_START), COUNT(*) FROM {YLD_TABLE} {where}
+            GROUP BY LOT_CD, PROCESS ORDER BY LOT_CD, PROCESS''', {'lotcd': lotcd} if lotcd else {})
+        return [{'lotcd': product, 'process': process,
+                 'first_measurement': str(first) if first is not None else None,
+                 'latest_measurement': str(last) if last is not None else None,
+                 'parameter_row_count': int(count)} for product, process, first, last, count in cur]
+    finally:
+        conn.close()
+
+
+def _fetch_wafer_values(lotcd: str, start: str, end: str, process: str, param: str) -> list[dict]:
+    """Complete single-parameter measurements, [start, end), without a preview cap."""
+    conn = _get_oracle_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(f'''SELECT MEASURETIME_START, LOTID, WFID, VALUE
+            FROM {YLD_TABLE} WHERE LOT_CD = :lotcd AND PROCESS = :process AND PARAM = :param
+              AND MEASURETIME_START >= TO_DATE(:start_date, 'YYYYMMDD')
+              AND MEASURETIME_START < TO_DATE(:end_date, 'YYYYMMDD')
+            ORDER BY MEASURETIME_START, LOTID, WFID''',
+            {'lotcd': lotcd, 'process': _process_to_db(process.lower()), 'param': param,
+             'start_date': start, 'end_date': end})
+        return [{'end_tm': str(ts), 'lot_id': str(lot), 'wf_id': int(wf),
+                 'value': float(value) if value is not None else None}
+                for ts, lot, wf, value in cur]
+    finally:
+        conn.close()

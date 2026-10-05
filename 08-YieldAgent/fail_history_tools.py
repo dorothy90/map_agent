@@ -197,6 +197,7 @@ def _search_opensearch(
     fail_type: str = "",
     cause_oper: str = "",
     top_k: int = 5,
+    use_embeddings: bool = True,
 ) -> List[Dict[str, Any]]:
     """BM25 + kNN 하이브리드 검색 실행"""
     client = _get_opensearch_client()
@@ -204,8 +205,8 @@ def _search_opensearch(
     fail_type = _normalize_fail_type(fail_type)
 
     # 약어 확장 후 임베딩 생성
-    expanded_query = _expand_acronyms(query)
-    embedding = _get_embedding(expanded_query)
+    expanded_query = _expand_acronyms(query) if use_embeddings else query
+    embedding = _get_embedding(expanded_query) if use_embeddings else []
 
     # 메타데이터 필터 구성
     # product / fail_type은 text + .keyword 매핑 → 정확매칭 위해 .keyword 사용
@@ -275,6 +276,8 @@ def _search_opensearch(
         },
     }
 
+    if not use_embeddings:
+        search_body = {"size": top_k, "query": bm25_query}
     try:
         response = client.search(
             index=_OPENSEARCH_INDEX,
@@ -352,7 +355,7 @@ def _lookup_super_reference(product: str, fail_type: str, cause_oper: str) -> st
 
 
 # ── wiki-first 카드 보조: citations doc_id로 raw 단순 조회 ────
-def _fetch_results_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
+def _fetch_results_by_doc_ids(doc_ids: List[str], *, full_content: bool = False, strict: bool = False) -> List[Dict[str, Any]]:
     """citations의 doc_id로 OpenSearch에서 단순 조회 (BM25/kNN 없음).
 
     wiki-first 응답일 때 HTML 카드 렌더용 raw 결과를 채우기 위해 사용.
@@ -370,6 +373,8 @@ def _fetch_results_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
     try:
         resp = client.search(index=_OPENSEARCH_INDEX, body=body)
     except Exception as e:
+        if strict:
+            raise
         logger.warning("[_fetch_results_by_doc_ids] terms query 실패: %s", e)
         return []
     results: List[Dict[str, Any]] = []
@@ -388,7 +393,7 @@ def _fetch_results_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
             "doc_id": src.get("doc_id", ""),
             "filenm": src.get("filenm", ""),
             "score": 0.0,
-            "content": src.get("content", "")[:200],
+            "content": src.get("content", "") if full_content else src.get("content", "")[:200],
         })
     return results
 

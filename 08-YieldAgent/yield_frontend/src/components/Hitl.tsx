@@ -14,6 +14,7 @@ const optHint = (o: HitlOption) => (typeof o === "string" ? undefined : o.hint);
 interface Props {
   payload: InterruptPayload;
   answered?: string;
+  closed?: boolean;
   busy: boolean;
   onResume: (value: ResumeValue, label: string) => void;
 }
@@ -160,13 +161,15 @@ function MissingParam({ payload, busy, onResume }: Omit<Props, "answered">) {
   );
 }
 
-export function HitlCard({ payload, answered, busy, onResume }: Props) {
+export function HitlCard({ payload, answered, closed, busy, onResume }: Props) {
   const isPlanReview = payload.interrupt_type === "plan_review";
   return (
     <div className="self-stretch rounded-xl border border-[var(--warn)]/40 bg-[var(--warn)]/[0.06] p-3">
-      {answered ? (
-        <div className="flex items-center gap-2 text-sm text-[var(--good)]">
-          <Check className="size-4" /> 응답: {answered}
+      {answered || closed ? (
+        <div className="text-sm">
+          <p className="mb-2 text-muted-foreground">{payload.message || "추가 정보 확인"}</p>
+          {answered ? <p className="flex items-center gap-2 text-[var(--good)]"><Check className="size-4" /> 응답: {answered}</p>
+            : <p className="text-muted-foreground">질문이 종료되었습니다.</p>}
         </div>
       ) : isPlanReview ? (
         <PlanReview busy={busy} onResume={onResume} />

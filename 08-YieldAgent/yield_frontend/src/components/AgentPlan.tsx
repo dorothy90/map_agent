@@ -1,4 +1,4 @@
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, CircleAlert, CircleMinus, LoaderCircle, XCircle } from "lucide-react";
 import type { ExecStep } from "@/types";
 
 // 멀티에이전트 실행 타임라인 — node_complete/status 이벤트가 실시간으로 쌓인다.
@@ -13,8 +13,12 @@ export function AgentPlan({ steps }: { steps: ExecStep[] }) {
       </div>
       <ul className="flex flex-col gap-1.5">
         {steps.map((s) => (
-          <li key={s.id} className="flex items-center gap-2 text-sm">
-            <CheckCircle2 className="size-4 shrink-0 text-[var(--good)]" />
+          <li key={s.id} data-state={s.state || "running"} className="flex items-center gap-2 text-sm">
+            {s.state === "success" ? <CheckCircle2 aria-label="완료" className="size-4 shrink-0 text-[var(--good)]" />
+              : s.state === "error" ? <XCircle aria-label="실패" className="size-4 shrink-0 text-destructive" />
+              : s.state === "partial" ? <CircleAlert aria-label="일부 완료" className="size-4 shrink-0 text-[var(--warn)]" />
+              : s.state === "empty" || s.state === "cancelled" ? <CircleMinus aria-label={s.state === "empty" ? "자료 없음" : "중지됨"} className="size-4 shrink-0 text-muted-foreground" />
+              : <LoaderCircle aria-label="진행 중" className="size-4 shrink-0 animate-spin text-muted-foreground" />}
             <span className="flex-1 truncate font-mono text-xs text-foreground">{s.node}</span>
             {s.detail && (
               <span className="truncate text-[0.7rem] text-muted-foreground">{s.detail}</span>

@@ -168,8 +168,10 @@ async def lifespan(app: FastAPI):
     with MongoDBSaver.from_conn_string(MONGO_URI, db_name=MONGO_DB) as checkpointer:
         app.state.graph = workflow.compile(checkpointer=checkpointer)
         logger.info("MongoDB 체크포인터 + motor 연결 완료 (%s/%s)", MONGO_URI, MONGO_DB)
+        from harness.app import lifespan as harness_lifespan
         try:
-            yield
+            async with harness_lifespan(app):
+                yield
         finally:
             if lint_task is not None:
                 lint_task.cancel()
@@ -205,6 +207,9 @@ app.add_middleware(
 # plan: ~/.claude/plans/reactive-shimmying-lake.md — "단일 서버 확장" 원칙.
 # repl_agent 패키지는 기존 supervisor/graph 와 import 의존이 없다.
 app.include_router(repl_router, prefix="/repl", tags=["repl"])
+from harness.router import router as harness_router, uses_harness, compatibility_chat, principal as harness_principal, artifact_payload
+
+app.include_router(harness_router, tags=["harness"])
 
 # ── Wiki vault graph endpoint (Day 5) ────────────────────
 from wiki_router import router as wiki_router  # noqa: E402
@@ -407,6 +412,26 @@ async def download_pptx(filename: str):
 # ── 세션 삭제 ─────────────────────────────────────────────
 @app.delete("/session/{session_id}")
 async def delete_session(session_id: str, request: Request):
+    if await uses_harness(request, session_id):
+        service = request.app.state.harness
+        owner = harness_principal(request)
+        runs = await service.store.runs.find({"principal_id": owner, "session_id": session_id}).to_list(None)
+        if any(run["active"] for run in runs):
+            raise HTTPException(409, "먼저 실행 중인 작업을 중지하세요.")
+        from bson import ObjectId
+        async for result in service.store.results.find({"principal_id": owner, "session_id": session_id}):
+            obs = result["observation"]
+            for blob_id in [obs["data_ref"], *(a["artifact_id"] for a in obs["artifact_refs"])]:
+                await service.store.blobs.delete(ObjectId(blob_id))
+        ids = [run["run_id"] for run in runs]
+        for thread_id in await service.store.db.harness_checkpoints.distinct("thread_id"):
+            if any(thread_id == "harness:" + run_id or thread_id.startswith("harness:" + run_id + ":") for run_id in ids):
+                await service.checkpointer.adelete_thread(thread_id)
+        await service.store.results.delete_many({"principal_id": owner, "session_id": session_id})
+        await service.store.calls.delete_many({"run_id": {"$in": ids}})
+        await service.store.runs.delete_many({"principal_id": owner, "session_id": session_id})
+        await service.store.db.harness_sessions.delete_one({"principal_id": owner, "session_id": session_id})
+        return {"deleted": session_id}
     graph = request.app.state.graph
     try:
         await graph.checkpointer.adelete_thread(session_id)
@@ -449,12 +474,55 @@ async def list_sessions(request: Request):
             turn_count=doc.get("turn_count", 0),
             updated_at=doc.get("updated_at", datetime.now(timezone.utc)),
         ))
-    return results
+    harness_pipeline = [
+        {"$match": {"principal_id": harness_principal(request)}},
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$session_id", "last_query": {"$first": "$query"}, "turn_count": {"$sum": 1}, "updated_at": {"$first": "$created_at"}}},
+        {"$sort": {"updated_at": -1}}, {"$limit": 50},
+    ]
+    async for doc in request.app.state.harness.store.runs.aggregate(harness_pipeline):
+        results.append(SessionSummary(session_id=doc["_id"], last_query=doc["last_query"], turn_count=doc["turn_count"], updated_at=doc["updated_at"]))
+    return sorted(results, key=lambda item: item.updated_at, reverse=True)[:50]
 
 
 # ── 세션 대화 이력 조회 ──────────────────────────────────
 @app.get("/session/{session_id}/history", response_model=SessionHistory)
 async def get_session_history(session_id: str, request: Request):
+    if await uses_harness(request, session_id):
+        from harness.router import public_run, input_text, table_payloads
+        turns = []
+        latest_run = None
+        through_sequence = 0
+        async for run in request.app.state.harness.store.runs.find({"principal_id": harness_principal(request), "session_id": session_id}).sort([("created_at", 1), ("run_id", 1)]):
+            latest_run = public_run(run)
+            through_sequence = 0
+            turns.append(HistoryMessage(role="user", content=run["query"], timestamp=run["created_at"]))
+            if not run["active"]:
+                artifacts = {}
+                received = {event["payload"].get("interrupt_id") for event in run["events"] if event["type"] == "input_received"}
+                for event in run["events"]:
+                    if event["type"] == "artifact":
+                        artifact_id = event["payload"]["artifact_id"]
+                        artifacts.setdefault(artifact_id, ArtifactData(**await artifact_payload(request, session_id, artifact_id)))
+                    elif event["type"] == "tool_finished" and event["payload"].get("result_id"):
+                        for table in await table_payloads(request, session_id, event["payload"]["result_id"]):
+                            artifacts.setdefault(table["artifact_id"], ArtifactData(**table))
+                    if event["type"] == "commentary":
+                        turns.append(HistoryMessage(role="assistant", agent="harness", phase="commentary",
+                            content=event["payload"]["content"], timestamp=run["created_at"]))
+                    elif event["type"] == "input_required":
+                        payload = event["payload"]
+                        turns.append(HistoryMessage(role="assistant", agent="harness", content=payload.get("message", payload.get("answer", "")), timestamp=run["created_at"]))
+                        # Older runs stored answers only in user_inputs.
+                        if payload.get("interrupt_id") not in received:
+                            for answer in run.get("user_inputs", []):
+                                if answer.get("question", {}).get("interrupt_id") == payload.get("interrupt_id"):
+                                    turns.append(HistoryMessage(role="user", content=input_text(answer["value"]), timestamp=run["created_at"]))
+                    elif event["type"] == "input_received":
+                        turns.append(HistoryMessage(role="user", content=input_text(event["payload"]["value"]), timestamp=run["created_at"]))
+                turns.append(HistoryMessage(role="assistant", agent="harness", content=run.get("answer", ""), artifacts=list(artifacts.values()), timestamp=run["created_at"]))
+                through_sequence = max((event["sequence"] for event in run["events"]), default=0)
+        return SessionHistory(session_id=session_id, turns=turns, latest_run=latest_run, through_sequence=through_sequence)
     db = request.app.state.motor_db
     turns: list[HistoryMessage] = []
     async for doc in db.chat_turns.find(
@@ -484,6 +552,8 @@ async def get_session_history(session_id: str, request: Request):
 # ── SSE 스트리밍 ──────────────────────────────────────────
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest, req: Request):
+    if await uses_harness(req, request.session_id):
+        return await compatibility_chat(request, req)
     graph = req.app.state.graph
     db = req.app.state.motor_db
     # #23 fix: 5-task plan 처리 시 노드 호출 횟수가 ~12회 (rewrite + planner + supervisor×6 + agents×5)
