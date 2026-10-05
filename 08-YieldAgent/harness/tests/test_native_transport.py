@@ -1,10 +1,12 @@
-"""Run the installed upstream engine against a local synthetic model server."""
+"""Run the relocated bundled engine against a local synthetic model server."""
 import asyncio
 import json
 import threading
 import shutil
+import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,11 +17,37 @@ from harness.types import Contract, ToolObservation
 import harness.native_hermes as native
 
 
-@pytest.mark.skipif(not (native.ROOT / '.venv-hermes/bin/python').exists(), reason='Native Hermes not installed')
 @pytest.mark.parametrize("cancel", [False, True])
 def test_actual_native_engine_roundtrips_backend_tool_without_external_model(monkeypatch, tmp_path, cancel):
     shutil.copytree(native.ROOT / '08-YieldAgent/harness/skills/yield-analysis', tmp_path / 'skills/yield-analysis')
-    (tmp_path / 'config.yaml').write_text('skills:\n  auto_load:\n    - yield-analysis\n')
+    (tmp_path / 'config.yaml').write_text('skills:\n  auto_load:\n    - yield-analysis\nagent:\n  environment_probe: false\n')
+    relocated = tmp_path / 'relocated/harness'
+    shutil.copytree(Path(native.__file__).parent, relocated, ignore=shutil.ignore_patterns('__pycache__', 'tests'))
+    # Audit the child itself: it must not fall back to installed Hermes or run installers.
+    worker = relocated / 'native_worker.py'
+    audit = r"""
+def audit_embedded(event, args):
+    if event == 'open' and isinstance(args[0], (str, bytes)):
+        path = str(args[0])
+        if '/.venv-hermes/' in path or '/.runtime/hermes/src/' in path:
+            with open(AUDIT_FAILURE, 'a') as log: log.write(path + '\n')
+            raise RuntimeError('External Hermes source accessed: ' + path)
+    if event == 'subprocess.Popen':
+        # Upstream probes OS and interpreter versions. Neither installs anything.
+        argv = args[1]
+        if argv == ["uname", "-p"] or argv == ["file", "-b", str(Path(sys.executable).resolve())]:
+            return
+        if argv[0] in ("python", "python3") and argv[1:] == ["-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))"]:
+            return
+        with open(AUDIT_FAILURE, 'a') as log: log.write(repr(args[:3]) + '\n')
+        raise RuntimeError('Unexpected subprocess in embedded engine: ' + str(args[0]))
+sys.addaudithook(audit_embedded)
+"""
+    audit_failure = tmp_path / 'forbidden-runtime.log'
+    audit = 'AUDIT_FAILURE = ' + repr(str(audit_failure)) + '\n' + audit
+    worker.write_text(worker.read_text().replace("if __name__ == '__main__':", audit + "\nif __name__ == '__main__':"))
+    monkeypatch.setattr(native, '__file__', str(relocated / 'native_hermes.py'))
+    monkeypatch.setattr(native, 'ROOT', tmp_path / 'relocated')
     requests = []
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
@@ -62,6 +90,10 @@ def test_actual_native_engine_roundtrips_backend_tool_without_external_model(mon
     processes = []
     spawn = asyncio.create_subprocess_exec
     async def track_process(*args, **kwargs):
+        assert args[0] == sys.executable
+        assert args[1] == '-I'
+        assert str(relocated) in args[2]
+        kwargs['stderr'] = None  # pytest captures worker bootstrap failures.
         process = await spawn(*args, **kwargs)
         processes.append(process)
         return process
@@ -88,7 +120,7 @@ def test_actual_native_engine_roundtrips_backend_tool_without_external_model(mon
         check=noop, remaining_seconds=lambda: 45, store=SimpleNamespace(event=noop, runs=SimpleNamespace(update_one=noop)))
     try:
         async def scenario():
-            task = asyncio.create_task(native.run_native(context, registry))
+            task = asyncio.create_task(native.run_native(context, registry, history=[{'role': 'user', 'content': 'earlier synthetic turn'}, {'role': 'assistant', 'content': 'earlier synthetic answer'}]))
             if cancel:
                 await asyncio.wait_for(entered.wait(), 30)
                 task.cancel()
@@ -98,6 +130,7 @@ def test_actual_native_engine_roundtrips_backend_tool_without_external_model(mon
                 return None
             return await task
         result = asyncio.run(scenario())
+        assert not audit_failure.exists(), audit_failure.read_text() if audit_failure.exists() else ''
         if cancel:
             return
         assert result['status'] == 'completed', result
@@ -105,6 +138,7 @@ def test_actual_native_engine_roundtrips_backend_tool_without_external_model(mon
         assert result['result_ids'] == ['stored-synthetic']
         assert 'Synthetic result is 7.' in result['answer']
         assert any('stored-synthetic' in json.dumps(r) for r in requests)
+        assert 'earlier synthetic answer' in json.dumps(requests)
         assert result['native_usage']['total_tokens'] > 0
         assert '합집합 수율' in json.dumps(next(r for r in requests if 'messages' in r), ensure_ascii=False)
     finally:

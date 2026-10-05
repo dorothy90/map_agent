@@ -1,12 +1,14 @@
-"""Adapter to the pinned, unmodified Hermes engine in a separate interpreter."""
+"""Adapter to the bundled Hermes engine using the backend Python interpreter."""
 import asyncio
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
+import sys
 import tempfile
+
+import yaml
 
 from .completion import render_results
 from .executor import ToolExecutor
@@ -70,8 +72,13 @@ def prepare_profile(principal_id):
             if not target.exists():
                 shutil.copytree(directory, target)
     config = profile / 'config.yaml'
-    if not config.exists():
-        config.write_text('skills:\n  auto_load:\n    - yield-analysis\n')
+    content = yaml.safe_load(config.read_text()) if config.exists() else {'skills': {'auto_load': ['yield-analysis']}}
+    # This worker has no host terminal tool; probing its package manager is irrelevant.
+    if content.setdefault('agent', {}).get('environment_probe') is not False:
+        content['agent']['environment_probe'] = False
+        with tempfile.NamedTemporaryFile(mode='w', dir=profile, delete=False) as pending:
+            pending.write(yaml.safe_dump(content, allow_unicode=True))
+        os.replace(pending.name, config)
     return profile
 
 
@@ -83,21 +90,14 @@ async def run_native(context, registry, *, history=None):
             return {'status': 'partial', 'stop_reason': kind + '_limit',
                 'answer': '실행 예산을 모두 사용하여 추가 모델 호출 없이 중지했습니다.',
                 'observations': run.get('observations', []), 'result_ids': run.get('result_ids', [])}
-    python = ROOT / '.venv-hermes/bin/python'
-    if not python.exists():
-        raise RuntimeError('Native Hermes is not installed; run scripts/setup_hermes.sh')
-    source = ROOT / '.runtime/hermes/src'
-    actual = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
-    changed = subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain', '--untracked-files=no'], text=True).strip()
-    if actual != UPSTREAM_COMMIT or changed:
-        raise RuntimeError('Native Hermes source does not match the verified pinned revision')
+    python = sys.executable
     bridge = NativeBridge(registry, context)
     profile = prepare_profile(run['principal_id'])
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR') if key in os.environ}
-    env.update(HERMES_HOME=str(profile), PYTHONUNBUFFERED='1')
+    env.update(HERMES_HOME=str(profile), PYTHONUNBUFFERED='1', HERMES_DISABLE_LAZY_INSTALLS='1')
     workspace = tempfile.TemporaryDirectory(prefix="yield-hermes-")
     try:
-        process = await asyncio.create_subprocess_exec(str(python), str(Path(__file__).with_name('native_worker.py')),
+        process = await asyncio.create_subprocess_exec(str(python), '-I', str(Path(__file__).with_name('native_worker.py')),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             env=env, cwd=workspace.name, limit=16 * 1024 * 1024, start_new_session=True)
     except BaseException:

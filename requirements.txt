@@ -33,3 +33,17 @@ oracledb>=3.4.2
 opensearch-py>=3.2.0
 tabulate>=0.9.0
 json-repair>=0.58.0
+
+# Embedded Hermes engine (ordinary libraries; no Hermes installation)
+ruamel.yaml==0.18.16
+snowballstemmer==3.1.1
+truststore==0.10.4
+fire==0.7.1
+croniter==6.0.0
+tomli-w==1.2.0
+openai==2.24.0
+httpx[socks]>=0.28.1,<0.29
+rich>=14.0
+tenacity>=9.0
+jinja2>=3.1.6
+packaging>=24

@@ -8,7 +8,7 @@ from pathlib import Path
 
 # Both projects contain a top-level tools package. Resolve the pinned engine's
 # packages before this adapter's directory in the separate interpreter.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / '.runtime/hermes/src'))
+sys.path.insert(0, str(Path(__file__).resolve().with_name('engine')))
 
 
 def main():

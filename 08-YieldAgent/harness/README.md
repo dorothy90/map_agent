@@ -117,8 +117,12 @@ The investigation reserves `min(active_seconds * 0.2, 2 * call_timeout)` seconds
 The context includes an observational notice after three consecutive equivalent visible tool results (ignoring generated result IDs). It does not block execution, does not infer equality of unseen rows, and is not the full upstream loop controller. The final three live evaluation runs remain partial; see the alignment record before claiming operational parity.
 
 
-### Native Hermes checkpoint (2026-10-05)
+### Bundled Hermes engine (2026-10-06)
 
-New server runs default to `HARNESS_ENGINE=hermes`; `HARNESS_ENGINE=langgraph` retains the custom loop described above. Install the pinned upstream source and separate Python 3.14 environment with `bash scripts/setup_hermes.sh` from the repository root before selecting Hermes. Existing runs keep their recorded engine.
+New runs default to `HARNESS_ENGINE=hermes`; existing runs keep their engine. `HARNESS_ENGINE=langgraph` retains the custom loop described above. The engine source is included in `harness/engine/`, pinned to upstream `e473f5a9c976a0b5bc292aa415dae28c638a47c3`. It runs with the backend's Python 3.11 interpreter. No Hermes package, external checkout, Python 3.14, or separate server is required. A child process isolates upstream module names from the backend; the backend owns its lifetime.
 
-The native adapter invokes upstream `AIAgent` and connects existing read/artifact tools, result storage and session history. It does not enable every Hermes CLI tool. Live acceptance remains **0/3**: two runs stopped at the token budget, and one produced ten binmaps with incorrect period/metric scope. This is an incomplete development checkpoint, not a validated deployment. See `docs/superpowers/plans/2026-10-05-hermes-native-engine.md`.
+Install the ordinary libraries declared in the repository `requirements.txt`/`pyproject.toml` through your approved package process. `scripts/setup_hermes.sh` now only verifies imports; it does not install anything. Do not install from `engine/pyproject.toml`: that is retained upstream metadata, not this backend's dependency specification.
+
+`native_worker.py` invokes the bundled `AIAgent`; `native_hermes.py` connects backend tools, result storage, history and cancellation. Enabled tools are existing read/artifact tools plus upstream skills/memory. Upstream package activation, update handoff, lazy installation and external plugin discovery are disabled. The loop, tool discovery, retries, compression and skill/memory implementations remain upstream code. `engine/UPSTREAM.json` records original hashes; `engine/PATCHES.diff` records local adaptations and the MIT license is retained.
+
+For migration, see [MIGRATION.md](MIGRATION.md). Source portability and wafer-answer quality have separate acceptance checks. The three repeated live tests on the bundled engine also scored **0/3**: one budget interruption and two map outputs with incorrect period/parameter scope. Source relocation alone does not correct those errors. This is not a claim that all Hermes CLI, gateway or optional integrations are enabled or tested.

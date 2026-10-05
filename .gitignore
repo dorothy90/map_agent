@@ -255,6 +255,6 @@ image.png
 08-YieldAgent/yield_frontend/*.tsbuildinfo
 .worktrees/
 
-# Pinned native Hermes runtime (installed by setup script)
+# Legacy external Hermes files and current per-user runtime profiles
 /.venv-hermes/
 /.runtime/hermes/

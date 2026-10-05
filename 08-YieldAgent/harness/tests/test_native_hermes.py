@@ -110,3 +110,33 @@ def test_native_controller_pins_engine_and_restores_history(monkeypatch):
             await store.client.drop_database(store.db.name)
             store.client.close()
     asyncio.run(scenario())
+
+
+def test_bundled_source_matches_recorded_upstream_and_local_patches():
+    import hashlib
+    import json
+    from pathlib import Path
+    import harness.native_hermes as native
+    source = Path(native.__file__).with_name('engine')
+    manifest = json.loads((source / 'UPSTREAM.json').read_text())
+    assert manifest['commit'] == native.UPSTREAM_COMMIT
+    assert 'MIT License' in (source / 'LICENSE').read_text()
+    for path, upstream_hash in manifest['files'].items():
+        expected = manifest['local_files'].get(path, upstream_hash)
+        assert hashlib.sha256((source / path).read_bytes()).hexdigest() == expected, path
+    patch = (source / 'PATCHES.diff').read_text()
+    assert all('+++ b/' + path in patch for path in manifest['local_files'])
+
+
+def test_embedded_profile_disables_host_package_probe_without_losing_settings(monkeypatch, tmp_path):
+    import yaml
+    import harness.native_hermes as native
+    monkeypatch.setattr(native, 'ROOT', tmp_path)
+    profile = native.prepare_profile('p')
+    config = profile / 'config.yaml'
+    assert yaml.safe_load(config.read_text())['agent']['environment_probe'] is False
+    config.write_text('skills:\n  auto_load: [custom-skill]\nagent:\n  environment_probe: true\n  stall_guards: false\n')
+    assert native.prepare_profile('p') == profile
+    saved = yaml.safe_load(config.read_text())
+    assert saved['skills']['auto_load'] == ['custom-skill']
+    assert saved['agent'] == {'environment_probe': False, 'stall_guards': False}
