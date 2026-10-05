@@ -9,7 +9,7 @@ from .registry import ToolResult, ToolSpec
 
 class YieldInput(Contract):
     lotcd: str = Field(min_length=1, max_length=20)
-    ref_date: date = Field(description="조회 기준 날짜, YYYY-MM-DD")
+    ref_date: date = Field(description="조회 기준 날짜, YYYY-MM-DD. weekly/monthly는 기준일이 속한 달력 기간 전체를 포함하므로 기준일 이후 자료도 포함될 수 있다. 정확한 일별 범위는 daily 사용.")
     unit: Literal["weekly", "monthly", "daily"] = "weekly"
     periods: int = Field(default=4, ge=1, le=52)
 
@@ -21,12 +21,19 @@ def _fetch_and_render(lotcd, ref_date, unit, periods):
     return rows, _build_html_table(rows, lotcd, unit=unit)
 
 
+def _period_scope(args):
+    from yield_db import _get_period_date_ranges
+    return {**args.model_dump(mode='json'),
+        'period_ranges': _get_period_date_ranges(args.ref_date, args.unit, args.periods),
+        'interval': '[start, end)', 'period_policy': 'whole_calendar_periods_including_reference_period'}
+
+
 async def query_yield(args, context):
     rows, html = await run_blocking(_fetch_and_render, args.lotcd, args.ref_date, args.unit, args.periods)
     populated = any(row.get(key) not in (None, "-", 0, "0") for row in rows for key in ("lotcount", "pt1c_lotcount", "gms_lotcount"))
     # Oracle VALUE has no unit metadata in this query; do not infer a percent
     # conversion from the magnitude. GMS already supplies percentage values.
-    scope = {**args.model_dump(mode="json"), "value_units": {
+    scope = {**_period_scope(args), "value_units": {
         "PT1H": "source_value_unit_unspecified", "PT1C": "source_value_unit_unspecified", "GMS": "percent"}}
     return ToolResult(rows=rows, scope=scope, status="success" if populated else "empty", summary=f"{args.lotcd} {args.unit} {len(rows)}개 기간 조회. 전체 PT1H/PT1C/GMS 수율표를 산출물로 제공했습니다. PT1H/PT1C는 원본값(단위 미확정), GMS는 %입니다.",
         artifacts=[{"title": f"{args.lotcd} 수율표", "mime": "text/html", "data": html}])
@@ -34,10 +41,10 @@ async def query_yield(args, context):
 
 def register(registry):
     registry.add(ToolSpec("inspect_yield_coverage", "제품 미지정 탐색 가능. 파라미터 자료의 제품/공정별 최초·최신 측정 시점과 행 수를 조회한다.", CoverageInput, inspect_yield_coverage))
-    registry.add(ToolSpec("query_wafer_yield", "전체 기간 모집단에서 웨이퍼 측정값과 동률 보존 순위를 조회. A-bin 전체 pass%와 파라미터 VALUE를 구분하고 재측정 정책을 명시해야 한다.", WaferYieldInput, query_wafer_yield))
-    registry.add(ToolSpec("analyze_yield", "기존 수율 지표 방향에 따라 최신 두 기간 상대 변화 상위 항목과 표본 수를 계산한다. 원인/통계적 이상 검정이 아니다.", YieldInput, analyze_yield))
+    registry.add(ToolSpec("query_wafer_yield", "웨이퍼 측정값과 기간별 순위. metric=pass_rate는 전체 A-bin 수율이며 parameter 입력 금지. metric=parameter는 단위 미확정 원본 VALUE이며 수율%가 아니다. 특정 불량 bin 수율과 전체 기간 하위 N개는 query_defect_yield 사용.", WaferYieldInput, query_wafer_yield))
+    registry.add(ToolSpec("analyze_yield", "기존 수율 지표 방향에 따라 최신 두 기간 전체 상대 변화 항목과 표본 수를 계산한다. 원인/통계적 이상 검정이 아니다.", YieldInput, analyze_yield, eager=True))
     registry.add(ToolSpec("render_yield_scatter", "기존 측정 산점도 생성. 기간별 파라미터 행 제한이 있는 표본이며 전체 순위용이 아니다.", YieldInput, render_yield_scatter))
-    registry.add(ToolSpec("query_yield", "제품별 PT1H/PT1C/GMS 수율과 표본 수를 기간 단위로 조회하고 전체 HTML 수율표 산출물도 생성한다.", YieldInput, query_yield))
+    registry.add(ToolSpec("query_yield", "제품별 PT1H/PT1C/GMS 수율과 표본 수를 기간 단위로 조회하고 전체 HTML 수율표 산출물도 생성한다.", YieldInput, query_yield, eager=True))
 
 
 class CoverageInput(Contract):
@@ -111,7 +118,7 @@ def _analyze_yield(args):
     import math
     from ..types import ResultTable
     rows = _fetch_periods(args.lotcd, args.ref_date, args.unit, args.periods, strict=True)
-    anomalies = _detect_anomalies(rows)
+    anomalies = _detect_anomalies(rows, top_n=len(PARA_COLUMNS) + len(PT1C_COLUMNS))
     comparable = []
     if len(rows) >= 2:
         for key in [*PARA_COLUMNS, *('pt1c_' + p for p in PT1C_COLUMNS)]:
@@ -130,14 +137,14 @@ def _analyze_yield(args):
         anomaly['metric_direction'] = 'higher_is_better' if anomaly['param'] in HIGHER_IS_BETTER else 'lower_is_better'
     return ToolResult(tables=[ResultTable(table_id='period_values', title='기간별 원본 집계', rows=rows, complete=True),
         ResultTable(table_id='changes', title='최신 두 기간의 상대 변화', rows=anomalies, units={'change_pct': 'percent'}, complete=True)],
-        scope={**args.model_dump(mode='json'), 'comparison': 'last_two_requested_periods', 'analysis_status': analysis_status,
+        scope={**_period_scope(args), 'comparison': 'last_two_requested_periods', 'analysis_status': analysis_status,
             'comparable_metrics': comparable,
             'formula': '(current - previous) / abs(previous) * 100', 'threshold': None,
-            'selection': 'existing top N improvement and deterioration by absolute relative change',
+            'selection': 'all nonzero comparable changes, ordered by absolute relative change within direction',
             'direction_source': 'common.HIGHER_IS_BETTER; existing domain convention',
             'zero_or_missing_previous': 'excluded; relative change undefined',
             'aggregation': 'source AVG(VALUE), all source measurement rows; retest not deduplicated'},
-        summary='최신 두 요청 기간의 상대 변화 상위 항목입니다. 통계적 이상 임계값 검정이나 원인 확정 결과는 아닙니다.',
+        summary='최신 두 요청 기간의 전체 상대 변화 항목입니다. 통계적 이상 임계값 검정이나 원인 확정 결과는 아닙니다.',
         status='success' if anomalies else 'empty')
 
 

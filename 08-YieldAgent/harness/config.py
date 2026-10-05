@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+from typing import Literal
 from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    engine: Literal["hermes", "langgraph"] = "langgraph"
     model: str = "z-ai/glm-5.3-flash"
     base_url: str = "https://openrouter.ai/api/v1"
     api_key: SecretStr = SecretStr("")
@@ -19,6 +21,9 @@ class Settings(BaseModel):
     active_seconds: int = Field(default=300, ge=5)
     call_timeout: int = Field(default=90, ge=1)
     max_output_tokens: int = Field(default=8192, ge=128)
+    answer_output_tokens: int = Field(default=4096, ge=128)
+    review_output_tokens: int = Field(default=2048, ge=128)
+    evidence_tokens: int = Field(default=2000, ge=0)
     temperature: float = Field(default=0, ge=0, le=2)
     reasoning_effort: str | None = None
     python_image: str = "yield-harness-python:2"
@@ -35,6 +40,7 @@ class Settings(BaseModel):
         elif not key and host == "openrouter.ai":
             key = os.getenv("OPENROUTER_API_KEY", "")
         return cls(
+            engine=os.getenv("HARNESS_ENGINE", "hermes"),
             model=os.getenv("HARNESS_MODEL", cls.model_fields["model"].default),
             base_url=base_url,
             api_key=key,
@@ -50,6 +56,9 @@ class Settings(BaseModel):
             active_seconds=int(os.getenv("HARNESS_ACTIVE_SECONDS", "300")),
             call_timeout=int(os.getenv("HARNESS_CALL_TIMEOUT", "90")),
             max_output_tokens=int(os.getenv("HARNESS_MAX_OUTPUT_TOKENS", "8192")),
+            answer_output_tokens=int(os.getenv("HARNESS_ANSWER_OUTPUT_TOKENS", "4096")),
+            review_output_tokens=int(os.getenv("HARNESS_REVIEW_OUTPUT_TOKENS", "2048")),
+            evidence_tokens=int(os.getenv("HARNESS_EVIDENCE_TOKENS", "2000")),
             temperature=float(os.getenv("HARNESS_TEMPERATURE", "0")),
             reasoning_effort=os.getenv("HARNESS_REASONING_EFFORT") or None,
         )

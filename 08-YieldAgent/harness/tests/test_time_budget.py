@@ -60,3 +60,23 @@ def test_reasoning_timeout_transitions_to_reserved_final_answer():
         assert calls == ['reasoning', 'answer']
         assert result['pending'][0]['name'] == 'finish'
     asyncio.run(scenario())
+
+
+def test_investigation_still_runs_with_half_the_wall_clock_budget_left():
+    from langchain_core.messages import AIMessage
+    from harness.nodes import Nodes
+    from harness.tools.registry import ToolRegistry
+    from harness.testing import ScriptedModel
+    async def scenario():
+        calls = []
+        async def check(): return {'usage': {'tokens': 10000, 'models': 2, 'tools': 1}}
+        async def model_call(*args, **kwargs):
+            calls.append(kwargs)
+            return AIMessage(content='analysis')
+        ctx = SimpleNamespace(settings=Settings(), check=check, model_call=model_call,
+            remaining_seconds=lambda *a: 150)
+        node = Nodes(ScriptedModel([]), ToolRegistry(), ctx, '')
+        await node.think({'goal': {}, 'observations': [], 'messages': []})
+        assert calls[0]['purpose'] == 'reasoning'
+        assert calls[0]['reserve_seconds'] == 60
+    asyncio.run(scenario())

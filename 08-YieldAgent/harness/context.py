@@ -103,6 +103,15 @@ def evidence_views(observations, *, token_budget=8000):
         return 0
 
     remaining = max(0, token_budget)
+    # A deliberate retrieval must reach the next model call. Otherwise a row
+    # larger than its fair share can be omitted forever, even after read_result.
+    requested = sources[0] if sources and sources[0]['observation'].get('tool_name') == 'read_result' else None
+    if requested:
+        while remaining:
+            cost = take_one(requested, remaining)
+            if not cost:
+                break
+            remaining -= cost
     share = remaining // max(1, len(sources))
     for source in sources:
         allowance = share
@@ -176,6 +185,27 @@ def referenced_messages(messages, observations):
     return output
 
 
+def repeated_observation_notice(observations):
+    """Observational warning only: equal previews do not prove full-data equality."""
+    def signature(obs):
+        value = {k: obs.get(k) for k in ('tool_name', 'status', 'scope', 'columns', 'total_rows', 'preview_rows')}
+        value['tables'] = [{k: t.get(k) for k in ('table_id', 'columns', 'units', 'total_rows', 'preview_rows', 'complete')}
+            for t in obs.get('tables', [])]
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    if len(observations) < 3:
+        return None
+    latest = signature(observations[-1])
+    count = 0
+    for observation in reversed(observations):
+        if signature(observation) != latest:
+            break
+        count += 1
+    if count < 3:
+        return None
+    return {'count': count, 'result_id': observations[-1]['result_id'],
+        'instruction': '같은 도구의 관측 범위와 전달된 행이 연속으로 같습니다. 전체 원본의 동일성을 뜻하지는 않습니다. 필요한 자료를 이미 확보했다면 그 결과로 계산·산출물을 진행하세요. 부족하다면 필요한 범위나 열을 구체적으로 바꾸어 조회하세요. 완료하지 않은 작업을 완료로 보고하지 마세요.'}
+
+
 def build_context(state, instructions, *, final=False, evidence_tokens=8000):
     observations = list({o["result_id"]: o for o in state.get("observations", [])}.values())
     focus = list(dict.fromkeys(state.get("focus_result_ids", [])))
@@ -191,6 +221,7 @@ def build_context(state, instructions, *, final=False, evidence_tokens=8000):
     metadata = {"now": datetime.now().astimezone().isoformat(), "goal": state["goal"], "worklog": state.get("worklog", {}),
         "summary": state.get("summary", ""), "validation_issues": state.get("validation_issues", []),
         "summary_scope": "older_compacted_messages; current results and latest user instructions take precedence",
+        "repeated_observation_notice": repeated_observation_notice([o for o in observations if o.get("run_id") == state.get("run_id")]),
         "focus_result_ids": focus, "result_index": index, "evidence": evidence,
         "history_archives": state.get("context_archives", [])[-10:],
         "older_results": max(0, len(observations) - len(index)),

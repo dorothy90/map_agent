@@ -37,6 +37,7 @@ class ToolSpec:
     timeout: int = 60
     effect: Literal['read', 'artifact', 'persistent_write'] | None = None
     availability: Callable | None = None
+    eager: bool = False
 
     def __post_init__(self):
         if self.effect is None:
@@ -81,7 +82,8 @@ def domain_registry():
     from .artifact_tools import register as artifacts
     from .map_tools import register as maps
     from .document_tools import register as documents
+    from .defect_tools import register as defects
     registry = ToolRegistry()
-    for register in (yields, wads, lots, python, analysis, artifacts, maps, documents):
+    for register in (yields, wads, lots, python, analysis, artifacts, maps, documents, defects):
         register(registry)
     return registry

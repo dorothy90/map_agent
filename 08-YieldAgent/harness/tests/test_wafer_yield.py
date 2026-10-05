@@ -78,3 +78,22 @@ def test_analysis_distinguishes_unavailable_comparison_from_unchanged(monkeypatc
     assert y._analyze_yield(args).scope['analysis_status'] == 'no_findings'
     monkeypatch.setattr(yield_db, '_fetch_periods', lambda *a, **k: [{'VTH': 10}, {'VTH': 9}])
     assert y._analyze_yield(args).scope['analysis_status'] == 'findings'
+
+
+def test_analysis_preserves_all_changed_metrics_for_downstream_selection(monkeypatch):
+    from harness.tools import yield_tools as y
+    params = ['IOFF', 'IGATE', 'IDDQ', 'TPD', 'BVDS']
+    monkeypatch.setattr(yield_db, '_fetch_periods', lambda *a, **k: [
+        {p: 10 for p in params}, {p: 11 + i for i, p in enumerate(params)}])
+    result = y._analyze_yield(y.YieldInput(lotcd='P', ref_date='2026-01-02'))
+    assert {r['param'] for r in result.tables[1].rows} == set(params)
+
+
+def test_yield_scope_exposes_actual_calendar_ranges(monkeypatch):
+    import asyncio
+    from harness.tools import yield_tools as y
+    async def fetch(*args): return [{'lotcount': 1}], '<html></html>'
+    monkeypatch.setattr(y, 'run_blocking', fetch)
+    result = asyncio.run(y.query_yield(y.YieldInput(lotcd='P', ref_date='2026-10-05'), None))
+    assert result.scope['period_ranges'][-1] == {'label': '2026-W41', 'start': '20261005', 'end': '20261012'}
+    assert result.scope['interval'] == '[start, end)'

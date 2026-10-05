@@ -114,7 +114,8 @@ def test_finish_argument_feedback_survives_finalizer_context_rebuild():
         state.update(await nodes.execute(state))
         await nodes.think(state)
         assert captured[0][0] is True
-        metadata = json.loads(captured[0][1][1].content)
+        metadata = json.loads(next(m.content for m in captured[0][1]
+            if m.additional_kwargs.get('input_section') == 'context'))
         assert metadata["validation_issues"][0]["code"] == "missing_answer"
         assert any(m.type == "ai" and "DEMO 8월" in m.content for m in captured[0][1])
     asyncio.run(scenario())

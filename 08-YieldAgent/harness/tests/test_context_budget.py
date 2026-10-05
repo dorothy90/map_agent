@@ -8,6 +8,26 @@ from harness.config import Settings
 from harness.types import ToolObservation
 
 
+def test_completion_reserves_leave_room_for_another_investigation_step():
+    from harness.nodes import Nodes
+    from harness.testing import ScriptedModel
+    from harness.tools.registry import ToolRegistry
+    from harness.types import TableRef
+
+    rows = [{'wafer': str(i), 'measurement': 'detail ' * 25} for i in range(100)]
+    sources = [result(str(i), run_id='run', preview_rows=rows, total_rows=100,
+        tables=[TableRef(table_id='data', title='Data', columns=['wafer', 'measurement'],
+            total_rows=100, preview_rows=rows, complete=True, data_ref=str(i))]) for i in range(4)]
+    node = Nodes(ScriptedModel([]), ToolRegistry(), SimpleNamespace(settings=Settings()), '')
+    state = {'run_id': 'run', 'goal': {}, 'observations': sources,
+        'messages': [HumanMessage(content='조회 결과로 순위와 맵을 완성해줘')]}
+    context, reserve, _, output, review_output, _ = node.completion_plan(state, 60000)
+    # Leave a 25k-token investigation call admissible after 60k already used.
+    assert 60000 + 25000 + reserve <= Settings().token_limit
+    assert output <= 4096 and review_output <= 2048
+    assert sources[0]['tables'][0]['preview_rows'] == rows
+
+
 def result(result_id="r", **updates):
     return ToolObservation(**({"principal_id": "p", "session_id": "s", "run_id": "old",
         "invocation_id": result_id, "result_id": result_id, "tool_name": "search",
@@ -401,3 +421,46 @@ def test_final_context_keeps_latest_public_action_context_and_marks_old_summary(
     assert metadata['summary_scope'] == 'older_compacted_messages; current results and latest user instructions take precedence'
     assert str(context).count('UNIQUE_DOCUMENT_BODY') == 1
     assert not any(getattr(message, 'tool_calls', []) or message.type == 'tool' for message in context)
+
+
+def test_review_receives_loaded_skill_contracts():
+    from harness.nodes import Nodes
+    from harness.testing import ScriptedModel
+    from harness.tools.registry import ToolRegistry
+    node = Nodes(ScriptedModel([]), ToolRegistry(), SimpleNamespace(settings=Settings()), '')
+    skill = {'name': 'analysis', 'content': 'Preserve the requested population and metric.'}
+    state = {'goal': {}, 'loaded_skills': {'analysis': skill}}
+    messages = node.review_context(state, {'answer': 'done'}, [], 2000)
+    assert any(m.type == 'system' and json.loads(m.content) == skill
+        for m in messages if m.additional_kwargs.get('input_section') == 'skills')
+
+
+def test_explicit_read_result_is_visible_before_older_preview_rows():
+    from harness.context import evidence_views
+    old = [result(str(i), preview_rows=[{'value': 'a' * 300}] * 10, total_rows=10) for i in range(4)]
+    read = result('read', tool_name='read_result', preview_rows=[{'stdout': 'requested ' * 130}], total_rows=1)
+    views = evidence_views([read, *old], token_budget=1000)
+    assert views[0]['preview_rows'] == read['preview_rows']
+    assert sum(len(json.dumps(v['preview_rows'], ensure_ascii=False)) // 2 for v in views) <= 1100
+
+
+def test_older_explicit_read_does_not_hide_a_new_calculation():
+    from harness.context import evidence_views
+    read = result('read', tool_name='read_result', preview_rows=[{'v': 'a' * 390}] * 5, total_rows=5)
+    calculated = result('calculated', tool_name='run_python', preview_rows=[{'result': 'NEW_RESULT'}], total_rows=1)
+    views = evidence_views([calculated, read], token_budget=1000)
+    assert views[0]['preview_rows'] == calculated['preview_rows']
+
+
+def test_repeated_equivalent_retrievals_are_reported_despite_new_result_ids():
+    from harness.context import build_context
+    observations = [result(str(i), run_id='run', tool_name='read_result',
+        preview_rows=[{'value': 10}], total_rows=1) for i in range(3)]
+    state = {'goal': {}, 'run_id': 'run', 'observations': observations}
+    metadata = json.loads(next(m.content for m in build_context(state, '')
+        if m.additional_kwargs.get('input_section') == 'context'))
+    assert metadata['repeated_observation_notice']['count'] == 3
+    observations[-1]['preview_rows'] = [{'value': 11}]
+    metadata = json.loads(next(m.content for m in build_context(state, '')
+        if m.additional_kwargs.get('input_section') == 'context'))
+    assert metadata['repeated_observation_notice'] is None

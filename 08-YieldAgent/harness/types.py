@@ -142,7 +142,8 @@ class Worklog(Contract):
 
 
 class LoadTools(Contract):
-    names: list[str] = Field(min_length=1, max_length=4, description="이번 조사 단계에 필요한 도구 이름. 상세 스키마를 이 목록으로 교체한다.")
+    names: list[str] = Field(min_length=1, max_length=4, description="추가로 필요한 도구 이름. 이미 불러온 도구는 다시 요청할 필요가 없다.")
+    mode: Literal['add', 'replace'] = Field(default='add', description="add는 기존 도구를 유지하고 추가한다. replace는 불필요한 도구를 줄이기 위해 목록을 명시적으로 교체한다.")
 
 
 class SelectResults(Contract):

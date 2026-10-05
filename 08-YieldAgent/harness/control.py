@@ -36,7 +36,7 @@ class RunController:
         async with self.store.session_lock(principal_id, session_id):
             if await self.store.runs.find_one({"principal_id": principal_id, "session_id": session_id, "steer_pending": {"$exists": True}}):
                 raise Conflict("A goal change is being recovered")
-            run = await self.store.start_run(principal_id, session_id, request_id, query)
+            run = await self.store.start_run(principal_id, session_id, request_id, query, engine=self.settings.engine)
         await self.launch(run["run_id"])
         return run
 
@@ -97,6 +97,20 @@ class RunController:
         try:
             context = ExecutionContext(self.store, self.settings, run)
             registry = self.registry_factory()
+            if run.get("engine", "langgraph") == "hermes":
+                from .native_hermes import run_native
+                previous = await self.store.runs.find({"principal_id": run["principal_id"],
+                    "session_id": run["session_id"], "active": False}).sort("created_at", -1).limit(10).to_list(length=10)
+                from .native_hermes import native_history
+                await self.store.event(run["run_id"], "run_started", {"query": run["query"],
+                    "goal_revision": run["goal_revision"], "engine": "hermes"})
+                result = await run_native(context, registry,
+                    history=native_history(previous))
+                await context.check()
+                stop_heartbeat()
+                await self._save_context(run, result)
+                await self.store.finish(run["run_id"], run["epoch"], result["status"], result["answer"], result["stop_reason"])
+                return
             from .delegation import register_delegation
             register_delegation(registry, self.model_factory, self.checkpointer)
             graph = build_harness(model=self.model_factory(), registry=registry, store=self.store,
@@ -166,6 +180,7 @@ class RunController:
                 await self.store.finish(run["run_id"], run["epoch"], "cancelled" if cancelled else "partial",
                     "작업을 중지했습니다." if cancelled else answer, "user_cancelled" if cancelled else reason)
         except Exception as exc:
+            logger.exception("Run %s failed", run["run_id"])
             stop_heartbeat()
             await self.store.finish(run["run_id"], run["epoch"], "failed", "실행을 완료하지 못했습니다. 연결과 실행 설정을 확인하세요.", type(exc).__name__)
         finally:
@@ -177,6 +192,9 @@ class RunController:
                 {'$max': {'usage.active_seconds': run['usage']['active_seconds'] + time.monotonic() - run['started_monotonic']}})
 
     async def _save_context(self, run, result):
+        if "native_messages" in result:
+            await self.store.runs.update_one({"_id": run["run_id"], "epoch": run["epoch"], "status": "running"},
+                {"$set": {key: result[key] for key in ("native_messages", "native_usage", "native_engine")}})
         from .context import memory_snapshot
         await self.store.runs.update_one({"_id": run["run_id"], "epoch": run["epoch"], "status": "running", "active": True}, {"$set": {
             "observations": result.get("observations", []), "result_ids": result.get("result_ids", []),
@@ -242,7 +260,7 @@ class RunController:
 
     async def _apply_steer(self, run, payload):
         await self.cancel(run["principal_id"], run["run_id"])
-        next_run = await self.store.start_run(run["principal_id"], run["session_id"], payload["request_id"], str(payload["value"]), ready=False)
+        next_run = await self.store.start_run(run["principal_id"], run["session_id"], payload["request_id"], str(payload["value"]), ready=False, engine=run.get("engine", "langgraph"))
         await self.store.runs.update_one({"_id": next_run["run_id"]}, {"$set": {"parent_run_id": run["run_id"], "goal_revision": run["goal_revision"] + 1,
             "goal_request": run.get("goal_request", run["query"]) + "\n사용자의 최신 수정: " + str(payload["value"]), "ready": True}})
         await self.store.runs.update_one({"_id": run["run_id"]}, {"$unset": {"steer_pending": ""}})

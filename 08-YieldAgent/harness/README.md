@@ -22,6 +22,9 @@ HARNESS_MODEL=z-ai/glm-5.3-flash
 HARNESS_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_API_KEY=...
 HARNESS_MAX_OUTPUT_TOKENS=8192
+HARNESS_ANSWER_OUTPUT_TOKENS=4096
+HARNESS_REVIEW_OUTPUT_TOKENS=2048
+HARNESS_EVIDENCE_TOKENS=2000
 HARNESS_TEMPERATURE=1.0
 HARNESS_REASONING_EFFORT=high
 ```
@@ -90,7 +93,7 @@ MCP 호스트에는 이 명령과 작업 디렉터리를 등록한다. 공통 re
 
 ## v2 실행과 안전한 전환
 
-신규 실행은 `harness/v2`, 표 계약은 `harness-observation/v2`이다. 스킬 목록·내용·해시는 실행 생성 때 고정하며 모델이 읽은 지침만 맥락에 넣는다. v1 완료 기록과 단일 표 결과는 읽기 어댑터로 유지한다. 활성 v1 체크포인트는 v2 그래프에 넣지 않는다. 배포 전에 구버전 실행을 종료 상태로 drain하고, 입력 대기는 구버전에서 재개하거나 명시적으로 취소한다. legacy 대화는 계속 legacy 엔진을 사용한다.
+신규 실행은 `harness/v2`, 표 계약은 `harness-observation/v2`이다. 스킬 목록·내용·해시는 실행 생성 때 고정하며 모델이 읽은 지침과 `auto_load: true`로 선언된 기본 지침을 맥락에 넣는다. 기본 지침은 첫 판단 전에 로딩하고, 읽은 지침은 답변 검토 단계에도 동일하게 전달한다. 자동 로딩은 질문 문구 매칭을 사용하지 않으며 실행 생성 시 고정한 스킬 스냅샷을 따른다. v1 완료 기록과 단일 표 결과는 읽기 어댑터로 유지한다. 활성 v1 체크포인트는 v2 그래프에 넣지 않는다. 배포 전에 구버전 실행을 종료 상태로 drain하고, 입력 대기는 구버전에서 재개하거나 명시적으로 취소한다. legacy 대화는 계속 legacy 엔진을 사용한다.
 
 여러 표는 `tables[result_id][table_id]`로 계산한다. 단일 표에는 기존 `datasets[result_id]`도 제공한다. 문서 페이지와 표의 일부 자료는 전체성 플래그와 원본 계보가 후속 계산까지 전달된다. 스킬 기반 하위 조사는 같은 엔진을 사용하지만 부모 대화 전체를 복제하지 않는다. 읽기와 격리 Python 계산만 허용하고 영구 쓰기·재위임은 막는다. 부모의 마무리 예산은 하위 조사에 사용할 수 없다.
 
@@ -99,3 +102,23 @@ MCP 호스트에는 이 명령과 작업 디렉터리를 등록한다. 공통 re
 고정 MCP 세션은 살아 있는 소유자가 있으면 충돌을 반환한다. lease가 만료된 연결은 epoch 경계에서 종료하고 저장 결과를 유지한 새 연결을 만든다. 연결의 유휴 시간은 조사 시간에 합산하지 않는다.
 
 롤백은 v2 결과 읽기 어댑터가 있는 호환 빌드로만 한다. 새 실행 진입을 막고 활성 작업을 정리한 뒤 전환한다. v2 자료를 읽지 못하는 예전 빌드로의 즉시 롤백은 지원하지 않는다.
+
+
+### Hermes core adaptation (2026-10-05)
+
+Reference commit: `NousResearch/hermes-agent@e473f5a9c976a0b5bc292aa415dae28c638a47c3`. This backend adapts the core loop; it does not embed the complete Hermes CLI/gateway/memory-learning runtime. See `docs/superpowers/plans/2026-10-05-hermes-core-alignment.md` for the source-by-source comparison.
+
+`ToolSpec(eager=True)` exposes a core tool immediately. Specialist tools use `load_tools`; its `mode=replace` replaces only the explicitly loaded set and cannot hide core tools. Eager and loaded schemas are omitted from the deferred catalog to avoid duplication.
+
+The investigation reserves `min(active_seconds * 0.2, 2 * call_timeout)` seconds for answer/review rather than reserving two full 90-second calls from the outset. This preserves the hard total budget. Explicit `read_result` rows receive preview space before older incidental evidence; stored full results remain available when the requested page exceeds the context budget.
+
+`query_yield` and `analyze_yield` expose actual calendar period ranges. Weekly/monthly periods include the entire reference period; callers must not describe those as an exact trailing-day interval. `analyze_yield` returns every nonzero comparable change for downstream population selection, not only the display-oriented top three.
+
+The context includes an observational notice after three consecutive equivalent visible tool results (ignoring generated result IDs). It does not block execution, does not infer equality of unseen rows, and is not the full upstream loop controller. The final three live evaluation runs remain partial; see the alignment record before claiming operational parity.
+
+
+### Native Hermes checkpoint (2026-10-05)
+
+New server runs default to `HARNESS_ENGINE=hermes`; `HARNESS_ENGINE=langgraph` retains the custom loop described above. Install the pinned upstream source and separate Python 3.14 environment with `bash scripts/setup_hermes.sh` from the repository root before selecting Hermes. Existing runs keep their recorded engine.
+
+The native adapter invokes upstream `AIAgent` and connects existing read/artifact tools, result storage and session history. It does not enable every Hermes CLI tool. Live acceptance remains **0/3**: two runs stopped at the token budget, and one produced ten binmaps with incorrect period/metric scope. This is an incomplete development checkpoint, not a validated deployment. See `docs/superpowers/plans/2026-10-05-hermes-native-engine.md`.

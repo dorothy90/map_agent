@@ -55,3 +55,17 @@ def test_unknown_skill_reference_returns_recoverable_tool_feedback():
         assert feedback['status']=='invalid_arguments'
         assert 'SKILL.md' in feedback['message']
     asyncio.run(scenario())
+
+
+def test_declared_auto_load_is_pinned_and_other_skills_remain_lazy(tmp_path):
+    from harness.skills import SkillCatalog
+    for name, auto in [('base', 'true'), ('specialist', 'false')]:
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / 'SKILL.md').write_text(
+            f'---\nname: {name}\ndescription: Test\nauto_load: {auto}\n---\n{name} body')
+    catalog = SkillCatalog(tmp_path)
+    pinned = SkillCatalog(snapshot=catalog.snapshot)
+    assert list(pinned.auto_loaded()) == ['base/SKILL.md']
+    assert pinned.auto_loaded()['base/SKILL.md'] == pinned.read('base')
+    assert 'specialist body' not in str(pinned.auto_loaded())

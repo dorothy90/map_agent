@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 
 
 def test_result_drives_additional_tool_call():
@@ -60,10 +61,67 @@ def test_model_loads_only_selected_tool_schemas():
         try:
             result = await graph.ainvoke(initial_state(run, "조회"), {"configurable": {"thread_id": run["run_id"]}})
             assert result["status"] == "completed"
-            assert "load_tools" in seen[0] and "query_yield" not in seen[0]
+            assert "load_tools" in seen[0] and "query_yield" in seen[0] and "query_wads" not in seen[0]
             assert "query_yield" in seen[1] and "query_wads" not in seen[1]
             assert result["loaded_tools"] == ["query_yield"]
         finally:
             await store.client.drop_database(store.db.name)
             store.client.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode, expected', [
+    (None, ['query_wads', 'inspect_wads_coverage']),
+    ('replace', ['inspect_wads_coverage']),
+])
+def test_loading_more_tools_preserves_existing_schemas_unless_replaced(mode, expected):
+    from harness.testing import setup_case, initial_state
+
+    async def scenario():
+        arguments = {'names': ['inspect_wads_coverage', 'inspect_wads_coverage']}
+        if mode:
+            arguments['mode'] = mode
+        store, run, model, graph = await setup_case([
+            {'tool': 'load_tools', 'arguments': {'names': ['query_wads']}},
+            {'tool': 'load_tools', 'arguments': arguments},
+            {'finish': {'answer': '도구 준비 확인'}},
+        ], {})
+        seen, bind = [], model.bind_tools
+        def record(tools, **kwargs):
+            seen.append({tool['function']['name'] for tool in tools})
+            return bind(tools, **kwargs)
+        model.bind_tools = record
+        try:
+            result = await graph.ainvoke(initial_state(run, '도구 준비'),
+                {'configurable': {'thread_id': run['run_id']}})
+            assert result['status'] == 'completed'
+            assert result['loaded_tools'] == expected
+            assert seen[-1] & {'query_wads', 'inspect_wads_coverage'} == set(expected)
+        finally:
+            await store.client.drop_database(store.db.name)
+            store.client.close()
+    asyncio.run(scenario())
+
+
+def test_declared_core_tools_are_available_without_discovery():
+    from types import SimpleNamespace
+    from langchain_core.messages import AIMessage
+    from harness.config import Settings
+    from harness.nodes import Nodes
+    from harness.testing import ScriptedModel
+    from harness.tools.registry import domain_registry
+    async def scenario():
+        seen = []
+        model = ScriptedModel([])
+        original = model.bind_tools
+        def bind(tools, **kwargs):
+            seen.append({t['function']['name'] for t in tools})
+            return original(tools, **kwargs)
+        model.bind_tools = bind
+        async def check(): return {'usage': {'tokens': 0, 'models': 0, 'tools': 0}}
+        async def call(*args, **kwargs): return AIMessage(content='ready')
+        node = Nodes(model, domain_registry(), SimpleNamespace(settings=Settings(), check=check, model_call=call), '')
+        await node.think({'goal': {}, 'observations': [], 'messages': []})
+        assert {'read_result', 'run_python', 'recall_session', 'query_yield', 'analyze_yield', 'query_defect_yield'} <= seen[-1]
+        assert 'query_wads' not in seen[-1]
     asyncio.run(scenario())

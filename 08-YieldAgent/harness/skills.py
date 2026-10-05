@@ -37,7 +37,12 @@ class SkillCatalog:
                     resources[str(path.relative_to(source.parent))] = {'content': content,
                         'hash': hashlib.sha256(content.encode()).hexdigest()}
             self.snapshot[name] = {'name': name, 'description': str(parsed.get('description', '')),
-                'version': resources['SKILL.md']['hash'], 'resources': resources}
+                'version': resources['SKILL.md']['hash'], 'resources': resources,
+                'auto_load': parsed.get('auto_load') is True}
+
+    def auto_loaded(self):
+        return {name + '/SKILL.md': self.read(name)
+            for name, item in self.snapshot.items() if item.get('auto_load', False)}
 
     def list(self):
         return [{k: item[k] for k in ('name', 'description', 'version')} for item in self.snapshot.values()]
