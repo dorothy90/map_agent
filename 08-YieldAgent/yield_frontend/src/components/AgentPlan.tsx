@@ -3,7 +3,7 @@ import type { ExecStep } from "@/types";
 
 // 멀티에이전트 실행 타임라인 — node_complete/status 이벤트가 실시간으로 쌓인다.
 // "어느 에이전트 노드가 언제 돌았는지"를 보여 multi-agent 흐름을 검증한다.
-export function AgentPlan({ steps }: { steps: ExecStep[] }) {
+export function AgentPlan({ steps, selectedId, onSelect }: { steps: ExecStep[]; selectedId?: string; onSelect: (id: string) => void }) {
   if (steps.length === 0) return null;
   return (
     <div className="max-h-44 overflow-y-auto border-t bg-card/40 px-4 py-3">
@@ -13,7 +13,11 @@ export function AgentPlan({ steps }: { steps: ExecStep[] }) {
       </div>
       <ul className="flex flex-col gap-1.5">
         {steps.map((s) => (
-          <li key={s.id} data-state={s.state || "running"} className="flex items-center gap-2 text-sm">
+          <li key={s.id} data-state={s.state || "running"}>
+            <button type="button" disabled={!s.runId || !s.invocationId}
+              aria-label={`${s.node} 실행 상세 보기`} aria-pressed={selectedId === s.id}
+              onClick={() => onSelect(s.id)}
+              className={`flex w-full min-w-0 items-center gap-2 rounded px-1 py-1 text-left text-sm disabled:cursor-default ${selectedId === s.id ? "bg-muted ring-1 ring-primary/30" : "hover:bg-muted/60"}`}>
             {s.state === "success" ? <CheckCircle2 aria-label="완료" className="size-4 shrink-0 text-[var(--good)]" />
               : s.state === "error" ? <XCircle aria-label="실패" className="size-4 shrink-0 text-destructive" />
               : s.state === "partial" ? <CircleAlert aria-label="일부 완료" className="size-4 shrink-0 text-[var(--warn)]" />
@@ -26,6 +30,7 @@ export function AgentPlan({ steps }: { steps: ExecStep[] }) {
             <span className="rounded bg-background px-1.5 py-0.5 font-mono text-[0.6rem] tabular-nums text-muted-foreground">
               {s.elapsed.toFixed(1)}s
             </span>
+            </button>
           </li>
         ))}
       </ul>

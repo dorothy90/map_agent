@@ -4,6 +4,8 @@ import remarkGfm from "remark-gfm";
 import { Hexagon, LayoutGrid, Lightbulb, Send, Timer } from "lucide-react";
 import { AgentPlan } from "@/components/AgentPlan";
 import { ArtifactPanel } from "@/components/Artifacts";
+import { ToolDetail } from "@/components/ToolDetail";
+import { observationSteps } from "@/lib/tool-detail";
 import { HitlCard } from "@/components/Hitl";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,6 +34,8 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [chat, setChat] = useState<ChatItem[]>([]);
   const [steps, setSteps] = useState<ExecStep[]>([]);
+  const [selectedStepId, setSelectedStepId] = useState<string>();
+  const selectedStep = steps.find(step => step.id === selectedStepId);
   const [cards, setCards] = useState<CanvasCard[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -68,6 +72,7 @@ export default function App() {
         id: artifact.artifact_id, agent: artifact.agent, title: artifact.title, artifactType: artifact.artifact_type, mime: artifact.mime, data: artifact.data,
       }))));
       if (history.latest_run) {
+        setSteps(observationSteps(history.latest_run.observations || []));
         const active = ["created", "running", "waiting_user", "cancelling"].includes(history.latest_run.status) ? history.latest_run : null;
         if (active && mounted) {
           const generation = ++streamGeneration.current;
@@ -85,8 +90,13 @@ export default function App() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [chat, progress]);
   useEffect(() => {
-    canvasRef.current?.scrollTo({ top: canvasRef.current.scrollHeight, behavior: "smooth" });
-  }, [cards]);
+    if (!selectedStepId) canvasRef.current?.scrollTo({ top: canvasRef.current.scrollHeight, behavior: "smooth" });
+  }, [cards, selectedStepId]);
+
+  function selectStep(id: string) {
+    setSelectedStepId(id);
+    canvasRef.current?.scrollTo({ top: 0 });
+  }
 
   function push(item: ChatItem) {
     setChat((xs) => [...xs, item]);
@@ -137,7 +147,7 @@ export default function App() {
           if (!evt.invocation_id) break;
           setSteps((s) => {
             const id = evt.invocation_id ? `${evt.run_id}:${evt.invocation_id}` : `s${stepSeq.current++}`;
-            const step: ExecStep = { id, node: evt.node || "harness", elapsed: evt.elapsed || 0, detail: evt.message, state: evt.state || "running", parentInvocationId: evt.parent_invocation_id };
+            const step: ExecStep = { id, runId: evt.run_id, invocationId: evt.invocation_id, node: evt.node || "harness", elapsed: evt.elapsed || 0, detail: evt.message, state: evt.state || "running", parentInvocationId: evt.parent_invocation_id };
             return s.some(x => x.id === id) ? s.map(x => x.id === id ? step : x) : [...s, step];
           });
           break;
@@ -246,6 +256,7 @@ export default function App() {
 
   async function run(userText: string, resumeValue?: ResumeValue) {
     if (!sessionId || busy) return;
+    setSelectedStepId(undefined);
     if (resumeValue !== undefined) {
       setChat(items => items.map(item => item.kind === "interrupt" && !item.closed && !item.answered
         ? { ...item, answered: userText, closed: true } : item));
@@ -313,6 +324,7 @@ export default function App() {
       const id = await createSession();
       sessionStorage.setItem("yield-session", id);
       setSessionId(id); setChat([]); setCards([]); setSteps([]); setPending(false); setRunId(null); setElapsed(null); setProgress(null);
+      setSelectedStepId(undefined);
       runRevision.current = 1; interruptId.current = undefined;
     } catch { push({ kind: "error", text: "새 대화를 만들지 못했습니다." }); }
   }
@@ -442,7 +454,7 @@ export default function App() {
             )}
           </div>
 
-          <AgentPlan steps={steps} />
+          <AgentPlan steps={steps} selectedId={selectedStepId} onSelect={selectStep} />
 
           <div className="flex flex-wrap gap-2 px-4 pt-3">
             {PRESETS.map((p) => (
@@ -477,14 +489,18 @@ export default function App() {
             <span className="flex items-center gap-1.5">
               <LayoutGrid className="size-3.5" /> Artifacts
             </span>
-            {cards.length > 0 && (
+            {selectedStep ? (
+              <Button variant="outline" size="sm" className="h-6 px-2 text-[0.7rem] normal-case tracking-normal" onClick={() => setSelectedStepId(undefined)}>
+                전체 결과
+              </Button>
+            ) : cards.length > 0 && (
               <Button variant="outline" size="sm" className="h-6 px-2 text-[0.7rem] normal-case tracking-normal" onClick={() => setCards([])}>
                 지우기
               </Button>
             )}
           </div>
           <div ref={canvasRef} className="flex-1 overflow-y-auto p-5">
-            {cards.length === 0 ? (
+            {selectedStep ? <ToolDetail key={selectedStep.id} step={selectedStep} cards={cards} /> : cards.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 px-4 py-12 text-center text-sm text-muted-foreground">
                 <LayoutGrid className="size-8 opacity-30" />
                 도구가 생성한 artifact(HTML·markdown·PPTX)가 agent 별로 여기에 그려집니다

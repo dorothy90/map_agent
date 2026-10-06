@@ -61,6 +61,8 @@ export type RealStreamEvent = { event_id?: string; sequence?: number; run_id?: s
 // 좌측 멀티에이전트 실행 타임라인의 한 스텝 (node_complete/status 누적).
 export interface ExecStep {
   id: string;
+  runId?: string;
+  invocationId?: string;
   node: string;
   elapsed: number;
   detail?: string; // status 메시지
