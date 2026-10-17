@@ -1,0 +1,139 @@
+<div id="browse-collections" aria-label="날짜와 FAIL과 OPER를 함께 고르는 저널 인덱스"><div class="bc-app" data-design="journal" aria-label="저널 인덱스 화면"></div></div>
+<style>
+#browse-collections .bc-app{--bc-bg:light-dark(#fffefa,#1c1f19);--bc-side:light-dark(#f5f5ef,#24291f);--bc-ink:light-dark(#282f25,#eef0e7);--bc-muted:light-dark(#687060,#abb5a0);--bc-line:light-dark(#dfe3d6,#3e4937);--bc-accent:light-dark(#346544,#a3d0a0);--bc-active:light-dark(#e7eddf,#35462e);background:var(--bc-bg);color:var(--bc-ink);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo",sans-serif;min-height:1590px}
+#browse-collections *{box-sizing:border-box}
+#browse-collections [hidden]{display:none!important}
+#browse-collections button,#browse-collections input,#browse-collections select{font:inherit;color:inherit}
+#browse-collections button{background:transparent;border:0;padding:0;text-align:left}
+#browse-collections button:hover{color:var(--bc-accent)}
+#browse-collections button:disabled{opacity:.35}
+#browse-collections .bc-top{padding:22px 110px 22px 26px;border-bottom:1px solid var(--bc-line);display:flex;gap:22px;align-items:center;flex-wrap:wrap}
+#browse-collections .bc-logo{font:600 29px/1 Georgia,serif;letter-spacing:-1.6px}
+#browse-collections .bc-top span{font-size:11px;color:var(--bc-muted)}
+#browse-collections .bc-shell{display:grid;grid-template-columns:226px minmax(0,1fr)}
+#browse-collections .bc-sidebar{padding:24px 16px;background:var(--bc-side);border-right:1px solid var(--bc-line);min-width:0}
+#browse-collections .bc-sidebar h3{font-size:13px;margin:0 8px 17px;font-weight:600}
+#browse-collections .bc-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;border-bottom:1px solid var(--bc-line);margin-bottom:22px}
+#browse-collections .bc-tabs button{padding:10px 0;text-align:center;font-size:12px;color:var(--bc-muted);border-bottom:2px solid transparent}
+#browse-collections .bc-tabs button[aria-pressed="true"]{color:var(--bc-ink);border-color:var(--bc-ink);font-weight:600}
+#browse-collections .bc-period{padding:0 7px 22px;border-bottom:1px solid var(--bc-line);margin-bottom:18px}
+#browse-collections label{font-size:11px;color:var(--bc-muted);display:flex;flex-direction:column;gap:5px}
+#browse-collections select,#browse-collections input{background:var(--bc-bg);color:var(--bc-ink);border:1px solid var(--bc-line);padding:8px;border-radius:4px;font-size:12px;min-width:0;max-width:100%;width:100%}
+#browse-collections .bc-dateinputs{display:grid;grid-template-columns:1fr;gap:9px;margin-top:12px}
+#browse-collections .bc-dateinputs input{font-size:12px;min-height:34px}
+#browse-collections .bc-periodnote{font-size:10px;color:var(--bc-muted);margin:9px 0 0}
+#browse-collections .bc-navtitle{display:flex;justify-content:space-between;font-size:11px;color:var(--bc-muted);margin:0 8px 10px}
+#browse-collections .bc-month{margin:3px 0 8px}
+#browse-collections .bc-month>summary{padding:9px 7px;font-size:12px;border-bottom:1px solid var(--bc-line)}
+#browse-collections .bc-month>summary span{float:right;color:var(--bc-muted);font-size:10px}
+#browse-collections .bc-navitem{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:9px 9px;margin:2px 0;border-left:2px solid transparent;border-radius:3px;font-size:12px;width:100%;line-height:1.4}
+#browse-collections .bc-navitem span:last-child{font-size:10px;color:var(--bc-muted);white-space:nowrap}
+#browse-collections .bc-navitem[aria-pressed="true"]{background:var(--bc-active);color:var(--bc-accent);border-left-color:var(--bc-accent);font-weight:600}
+#browse-collections .bc-category .bc-navitem{padding:14px 10px;margin-bottom:7px}
+#browse-collections .bc-category .bc-navitem span:first-child{font-size:13px}
+#browse-collections .bc-help{font-size:11px;color:var(--bc-muted);margin:23px 8px 0;border-top:1px solid var(--bc-line);padding-top:16px;line-height:1.85}
+#browse-collections .bc-main{padding:29px 32px;min-width:0}
+#browse-collections .bc-breadcrumb{font-size:11px;color:var(--bc-muted);margin-bottom:26px;overflow-wrap:anywhere}
+#browse-collections .bc-kicker{font-size:10px;letter-spacing:1.5px;color:var(--bc-accent);margin:0 0 9px}
+#browse-collections h2{font:500 37px/1.3 Georgia,"Times New Roman",serif;letter-spacing:-1px;margin:0 0 13px;word-break:keep-all}
+#browse-collections .bc-subtitle{font-size:14px;color:var(--bc-muted);line-height:1.9;margin:0;word-break:keep-all}
+#browse-collections .bc-scope{font-size:11px;color:var(--bc-muted);padding:20px 0;border-bottom:1px solid var(--bc-line);margin:0 0 23px;display:flex;gap:15px;flex-wrap:wrap}
+#browse-collections .bc-scope strong{color:var(--bc-ink);font-weight:500}
+#browse-collections .bc-resulthead{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px}
+#browse-collections .bc-resulthead h3{font-size:15px;margin:0;font-weight:600}
+#browse-collections .bc-resulthead span{font-size:11px;color:var(--bc-muted)}
+#browse-collections .bc-lot{border-bottom:1px solid var(--bc-line);margin-top:12px}
+#browse-collections .bc-lot>summary{padding:16px 0;list-style:none;display:grid;grid-template-columns:1fr auto 15px;gap:15px;align-items:center}
+#browse-collections .bc-lot>summary::-webkit-details-marker{display:none}
+#browse-collections .bc-lotname{font:500 23px Georgia,serif;letter-spacing:-.5px}
+#browse-collections .bc-lotmeta{font-size:11px;color:var(--bc-muted);margin-top:5px;display:block}
+#browse-collections .bc-lotcount{font-size:12px;color:var(--bc-muted)}
+#browse-collections .bc-chevron{font-size:17px;color:var(--bc-muted)}
+#browse-collections .bc-chevron:after{content:'＋'}
+#browse-collections .bc-lot[open]>.bc-lothead .bc-chevron:after{content:'−'}
+#browse-collections .bc-candidate{border-top:1px solid var(--bc-line)}
+#browse-collections .bc-candidate>summary{padding:15px 0;display:grid;grid-template-columns:31px minmax(0,1fr) 15px;gap:10px;list-style:none}
+#browse-collections .bc-candidate>summary::-webkit-details-marker{display:none}
+#browse-collections .bc-rank{font:18px/1.5 Georgia,serif;color:var(--bc-muted);font-variant-numeric:tabular-nums}
+#browse-collections .bc-candidate strong{font-size:14px;font-weight:500;word-break:keep-all;line-height:1.7}
+#browse-collections .bc-candidate small{display:block;font-size:11px;color:var(--bc-muted);margin-top:5px}
+#browse-collections .bc-candidate[open]>summary .bc-chevron:after{content:'−'}
+#browse-collections .bc-evidence{margin:0 0 20px 41px;padding-left:14px;border-left:2px solid var(--bc-accent);font-size:13px;line-height:1.95;color:var(--bc-muted)}
+#browse-collections .bc-evidence strong{display:block;color:var(--bc-ink);font-size:12px;font-weight:500;margin-bottom:8px}
+#browse-collections .bc-pagination{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin:23px 0;font-size:11px;color:var(--bc-muted)}
+#browse-collections .bc-pagination div{display:flex;gap:20px}
+#browse-collections .bc-footer{border-top:1px solid var(--bc-line);padding-top:18px;margin-top:27px;font-size:10px;color:var(--bc-muted);line-height:1.9}
+#browse-collections .bc-empty{font-size:13px;color:var(--bc-muted);padding:25px 0}
+#browse-collections .bc-alert{font-size:12px;color:var(--bc-ink);border-left:2px solid var(--bc-accent);padding:10px;margin:10px 0}
+@media(max-width:800px){#browse-collections [data-design] .bc-shell{grid-template-columns:190px minmax(0,1fr)}#browse-collections [data-design] .bc-main{padding:25px 20px}#browse-collections [data-design] .bc-sidebar{padding:23px 12px}#browse-collections .bc-reading{grid-template-columns:1fr}#browse-collections .bc-readinglist{border-right:0;padding:0}#browse-collections .bc-app{min-height:2100px}}
+@media(max-width:520px){#browse-collections [data-design] .bc-shell{grid-template-columns:1fr}#browse-collections .bc-sidebar{border-right:0;border-bottom:1px solid var(--bc-line)}#browse-collections .bc-dateinputs{grid-template-columns:1fr 1fr}#browse-collections .bc-monthnav{display:grid;grid-template-columns:1fr 1fr;gap:3px}#browse-collections .bc-category{display:grid;grid-template-columns:1fr 1fr;gap:6px}#browse-collections .bc-category .bc-navitem{flex-direction:column;align-items:start}#browse-collections .bc-help{display:none}#browse-collections .bc-top span{display:none}#browse-collections h2,#browse-collections [data-design="reader"] h2{font-size:31px}#browse-collections .bc-app{min-height:2650px}}
+@media(pointer:coarse){#browse-collections button,#browse-collections select,#browse-collections input,#browse-collections summary{min-height:44px}}
+</style>
+<style>
+#browse-collections .bc-app{min-height:1650px}
+#browse-collections .bc-sidebar h3{margin-bottom:7px}
+#browse-collections .bc-sidebarintro{font-size:11px;color:var(--bc-muted);margin:0 8px 23px}
+#browse-collections .bc-filtersection{margin:0 7px 20px;padding:0 0 17px;border:0;border-bottom:1px solid var(--bc-line);min-width:0}
+#browse-collections .bc-filtersection>summary{display:flex;justify-content:space-between;align-items:center;gap:10px;list-style:none;font-size:12px;padding:3px 0}
+#browse-collections .bc-filtersection>summary::-webkit-details-marker{display:none}
+#browse-collections .bc-filtersection>summary small{display:block;font-size:10px;color:var(--bc-muted);margin-top:4px;font-weight:400}
+#browse-collections .bc-filtersection>summary .bc-filterarrow{font-size:15px;color:var(--bc-muted)}
+#browse-collections .bc-filterarrow:after{content:'＋'}
+#browse-collections .bc-filtersection[open]>summary .bc-filterarrow:after{content:'−'}
+#browse-collections .bc-filtersection[open] .bc-checks{padding-top:10px}
+#browse-collections .bc-checks{clear:both;display:grid;gap:5px}
+#browse-collections .bc-check{display:flex;flex-direction:row;align-items:center;gap:8px;padding:5px 0;color:var(--bc-ink);font-size:12px;width:100%}
+#browse-collections .bc-check input{width:14px;height:14px;min-height:0;padding:0;margin:0;accent-color:var(--bc-accent);flex-shrink:0}
+#browse-collections .bc-check small{margin-left:auto;font-size:10px;color:var(--bc-muted)}
+#browse-collections .bc-filterhint{font-size:10px;color:var(--bc-muted);margin:9px 0 0}
+#browse-collections .bc-navtitle{margin-top:20px}
+#browse-collections .bc-selectedfilters{display:flex;gap:7px;flex-wrap:wrap;padding:0 0 18px;border-bottom:1px solid var(--bc-line);margin:0 0 22px;align-items:center}
+#browse-collections .bc-chip{font-size:11px;border:1px solid var(--bc-line);border-radius:4px;padding:6px 9px;background:var(--bc-side)}
+#browse-collections .bc-chip span{color:var(--bc-muted);margin-left:9px}
+#browse-collections .bc-chip:hover{border-color:var(--bc-accent)}
+#browse-collections .bc-reset{margin-left:auto;font-size:11px;color:var(--bc-muted);padding:8px 0}
+#browse-collections .bc-conditionlabel{font-size:11px;color:var(--bc-muted);margin:0 0 11px}
+#browse-collections .bc-scope{margin-bottom:20px}
+#browse-collections .bc-empty strong{display:block;color:var(--bc-ink);font-weight:500;font-size:15px;margin-bottom:10px}
+#browse-collections .bc-empty button{display:block;font-size:12px;color:var(--bc-accent);margin-top:17px}
+#browse-collections .bc-dateinputs{grid-template-columns:1fr}
+#browse-collections .bc-navitem[aria-pressed="true"]{font-weight:600}
+#browse-collections .bc-resulthead .bc-count{font-variant-numeric:tabular-nums}
+@media(max-width:520px){#browse-collections .bc-filtersection{margin-bottom:15px}#browse-collections .bc-checks{grid-template-columns:1fr 1fr;gap:5px 18px}#browse-collections .bc-dateinputs{grid-template-columns:1fr 1fr}#browse-collections .bc-reset{margin-left:0}#browse-collections .bc-app{min-height:2450px}}
+@media(pointer:coarse){#browse-collections .bc-check{min-height:44px}#browse-collections .bc-check input{min-height:0;width:16px;height:16px}}
+</style>
+<script>
+(()=>{
+const host=document.getElementById('browse-collections'),app=host.querySelector('.bc-app');
+const dates=[10,11,12].flatMap(m=>Array.from({length:30},(_,i)=>`2026-${m}-${String(30-i).padStart(2,'0')}`));
+const fails=['OPEN','SHORT'],opers=['ETCH-120','CVD-210','CMP-340'];
+const titles=['챔버 압력 편차','공정 온도 편차','처리 시간 편차','장비 간 조건 차이','직전 공정 이력 차이','챔버별 처리 조건 차이','공정 간 대기 시간 편차'];
+const all=dates.flatMap((date,seed)=>Array.from({length:30},(_,i)=>({id:date+'-'+(i+1),date,rank:i+1,lot:`L${date.slice(5,7)}${['A','B','C'][Math.floor(i/10)]}${date.slice(8).padStart(3,'0')}`,fail:fails[(i+seed)%2],oper:opers[(i+seed)%3],title:titles[(i+seed)%titles.length]})));
+const saved=window.openai?.widgetState?.privateContent?.journalFilters||{};
+const s={preset:'10',start:'2026-10-01',end:'2026-10-30',date:'2026-10-30',fails:['OPEN'],opers:['ETCH-120'],page:0,expanded:[10],filterOpen:{fails:false,opers:false},...saved};
+const option=(v,selected,label=v)=>`<option value="${v}" ${v===selected?'selected':''}>${label}</option>`;
+function keep(){window.openai?.setWidgetState?.({modelContent:{journalFilters:s},privateContent:{journalFilters:s}}).catch(()=>{});}
+function inPeriod(c){return c.date>=s.start&&c.date<=s.end;}
+function match(c,ignore){return inPeriod(c)&&(ignore==='date'||!s.date||c.date===s.date)&&(ignore==='fail'||!s.fails.length||s.fails.includes(c.fail))&&(ignore==='oper'||!s.opers.length||s.opers.includes(c.oper));}
+function normalize(){s.fails=s.fails.filter(f=>fails.includes(f));s.opers=s.opers.filter(o=>opers.includes(o));if(s.date&&(!dates.includes(s.date)||s.date<s.start||s.date>s.end))s.date=null;}
+function checkbox(field,value,count){return `<label class="bc-check cursor-interaction"><input type="checkbox" data-filter="${field}" value="${value}" ${s[field].includes(value)?'checked':''}><span>${value}</span><small>${count}개</small></label>`;}
+function filterSection(field,label,values,ignore){const chosen=s[field],summary=!chosen.length||chosen.length===values.length?'전체':chosen.length===1?chosen[0]:chosen.length+'개 선택';return `<details class="bc-filtersection" data-filtersection="${field}" ${s.filterOpen[field]?'open':''}><summary class="cursor-interaction"><span>${label}<small>${summary}</small></span><span class="bc-filterarrow" aria-hidden="true"></span></summary><div class="bc-checks" role="group" aria-label="${label} 복수 선택">${values.map(v=>checkbox(field,v,all.filter(c=>match(c,ignore)&&c[ignore]===v).length)).join('')}</div><p class="bc-filterhint">선택하지 않으면 전체 ${label}</p></details>`;}
+function sidebar(){const available=dates.filter(d=>d>=s.start&&d<=s.end),dateMatches=all.filter(c=>match(c,'date'));
+return `<aside class="bc-sidebar"><h3>마이닝 아카이브</h3><p class="bc-sidebarintro">날짜 · FAIL · OPER 함께 선택</p><div class="bc-period"><label>조회 기간<select data-field="preset">${option('all',s.preset,'10~12월 전체')}${[10,11,12].map(m=>option(String(m),s.preset,m+'월')).join('')}${option('custom',s.preset,'직접 지정')}</select></label><div class="bc-dateinputs" ${s.preset==='custom'?'':'hidden'}><label>시작일<input type="date" data-field="start" value="${s.start}" min="2026-10-01" max="2026-12-30"></label><label>종료일<input type="date" data-field="end" value="${s.end}" min="2026-10-01" max="2026-12-30"></label></div><p class="bc-periodnote">${s.start.replaceAll('-','.')} — ${s.end.replaceAll('-','.')}</p></div>${filterSection('fails','FAIL',fails,'fail')}${filterSection('opers','OPER',opers,'oper')}<div class="bc-navtitle"><span>날짜</span><span>${available.length}일</span></div><button type="button" class="bc-navitem" data-date="all" aria-pressed="${!s.date}"><span>기간 내 모든 날짜</span><span>${dateMatches.length}개</span></button>${[10,11,12].filter(m=>available.some(d=>Number(d.slice(5,7))===m)).map(m=>`<details class="bc-month" data-month="${m}" ${s.expanded.includes(m)?'open':''}><summary class="cursor-interaction">2026년 ${m}월 <span>${available.filter(d=>Number(d.slice(5,7))===m).length}일</span></summary><nav class="bc-monthnav" aria-label="${m}월 날짜 선택">${available.filter(d=>Number(d.slice(5,7))===m).map(d=>`<button type="button" class="bc-navitem" data-date="${d}" aria-pressed="${s.date===d}"><span>${m}월 ${Number(d.slice(8))}일</span><span>${dateMatches.filter(c=>c.date===d).length}개</span></button>`).join('')}</nav></details>`).join('')}<p class="bc-help">날짜·FAIL·OPER 조건을 모두 만족하는 후보를 표시합니다.<br><br>같은 항목에서 여러 개를 고르면 선택한 값 중 하나에 해당하는 후보를 표시합니다.<br><br>옆 숫자는 다른 조건을 적용했을 때의 후보 수입니다.</p></aside>`;}
+function chip(kind,value,label){return `<button type="button" class="bc-chip" data-remove="${kind}" data-value="${value}" aria-label="${label} 조건 해제">${label}<span aria-hidden="true">×</span></button>`;}
+function chips(){const periodLabel=s.preset==='all'?'10~12월 전체':s.preset==='custom'?s.start.slice(5)+' — '+s.end.slice(5):s.preset+'월';return `<p class="bc-conditionlabel">적용 중인 조건 · 각 항목을 눌러 해제</p><div class="bc-selectedfilters">${chip('period','all','기간 '+periodLabel)}${s.date?chip('date',s.date,'날짜 '+s.date.slice(5).replace('-','.')):''}${s.fails.map(f=>chip('fails',f,'FAIL '+f)).join('')}${s.opers.map(o=>chip('opers',o,'OPER '+o)).join('')}<button type="button" class="bc-reset" data-reset="all">전체 초기화</button></div>`;}
+function evidence(c){return `<div class="bc-evidence"><strong>후보 선정 근거 · 예시</strong>${c.date}의 ${c.lot}에서 ${c.fail} 결과와 ${c.oper} 공정 조건을 함께 확인할 후보입니다. ${c.title}를 검토하는 상황을 가정했습니다.<br><br>실제 화면에서는 mining agent가 반환한 분석 근거를 표시합니다.</div>`;}
+function candidate(c){return `<details class="bc-candidate" data-candidate-id="${c.id}"><summary class="cursor-interaction"><span class="bc-rank">${String(c.rank).padStart(2,'0')}</span><span><strong>${c.title}</strong><small>${c.date.slice(5).replace('-','.')} &nbsp;·&nbsp; ${c.fail} &nbsp;·&nbsp; ${c.oper}</small></span><span class="bc-chevron" aria-hidden="true"></span></summary>${evidence(c)}</details>`;}
+function collections(lots,rows){return lots.map((l,i)=>{const list=rows.filter(c=>c.lot===l);return `<details class="bc-lot" ${i===0?'open':''}><summary class="bc-lothead cursor-interaction"><span><strong class="bc-lotname">${l}</strong><small class="bc-lotmeta">${list[0].date} · ${[...new Set(list.map(c=>c.fail))].join(' / ')} · ${[...new Set(list.map(c=>c.oper))].join(' / ')}</small></span><span class="bc-lotcount">${list.length}개 후보</span><span class="bc-chevron" aria-hidden="true"></span></summary>${list.map(candidate).join('')}</details>`;}).join('');}
+function render(){normalize();const rows=all.filter(c=>match(c)),base=all.filter(c=>inPeriod(c)&&(!s.date||c.date===s.date)),lots=[...new Set(rows.map(c=>c.lot))],pages=Math.ceil(lots.length/6);s.page=Math.max(0,Math.min(s.page,pages-1));const pageLots=lots.slice(s.page*6,s.page*6+6),pageRows=rows.filter(c=>pageLots.includes(c.lot));const title=s.date?`${Number(s.date.slice(5,7))}월 ${Number(s.date.slice(8))}일의 기록`:'조건으로 모아 읽는 기록';
+app.innerHTML=`<header class="bc-top"><div class="bc-logo">mining.</div><span>The collection journal</span></header><div class="bc-shell">${sidebar()}<main class="bc-main"><div class="bc-breadcrumb">Archive &nbsp;/&nbsp; LOT Collection &nbsp;/&nbsp; ${s.date||'기간 내 모든 날짜'}</div><p class="bc-kicker">THE COLLECTION JOURNAL</p><h2>${title}</h2><p class="bc-subtitle">날짜와 FAIL, 공정 조건을 겹쳐 살펴봅니다.<br>선택한 조건의 후보를 LOT별로 모았습니다.</p><div class="bc-scope"><span>조회 기간 <strong>${s.start.slice(5).replace('-','.')} — ${s.end.slice(5).replace('-','.')}</strong></span><span><strong>${lots.length}</strong> LOT</span><span><strong>${rows.length}</strong>개 후보 / ${base.length}개</span></div>${chips()}${s.start>s.end?'<p class="bc-alert" role="alert">종료일을 시작일 이후로 선택해주세요.</p>':''}<div class="bc-resulthead"><h3>LOT 컬렉션</h3><span class="bc-count" aria-live="polite">${rows.length}개 후보 · 날짜 내림차순, LOT별 RANK 순</span></div>${rows.length?collections(pageLots,pageRows):'<div class="bc-empty"><strong>선택한 조건에 맞는 후보가 없습니다.</strong>상단의 조건을 하나씩 해제하거나 조회 기간을 넓혀보세요.<button type="button" data-reset="filters">현재 기간에서 모든 후보 보기 →</button></div>'}${pageLots.length?`<div class="bc-pagination"><span>${s.page*6+1}–${Math.min(s.page*6+6,lots.length)} / ${lots.length} LOT · 이 페이지 ${pageRows.length}개 후보</span><div><button type="button" data-page="-1" ${s.page===0?'disabled':''}>← 이전</button><button type="button" data-page="1" ${s.page+1>=pages?'disabled':''}>다음 →</button></div></div>`:''}<footer class="bc-footer">2026년 10~12월 · 매월 30일 · 날짜마다 30개 후보<br>모든 결과와 분석 근거는 목업용 예시입니다.</footer></main></div>`;
+app.querySelectorAll('button').forEach(b=>b.classList.add('cursor-interaction'));
+app.querySelectorAll('[data-filtersection]').forEach(el=>el.addEventListener('toggle',()=>{if(!el.isConnected)return;const field=el.dataset.filtersection;if(s.filterOpen[field]!==el.open){s.filterOpen[field]=el.open;keep();}}));
+app.querySelectorAll('.bc-month').forEach(el=>el.addEventListener('toggle',()=>{const m=Number(el.dataset.month);if(el.open&&!s.expanded.includes(m)){s.expanded.push(m);keep();}else if(!el.open&&s.expanded.includes(m)){s.expanded=s.expanded.filter(x=>x!==m);keep();}}));}
+render();
+app.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;let resetPage=true;if(b.dataset.date)s.date=b.dataset.date==='all'?null:b.dataset.date;if(b.dataset.remove){const field=b.dataset.remove;if(field==='period'){s.preset='all';s.start='2026-10-01';s.end='2026-12-30';}else if(field==='date')s.date=null;else s[field]=s[field].filter(v=>v!==b.dataset.value);}if(b.dataset.reset){s.date=null;s.fails=[];s.opers=[];if(b.dataset.reset==='all'){s.preset='all';s.start='2026-10-01';s.end='2026-12-30';}}if(b.dataset.page){s.page+=Number(b.dataset.page);resetPage=false;}if(resetPage)s.page=0;render();keep();});
+app.addEventListener('change',e=>{const target=e.target;if(target.dataset.filter){const f=target.dataset.filter;s[f]=target.checked?[...new Set([...s[f],target.value])]:s[f].filter(v=>v!==target.value);}else if(target.dataset.field){const f=target.dataset.field;if(f==='preset'){s.preset=target.value;if(s.preset==='all'){s.start='2026-10-01';s.end='2026-12-30';}else if(s.preset!=='custom'){s.start=`2026-${s.preset}-01`;s.end=`2026-${s.preset}-30`;s.expanded=[Number(s.preset)];}}else{s[f]=target.value;s.preset='custom';}}else return;s.page=0;render();keep();});
+window.addEventListener('openai:set_globals',e=>{const updated=e.detail?.globals?.widgetState?.privateContent?.journalFilters;if(updated){Object.assign(s,updated);render();}});
+if(globalThis.Tweak){const settings={width:226};const t=new Tweak({container:app,onChange:()=>{const shell=app.querySelector('.bc-shell');if(shell)shell.style.gridTemplateColumns=settings.width+'px minmax(0,1fr)';}});t.addSlider(settings,'width',{label:'조건 사이드바 너비',min:210,max:280,step:5,unit:'px'});}
+})();
+</script>
