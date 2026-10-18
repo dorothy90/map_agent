@@ -1,4 +1,6 @@
-<div id="browse-collections" aria-label="날짜와 FAIL과 OPER를 함께 고르는 저널 인덱스"><div class="bc-app" data-design="journal" aria-label="저널 인덱스 화면"></div></div>
+<div id="browse-collections" aria-label="마이닝 저널">
+<section data-variant="저널형" aria-label="저널형"><div class="bc-app" data-design="filters" aria-label="저널형 화면"></div></section>
+</div>
 <style>
 #browse-collections .bc-app{--bc-bg:light-dark(#fffefa,#1c1f19);--bc-side:light-dark(#f5f5ef,#24291f);--bc-ink:light-dark(#282f25,#eef0e7);--bc-muted:light-dark(#687060,#abb5a0);--bc-line:light-dark(#dfe3d6,#3e4937);--bc-accent:light-dark(#346544,#a3d0a0);--bc-active:light-dark(#e7eddf,#35462e);background:var(--bc-bg);color:var(--bc-ink);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo",sans-serif;min-height:1590px}
 #browse-collections *{box-sizing:border-box}
@@ -68,6 +70,31 @@
 @media(max-width:800px){#browse-collections [data-design] .bc-shell{grid-template-columns:190px minmax(0,1fr)}#browse-collections [data-design] .bc-main{padding:25px 20px}#browse-collections [data-design] .bc-sidebar{padding:23px 12px}#browse-collections .bc-reading{grid-template-columns:1fr}#browse-collections .bc-readinglist{border-right:0;padding:0}#browse-collections .bc-app{min-height:2100px}}
 @media(max-width:520px){#browse-collections [data-design] .bc-shell{grid-template-columns:1fr}#browse-collections .bc-sidebar{border-right:0;border-bottom:1px solid var(--bc-line)}#browse-collections .bc-dateinputs{grid-template-columns:1fr 1fr}#browse-collections .bc-monthnav{display:grid;grid-template-columns:1fr 1fr;gap:3px}#browse-collections .bc-category{display:grid;grid-template-columns:1fr 1fr;gap:6px}#browse-collections .bc-category .bc-navitem{flex-direction:column;align-items:start}#browse-collections .bc-help{display:none}#browse-collections .bc-top span{display:none}#browse-collections h2,#browse-collections [data-design="reader"] h2{font-size:31px}#browse-collections .bc-app{min-height:2650px}}
 @media(pointer:coarse){#browse-collections button,#browse-collections select,#browse-collections input,#browse-collections summary{min-height:44px}}
+
+#browse-collections .bc-app{min-height:0}
+#browse-collections .of-candidate{padding:24px 0;border-bottom:1px solid var(--bc-line)}
+#browse-collections .of-candidatehead{display:flex;align-items:flex-start;gap:16px}
+#browse-collections .of-rank{font-family:Georgia,serif;font-size:22px;line-height:1.3;color:var(--bc-muted);min-width:28px;font-variant-numeric:tabular-nums}
+#browse-collections .of-candidate h3{font-size:17px;line-height:1.5;font-weight:500;margin:0;color:var(--bc-ink)}
+#browse-collections .of-meta{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12px;color:var(--bc-muted);margin:7px 0 0}
+#browse-collections .of-body{margin:15px 0 0 44px}
+#browse-collections .of-evidencelabel{font-size:11px;color:var(--bc-muted)}
+#browse-collections .of-body p{font-size:14px;line-height:1.85;margin:5px 0 0;color:var(--bc-ink);max-width:650px}
+#browse-collections [data-design="sheet"] .of-candidate{display:grid;grid-template-columns:minmax(190px,1fr) minmax(220px,1.3fr);gap:28px;padding:23px 0}
+#browse-collections [data-design="sheet"] .of-body{margin:0}
+#browse-collections [data-design="review"] .of-list{display:grid;gap:14px}
+#browse-collections [data-design="review"] .of-candidate{border:1px solid var(--bc-line);border-radius:8px;padding:20px 22px;background:var(--bc-bg)}
+#browse-collections .of-pick{margin-left:auto;white-space:nowrap;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--bc-muted)}
+#browse-collections .of-pick input{width:14px;height:14px;accent-color:var(--bc-accent)}
+#browse-collections [data-design="review"] .of-selected{border-color:var(--bc-accent);background:var(--bc-hint)}
+#browse-collections .of-pagenumber{font-size:12px;color:var(--bc-muted)}
+#browse-collections .bc-pagination>div{display:flex;align-items:center;gap:20px}
+@media(max-width:800px){#browse-collections [data-design="sheet"] .of-candidate{grid-template-columns:1fr;gap:0}#browse-collections [data-design="sheet"] .of-body{margin:15px 0 0 44px}}
+@media(max-width:520px){#browse-collections .of-pick{font-size:11px}#browse-collections .of-candidatehead{gap:10px;flex-wrap:wrap}#browse-collections .of-body{margin-left:0}#browse-collections [data-design="sheet"] .of-body{margin-left:0}#browse-collections .bc-pagination{flex-wrap:wrap;gap:15px}}
+#browse-collections .of-toppages{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:0 0 10px;font-size:12px;color:var(--bc-muted)}
+#browse-collections .of-toppages>div{display:flex;align-items:center;gap:18px}
+#browse-collections .of-toppages button{padding:5px 0}
+#browse-collections .of-toppages button:disabled{opacity:.35}
 </style>
 <style>
 #browse-collections .bc-app{min-height:1650px}
@@ -101,39 +128,323 @@
 #browse-collections .bc-resulthead .bc-count{font-variant-numeric:tabular-nums}
 @media(max-width:520px){#browse-collections .bc-filtersection{margin-bottom:15px}#browse-collections .bc-checks{grid-template-columns:1fr 1fr;gap:5px 18px}#browse-collections .bc-dateinputs{grid-template-columns:1fr 1fr}#browse-collections .bc-reset{margin-left:0}#browse-collections .bc-app{min-height:2450px}}
 @media(pointer:coarse){#browse-collections .bc-check{min-height:44px}#browse-collections .bc-check input{min-height:0;width:16px;height:16px}}
+
+#browse-collections .bc-app{min-height:0}
+#browse-collections .of-candidate{padding:24px 0;border-bottom:1px solid var(--bc-line)}
+#browse-collections .of-candidatehead{display:flex;align-items:flex-start;gap:16px}
+#browse-collections .of-rank{font-family:Georgia,serif;font-size:22px;line-height:1.3;color:var(--bc-muted);min-width:28px;font-variant-numeric:tabular-nums}
+#browse-collections .of-candidate h3{font-size:17px;line-height:1.5;font-weight:500;margin:0;color:var(--bc-ink)}
+#browse-collections .of-meta{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12px;color:var(--bc-muted);margin:7px 0 0}
+#browse-collections .of-body{margin:15px 0 0 44px}
+#browse-collections .of-evidencelabel{font-size:11px;color:var(--bc-muted)}
+#browse-collections .of-body p{font-size:14px;line-height:1.85;margin:5px 0 0;color:var(--bc-ink);max-width:650px}
+#browse-collections [data-design="sheet"] .of-candidate{display:grid;grid-template-columns:minmax(190px,1fr) minmax(220px,1.3fr);gap:28px;padding:23px 0}
+#browse-collections [data-design="sheet"] .of-body{margin:0}
+#browse-collections [data-design="review"] .of-list{display:grid;gap:14px}
+#browse-collections [data-design="review"] .of-candidate{border:1px solid var(--bc-line);border-radius:8px;padding:20px 22px;background:var(--bc-bg)}
+#browse-collections .of-pick{margin-left:auto;white-space:nowrap;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--bc-muted)}
+#browse-collections .of-pick input{width:14px;height:14px;accent-color:var(--bc-accent)}
+#browse-collections [data-design="review"] .of-selected{border-color:var(--bc-accent);background:var(--bc-hint)}
+#browse-collections .of-pagenumber{font-size:12px;color:var(--bc-muted)}
+#browse-collections .bc-pagination>div{display:flex;align-items:center;gap:20px}
+@media(max-width:800px){#browse-collections [data-design="sheet"] .of-candidate{grid-template-columns:1fr;gap:0}#browse-collections [data-design="sheet"] .of-body{margin:15px 0 0 44px}}
+@media(max-width:520px){#browse-collections .of-pick{font-size:11px}#browse-collections .of-candidatehead{gap:10px;flex-wrap:wrap}#browse-collections .of-body{margin-left:0}#browse-collections [data-design="sheet"] .of-body{margin-left:0}#browse-collections .bc-pagination{flex-wrap:wrap;gap:15px}}
+#browse-collections .of-toppages{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:0 0 10px;font-size:12px;color:var(--bc-muted)}
+#browse-collections .of-toppages>div{display:flex;align-items:center;gap:18px}
+#browse-collections .of-toppages button{padding:5px 0}
+#browse-collections .of-toppages button:disabled{opacity:.35}
+</style>
+<style>
+#browse-collections .bc-app{min-height:0}
+#browse-collections .bc-top{padding-top:17px;padding-bottom:17px}
+#browse-collections .bc-main{padding-top:23px}
+#browse-collections .bc-heading{display:flex;justify-content:space-between;align-items:center;gap:15px;flex-wrap:wrap;margin-bottom:20px}
+#browse-collections .bc-kicker{font-size:10px;margin:0 0 6px}
+#browse-collections h2{font-size:30px;margin:0 0 7px;line-height:1.25}
+#browse-collections .bc-context{font-size:11px;color:var(--bc-muted);margin:0;line-height:1.8}
+#browse-collections .bc-dayall{font-size:11px;padding:8px 11px;border:1px solid var(--bc-line);border-radius:4px;color:var(--bc-accent);background:var(--bc-bg);white-space:nowrap}
+#browse-collections .bc-dayall:hover{border-color:var(--bc-accent)}
+#browse-collections .bc-dayall:disabled{color:var(--bc-muted)}
+#browse-collections .bc-resulthead{padding:13px 0 12px;margin-bottom:0;border-top:1px solid var(--bc-line)}
+#browse-collections .bc-resulthead h3{font-size:14px;font-weight:500}
+#browse-collections .bc-resulthead .bc-total{font-size:12px;color:var(--bc-accent);margin-left:7px}
+#browse-collections .bc-resulthead>span{font-size:10px}
+#browse-collections .bc-columns,#browse-collections .bc-candidate>summary{display:grid;grid-template-columns:31px minmax(125px,1fr) 88px 49px 76px 15px;gap:10px;align-items:center}
+#browse-collections .bc-columns{padding:10px 0;border-top:1px solid var(--bc-line);font-size:10px;color:var(--bc-muted)}
+#browse-collections .bc-candidate>summary{padding:12px 0;min-height:48px}
+#browse-collections .bc-fields{display:contents}
+#browse-collections .bc-titlecell strong{font-size:13px;font-weight:500;line-height:1.6}
+#browse-collections .bc-candidate small{font-size:10px;margin:4px 0 0}
+#browse-collections .bc-lotcell,#browse-collections .bc-failcell,#browse-collections .bc-opercell{font-size:11px;color:var(--bc-muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+#browse-collections .bc-rank{font-size:16px;line-height:1.5}
+#browse-collections .bc-chevron{font-size:14px;text-align:right}
+#browse-collections .bc-selectedfilters{padding:0 0 13px;margin:0;border-bottom:0}
+#browse-collections .bc-conditionlabel{margin:0 4px 0 0;font-size:10px}
+#browse-collections .bc-chip{font-size:10px;padding:4px 7px}
+#browse-collections .bc-evidence{margin:2px 0 17px 41px;font-size:13px}
+#browse-collections .bc-pagination{padding-top:15px;border-top:1px solid var(--bc-line);margin-top:0}
+#browse-collections .bc-footer{margin-top:20px}
+@media(max-width:800px){#browse-collections .bc-columns,#browse-collections .bc-candidate>summary{grid-template-columns:26px minmax(100px,1fr) 79px 43px 69px 13px;gap:6px}#browse-collections .bc-lotcell,#browse-collections .bc-failcell,#browse-collections .bc-opercell{font-size:10px}#browse-collections .bc-resulthead>span{display:none}}
+@media(max-width:520px){#browse-collections .bc-columns{display:none}#browse-collections .bc-candidate>summary{grid-template-columns:26px minmax(0,1fr) 15px;gap:5px 9px;padding:12px 0}#browse-collections .bc-fields{display:flex;gap:10px;flex-wrap:wrap;grid-column:2;grid-row:2}#browse-collections .bc-titlecell{grid-column:2;grid-row:1}#browse-collections .bc-rank{grid-column:1;grid-row:1}#browse-collections .bc-candidate>summary>.bc-chevron{grid-column:3;grid-row:1}#browse-collections h2{font-size:27px}#browse-collections .bc-app{min-height:0}}
+
+#browse-collections .bc-app{min-height:0}
+#browse-collections .of-candidate{padding:24px 0;border-bottom:1px solid var(--bc-line)}
+#browse-collections .of-candidatehead{display:flex;align-items:flex-start;gap:16px}
+#browse-collections .of-rank{font-family:Georgia,serif;font-size:22px;line-height:1.3;color:var(--bc-muted);min-width:28px;font-variant-numeric:tabular-nums}
+#browse-collections .of-candidate h3{font-size:17px;line-height:1.5;font-weight:500;margin:0;color:var(--bc-ink)}
+#browse-collections .of-meta{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12px;color:var(--bc-muted);margin:7px 0 0}
+#browse-collections .of-body{margin:15px 0 0 44px}
+#browse-collections .of-evidencelabel{font-size:11px;color:var(--bc-muted)}
+#browse-collections .of-body p{font-size:14px;line-height:1.85;margin:5px 0 0;color:var(--bc-ink);max-width:650px}
+#browse-collections [data-design="sheet"] .of-candidate{display:grid;grid-template-columns:minmax(190px,1fr) minmax(220px,1.3fr);gap:28px;padding:23px 0}
+#browse-collections [data-design="sheet"] .of-body{margin:0}
+#browse-collections [data-design="review"] .of-list{display:grid;gap:14px}
+#browse-collections [data-design="review"] .of-candidate{border:1px solid var(--bc-line);border-radius:8px;padding:20px 22px;background:var(--bc-bg)}
+#browse-collections .of-pick{margin-left:auto;white-space:nowrap;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--bc-muted)}
+#browse-collections .of-pick input{width:14px;height:14px;accent-color:var(--bc-accent)}
+#browse-collections [data-design="review"] .of-selected{border-color:var(--bc-accent);background:var(--bc-hint)}
+#browse-collections .of-pagenumber{font-size:12px;color:var(--bc-muted)}
+#browse-collections .bc-pagination>div{display:flex;align-items:center;gap:20px}
+@media(max-width:800px){#browse-collections [data-design="sheet"] .of-candidate{grid-template-columns:1fr;gap:0}#browse-collections [data-design="sheet"] .of-body{margin:15px 0 0 44px}}
+@media(max-width:520px){#browse-collections .of-pick{font-size:11px}#browse-collections .of-candidatehead{gap:10px;flex-wrap:wrap}#browse-collections .of-body{margin-left:0}#browse-collections [data-design="sheet"] .of-body{margin-left:0}#browse-collections .bc-pagination{flex-wrap:wrap;gap:15px}}
+#browse-collections .of-toppages{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:0 0 10px;font-size:12px;color:var(--bc-muted)}
+#browse-collections .of-toppages>div{display:flex;align-items:center;gap:18px}
+#browse-collections .of-toppages button{padding:5px 0}
+#browse-collections .of-toppages button:disabled{opacity:.35}
+</style>
+<style>
+#browse-collections .bc-app{--bc-bg:light-dark(#fefefb,#1b1e19);--bc-side:light-dark(#f4f5f0,#232820);--bc-ink:light-dark(#22291f,#f0f1e9);--bc-muted:light-dark(#596351,#b6bfad);--bc-line:light-dark(#d1d7c9,#47503f);--bc-accent:light-dark(#326044,#abd1a8);--bc-active:light-dark(#e5ecdd,#35482e);--bc-rowline:light-dark(#e9ece3,#353e2e);--bc-hint:light-dark(#f3f6ee,#293324)}
+#browse-collections .bc-shell{grid-template-columns:224px minmax(0,1fr)}
+#browse-collections .bc-main{max-width:900px;width:100%;margin-inline:auto;padding:25px 32px}
+#browse-collections .bc-top{padding-top:18px;padding-bottom:18px}
+#browse-collections .bc-logo{font-size:30px;letter-spacing:-1.5px}
+#browse-collections .bc-top>span{font-size:12px}
+#browse-collections .bc-heading{margin-bottom:20px;align-items:center}
+#browse-collections h2{font-family:"Iowan Old Style","AppleMyungjo","Noto Serif KR",serif;font-size:32px;letter-spacing:-1.1px;line-height:1.35;margin-bottom:7px}
+#browse-collections .bc-context{font-size:12px;line-height:1.7}
+#browse-collections .bc-dayall{font-size:12px;padding:8px 12px;background:transparent;border-color:var(--bc-line)}
+#browse-collections .bc-resulthead{border-top:1px solid var(--bc-line);padding:14px 0}
+#browse-collections .bc-resulthead h3{font-size:15px;letter-spacing:-.3px}
+#browse-collections .bc-resulthead .bc-total{font-size:13px}
+#browse-collections .bc-resulthead>span{font-size:11px}
+#browse-collections .bc-columns,#browse-collections .bc-candidate>summary{grid-template-columns:30px minmax(150px,1fr) 96px 58px 84px 14px;gap:10px}
+#browse-collections .bc-columns{font-size:11px;border-top:0;border-bottom:1px solid var(--bc-line);padding:8px 0 11px}
+#browse-collections .bc-candidate{border-top:0;border-bottom:1px solid var(--bc-rowline)}
+#browse-collections .bc-candidate>summary{padding:12px 0;min-height:48px;line-height:1.5}
+#browse-collections .bc-titlecell strong{font-size:15px;font-weight:500;letter-spacing:-.35px;color:var(--bc-ink);line-height:1.5}
+#browse-collections .bc-rank{font-size:15px;color:var(--bc-muted)}
+#browse-collections .bc-lotcell,#browse-collections .bc-failcell,#browse-collections .bc-opercell{font-size:12px;letter-spacing:-.15px;color:var(--bc-muted)}
+#browse-collections .bc-chevron{font-size:14px;opacity:.8}
+#browse-collections .bc-candidate>summary:hover{background:var(--bc-hint)}
+#browse-collections .bc-candidate[open]>summary{background:var(--bc-hint)}
+#browse-collections .bc-candidate[open] .bc-titlecell strong{color:var(--bc-accent)}
+#browse-collections .bc-evidence{margin:5px 0 20px 40px;max-width:600px;line-height:1.9}
+#browse-collections .bc-sidebar{padding:24px 16px;border-right-color:var(--bc-rowline)}
+#browse-collections .bc-sidebar h3{font-size:14px;font-weight:500;letter-spacing:-.25px}
+#browse-collections .bc-sidebarintro{font-size:11px;line-height:1.8}
+#browse-collections .bc-filtersection>summary{font-size:12px}
+#browse-collections .bc-filtersection>summary small{font-size:11px}
+#browse-collections .bc-filtersection,#browse-collections .bc-period{border-bottom-color:var(--bc-line)}
+#browse-collections .bc-navitem{font-size:12px}
+#browse-collections .bc-navitem span:last-child{font-size:11px}
+#browse-collections .bc-navitem[aria-pressed="true"]{font-weight:500;border-radius:0 4px 4px 0}
+#browse-collections .bc-chip{font-size:11px;background:var(--bc-hint)}
+#browse-collections .bc-pagination{font-size:11px;border-top:0;padding-top:18px}
+#browse-collections .bc-footer{border-color:var(--bc-rowline);font-size:11px}
+@media(max-width:800px){#browse-collections .bc-main{padding:24px 20px}#browse-collections .bc-columns,#browse-collections .bc-candidate>summary{grid-template-columns:25px minmax(100px,1fr) 80px 47px 74px 12px;gap:7px}#browse-collections .bc-lotcell,#browse-collections .bc-failcell,#browse-collections .bc-opercell{font-size:11px}#browse-collections .bc-titlecell strong{font-size:14px}#browse-collections h2{font-size:29px}}
+@media(max-width:520px){#browse-collections .bc-columns{display:none}#browse-collections .bc-candidate>summary{grid-template-columns:25px minmax(0,1fr) 14px;gap:5px 9px}#browse-collections .bc-main{padding:25px 20px}#browse-collections h2{font-size:27px}#browse-collections .bc-dayall{font-size:11px}}
+@media(prefers-reduced-motion:no-preference){#browse-collections .bc-candidate>summary{transition:background-color .12s ease}#browse-collections .bc-navitem{transition:background-color .12s ease}}
+
+#browse-collections .bc-app{min-height:0}
+#browse-collections .of-candidate{padding:24px 0;border-bottom:1px solid var(--bc-line)}
+#browse-collections .of-candidatehead{display:flex;align-items:flex-start;gap:16px}
+#browse-collections .of-rank{font-family:Georgia,serif;font-size:22px;line-height:1.3;color:var(--bc-muted);min-width:28px;font-variant-numeric:tabular-nums}
+#browse-collections .of-candidate h3{font-size:17px;line-height:1.5;font-weight:500;margin:0;color:var(--bc-ink)}
+#browse-collections .of-meta{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12px;color:var(--bc-muted);margin:7px 0 0}
+#browse-collections .of-body{margin:15px 0 0 44px}
+#browse-collections .of-evidencelabel{font-size:11px;color:var(--bc-muted)}
+#browse-collections .of-body p{font-size:14px;line-height:1.85;margin:5px 0 0;color:var(--bc-ink);max-width:650px}
+#browse-collections [data-design="sheet"] .of-candidate{display:grid;grid-template-columns:minmax(190px,1fr) minmax(220px,1.3fr);gap:28px;padding:23px 0}
+#browse-collections [data-design="sheet"] .of-body{margin:0}
+#browse-collections [data-design="review"] .of-list{display:grid;gap:14px}
+#browse-collections [data-design="review"] .of-candidate{border:1px solid var(--bc-line);border-radius:8px;padding:20px 22px;background:var(--bc-bg)}
+#browse-collections .of-pick{margin-left:auto;white-space:nowrap;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--bc-muted)}
+#browse-collections .of-pick input{width:14px;height:14px;accent-color:var(--bc-accent)}
+#browse-collections [data-design="review"] .of-selected{border-color:var(--bc-accent);background:var(--bc-hint)}
+#browse-collections .of-pagenumber{font-size:12px;color:var(--bc-muted)}
+#browse-collections .bc-pagination>div{display:flex;align-items:center;gap:20px}
+@media(max-width:800px){#browse-collections [data-design="sheet"] .of-candidate{grid-template-columns:1fr;gap:0}#browse-collections [data-design="sheet"] .of-body{margin:15px 0 0 44px}}
+@media(max-width:520px){#browse-collections .of-pick{font-size:11px}#browse-collections .of-candidatehead{gap:10px;flex-wrap:wrap}#browse-collections .of-body{margin-left:0}#browse-collections [data-design="sheet"] .of-body{margin-left:0}#browse-collections .bc-pagination{flex-wrap:wrap;gap:15px}}
+#browse-collections .of-toppages{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:0 0 10px;font-size:12px;color:var(--bc-muted)}
+#browse-collections .of-toppages>div{display:flex;align-items:center;gap:18px}
+#browse-collections .of-toppages button{padding:5px 0}
+#browse-collections .of-toppages button:disabled{opacity:.35}
+</style>
+<style>
+#browse-collections .bc-app{position:relative;min-height:1900px;--sh-panel:light-dark(#fff,#21251f);--sh-panel-line:light-dark(#d8ded3,#495440)}
+#browse-collections .bc-columns,#browse-collections .bc-candidate>summary,#browse-collections .sh-readrow{grid-template-columns:30px minmax(140px,1fr) 96px 62px 84px 14px}
+#browse-collections .bc-top{padding-top:19px;padding-bottom:19px}
+#browse-collections .bc-sidebar{background:light-dark(#f7f8f4,#252b21)}
+#browse-collections .bc-sidebar select,#browse-collections .bc-sidebar input:not([type="checkbox"]){border-radius:6px;background:var(--sh-panel)}
+#browse-collections .bc-filtersection{background:var(--sh-panel);border:1px solid var(--sh-panel-line);border-radius:7px;padding:11px;margin:0 0 10px}
+#browse-collections .bc-filtersection>summary{padding:0}
+#browse-collections .bc-filtersection>summary small{font-size:10px}
+#browse-collections .bc-filterhint{font-size:10px;margin-top:10px}
+#browse-collections .bc-check{border-radius:4px;padding:6px 3px}
+#browse-collections .bc-check:hover{background:var(--bc-hint)}
+#browse-collections .sh-searchlabel{font-size:10px;margin:13px 0 7px}
+#browse-collections .sh-filtersearch{margin-top:3px;padding:8px;font-size:11px;width:100%}
+#browse-collections .sh-search-empty{font-size:11px;color:var(--bc-muted);padding:13px 0}
+#browse-collections .sh-badge{display:inline-block;padding:2px 6px;line-height:1.5;border:1px solid var(--sh-panel-line);border-radius:5px;font-size:10px;font-weight:500;background:var(--bc-bg);color:var(--bc-muted)}
+#browse-collections .bc-dayall{border-radius:6px;background:var(--sh-panel)}
+#browse-collections .bc-navitem[aria-pressed="true"]{border-radius:5px}
+#browse-collections .bc-help{font-size:10px}
+#browse-collections .sh-readrow{display:grid;align-items:center;gap:10px;padding:12px 0;min-height:48px;line-height:1.5;width:100%;text-align:left}
+#browse-collections .sh-readrow[aria-pressed="true"]{background:var(--bc-hint)}
+#browse-collections .sh-readrow:hover{background:var(--bc-hint)}
+#browse-collections .sh-sheet{position:absolute;right:16px;width:min(355px,calc(100% - 32px));z-index:5;background:var(--sh-panel);border:1px solid var(--sh-panel-line);border-radius:9px;box-shadow:0 8px 30px light-dark(#1f2b171f,#0007);padding:20px}
+#browse-collections .sh-sheethead{display:flex;justify-content:space-between;align-items:center;gap:12px;border-bottom:1px solid var(--bc-line);padding-bottom:14px}
+#browse-collections .sh-sheethead>span{font-size:12px;font-weight:500}
+#browse-collections .sh-sheethead button{font-size:20px;width:28px;text-align:center;line-height:1.3;border-radius:4px}
+#browse-collections .sh-sheethead button:hover{background:var(--bc-side)}
+#browse-collections .sh-sheetkicker{font-size:11px;color:var(--bc-muted);margin:18px 0 8px}
+#browse-collections .sh-sheet h3{font:500 25px/1.5 "AppleMyungjo",Georgia,serif;margin:0 0 18px;letter-spacing:-.5px}
+#browse-collections .sh-sheet dl{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:20px 0}
+#browse-collections .sh-sheet dt{font-size:10px;color:var(--bc-muted);margin-bottom:5px}
+#browse-collections .sh-sheet dd{font-size:12px;margin:0}
+#browse-collections .sh-sheet .bc-evidence{margin:24px 0;padding-left:12px;font-size:12px}
+#browse-collections .sh-sheet footer{border-top:1px solid var(--bc-line);padding-top:15px;display:flex;justify-content:space-between;gap:10px}
+#browse-collections .sh-sheet footer button{font-size:11px;padding:5px 0}
+#browse-collections [data-design="sheet"] .bc-sidebar{background:var(--bc-bg)}
+#browse-collections [data-design="sheet"] .bc-filtersection{border:0;border-bottom:1px solid var(--bc-line);border-radius:0;background:transparent;padding:10px 7px 15px}
+#browse-collections [data-design="review"]{--bc-bg:light-dark(#fff,#1c1e1c);--bc-side:light-dark(#f7f7f6,#282b27);--bc-ink:light-dark(#262a25,#eceee9);--bc-active:light-dark(#e9ede5,#394732)}
+#browse-collections [data-design="review"] .bc-main{max-width:980px;padding-left:26px;padding-right:26px}
+#browse-collections [data-design="review"] .bc-sidebar{background:var(--bc-bg)}
+#browse-collections [data-design="review"] .bc-filtersection{background:var(--bc-side);border:0}
+#browse-collections .sh-reviewbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 0 17px;font-size:11px}
+#browse-collections .sh-reviewbar>span{margin-right:auto;color:var(--bc-muted)}
+#browse-collections .sh-reviewbar strong{font-weight:500;color:var(--bc-ink)}
+#browse-collections .sh-reviewbar button{border:1px solid var(--bc-line);border-radius:5px;padding:6px 9px;font-size:11px}
+#browse-collections .sh-reviewbar button[aria-pressed="true"]{background:var(--bc-ink);color:var(--bc-bg)}
+#browse-collections .sh-tablewrap{overflow-x:auto}
+#browse-collections .sh-table{border-collapse:collapse;width:100%;font-size:12px}
+#browse-collections .sh-table th{background:var(--bc-side);font-size:10px;color:var(--bc-muted);font-weight:500;text-align:left;padding:11px 7px;border-bottom:1px solid var(--bc-line);white-space:nowrap}
+#browse-collections .sh-table td{padding:12px 7px;border-bottom:1px solid var(--bc-rowline);font-variant-numeric:tabular-nums;vertical-align:middle}
+#browse-collections .sh-table td:nth-child(2){font-size:11px;color:var(--bc-muted)}
+#browse-collections .sh-table td:nth-child(3){min-width:140px}
+#browse-collections .sh-table td:nth-child(n+4){white-space:nowrap;font-size:11px;color:var(--bc-muted)}
+#browse-collections .sh-table td button{font-size:13px;font-weight:500;text-align:left}
+#browse-collections .sh-table input[type="checkbox"]{width:14px;height:14px;min-height:0;margin:0;padding:0;accent-color:var(--bc-accent)}
+#browse-collections .sh-table .sh-selected{background:var(--bc-hint)}
+#browse-collections .sh-table tr:hover{background:var(--bc-hint)}
+#browse-collections .sh-table small{display:block;font-size:10px;color:var(--bc-muted);margin-top:4px}
+#browse-collections .sh-table .bc-evidence{max-width:620px;margin:9px 0 9px 25px}
+@media(max-width:800px){#browse-collections .bc-app{min-height:2200px}#browse-collections .bc-columns,#browse-collections .bc-candidate>summary,#browse-collections .sh-readrow{grid-template-columns:25px minmax(100px,1fr) 80px 49px 74px 12px;gap:7px}#browse-collections .sh-sheet{right:12px}}
+@media(max-width:520px){#browse-collections .bc-app{min-height:3400px}#browse-collections .bc-candidate>summary,#browse-collections .sh-readrow{grid-template-columns:25px minmax(0,1fr) 14px;gap:5px 9px}#browse-collections .bc-fields{grid-column:2;grid-row:2}#browse-collections .sh-readrow>.bc-chevron{grid-column:3;grid-row:1}#browse-collections .sh-sheet{right:10px;width:calc(100% - 20px)}#browse-collections .sh-table input[type="checkbox"]{min-height:0}}
+
+#browse-collections .bc-app{min-height:0}
+#browse-collections .of-candidate{padding:24px 0;border-bottom:1px solid var(--bc-line)}
+#browse-collections .of-candidatehead{display:flex;align-items:flex-start;gap:16px}
+#browse-collections .of-rank{font-family:Georgia,serif;font-size:22px;line-height:1.3;color:var(--bc-muted);min-width:28px;font-variant-numeric:tabular-nums}
+#browse-collections .of-candidate h3{font-size:17px;line-height:1.5;font-weight:500;margin:0;color:var(--bc-ink)}
+#browse-collections .of-meta{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12px;color:var(--bc-muted);margin:7px 0 0}
+#browse-collections .of-body{margin:15px 0 0 44px}
+#browse-collections .of-evidencelabel{font-size:11px;color:var(--bc-muted)}
+#browse-collections .of-body p{font-size:14px;line-height:1.85;margin:5px 0 0;color:var(--bc-ink);max-width:650px}
+#browse-collections [data-design="sheet"] .of-candidate{display:grid;grid-template-columns:minmax(190px,1fr) minmax(220px,1.3fr);gap:28px;padding:23px 0}
+#browse-collections [data-design="sheet"] .of-body{margin:0}
+#browse-collections [data-design="review"] .of-list{display:grid;gap:14px}
+#browse-collections [data-design="review"] .of-candidate{border:1px solid var(--bc-line);border-radius:8px;padding:20px 22px;background:var(--bc-bg)}
+#browse-collections .of-pick{margin-left:auto;white-space:nowrap;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--bc-muted)}
+#browse-collections .of-pick input{width:14px;height:14px;accent-color:var(--bc-accent)}
+#browse-collections [data-design="review"] .of-selected{border-color:var(--bc-accent);background:var(--bc-hint)}
+#browse-collections .of-pagenumber{font-size:12px;color:var(--bc-muted)}
+#browse-collections .bc-pagination>div{display:flex;align-items:center;gap:20px}
+@media(max-width:800px){#browse-collections [data-design="sheet"] .of-candidate{grid-template-columns:1fr;gap:0}#browse-collections [data-design="sheet"] .of-body{margin:15px 0 0 44px}}
+@media(max-width:520px){#browse-collections .of-pick{font-size:11px}#browse-collections .of-candidatehead{gap:10px;flex-wrap:wrap}#browse-collections .of-body{margin-left:0}#browse-collections [data-design="sheet"] .of-body{margin-left:0}#browse-collections .bc-pagination{flex-wrap:wrap;gap:15px}}
+#browse-collections .of-toppages{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:0 0 10px;font-size:12px;color:var(--bc-muted)}
+#browse-collections .of-toppages>div{display:flex;align-items:center;gap:18px}
+#browse-collections .of-toppages button{padding:5px 0}
+#browse-collections .of-toppages button:disabled{opacity:.35}
+</style>
+
+<style>
+#browse-collections .bc-app{--journal-body:14px;--journal-title:18px;--journal-space:22px}
+#browse-collections .bc-main{max-width:864px;padding:25px 32px 36px}
+#browse-collections .bc-heading{margin-bottom:19px}
+#browse-collections .bc-heading h2{font-size:29px;letter-spacing:-.6px;line-height:1.35}
+#browse-collections .bc-context{font-size:12px;line-height:1.6;margin-top:7px}
+#browse-collections .bc-resulthead{padding:14px 0 10px;gap:10px;flex-wrap:wrap}
+#browse-collections .bc-resulthead>span{font-size:11px}
+#browse-collections .of-toppages{margin:0;padding:0 0 12px;border-bottom:1px solid var(--bc-line);font-size:12px}
+#browse-collections .of-candidate{padding:var(--journal-space) 0;border-bottom:1px solid var(--bc-line)}
+#browse-collections .of-candidatehead{gap:16px;align-items:baseline}
+#browse-collections .of-rank{font-size:20px;line-height:1.4;font-weight:400;min-width:28px}
+#browse-collections .of-candidate h3{font-size:var(--journal-title);line-height:1.45;font-weight:500;letter-spacing:-.35px;margin:0;word-break:keep-all;overflow-wrap:anywhere}
+#browse-collections .of-meta{font-size:12px;line-height:1.6;font-weight:400;gap:6px 16px;margin:6px 0 0;align-items:center;font-variant-numeric:tabular-nums}
+#browse-collections .of-meta .sh-badge{font-size:11px;font-weight:400;padding:1px 6px;line-height:1.5}
+#browse-collections .of-body{margin:11px 0 0 44px;max-width:640px}
+#browse-collections .of-evidencelabel{display:block;font-size:12px;line-height:1.5;font-weight:400;color:var(--bc-muted)}
+#browse-collections .of-body p{font-size:var(--journal-body);font-weight:400;line-height:1.75;letter-spacing:-.1px;margin:4px 0 0;max-width:640px;word-break:normal;overflow-wrap:anywhere}
+#browse-collections .bc-pagination{border-top:0;padding-top:20px;font-size:12px}
+#browse-collections .bc-footer{font-size:11px;line-height:1.7;margin-top:20px}
+#browse-collections .bc-dayall{font-size:12px}
+#browse-collections .bc-navitem{font-size:12px}
+#browse-collections .bc-check{font-size:12px}
+#browse-collections .bc-filtersection>summary small{font-size:11px}
+#browse-collections .bc-help{font-size:11px;line-height:1.7}
+@media(max-width:800px){#browse-collections .bc-main{padding:24px 20px 30px}}
+@media(max-width:520px){#browse-collections .bc-heading h2{font-size:26px}#browse-collections .bc-main{padding:22px 18px 28px}#browse-collections .of-candidatehead{flex-wrap:nowrap;gap:12px}#browse-collections .of-rank{min-width:24px;font-size:18px}#browse-collections .of-body{margin-left:36px}#browse-collections .bc-resulthead>span{display:block}#browse-collections .of-toppages>div{gap:14px}}
 </style>
 <script>
 (()=>{
-const host=document.getElementById('browse-collections'),app=host.querySelector('.bc-app');
+const host=document.getElementById('browse-collections'),states={};
+const savedAll=window.openai?.widgetState?.privateContent?.refinedOpenJournal||{};
+host.querySelectorAll('.bc-app').forEach(app=>{
+const design=app.dataset.design;
 const dates=[10,11,12].flatMap(m=>Array.from({length:30},(_,i)=>`2026-${m}-${String(30-i).padStart(2,'0')}`));
 const fails=['OPEN','SHORT'],opers=['ETCH-120','CVD-210','CMP-340'];
 const titles=['챔버 압력 편차','공정 온도 편차','처리 시간 편차','장비 간 조건 차이','직전 공정 이력 차이','챔버별 처리 조건 차이','공정 간 대기 시간 편차'];
 const all=dates.flatMap((date,seed)=>Array.from({length:30},(_,i)=>({id:date+'-'+(i+1),date,rank:i+1,lot:`L${date.slice(5,7)}${['A','B','C'][Math.floor(i/10)]}${date.slice(8).padStart(3,'0')}`,fail:fails[(i+seed)%2],oper:opers[(i+seed)%3],title:titles[(i+seed)%titles.length]})));
-const saved=window.openai?.widgetState?.privateContent?.journalFilters||{};
-const s={preset:'10',start:'2026-10-01',end:'2026-10-30',date:'2026-10-30',fails:['OPEN'],opers:['ETCH-120'],page:0,expanded:[10],filterOpen:{fails:false,opers:false},...saved};
+const saved=savedAll[design]||{};
+const s={preset:'10',start:'2026-10-01',end:'2026-10-30',date:'2026-10-30',fails:[],opers:[],page:0,expanded:[10],filterOpen:{fails:false,opers:false},openCandidates:[],search:{fails:'',opers:''},picked:null,panelTop:190,selected:[],selectedOnly:false,...saved};
+states[design]=s;
+function escapeText(text){return text.replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;').replaceAll('>','&gt;');}
 const option=(v,selected,label=v)=>`<option value="${v}" ${v===selected?'selected':''}>${label}</option>`;
-function keep(){window.openai?.setWidgetState?.({modelContent:{journalFilters:s},privateContent:{journalFilters:s}}).catch(()=>{});}
+function keep(){window.openai?.setWidgetState?.({modelContent:{refinedOpenJournal:states},privateContent:{refinedOpenJournal:states}}).catch(()=>{});}
 function inPeriod(c){return c.date>=s.start&&c.date<=s.end;}
 function match(c,ignore){return inPeriod(c)&&(ignore==='date'||!s.date||c.date===s.date)&&(ignore==='fail'||!s.fails.length||s.fails.includes(c.fail))&&(ignore==='oper'||!s.opers.length||s.opers.includes(c.oper));}
 function normalize(){s.fails=s.fails.filter(f=>fails.includes(f));s.opers=s.opers.filter(o=>opers.includes(o));if(s.date&&(!dates.includes(s.date)||s.date<s.start||s.date>s.end))s.date=null;}
 function checkbox(field,value,count){return `<label class="bc-check cursor-interaction"><input type="checkbox" data-filter="${field}" value="${value}" ${s[field].includes(value)?'checked':''}><span>${value}</span><small>${count}개</small></label>`;}
-function filterSection(field,label,values,ignore){const chosen=s[field],summary=!chosen.length||chosen.length===values.length?'전체':chosen.length===1?chosen[0]:chosen.length+'개 선택';return `<details class="bc-filtersection" data-filtersection="${field}" ${s.filterOpen[field]?'open':''}><summary class="cursor-interaction"><span>${label}<small>${summary}</small></span><span class="bc-filterarrow" aria-hidden="true"></span></summary><div class="bc-checks" role="group" aria-label="${label} 복수 선택">${values.map(v=>checkbox(field,v,all.filter(c=>match(c,ignore)&&c[ignore]===v).length)).join('')}</div><p class="bc-filterhint">선택하지 않으면 전체 ${label}</p></details>`;}
+function filterSection(field,label,values,ignore){const chosen=s[field],summary=!chosen.length||chosen.length===values.length?'전체':chosen.length===1?chosen[0]:chosen.length+'개 선택';return `<details class="bc-filtersection" data-filtersection="${field}" ${s.filterOpen[field]?'open':''}><summary class="cursor-interaction"><span>${label}<small>${summary}</small></span><span class="bc-filterarrow" aria-hidden="true"></span></summary>${design==='filters'?`<label class="sh-searchlabel">${label} 검색<input type="search" class="sh-filtersearch" data-search="${field}" placeholder="${label==='OPER'?'공정 코드 검색…':'FAIL 검색…'}" value="${escapeText(s.search[field])}" autocomplete="off"></label>`:''}<div class="bc-checks" role="group" aria-label="${label} 복수 선택">${values.map(v=>`<div data-search-option="${v}" ${!v.toLowerCase().includes(s.search[field].toLowerCase())?'hidden':''}>${checkbox(field,v,all.filter(c=>match(c,ignore)&&c[ignore]===v).length)}</div>`).join('')}</div>${design==='filters'?`<p class="sh-search-empty" ${values.some(v=>v.toLowerCase().includes(s.search[field].toLowerCase()))?'hidden':''} role="status">검색 결과가 없습니다.</p>`:''}<p class="bc-filterhint">선택하지 않으면 전체 ${label}</p></details>`;}
 function sidebar(){const available=dates.filter(d=>d>=s.start&&d<=s.end),dateMatches=all.filter(c=>match(c,'date'));
 return `<aside class="bc-sidebar"><h3>마이닝 아카이브</h3><p class="bc-sidebarintro">날짜 · FAIL · OPER 함께 선택</p><div class="bc-period"><label>조회 기간<select data-field="preset">${option('all',s.preset,'10~12월 전체')}${[10,11,12].map(m=>option(String(m),s.preset,m+'월')).join('')}${option('custom',s.preset,'직접 지정')}</select></label><div class="bc-dateinputs" ${s.preset==='custom'?'':'hidden'}><label>시작일<input type="date" data-field="start" value="${s.start}" min="2026-10-01" max="2026-12-30"></label><label>종료일<input type="date" data-field="end" value="${s.end}" min="2026-10-01" max="2026-12-30"></label></div><p class="bc-periodnote">${s.start.replaceAll('-','.')} — ${s.end.replaceAll('-','.')}</p></div>${filterSection('fails','FAIL',fails,'fail')}${filterSection('opers','OPER',opers,'oper')}<div class="bc-navtitle"><span>날짜</span><span>${available.length}일</span></div><button type="button" class="bc-navitem" data-date="all" aria-pressed="${!s.date}"><span>기간 내 모든 날짜</span><span>${dateMatches.length}개</span></button>${[10,11,12].filter(m=>available.some(d=>Number(d.slice(5,7))===m)).map(m=>`<details class="bc-month" data-month="${m}" ${s.expanded.includes(m)?'open':''}><summary class="cursor-interaction">2026년 ${m}월 <span>${available.filter(d=>Number(d.slice(5,7))===m).length}일</span></summary><nav class="bc-monthnav" aria-label="${m}월 날짜 선택">${available.filter(d=>Number(d.slice(5,7))===m).map(d=>`<button type="button" class="bc-navitem" data-date="${d}" aria-pressed="${s.date===d}"><span>${m}월 ${Number(d.slice(8))}일</span><span>${dateMatches.filter(c=>c.date===d).length}개</span></button>`).join('')}</nav></details>`).join('')}<p class="bc-help">날짜·FAIL·OPER 조건을 모두 만족하는 후보를 표시합니다.<br><br>같은 항목에서 여러 개를 고르면 선택한 값 중 하나에 해당하는 후보를 표시합니다.<br><br>옆 숫자는 다른 조건을 적용했을 때의 후보 수입니다.</p></aside>`;}
 function chip(kind,value,label){return `<button type="button" class="bc-chip" data-remove="${kind}" data-value="${value}" aria-label="${label} 조건 해제">${label}<span aria-hidden="true">×</span></button>`;}
-function chips(){const periodLabel=s.preset==='all'?'10~12월 전체':s.preset==='custom'?s.start.slice(5)+' — '+s.end.slice(5):s.preset+'월';return `<p class="bc-conditionlabel">적용 중인 조건 · 각 항목을 눌러 해제</p><div class="bc-selectedfilters">${chip('period','all','기간 '+periodLabel)}${s.date?chip('date',s.date,'날짜 '+s.date.slice(5).replace('-','.')):''}${s.fails.map(f=>chip('fails',f,'FAIL '+f)).join('')}${s.opers.map(o=>chip('opers',o,'OPER '+o)).join('')}<button type="button" class="bc-reset" data-reset="all">전체 초기화</button></div>`;}
+function chips(){return s.fails.length||s.opers.length?`<div class="bc-selectedfilters"><span class="bc-conditionlabel">선택 조건</span>${s.fails.map(f=>chip('fails',f,'FAIL '+f)).join('')}${s.opers.map(o=>chip('opers',o,'OPER '+o)).join('')}</div>`:'';}
 function evidence(c){return `<div class="bc-evidence"><strong>후보 선정 근거 · 예시</strong>${c.date}의 ${c.lot}에서 ${c.fail} 결과와 ${c.oper} 공정 조건을 함께 확인할 후보입니다. ${c.title}를 검토하는 상황을 가정했습니다.<br><br>실제 화면에서는 mining agent가 반환한 분석 근거를 표시합니다.</div>`;}
-function candidate(c){return `<details class="bc-candidate" data-candidate-id="${c.id}"><summary class="cursor-interaction"><span class="bc-rank">${String(c.rank).padStart(2,'0')}</span><span><strong>${c.title}</strong><small>${c.date.slice(5).replace('-','.')} &nbsp;·&nbsp; ${c.fail} &nbsp;·&nbsp; ${c.oper}</small></span><span class="bc-chevron" aria-hidden="true"></span></summary>${evidence(c)}</details>`;}
-function collections(lots,rows){return lots.map((l,i)=>{const list=rows.filter(c=>c.lot===l);return `<details class="bc-lot" ${i===0?'open':''}><summary class="bc-lothead cursor-interaction"><span><strong class="bc-lotname">${l}</strong><small class="bc-lotmeta">${list[0].date} · ${[...new Set(list.map(c=>c.fail))].join(' / ')} · ${[...new Set(list.map(c=>c.oper))].join(' / ')}</small></span><span class="bc-lotcount">${list.length}개 후보</span><span class="bc-chevron" aria-hidden="true"></span></summary>${list.map(candidate).join('')}</details>`;}).join('');}
-function render(){normalize();const rows=all.filter(c=>match(c)),base=all.filter(c=>inPeriod(c)&&(!s.date||c.date===s.date)),lots=[...new Set(rows.map(c=>c.lot))],pages=Math.ceil(lots.length/6);s.page=Math.max(0,Math.min(s.page,pages-1));const pageLots=lots.slice(s.page*6,s.page*6+6),pageRows=rows.filter(c=>pageLots.includes(c.lot));const title=s.date?`${Number(s.date.slice(5,7))}월 ${Number(s.date.slice(8))}일의 기록`:'조건으로 모아 읽는 기록';
-app.innerHTML=`<header class="bc-top"><div class="bc-logo">mining.</div><span>The collection journal</span></header><div class="bc-shell">${sidebar()}<main class="bc-main"><div class="bc-breadcrumb">Archive &nbsp;/&nbsp; LOT Collection &nbsp;/&nbsp; ${s.date||'기간 내 모든 날짜'}</div><p class="bc-kicker">THE COLLECTION JOURNAL</p><h2>${title}</h2><p class="bc-subtitle">날짜와 FAIL, 공정 조건을 겹쳐 살펴봅니다.<br>선택한 조건의 후보를 LOT별로 모았습니다.</p><div class="bc-scope"><span>조회 기간 <strong>${s.start.slice(5).replace('-','.')} — ${s.end.slice(5).replace('-','.')}</strong></span><span><strong>${lots.length}</strong> LOT</span><span><strong>${rows.length}</strong>개 후보 / ${base.length}개</span></div>${chips()}${s.start>s.end?'<p class="bc-alert" role="alert">종료일을 시작일 이후로 선택해주세요.</p>':''}<div class="bc-resulthead"><h3>LOT 컬렉션</h3><span class="bc-count" aria-live="polite">${rows.length}개 후보 · 날짜 내림차순, LOT별 RANK 순</span></div>${rows.length?collections(pageLots,pageRows):'<div class="bc-empty"><strong>선택한 조건에 맞는 후보가 없습니다.</strong>상단의 조건을 하나씩 해제하거나 조회 기간을 넓혀보세요.<button type="button" data-reset="filters">현재 기간에서 모든 후보 보기 →</button></div>'}${pageLots.length?`<div class="bc-pagination"><span>${s.page*6+1}–${Math.min(s.page*6+6,lots.length)} / ${lots.length} LOT · 이 페이지 ${pageRows.length}개 후보</span><div><button type="button" data-page="-1" ${s.page===0?'disabled':''}>← 이전</button><button type="button" data-page="1" ${s.page+1>=pages?'disabled':''}>다음 →</button></div></div>`:''}<footer class="bc-footer">2026년 10~12월 · 매월 30일 · 날짜마다 30개 후보<br>모든 결과와 분석 근거는 목업용 예시입니다.</footer></main></div>`;
+function rowContents(c){return `<span class="bc-rank">${String(c.rank).padStart(2,'0')}</span><span class="bc-titlecell"><strong>${c.title}</strong>${!s.date?`<small>${c.date}</small>`:''}</span><span class="bc-fields"><span class="bc-lotcell">${c.lot}</span><span class="bc-failcell"><span class="sh-badge">${c.fail}</span></span><span class="bc-opercell">${c.oper}</span></span><span class="bc-chevron" aria-hidden="true"></span>`;}
+function candidate(c){return `<article class="of-candidate ${s.selected.includes(c.id)?'of-selected':''}" data-candidate-id="${c.id}"><header class="of-candidatehead"><span class="of-rank">${String(c.rank).padStart(2,'0')}</span><div><h3>${c.title}</h3><p class="of-meta"><span>${c.lot}</span><span class="sh-badge">${c.fail}</span><span>${c.oper}</span>${!s.date?`<span>${c.date}</span>`:''}</p></div>${design==='review'?`<label class="of-pick"><input type="checkbox" data-select="${c.id}" ${s.selected.includes(c.id)?'checked':''}> 관심 후보</label>`:''}</header><div class="of-body"><span class="of-evidencelabel">선정 근거</span><p>${c.date}의 ${c.lot}에서 ${c.fail} 결과와 ${c.oper} 공정 조건을 함께 확인할 후보입니다. ${c.title}를 검토하는 상황을 가정했습니다.</p></div></article>`;}
+let viewRows=[];
+function listing(rows){return `${design==='review'?`<div class="sh-reviewbar"><span aria-live="polite">관심 후보 <strong>${s.selected.length}개</strong></span><button type="button" data-selected-only="true" aria-pressed="${s.selectedOnly}" ${!s.selected.length&&!s.selectedOnly?'disabled':''}>${s.selectedOnly?'전체 후보로 돌아가기':'관심 후보만 보기'}</button><button type="button" data-selection-clear="true" ${!s.selected.length?'disabled':''}>선택 해제</button></div>`:''}<section class="of-list" aria-label="근거가 모두 열린 후보 목록">${rows.map(candidate).join('')}</section>`;}
+function render(){normalize();let rows=all.filter(c=>match(c));if(design==='review'&&s.selectedOnly)rows=rows.filter(c=>s.selected.includes(c.id));if(design==='sheet'&&s.picked&&!rows.some(c=>c.id===s.picked))s.picked=null;const base=all.filter(c=>inPeriod(c)&&(!s.date||c.date===s.date)),lots=[...new Set(rows.map(c=>c.lot))],pages=Math.ceil(rows.length/15);s.page=Math.max(0,Math.min(s.page,pages-1));const pageRows=rows.slice(s.page*15,s.page*15+15);viewRows=pageRows;const title=s.date?`${Number(s.date.slice(5,7))}월 ${Number(s.date.slice(8))}일의 기록`:'기간별 마이닝 기록';
+app.innerHTML=`<header class="bc-top"><div class="bc-logo">mining.</div><span>The collection journal</span></header><div class="bc-shell">${sidebar()}<main class="bc-main"><div class="bc-heading"><div><h2>${title}</h2><p class="bc-context">${s.date?'선택 날짜 '+s.date:'조회 기간 '+s.start+' — '+s.end} &nbsp;·&nbsp; ${lots.length} LOT &nbsp;·&nbsp; 예시 데이터</p></div><button type="button" class="bc-dayall" data-dayall="true" ${!s.date?'disabled':''}>${s.date?'당일 전체 '+base.length+'개 보기':'당일 전체 보기'}</button></div>${chips()}${s.start>s.end?'<p class="bc-alert" role="alert">종료일을 시작일 이후로 선택해주세요.</p>':''}<div class="bc-resulthead"><h3>마이닝 후보 <span class="bc-total" aria-live="polite">${rows.length}${rows.length!==base.length?' / '+base.length:''}개</span></h3><span>${s.date?'RANK 순 · 근거 전체 펼침 · 페이지당 15개':'날짜 내림차순 · 날짜별 RANK 순'}</span></div>${pages>1?`<nav class="of-toppages" aria-label="후보 페이지"><span>${s.page*15+1}–${Math.min(s.page*15+15,rows.length)} / ${rows.length}개</span><div><button type="button" data-page="-1" ${s.page===0?'disabled':''}>← 이전</button><span>${s.page+1} / ${pages}페이지</span><button type="button" data-page="1" ${s.page+1>=pages?'disabled':''}>다음 →</button></div></nav>`:''}${rows.length?listing(pageRows):'<div class="bc-empty"><strong>선택한 조건에 맞는 후보가 없습니다.</strong>조건을 해제하거나 조회 기간을 넓혀보세요.<button type="button" data-dayall="true">'+(s.date?'이 날짜의 전체 후보 보기 →':'현재 기간의 필터 해제 →')+'</button></div>'}${pageRows.length?`<div class="bc-pagination"><span>${s.page*15+1}–${Math.min(s.page*15+15,rows.length)} / ${rows.length}개 후보</span>${pages>1?`<div><span class="of-pagenumber">${s.page+1} / ${pages}페이지</span><button type="button" data-page="-1" ${s.page===0?'disabled':''}>← 이전</button><button type="button" data-page="1" ${s.page+1>=pages?'disabled':''}>다음 →</button></div>`:'<span>현재 조건에 맞는 모든 후보를 표시했습니다.</span>'}</div>`:''}<footer class="bc-footer">2026년 10~12월 · 매월 30일 · 날짜마다 30개 후보 · 선정 근거는 예시 데이터입니다.</footer></main></div>`;
 app.querySelectorAll('button').forEach(b=>b.classList.add('cursor-interaction'));
+app.querySelectorAll('[data-candidate-id]').forEach(el=>el.addEventListener('toggle',()=>{if(!el.isConnected)return;const id=el.dataset.candidateId;if(el.open&&!s.openCandidates.includes(id)){s.openCandidates=[...s.openCandidates,id].slice(-30);keep();}else if(!el.open&&s.openCandidates.includes(id)){s.openCandidates=s.openCandidates.filter(x=>x!==id);keep();}}));
 app.querySelectorAll('[data-filtersection]').forEach(el=>el.addEventListener('toggle',()=>{if(!el.isConnected)return;const field=el.dataset.filtersection;if(s.filterOpen[field]!==el.open){s.filterOpen[field]=el.open;keep();}}));
 app.querySelectorAll('.bc-month').forEach(el=>el.addEventListener('toggle',()=>{const m=Number(el.dataset.month);if(el.open&&!s.expanded.includes(m)){s.expanded.push(m);keep();}else if(!el.open&&s.expanded.includes(m)){s.expanded=s.expanded.filter(x=>x!==m);keep();}}));}
 render();
-app.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;let resetPage=true;if(b.dataset.date)s.date=b.dataset.date==='all'?null:b.dataset.date;if(b.dataset.remove){const field=b.dataset.remove;if(field==='period'){s.preset='all';s.start='2026-10-01';s.end='2026-12-30';}else if(field==='date')s.date=null;else s[field]=s[field].filter(v=>v!==b.dataset.value);}if(b.dataset.reset){s.date=null;s.fails=[];s.opers=[];if(b.dataset.reset==='all'){s.preset='all';s.start='2026-10-01';s.end='2026-12-30';}}if(b.dataset.page){s.page+=Number(b.dataset.page);resetPage=false;}if(resetPage)s.page=0;render();keep();});
-app.addEventListener('change',e=>{const target=e.target;if(target.dataset.filter){const f=target.dataset.filter;s[f]=target.checked?[...new Set([...s[f],target.value])]:s[f].filter(v=>v!==target.value);}else if(target.dataset.field){const f=target.dataset.field;if(f==='preset'){s.preset=target.value;if(s.preset==='all'){s.start='2026-10-01';s.end='2026-12-30';}else if(s.preset!=='custom'){s.start=`2026-${s.preset}-01`;s.end=`2026-${s.preset}-30`;s.expanded=[Number(s.preset)];}}else{s[f]=target.value;s.preset='custom';}}else return;s.page=0;render();keep();});
-window.addEventListener('openai:set_globals',e=>{const updated=e.detail?.globals?.widgetState?.privateContent?.journalFilters;if(updated){Object.assign(s,updated);render();}});
-if(globalThis.Tweak){const settings={width:226};const t=new Tweak({container:app,onChange:()=>{const shell=app.querySelector('.bc-shell');if(shell)shell.style.gridTemplateColumns=settings.width+'px minmax(0,1fr)';}});t.addSlider(settings,'width',{label:'조건 사이드바 너비',min:210,max:280,step:5,unit:'px'});}
+app.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.disabled)return;
+if(b.dataset.read){if(design==='sheet'){s.picked=b.dataset.read;const y=b.getBoundingClientRect().top-app.getBoundingClientRect().top;s.panelTop=Math.max(160,Math.min(y,app.getBoundingClientRect().height-480));}else{s.openCandidates=s.openCandidates.includes(b.dataset.read)?s.openCandidates.filter(id=>id!==b.dataset.read):[...s.openCandidates,b.dataset.read].slice(-30);}render();keep();return;}
+if(b.dataset.sheetClose){const id=s.picked;s.picked=null;render();keep();app.querySelector('[data-read="'+id+'"]')?.focus({preventScroll:true});return;}
+if(b.dataset.sheetStep){const eligible=all.filter(c=>match(c)),index=eligible.findIndex(c=>c.id===s.picked),next=eligible[index+Number(b.dataset.sheetStep)];if(next)s.picked=next.id;render();keep();return;}
+if(b.dataset.selectedOnly){s.selectedOnly=!s.selectedOnly;s.page=0;render();keep();return;}
+if(b.dataset.selectionClear){s.selected=[];s.selectedOnly=false;render();keep();return;}
+let resetPage=true;if(b.dataset.date)s.date=b.dataset.date==='all'?null:b.dataset.date;if(b.dataset.dayall){s.fails=[];s.opers=[];s.selectedOnly=false;}if(b.dataset.remove){const field=b.dataset.remove;if(field==='period'){s.preset='all';s.start='2026-10-01';s.end='2026-12-30';}else if(field==='date')s.date=null;else s[field]=s[field].filter(v=>v!==b.dataset.value);}if(b.dataset.reset){s.date=null;s.fails=[];s.opers=[];if(b.dataset.reset==='all'){s.preset='all';s.start='2026-10-01';s.end='2026-12-30';}}if(b.dataset.page){s.page+=Number(b.dataset.page);resetPage=false;}if(resetPage)s.page=0;render();keep();if(b.dataset.page)app.querySelector('.bc-heading').scrollIntoView({block:'start'});});
+app.addEventListener('change',e=>{const target=e.target;if(target.dataset.select){s.selected=target.checked?[...new Set([...s.selected,target.dataset.select])]:s.selected.filter(id=>id!==target.dataset.select);render();keep();return;}if(target.dataset.selectAll){const ids=viewRows.map(c=>c.id);s.selected=target.checked?[...new Set([...s.selected,...ids])]:s.selected.filter(id=>!ids.includes(id));render();keep();return;}if(target.dataset.filter){const f=target.dataset.filter;s[f]=target.checked?[...new Set([...s[f],target.value])]:s[f].filter(v=>v!==target.value);}else if(target.dataset.field){const f=target.dataset.field;if(f==='preset'){s.preset=target.value;if(s.preset==='all'){s.start='2026-10-01';s.end='2026-12-30';}else if(s.preset!=='custom'){s.start=`2026-${s.preset}-01`;s.end=`2026-${s.preset}-30`;s.expanded=[Number(s.preset)];}}else{s[f]=target.value;s.preset='custom';}}else return;s.page=0;render();keep();});
+app.addEventListener('input',e=>{const field=e.target.dataset.search;if(!field)return;s.search[field]=e.target.value;const group=e.target.closest('[data-filtersection]');let visible=0;group.querySelectorAll('[data-search-option]').forEach(el=>{el.hidden=!el.dataset.searchOption.toLowerCase().includes(s.search[field].toLowerCase());if(!el.hidden)visible++;});group.querySelector('.sh-search-empty').hidden=visible>0;keep();});
+app.addEventListener('keydown',e=>{if(e.key==='Escape'&&s.picked&&!app.closest('[data-variant]').hidden){const id=s.picked;s.picked=null;render();keep();app.querySelector('[data-read="'+id+'"]')?.focus({preventScroll:true});}});
+window.addEventListener('openai:set_globals',e=>{const updated=e.detail?.globals?.widgetState?.privateContent?.refinedOpenJournal?.[design];if(updated){Object.assign(s,updated);render();}});
+if(globalThis.Tweak){const settings={width:226,body:14,title:18,spacing:22};const t=new Tweak({container:app,onChange:()=>{app.style.setProperty('--journal-body',settings.body+'px');app.style.setProperty('--journal-title',settings.title+'px');app.style.setProperty('--journal-space',settings.spacing+'px');const shell=app.querySelector('.bc-shell');if(shell)shell.style.gridTemplateColumns=settings.width+'px minmax(0,1fr)';}});t.addSlider(settings,'width',{label:'조건 사이드바 너비',min:210,max:280,step:5,unit:'px'});t.addSlider(settings,'body',{label:'근거 글자 크기',min:13,max:16,step:1,unit:'px'});t.addSlider(settings,'title',{label:'후보 제목 크기',min:17,max:20,step:1,unit:'px'});t.addSlider(settings,'spacing',{label:'후보 위아래 간격',min:18,max:28,step:2,unit:'px'});}
+});
 })();
 </script>
