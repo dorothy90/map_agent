@@ -7,6 +7,8 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+from dataclasses import replace
+from datetime import datetime, timezone
 
 import yaml
 
@@ -36,18 +38,23 @@ def native_history(previous):
 class NativeBridge:
     def __init__(self, registry, context):
         self.registry = registry
+        self.context = context
         self.allowed = {name for name, spec in registry.tools.items() if spec.effect in ('read', 'artifact')}
         self.executor = ToolExecutor(registry, context)
         self.observations = []
+        self.review_observations = []
 
     def schemas(self):
         return [tool for tool in self.registry.model_tools() if tool['function']['name'] in self.allowed]
 
-    async def invoke(self, call):
+    async def invoke(self, call, *, review_id=None):
         if call['name'] not in self.allowed:
             raise PermissionError('Tool is outside this run capability set')
-        observation = await self.executor.execute(call)
-        self.observations.append(observation.model_dump(mode='json'))
+        if review_id and call['name'] != 'read_result':
+            raise PermissionError('Verifier can only read stored results')
+        executor = ToolExecutor(self.registry, replace(self.context, parent_invocation_id=review_id)) if review_id else self.executor
+        observation = await executor.execute(call)
+        (self.review_observations if review_id else self.observations).append(observation.model_dump(mode='json'))
         return observation.model_view()
 
 
@@ -74,8 +81,12 @@ def prepare_profile(principal_id):
     config = profile / 'config.yaml'
     content = yaml.safe_load(config.read_text()) if config.exists() else {'skills': {'auto_load': ['yield-analysis']}}
     # This worker has no host terminal tool; probing its package manager is irrelevant.
-    if content.setdefault('agent', {}).get('environment_probe') is not False:
-        content['agent']['environment_probe'] = False
+    content.setdefault('agent', {})
+    content.setdefault('delegation', {})
+    changed = content['agent'].get('environment_probe') is not False or content['delegation'].get('orchestrator_enabled') is not True
+    content['agent']['environment_probe'] = False
+    content['delegation']['orchestrator_enabled'] = True
+    if changed:
         with tempfile.NamedTemporaryFile(mode='w', dir=profile, delete=False) as pending:
             pending.write(yaml.safe_dump(content, allow_unicode=True))
         os.replace(pending.name, config)
@@ -113,11 +124,17 @@ async def run_native(context, registry, *, history=None):
         'max_iterations': settings.model_limit - prior_usage.get('models', 0), 'run_budget_seconds': context.remaining_seconds(),
         'token_limit': max(0, settings.token_limit - prior_usage.get('tokens', 0)), 'session_id': run['session_id'],
         'query': run.get('goal_request', run['query']), 'instructions': Path(__file__).with_name('instructions').joinpath('native.md').read_text(),
+        'verification_instructions': Path(__file__).with_name('instructions').joinpath('verifier.md').read_text(),
         'tools': bridge.schemas(), 'history': history or [], 'upstream_commit': UPSTREAM_COMMIT}
     tasks = set()
+    reviews = {}
+    verification_observations = []
     async def invoke(message):
         try:
-            value = await bridge.invoke({'id': message['id'], 'name': message['name'], 'args': message['args']})
+            review_id = message.get('review_id')
+            if review_id and review_id not in reviews:
+                raise PermissionError('Unknown verification invocation')
+            value = await bridge.invoke({'id': message['id'], 'name': message['name'], 'args': message['args']}, review_id=review_id)
         except Exception as exc:
             from .runtime.domain_process import safe_error_message
             value = {'error': safe_error_message(exc), 'status': 'error'}
@@ -134,6 +151,38 @@ async def run_native(context, registry, *, history=None):
             if message['type'] == 'tool_call':
                 task = asyncio.create_task(invoke(message))
                 tasks.add(task)
+            elif message['type'] == 'verification_start':
+                review_id = message['review_id']
+                reviews[review_id] = message
+                await context.store.event(run['run_id'], 'tool_started', {'name': 'verify_answer',
+                    'invocation_id': review_id, 'state': 'running', 'elapsed_seconds': 0}, epoch=run['epoch'])
+                evidence = []
+                known = set()
+                for raw in bridge.observations:
+                    from .types import ToolObservation
+                    obs = ToolObservation.model_validate(raw)
+                    evidence.append({**obs.model_view(), 'validated_arguments': obs.validated_arguments})
+                    known.add(obs.result_id)
+                    known.update(obs.source_result_ids)
+                await send({'id': message['id'], 'result': {'request': startup['query'],
+                    'current_time': datetime.now(timezone.utc).isoformat(), 'prior_dialogue': history or [],
+                    'candidate': message['candidate'], 'evidence': evidence, 'known_result_ids': sorted(known)}})
+            elif message['type'] == 'verification_finished':
+                review_id = message['review_id']
+                started_review = reviews.pop(review_id)
+                report = message['report']
+                status = 'success' if report['verdict'] == 'pass' else 'partial'
+                summary = {'pass': '답변 검증 통과', 'fail': '답변 보완 필요', 'unknown': '답변 검증 미완료'}[report['verdict']]
+                observation = await context.store.put_result(run['principal_id'], run['session_id'],
+                    {'run_id': run['run_id'], 'invocation_id': review_id, 'tool_name': 'verify_answer',
+                     'validated_arguments': {'attempt': started_review['attempt'], 'candidate': started_review['candidate']},
+                     'status': status, 'summary': summary + (' · ' + '; '.join(report['issues']) if report['issues'] else ''),
+                     'source_result_ids': report['result_ids'], 'scope': {'verdict': report['verdict']},
+                     'provenance': {'elapsed_seconds': message['elapsed'], 'data_origin': 'live'},
+                     'error': None if status == 'success' else {'message': '; '.join(report['issues'])}}, [], [])
+                await bridge.executor.publish(observation, run)
+                verification_observations.append(observation.model_dump(mode='json'))
+                await send({'id': message['id'], 'result': {'saved': True}})
             elif message['type'] == 'commentary':
                 await context.store.event(run['run_id'], 'commentary', {'content': message['content']}, epoch=run['epoch'])
             elif message['type'] == 'step':
@@ -157,10 +206,11 @@ async def run_native(context, registry, *, history=None):
         tables = render_results(observations, source_index={o['result_id']: o for o in observations})
         return {'status': result_status(result), 'stop_reason': result.get('turn_exit_reason') or 'hermes_returned',
             'answer_text': answer, 'answer': answer + ('\n\n' + tables if tables else ''),
-            'observations': observations, 'result_ids': [o['result_id'] for o in observations],
+            'observations': observations + bridge.review_observations + verification_observations, 'result_ids': [o['result_id'] for o in observations],
             'native_messages': result.get('messages', []), 'native_usage': {k: result.get(k) for k in
                 ('api_calls', 'input_tokens', 'output_tokens', 'total_tokens')},
-            'native_engine': {'name': 'NousResearch/hermes-agent', 'commit': UPSTREAM_COMMIT}}
+            'native_engine': {'name': 'NousResearch/hermes-agent', 'commit': UPSTREAM_COMMIT,
+                'verification': result.get('verification', [])}}
     finally:
         for task in tasks:
             task.cancel()

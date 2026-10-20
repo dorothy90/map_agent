@@ -135,8 +135,10 @@ def test_embedded_profile_disables_host_package_probe_without_losing_settings(mo
     profile = native.prepare_profile('p')
     config = profile / 'config.yaml'
     assert yaml.safe_load(config.read_text())['agent']['environment_probe'] is False
-    config.write_text('skills:\n  auto_load: [custom-skill]\nagent:\n  environment_probe: true\n  stall_guards: false\n')
+    assert yaml.safe_load(config.read_text())['delegation']['orchestrator_enabled'] is True
+    config.write_text('skills:\n  auto_load: [custom-skill]\nagent:\n  environment_probe: true\n  stall_guards: false\ndelegation:\n  orchestrator_enabled: false\n  max_spawn_depth: 1\n')
     assert native.prepare_profile('p') == profile
     saved = yaml.safe_load(config.read_text())
     assert saved['skills']['auto_load'] == ['custom-skill']
     assert saved['agent'] == {'environment_probe': False, 'stall_guards': False}
+    assert saved['delegation'] == {'orchestrator_enabled': True, 'max_spawn_depth': 1}
