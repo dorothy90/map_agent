@@ -66,7 +66,7 @@
 | `executor.py`, `types.py`, `completion.py` 등 나머지 Python 파일 | 결과 계약과 예산·관측·기존 경로 의존성. 초기에는 함께 유지 |
 | `tools/`, `domain_metrics.py` | 업무 연결 어댑터와 지표 계산. 사내 업무 정의와 대조 |
 | `instructions/`, `skills/` | 도구 사용 지침·업무 지식. 연결되지 않은 도구 안내를 남기지 않는다. |
-| `runtime/` | 기존 동기 업무 함수 격리, 생성 Python 코드의 컨테이너 실행 |
+| `runtime/` | 기존 동기 업무 함수 격리, 생성 Python 코드의 별도 프로세스 실행(기본) 또는 Docker 실행 |
 | `tests/`, `evals/` | 합성 검증과 실제 서비스 평가 도구 |
 
 Hermes를 별도 설치하거나 최신 upstream으로 교체하지 않는다. 현재 내장 버전은 `e473f5a9c976a0b5bc292aa415dae28c638a47c3`이다. `native_hermes.py`의 루트 경로 계산, `scripts/setup_hermes.sh`의 경로는 사내 디렉터리 구조에 맞게 점검한다.
@@ -139,7 +139,7 @@ Hermes를 별도 설치하거나 최신 upstream으로 교체하지 않는다. �
 1. 기존 공개 실행 함수와 입력/출력·예외·취소·내부 LLM 호출을 읽는다. 내부 구현을 다시 작성하지 않는다.
 2. `harness/tools/`에 어댑터를 추가하거나 기존 어댑터를 사내 함수에 맞춘다.
 3. 입력은 `Contract` 기반 Pydantic 모델, handler는 `async handler(args, context)`, 반환은 `ToolResult`를 사용한다. `tools/lot_tools.py`가 기존 함수 연결 예시다.
-4. 동기 DB/연산 함수는 기존 `runtime.domain_process.run_blocking` 패턴으로 격리한다. 생성 Python 코드를 호스트에서 직접 실행하는 경로를 만들지 않는다.
+4. 동기 DB/연산 함수는 기존 `runtime.domain_process.run_blocking` 패턴으로 격리한다. 생성 Python 코드는 `runtime.process.ProcessRuntime`의 별도 프로세스에서 실행한다. API 프로세스 내부에서 직접 `exec()`하지 않는다. Kubernetes 설정과 격리 범위는 [이식설명서](MIGRATION.md#kubernetes-python-실행)를 따른다.
 5. `ToolSpec(name, description, schema, handler, effect=...)`로 등록하고 `tools/registry.py`의 `domain_registry()`에 연결한다. 설명에는 목적·필수 입력·결과 범위·단위를 적는다.
 6. 표는 `rows` 또는 `tables` 중 하나를 사용한다. 빈 결과, 잘림, 일부 실패, 범위·시간 기준·단위·출처를 보존한다. `result_id` 생성과 저장은 기존 executor/store 경계를 사용한다.
 7. 현재 native bridge는 `read`와 `artifact`만 노출한다. 영구쓰기 에이전트를 읽기 도구로 위장하지 않는다. 해당 에이전트는 기존 경로를 유지하고 별도 쓰기 권한 계약이 필요한 미연결 항목으로 보고한다.
@@ -195,7 +195,9 @@ npm run build
 npm run test:e2e
 ```
 
-사내에서 Python 도구도 사용할 경우:
+사내 Kubernetes에서 Python 도구를 사용할 경우 `HARNESS_PYTHON_RUNTIME=process`, `HARNESS_PYTHON_EXECUTABLE=/app/.venv/bin/python`을 설정한다. 경로와 의존성은 [이식설명서](MIGRATION.md#kubernetes-python-실행)를 따른다.
+
+Docker 실행을 명시적으로 선택하는 경우에만 다음 이미지를 준비하고 `HARNESS_PYTHON_RUNTIME=docker`를 설정한다:
 
 ```bash
 docker build -t yield-harness-python:2 08-YieldAgent/harness/runtime

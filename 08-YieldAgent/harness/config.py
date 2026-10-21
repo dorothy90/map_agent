@@ -26,6 +26,8 @@ class Settings(BaseModel):
     evidence_tokens: int = Field(default=2000, ge=0)
     temperature: float = Field(default=0, ge=0, le=2)
     reasoning_effort: str | None = None
+    python_runtime: Literal["process", "docker"] = "process"
+    python_executable: str | None = None
     python_image: str = "yield-harness-python:2"
     principal: str = "local"
     enabled: bool = False
@@ -48,6 +50,8 @@ class Settings(BaseModel):
             mongo_db=os.getenv("HARNESS_MONGO_DB", "yield_agent"),
             principal=os.getenv("HARNESS_PRINCIPAL", "local"),
             enabled=os.getenv("HARNESS_ENABLED", "false").lower() == "true",
+            python_runtime=os.getenv("HARNESS_PYTHON_RUNTIME", "process"),
+            python_executable=os.getenv("HARNESS_PYTHON_EXECUTABLE") or None,
             python_image=os.getenv("HARNESS_PYTHON_IMAGE", "yield-harness-python:2"),
             tool_limit=int(os.getenv("HARNESS_TOOL_LIMIT", "24")),
             model_limit=int(os.getenv("HARNESS_MODEL_LIMIT", "40")),

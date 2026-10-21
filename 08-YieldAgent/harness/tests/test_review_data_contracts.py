@@ -22,15 +22,14 @@ def test_python_empty_table_keeps_schema_through_worker(tmp_path, monkeypatch):
             return []
     paths = {name: tmp_path / name.rsplit('/', 1)[-1] for name in
         ['/input/data.json', '/input/code.py', '/output/result.json']}
-    monkeypatch.setattr(worker, 'Path', lambda path: paths[path])
     async def execute(self, code, datasets):
         paths['/input/data.json'].write_text(json.dumps(datasets))
         paths['/input/code.py'].write_text(code)
-        worker.main()
+        worker.main(['--input-dir', str(tmp_path), '--output-dir', str(tmp_path)])
         return json.loads(paths['/output/result.json'].read_text())
     monkeypatch.setattr(ContainerRuntime, 'execute', execute)
     ctx = SimpleNamespace(store=Store(), run={'principal_id': 'owner', 'session_id': 'session'},
-        settings=SimpleNamespace(python_image='unused'))
+        settings=SimpleNamespace(python_runtime='docker', python_image='unused'))
     result = asyncio.run(run_python(PythonInput(input_result_ids=['source'], code=
         "assert pd.isna(tables['source']['empty']['value'].mean())\n"
         "emit_table(tables['source']['empty'], name='roundtrip')"), ctx))

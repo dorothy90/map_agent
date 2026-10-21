@@ -8,12 +8,11 @@
 
 ```bash
 uv sync --group dev
-docker build -t yield-harness-python:2 08-YieldAgent/harness/runtime
 PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.preflight --require-live
 PYTHONPATH=08-YieldAgent .venv/bin/python -m uvicorn agent_server:app --port 8000
 ```
 
-MongoDB와 Oracle 연결 설정이 필요하다. 이력 검색에는 OpenSearch를 사용한다. Python 분석은 네트워크와 호스트 자격증명이 없는 Docker에서 실행한다. Docker를 사용할 수 없으면 분석 오류를 반환하며 호스트에서 생성 코드를 실행하지 않는다.
+MongoDB와 Oracle 연결 설정이 필요하다. 이력 검색에는 OpenSearch를 사용한다. Python 분석은 기본적으로 서버와 별도의 Python 프로세스에서 실행한다. `HARNESS_PYTHON_EXECUTABLE`에 `.venv/bin/python` 절대 경로를 지정하며, 비우면 서버의 Python을 사용한다. Docker는 필요하지 않다. 프로세스 방식은 보안 샌드박스가 아니며 파일·네트워크 접근은 Pod 권한을 따른다. 설정·의존성·검증 방법은 [이식설명서](MIGRATION.md#kubernetes-python-실행)를 따른다.
 
 2026-09-12 사용자가 크레딧을 추가한 뒤 지정한 공급자는 OpenRouter, 모델은 `z-ai/glm-5.3-flash`다.
 

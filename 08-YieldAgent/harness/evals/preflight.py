@@ -2,12 +2,13 @@ import argparse
 import asyncio
 import json
 import os
-import subprocess
 from dotenv import load_dotenv
 
 from harness.config import Settings
 from harness.model import build_model
 from harness.store import HarnessStore
+from harness.runtime.container import ContainerRuntime
+from harness.runtime.process import ProcessRuntime
 
 
 async def check():
@@ -40,10 +41,13 @@ async def check():
     except Exception as exc:
         results["oracle"] = {"ok": False, "error_type": type(exc).__name__}
     try:
-        p = await asyncio.to_thread(subprocess.run, ["docker", "info", "--format", "{{.ServerVersion}}"], capture_output=True, timeout=10)
-        results["docker"] = {"ok": p.returncode == 0}
+        runtime = (ContainerRuntime(settings.python_image) if settings.python_runtime == "docker"
+            else ProcessRuntime(settings.python_executable))
+        result = await runtime.execute("emit_table(pd.DataFrame([{'value': 1}]))", {})
+        results["python"] = {"ok": result["status"] == "success", "runtime": settings.python_runtime,
+            "error": result.get("error")}
     except Exception as exc:
-        results["docker"] = {"ok": False, "error_type": type(exc).__name__}
+        results["python"] = {"ok": False, "runtime": settings.python_runtime, "error_type": type(exc).__name__}
     try:
         def search():
             from fail_history_tools import _get_opensearch_client, _OPENSEARCH_INDEX

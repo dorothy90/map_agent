@@ -92,3 +92,40 @@ Python 3.11을 유지하며 Hermes를 별도로 설치하지 않는다. `harness
 승인된 패키지를 준비한 후 `BACKEND_PYTHON=/path/to/python bash scripts/setup_hermes.sh`로 import를 확인한다. `harness/tests/test_native_transport.py`는 다른 경로로 복사한 실제 엔진을 로컬 가상 모델과 연결해 스킬·도구 호출·취소를 검사한다.
 
 이 검사는 실제 업무 정답을 보장하지 않는다. 아래 업무 검증은 2단계에 해당한다. 사내 DB와 실제 LLM을 연결한 사용자 시나리오에서 조회 기간, 열화 파라미터 전체 집합, 수율 정의, 모집단 및 하위 10개 선정, 맵 10개를 각각 확인한 후 운영 전환한다. 기존 실제 평가에서 기간·지표 해석 오류와 토큰 예산 중단이 있었으므로, 이식 성공과 답변 품질 통과를 구분한다.
+
+## Kubernetes Python 실행
+
+`run_python → 별도 .venv/bin/python worker.py → exec(code, namespace)`로 실행한다. API 서버 내부에서 직접 `exec()`하지 않는다. 기본값은 `process`이며 Docker 데몬이나 소켓이 필요하지 않다.
+
+함께 이식할 파일: `config.py`, `tools/python_tools.py`, `runtime/process.py`, `runtime/worker.py`. 기존 Docker 선택지를 유지하려면 `runtime/container.py`도 보존한다.
+
+```dotenv
+HARNESS_PYTHON_RUNTIME=process
+HARNESS_PYTHON_EXECUTABLE=/app/.venv/bin/python
+```
+
+Python 경로는 실제 Pod의 절대 경로로 바꾼다. 비우면 서버를 실행한 `sys.executable`을 사용한다. `activate`는 필요 없다. 설정 변경 후 서버를 재시작한다. Linux/POSIX 프로세스 그룹 종료를 사용한다.
+
+배포 이미지 빌드 중 Python 3.11로 가상환경을 생성하고 사내 패키지 저장소에서 의존성을 설치한다. 개발 PC의 `.venv`를 복사하지 않는다. 기존 서버용 가상환경을 사용한다면 중복 생성 없이 분석 의존성만 병합한다. 분석 전용 환경 예시:
+
+```bash
+python3.11 -m venv /app/.venv
+/app/.venv/bin/python -m pip install pandas==2.3.3 numpy==2.2.6 scipy==1.16.1 plotly==6.3.0 statsmodels==0.14.5
+/app/.venv/bin/python -c "import pandas, numpy, scipy, plotly, statsmodels.api; print('analysis dependencies OK')"
+```
+
+위 목록은 분석 worker용이다. 같은 환경으로 API 서버도 실행한다면 프로젝트의 서버 의존성도 설치한다. 실행 시 임시 디렉터리 쓰기 권한이 필요하며 읽기 전용 루트 파일시스템이면 `/tmp` 등에 쓰기 가능한 볼륨을 제공한다.
+
+입력 전체 표, `df`/`tables`/`datasets`, `emit_table`, `emit_plot`, `stdout` 및 결과 JSON 계약은 유지한다. 호출별 임시 디렉터리를 사용하고 기본 60초 제한, 20 MiB 결과 읽기 제한을 적용한다. 완료·시간 초과·취소 시 worker의 프로세스 그룹을 종료한다. API 키·DB 비밀번호 등 부모 환경변수는 상속하지 않는다.
+
+**격리 범위:** `.venv`와 별도 프로세스는 보안 샌드박스가 아니다. 생성 코드는 같은 사용자 권한으로 파일과 네트워크에 접근할 수 있고 API와 Pod 자원을 공유한다. 기존 Docker의 실행별 CPU·메모리·PID 제한, 읽기 전용 입력, 네트워크 차단은 적용되지 않는다. Pod 자원 제한과 권한을 배포 정책에 맞게 설정한다. 강한 격리가 필요하면 별도 실행 Pod/서비스 구조가 필요하며 이 변경에는 포함하지 않는다.
+
+검증은 저장소 루트에서 실행한다(테스트용 pytest 필요):
+
+```bash
+.venv/bin/python -m pytest -q 08-YieldAgent/harness/tests/test_process_python_runtime.py
+```
+
+그다음 사내 실제 서버·LLM·MongoDB를 연결한 새 세션에서 전체 조회 결과의 집계와 차트 생성을 요청한다. `run_python` 성공, 표·차트 저장/화면 표시, 무한 루프 시간 초과 및 취소를 확인한다. 로컬 worker 테스트만으로 사내 통합 검증 완료를 선언하지 않는다.
+
+Docker 방식으로 되돌리려면 이미지를 빌드하고 `HARNESS_PYTHON_RUNTIME=docker`, `HARNESS_PYTHON_IMAGE=yield-harness-python:2`로 설정한다. Docker 실패 시 process 방식으로 자동 전환하지 않는다.

@@ -1,4 +1,5 @@
-"""Container entrypoint. The container, not Python imports, is the boundary."""
+"""Analysis entrypoint shared by container and local process runtimes."""
+import argparse
 import contextlib
 import io
 import json
@@ -21,8 +22,12 @@ class LimitedOutput(io.StringIO):
         return len(text)
 
 
-def main():
-    inputs = json.loads(Path("/input/data.json").read_text())
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-dir", type=Path, default=Path("/input"))
+    parser.add_argument("--output-dir", type=Path, default=Path("/output"))
+    args = parser.parse_args(argv)
+    inputs = json.loads((args.input_dir / "data.json").read_text(encoding="utf-8"))
     input_tables = {key: {name: (pd.DataFrame(rows["rows"], columns=rows["columns"])
         if isinstance(rows, dict) else pd.DataFrame(rows)) for name, rows in
         (value if isinstance(value, dict) else {"default": value}).items()} for key, value in inputs.items()}
@@ -46,13 +51,13 @@ def main():
     stdout, stderr = LimitedOutput(), LimitedOutput()
     result = {"status": "success", "tables": tables, "plots": plots, "error": None}
     try:
-        code = compile(Path("/input/code.py").read_text(), "analysis.py", "exec")
+        code = compile((args.input_dir / "code.py").read_text(encoding="utf-8"), "analysis.py", "exec")
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             exec(code, namespace)
     except Exception as exc:
         result.update(status="error", error={"type": type(exc).__name__, "message": str(exc)[:1000], "traceback": traceback.format_exc(limit=4)[-2000:]})
     result.update(stdout=stdout.getvalue(), stderr=stderr.getvalue())
-    Path("/output/result.json").write_text(json.dumps(result, ensure_ascii=False, allow_nan=False))
+    (args.output_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, allow_nan=False), encoding="utf-8")
 
 
 if __name__ == "__main__":

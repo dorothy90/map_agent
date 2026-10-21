@@ -58,15 +58,13 @@ def test_worker_keeps_tables_distinct_and_rejects_duplicate_names(tmp_path, monk
     data, code, output = tmp_path / 'data.json', tmp_path / 'code.py', tmp_path / 'result.json'
     data.write_text(json.dumps({'r': {'weekly': [{'week': 1}], 'wafer': [{'lot': 'x'}]}}))
     code.write_text("assert 'r' not in datasets\nemit_table(tables['r']['weekly'], name='weekly')\nemit_table(tables['r']['wafer'], name='wafer')")
-    paths = {'/input/data.json': data, '/input/code.py': code, '/output/result.json': output}
-    monkeypatch.setattr(worker, 'Path', lambda path: paths[path])
-    worker.main()
+    worker.main(['--input-dir', str(tmp_path), '--output-dir', str(tmp_path)])
     result = json.loads(output.read_text())
     assert result['status'] == 'success', result
     assert [t['table_id'] for t in result['tables']] == ['weekly', 'wafer']
     assert result['tables'][1]['rows'] == [{'lot': 'x'}]
     code.write_text("emit_table([{'x': 1}], name='same')\nemit_table([{'y': 1}], name='same')")
-    worker.main()
+    worker.main(['--input-dir', str(tmp_path), '--output-dir', str(tmp_path)])
     result = json.loads(output.read_text())
     assert result['status'] == 'error' and 'Duplicate' in result['error']['message']
 
@@ -86,7 +84,7 @@ def test_python_inherits_incomplete_input_even_when_stdout_claims_complete(monke
         assert datasets == {'x': {'default': {'rows': [{'n': 1}], 'columns': ['n']}}}
         return {'status': 'success', 'tables': [{'table_id': 'summary', 'title': 'summary', 'rows': [{'n': 1}], 'complete': True}], 'plots': [], 'stdout': 'all data complete', 'stderr': ''}
     monkeypatch.setattr(ContainerRuntime, 'execute', execute)
-    ctx = SimpleNamespace(store=Store(), run={'principal_id': 'a', 'session_id': 's'}, settings=SimpleNamespace(python_image='unused'))
+    ctx = SimpleNamespace(store=Store(), run={'principal_id': 'a', 'session_id': 's'}, settings=SimpleNamespace(python_runtime='docker', python_image='unused'))
     result = asyncio.run(run_python(PythonInput(code='print(1)', input_result_ids=['x']), ctx))
     assert result.status == 'partial'
     assert not result.tables[0].complete
@@ -108,6 +106,33 @@ def test_v1_gridfs_record_reads_without_rewrite():
             assert page['table_id'] == 'default' and page['complete']
             persisted = await store.results.find_one({'result_id': 'legacy'})
             assert 'tables' not in persisted['observation']
+        finally:
+            await store.client.drop_database(store.db.name)
+            store.client.close()
+    asyncio.run(scenario())
+
+
+def test_run_python_process_reads_full_stored_table_and_saves_artifacts():
+    from types import SimpleNamespace
+    from harness.config import Settings
+    from harness.store import HarnessStore
+    from harness.tools.python_tools import PythonInput, run_python
+    from harness.types import ResultTable
+
+    async def scenario():
+        store = HarnessStore(database='harness_process_' + uuid.uuid4().hex)
+        try:
+            await store.setup()
+            source = await store.put_result('a', 's', dict(run_id='r', invocation_id='input', tool_name='fixture'), [], [],
+                tables=[ResultTable(table_id='data', title='Fixture', rows=[{'n': i} for i in range(120)], complete=True)])
+            ctx = SimpleNamespace(store=store, run={'principal_id': 'a', 'session_id': 's'}, settings=Settings())
+            result = await run_python(PythonInput(input_result_ids=[source.result_id], code=
+                "emit_table(pd.DataFrame([{'count': len(df), 'total': int(df.n.sum())}]))\nemit_plot(px.bar(df, y='n'))"), ctx)
+            assert result.status == 'success'
+            saved = await store.put_result('a', 's', dict(run_id='r', invocation_id='output', tool_name='run_python'),
+                [], result.artifacts, tables=result.tables)
+            assert await store.rows('a', 's', saved.result_id, table_id='table_1') == [{'count': 120, 'total': 7140}]
+            assert len(saved.artifact_refs) == 2
         finally:
             await store.client.drop_database(store.db.name)
             store.client.close()

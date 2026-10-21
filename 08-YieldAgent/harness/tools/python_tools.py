@@ -1,5 +1,6 @@
 from pydantic import Field
 from ..runtime.container import ContainerRuntime
+from ..runtime.process import ProcessRuntime
 from ..types import Contract, ResultTable
 from .registry import ToolResult, ToolSpec
 
@@ -69,7 +70,9 @@ async def run_python(args, ctx):
                 "columns": list(dict.fromkeys([*table.columns, *(key for row in rows for key in row)]))}
             if not table.complete:
                 limitations.append(f"{result_id}/{table.table_id}: {table.missing_reason or 'Incomplete source'}")
-    result = await ContainerRuntime(ctx.settings.python_image).execute(args.code, datasets)
+    runtime = (ContainerRuntime(ctx.settings.python_image) if ctx.settings.python_runtime == "docker"
+        else ProcessRuntime(ctx.settings.python_executable))
+    result = await runtime.execute(args.code, datasets)
     artifacts = [{"title": "분석 코드", "mime": "text/plain", "data": args.code}]
     artifacts.extend({"title": f"분석 차트 {i+1}", "mime": "text/html", "data": html} for i, html in enumerate(result["plots"]))
     complete = result["status"] == "success" and not limitations
@@ -89,4 +92,4 @@ async def run_python(args, ctx):
 def register(registry):
     registry.add(ToolSpec("recall_session", "현재 맥락 밖의 이전 대화 원문·답변·결과 ID를 최근순으로 읽는다. 오래전 자료 재참조에 사용한다. offset으로 더 오래된 대화를 읽는다.", RecallInput, recall_session, eager=True))
     registry.add(ToolSpec("read_result", "이전 결과의 전체 원본을 페이지로 읽는다. result_id와 offset으로 표본 밖의 자료를 확인한다.", ReadInput, read_result, eager=True))
-    registry.add(ToolSpec("run_python", "격리 Python으로 result_id의 전체 데이터를 분석한다. tables[result_id][table_id], datasets[id]와 df(단일 표 입력만), pd/np/px/go/scipy/sm 사용. 표는 emit_table(df), 차트는 emit_plot(fig), 설명은 print(). 세션 변수는 유지되지 않는다.", PythonInput, run_python, read_only=False, timeout=70, effect='artifact', eager=True))
+    registry.add(ToolSpec("run_python", "별도 Python 실행 환경으로 result_id의 전체 데이터를 분석한다. tables[result_id][table_id], datasets[id]와 df(단일 표 입력만), pd/np/px/go/scipy/sm 사용. 표는 emit_table(df), 차트는 emit_plot(fig), 설명은 print(). 세션 변수는 유지되지 않는다.", PythonInput, run_python, read_only=False, timeout=70, effect='artifact', eager=True))
