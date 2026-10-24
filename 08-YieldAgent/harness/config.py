@@ -26,6 +26,7 @@ class Settings(BaseModel):
     evidence_tokens: int = Field(default=2000, ge=0)
     temperature: float = Field(default=0, ge=0, le=2)
     reasoning_effort: str | None = None
+    timezone: str | None = None
     python_runtime: Literal["process", "docker"] = "process"
     python_executable: str | None = None
     python_image: str = "yield-harness-python:2"
@@ -65,4 +66,5 @@ class Settings(BaseModel):
             evidence_tokens=int(os.getenv("HARNESS_EVIDENCE_TOKENS", "2000")),
             temperature=float(os.getenv("HARNESS_TEMPERATURE", "0")),
             reasoning_effort=os.getenv("HARNESS_REASONING_EFFORT") or None,
+            timezone=os.getenv("HARNESS_TIMEZONE") or os.getenv("HERMES_TIMEZONE") or None,
         )

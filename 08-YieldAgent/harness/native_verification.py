@@ -17,10 +17,22 @@ def unknown(reason):
     return {'verdict': 'unknown', 'issues': [reason], 'result_ids': []}
 
 
-def final_messages(messages, repair_prompts, answer):
-    """Keep tool evidence, replacing internal drafts/feedback with the final answer."""
-    clean = []
-    for message in messages:
+def final_messages(messages, repair_prompts, answer, *, turn_id=None,
+        current_turn_user_idx=None, conversation_history=None, user_message=None):
+    """Settle only the proven current turn; never infer a boundary from user text."""
+    start = 0
+    if user_message is not None:
+        if (not turn_id or type(current_turn_user_idx) is not int
+                or not 0 <= current_turn_user_idx < len(messages)
+                or messages[current_turn_user_idx].get('role') != 'user'):
+            # Upstream deliberately omits the boundary on preflight timeout, even
+            # when a previous user asked the identical question. Keep that history.
+            history = conversation_history if conversation_history is not None else messages
+            return [*history, {'role': 'user', 'content': user_message},
+                {'role': 'assistant', 'content': answer}]
+        start = current_turn_user_idx
+    clean = list(messages[:start])
+    for message in messages[start:]:
         if message.get('role') == 'user' and message.get('content') in repair_prompts:
             if clean and clean[-1].get('role') == 'assistant' and not clean[-1].get('tool_calls'):
                 clean.pop()
@@ -28,6 +40,9 @@ def final_messages(messages, repair_prompts, answer):
         clean.append(message)
     if clean and clean[-1].get('role') == 'assistant' and not clean[-1].get('tool_calls'):
         clean[-1] = {**clean[-1], 'content': answer}
+        # Hermes replays this sidecar in preference to content. A rewritten
+        # answer must not replay a draft rejected by independent verification.
+        clean[-1].pop('api_content', None)
     else:
         clean.append({'role': 'assistant', 'content': answer})
     return clean

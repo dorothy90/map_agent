@@ -9,6 +9,7 @@ import sys
 import tempfile
 from dataclasses import replace
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -104,13 +105,43 @@ async def run_native(context, registry, *, history=None):
     python = sys.executable
     bridge = NativeBridge(registry, context)
     profile = prepare_profile(run['principal_id'])
+    profile_config = profile / 'config.yaml'
+    config = (yaml.safe_load(profile_config.read_text()) or {}) if profile_config.exists() else {}
+    skill_config = config.get('skills') or {}
+    if skill_config.get('external_dirs') or skill_config.get('create_dir'):
+        raise ValueError('Native runs require profile-local skills; external skill directories cannot be versioned for this run')
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR') if key in os.environ}
-    env.update(HERMES_HOME=str(profile), PYTHONUNBUFFERED='1', HERMES_DISABLE_LAZY_INSTALLS='1')
+    env.update(HERMES_HOME=str(profile), PYTHONUNBUFFERED='1', HERMES_DISABLE_LAZY_INSTALLS='1',
+        HERMES_TIMEZONE=settings.timezone or config.get('timezone') or 'Asia/Seoul')
+    try:
+        requested_at = datetime.fromisoformat(run.get('created_at') or '')
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=ZoneInfo(env['HERMES_TIMEZONE']))
+    except (TypeError, ValueError):
+        requested_at = datetime.now(timezone.utc)
+    request_context = {'requested_at': requested_at.astimezone(ZoneInfo(env['HERMES_TIMEZONE'])).isoformat(),
+        'timezone': env['HERMES_TIMEZONE']}
     workspace = tempfile.TemporaryDirectory(prefix="yield-hermes-")
     try:
-        process = await asyncio.create_subprocess_exec(str(python), '-I', str(Path(__file__).with_name('native_worker.py')),
-            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            env=env, cwd=workspace.name, limit=16 * 1024 * 1024, start_new_session=True)
+        from .skills import SkillCatalog
+        skills_path = Path(workspace.name) / 'skills'
+        if (profile / 'skills').exists():
+            shutil.copytree(profile / 'skills', skills_path)
+        else:
+            skills_path.mkdir()
+        catalog = SkillCatalog(skills_path)
+        skill_record = {'request_context': request_context, 'skill_snapshot': catalog.snapshot,
+            'skill_versions': {item['name']: item['version'] for item in catalog.list()}}
+        await context.store.runs.update_one({'_id': run['run_id'], 'epoch': run['epoch'], 'status': 'running'},
+            {'$set': skill_record})
+        run.update(skill_record)
+        # Keep Hermes worker diagnostics instead of discarding them (stdout carries the RPC stream).
+        log_dir = ROOT / '.runtime/hermes/logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with open(log_dir / f"native-worker-{run['run_id']}.log", 'ab') as worker_log:
+            process = await asyncio.create_subprocess_exec(str(python), '-I', str(Path(__file__).with_name('native_worker.py')),
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=worker_log,
+                env=env, cwd=workspace.name, limit=16 * 1024 * 1024, start_new_session=True)
     except BaseException:
         workspace.cleanup()
         raise
@@ -121,11 +152,17 @@ async def run_native(context, registry, *, history=None):
             await process.stdin.drain()
     startup = {'model': settings.model, 'base_url': settings.base_url,
         'api_key': settings.api_key.get_secret_value(), 'max_tokens': settings.max_output_tokens,
+        'temperature': settings.temperature, 'reasoning_effort': settings.reasoning_effort,
+        'call_timeout': settings.call_timeout, 'skills_path': str(skills_path),
         'max_iterations': settings.model_limit - prior_usage.get('models', 0), 'run_budget_seconds': context.remaining_seconds(),
         'token_limit': max(0, settings.token_limit - prior_usage.get('tokens', 0)), 'session_id': run['session_id'],
         'query': run.get('goal_request', run['query']), 'instructions': Path(__file__).with_name('instructions').joinpath('native.md').read_text(),
         'verification_instructions': Path(__file__).with_name('instructions').joinpath('verifier.md').read_text(),
+        'request_context': request_context,
         'tools': bridge.schemas(), 'history': history or [], 'upstream_commit': UPSTREAM_COMMIT}
+    startup['instructions'] += ('\n\n서버가 제공한 요청 기준정보(JSON)다. 상대 기간은 이 요청 시각과 시간대를 기준으로 해석한다. '
+        '데이터의 관측 기간은 요청의 시간 기준과 별개이며, 사용자가 기준을 지정한 경우 그 지정을 우선한다.\n'
+        + json.dumps(request_context, ensure_ascii=False))
     tasks = set()
     reviews = {}
     verification_observations = []
@@ -165,6 +202,7 @@ async def run_native(context, registry, *, history=None):
                     known.add(obs.result_id)
                     known.update(obs.source_result_ids)
                 await send({'id': message['id'], 'result': {'request': startup['query'],
+                    'request_context': request_context,
                     'current_time': datetime.now(timezone.utc).isoformat(), 'prior_dialogue': history or [],
                     'candidate': message['candidate'], 'evidence': evidence, 'known_result_ids': sorted(known)}})
             elif message['type'] == 'verification_finished':
@@ -187,7 +225,7 @@ async def run_native(context, registry, *, history=None):
                 await context.store.event(run['run_id'], 'commentary', {'content': message['content']}, epoch=run['epoch'])
             elif message['type'] == 'step':
                 await context.store.runs.update_one({'_id': run['run_id'], 'epoch': run['epoch'], 'status': 'running'},
-                    {'$max': {'usage.tokens': prior_usage.get('tokens', 0) + message['tokens'],
+                    {'$set': {'usage.tokens': prior_usage.get('tokens', 0) + message['tokens'],
                         'usage.models': prior_usage.get('models', 0) + message['models']}})
                 await context.store.event(run['run_id'], 'progress', {'name': 'reasoning',
                     'message': 'Hermes 원본 엔진이 요청과 도구 결과를 확인하고 있습니다.'}, epoch=run['epoch'])
@@ -199,7 +237,7 @@ async def run_native(context, registry, *, history=None):
         if result is None:
             raise RuntimeError('Native Hermes worker exited without a result')
         await context.store.runs.update_one({'_id': run['run_id'], 'epoch': run['epoch'], 'status': 'running'},
-            {'$max': {'usage.tokens': prior_usage.get('tokens', 0) + (result.get('total_tokens') or 0),
+            {'$set': {'usage.tokens': prior_usage.get('tokens', 0) + (result.get('total_tokens') or 0),
                 'usage.models': prior_usage.get('models', 0) + (result.get('api_calls') or 0)}})
         observations = bridge.observations
         answer = result.get('final_response') or 'Hermes 실행이 답변을 완성하지 못했습니다.'
