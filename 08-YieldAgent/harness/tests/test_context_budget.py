@@ -229,31 +229,6 @@ def test_compaction_preserves_current_question_and_complete_tool_pairs():
     assert all(group[0].type == "ai" for group in message_groups(keep) if any(m.type == "tool" for m in group))
 
 
-def test_archived_history_can_only_be_read_by_its_owner_and_session():
-    import uuid
-    import pytest
-    from harness.store import HarnessStore
-    from harness.executor import ExecutionContext
-    from harness.tools.python_tools import recall_session, RecallInput
-
-    async def scenario():
-        store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
-        try:
-            await store.db.harness_context_archives.insert_one({"_id": "archive", "principal_id": "p", "session_id": "s",
-                "messages": [{"type": "human", "content": "original instruction"}, {"type": "ai", "content": "original answer"}]})
-            ctx = ExecutionContext(store, Settings(), {"principal_id": "p", "session_id": "s"})
-            page = await recall_session(RecallInput(archive_id="archive", limit=1), ctx)
-            assert page.rows == [{"type": "human", "content": "original instruction"}] and page.status == "partial"
-            for principal, session in [("other", "s"), ("p", "other")]:
-                ctx.run = {"principal_id": principal, "session_id": session}
-                with pytest.raises(PermissionError):
-                    await recall_session(RecallInput(archive_id="archive"), ctx)
-        finally:
-            await store.client.drop_database(store.db.name)
-            store.client.close()
-    asyncio.run(scenario())
-
-
 def test_memory_never_restores_unanswered_native_calls_after_a_stop():
     from harness.context import memory_snapshot, session_context
     state = {"messages": [HumanMessage(content="request"), AIMessage(content="checking", tool_calls=[

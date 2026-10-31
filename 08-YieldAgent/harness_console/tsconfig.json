@@ -1,0 +1,100 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "types": [
+      "vite/client",
+      "node",
+      "vitest/globals"
+    ],
+    "paths": {
+      "@hermes/shared": [
+        "./src/protocol/pr9-full.ts"
+      ],
+      "@/*": [
+        "./src/hermes/*"
+      ],
+      "@hermes/shared/i18n": [
+        "./src/protocol/i18n.ts"
+      ],
+      "@hermes/shared/ansi": [
+        "./src/protocol/pr9-ansi.ts"
+      ],
+      "@hermes/shared/color": [
+        "./src/protocol/pr9-extra/color.ts"
+      ],
+      "@hermes/shared/skin": [
+        "./src/protocol/pr9-extra/skin.ts"
+      ],
+      "@hermes/shared/translucency": [
+        "./src/protocol/pr9-extra/translucency.ts"
+      ],
+      "@hermes/shared/billing": [
+        "./src/protocol/pr9-extra/billing-types.ts"
+      ]
+    }
+  },
+  "include": [
+    "src",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "src/hermes/app/capabilities/connectors/data/queries-rules.test.tsx",
+    "src/hermes/app/chat/composer/discard-lost-prompt.test.ts",
+    "src/hermes/app/chat/composer/hooks/use-at-completions-contrib.test.tsx",
+    "src/hermes/app/chat/composer/hooks/use-completions-owner-route.test.tsx",
+    "src/hermes/app/chat/composer/hooks/use-composer-voice-shortcuts.test.tsx",
+    "src/hermes/app/chat/composer/hooks/use-composer-voice.test.tsx",
+    "src/hermes/app/chat/composer/hooks/use-slash-completions.test.tsx",
+    "src/hermes/app/chat/composer/status-stack/coding-row.test.tsx",
+    "src/hermes/app/chat/new-session-drag.test.ts",
+    "src/hermes/app/chat/right-rail/preview-popout-bridge.test.ts",
+    "src/hermes/app/chat/session-drag.test.ts",
+    "src/hermes/app/chat/sidebar/cron-jobs-section.test.tsx",
+    "src/hermes/app/chat/sidebar/gateway-groups-drag.test.tsx",
+    "src/hermes/app/chat/sidebar/gateway-groups.test.tsx",
+    "src/hermes/app/chat/sidebar/profile-launch-menu.test.tsx",
+    "src/hermes/app/chat/sidebar/project-dialog.test.tsx",
+    "src/hermes/app/hud/composer-drag.test.ts",
+    "src/hermes/app/right-sidebar/terminal/agent-terminal-stream.bound.test.ts",
+    "src/hermes/app/session/hooks/profile-rail-fresh-chat-owner.test.tsx",
+    "src/hermes/app/session/hooks/use-prompt-actions/prepared-submissions-spent.test.ts",
+    "src/hermes/components/assistant-ui/catalog-install-tool.test.tsx",
+    "src/hermes/components/assistant-ui/connector-directory-card.test.tsx",
+    "src/hermes/components/assistant-ui/connector-tool.test.tsx",
+    "src/hermes/components/assistant-ui/mcp-setup-tool.test.tsx",
+    "src/hermes/components/assistant-ui/thread/message-parts-connectors.test.tsx",
+    "src/hermes/components/assistant-ui/thread/user-edit-composer-owner-route.test.tsx",
+    "src/hermes/components/onboarding/skip-setup.test.tsx",
+    "src/hermes/components/prompt-overlays.test.tsx",
+    "src/hermes/components/prompt-overlays.vault-code.test.tsx",
+    "src/hermes/components/prompt-overlays.vault-save-login.test.tsx",
+    "src/hermes/components/prompt-overlays.vault-unlock.test.tsx",
+    "src/hermes/lib/desktop-git.test.ts",
+    "src/hermes/lib/voice-playback.routing.test.ts",
+    "src/hermes/lib/voice-playback.same-turn.test.ts",
+    "src/hermes/lib/voice-playback.test.ts",
+    "src/hermes/store/free-tier-challenge.test.ts",
+    "src/hermes/store/free-tier-sign-in.test.ts",
+    "src/hermes/store/hud.test.ts",
+    "src/hermes/store/onboarding-run.test.ts",
+    "src/hermes/store/pet-gallery.test.ts",
+    "src/hermes/store/profile-share.test.ts",
+    "src/hermes/store/translucency.test.ts",
+    "src/hermes/store/translucency.win10.test.ts"
+  ]
+}

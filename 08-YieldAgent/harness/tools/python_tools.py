@@ -1,7 +1,7 @@
 from pydantic import Field
 from ..runtime.container import ContainerRuntime
 from ..runtime.process import ProcessRuntime
-from ..types import Contract, ResultTable
+from ..types import Contract, ResultPage, ResultTable
 from .registry import ToolResult, ToolSpec
 
 
@@ -18,37 +18,15 @@ class ReadInput(Contract):
     columns: list[str] | None = None
 
 
-class RecallInput(Contract):
-    offset: int = Field(default=0, ge=0)
-    limit: int = Field(default=10, ge=1, le=20)
-    archive_id: str | None = Field(default=None, description="history_archives에 있는 압축 전 대화 원문 ID. 지정하면 그 기록을 페이지로 읽는다.")
-
-
-async def recall_session(args, ctx):
-    if args.archive_id:
-        archive = await ctx.store.db.harness_context_archives.find_one({"_id": args.archive_id,
-            "principal_id": ctx.run["principal_id"], "session_id": ctx.run["session_id"]})
-        if not archive:
-            raise PermissionError("History unavailable")
-        messages = archive["messages"]
-        return ToolResult(rows=messages[args.offset:args.offset + args.limit],
-            summary=f"보관된 대화 {len(messages)}개 중 offset={args.offset} 페이지", scope=args.model_dump(),
-            status="partial" if args.offset or args.offset + args.limit < len(messages) else None)
-    runs = await ctx.store.runs.find({"principal_id": ctx.run["principal_id"], "session_id": ctx.run["session_id"],
-        "_id": {"$ne": ctx.run["run_id"]}}).sort("created_at", -1).skip(args.offset).limit(args.limit).to_list(args.limit)
-    rows = [{"query": r["query"], "answer": r.get("answer_text", r.get("answer", "")), "status": r["status"], "created_at": r["created_at"],
-        "history_archives": r.get("context_memory", {}).get("context_archives", []),
-        "results": [{"result_id": o["result_id"], "tool_name": o["tool_name"], "scope": o["scope"]} for o in r.get("observations", []) if o["run_id"] == r["run_id"]]} for r in runs]
-    return ToolResult(rows=rows, summary=f"현재 세션의 이전 대화 {len(rows)}개", scope=args.model_dump())
-
-
 async def read_result(args, ctx):
     page = await ctx.store.read_result(ctx.run["principal_id"], ctx.run["session_id"], **args.model_dump())
+    projection = ResultPage(table_id=page["table_id"], source_total_rows=page["total_rows"],
+                            offset=page["offset"], limit=args.limit)
     complete = page["complete"] and not page["truncated"]
     reason = page["missing_reason"] or ("Only a page of the source table was read" if page["truncated"] else None)
     return ToolResult(tables=[ResultTable(table_id=page["table_id"], title=page["title"],
         rows=page["rows"], columns=page["columns"], units=page["units"], complete=complete, missing_reason=reason)],
-        summary=f"원본 {page['total_rows']}행 중 offset={page['offset']}부터 {len(page['rows'])}행",
+        summary=projection.summary(len(page["rows"])), page=projection,
         scope=page["scope"], source_result_ids=[args.result_id], status="partial" if not complete else None,
         data_origin=page["provenance"].get("data_origin", "unknown"))
 
@@ -70,8 +48,14 @@ async def run_python(args, ctx):
                 "columns": list(dict.fromkeys([*table.columns, *(key for row in rows for key in row)]))}
             if not table.complete:
                 limitations.append(f"{result_id}/{table.table_id}: {table.missing_reason or 'Incomplete source'}")
-    runtime = (ContainerRuntime(ctx.settings.python_image) if ctx.settings.python_runtime == "docker"
-        else ProcessRuntime(ctx.settings.python_executable))
+    if getattr(ctx.settings, 'no_yield_tools', False):
+        if ctx.settings.isolation is None:
+            raise RuntimeError("isolated Python backend is not configured")
+        runtime = ProcessRuntime(isolation=ctx.settings.isolation, run_id=ctx.run["run_id"],
+                                 principal_id=ctx.run["principal_id"])
+    else:
+        runtime = (ContainerRuntime(ctx.settings.python_image) if ctx.settings.python_runtime == "docker"
+            else ProcessRuntime(ctx.settings.python_executable))
     result = await runtime.execute(args.code, datasets)
     artifacts = [{"title": "분석 코드", "mime": "text/plain", "data": args.code}]
     artifacts.extend({"title": f"분석 차트 {i+1}", "mime": "text/html", "data": html} for i, html in enumerate(result["plots"]))
@@ -90,6 +74,5 @@ async def run_python(args, ctx):
 
 
 def register(registry):
-    registry.add(ToolSpec("recall_session", "현재 맥락 밖의 이전 대화 원문·답변·결과 ID를 최근순으로 읽는다. 오래전 자료 재참조에 사용한다. offset으로 더 오래된 대화를 읽는다.", RecallInput, recall_session, eager=True))
     registry.add(ToolSpec("read_result", "이전 결과의 전체 원본을 페이지로 읽는다. result_id와 offset으로 표본 밖의 자료를 확인한다.", ReadInput, read_result, eager=True))
-    registry.add(ToolSpec("run_python", "별도 Python 실행 환경으로 result_id의 전체 데이터를 분석한다. tables[result_id][table_id], datasets[id]와 df(단일 표 입력만), pd/np/px/go/scipy/sm 사용. 표는 emit_table(df), 차트는 emit_plot(fig), 설명은 print(). 세션 변수는 유지되지 않는다.", PythonInput, run_python, read_only=False, timeout=70, effect='artifact', eager=True))
+    registry.add(ToolSpec("run_python", "별도 Python 실행 환경으로 result_id의 전체 데이터를 분석한다. tables[result_id][table_id], datasets[id]와 df(단일 표 입력만), pd/np/px/go 사용. 표는 emit_table(df), 차트는 emit_plot(fig), 설명은 print(). 세션 변수는 유지되지 않는다.", PythonInput, run_python, read_only=False, timeout=70, effect='artifact', eager=True))

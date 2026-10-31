@@ -1,7 +1,5 @@
 import asyncio
 import json
-import uuid
-
 from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 
 
@@ -22,38 +20,6 @@ def test_compaction_keeps_native_tool_pairs_and_result_references():
         tools = [m for m in group if m.type == "tool"]
         if tools:
             assert {m.tool_call_id for m in tools} == {c["id"] for c in group[0].tool_calls}
-
-
-def test_thirty_turn_old_result_remains_retrievable_only_in_own_session():
-    from harness.store import HarnessStore
-    from harness.tools.python_tools import recall_session, RecallInput
-    from harness.executor import ExecutionContext
-    from harness.config import Settings
-
-    async def scenario():
-        store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
-        try:
-            await store.setup()
-            for i in range(30):
-                run = await store.start_run("p", "s", str(i), f"질문 {i}")
-                run = await store.acquire(run["run_id"], "worker")
-                if i == 0:
-                    obs = await store.put_result("p", "s", {"run_id": run["run_id"], "invocation_id": "first", "tool_name": "query_yield", "scope": {"lotcd": "DEMO"}}, [{"n": n} for n in range(120)], [])
-                    await store.runs.update_one({"_id": run["run_id"]}, {"$set": {"observations": [obs.model_dump(mode="json")]}})
-                await store.finish(run["run_id"], run["epoch"], "completed", f"답변 {i}", "test")
-            run = await store.start_run("p", "s", "31", "첫 자료 재조회")
-            ctx = ExecutionContext(store, Settings(), run)
-            old = await recall_session(RecallInput(offset=29, limit=1), ctx)
-            assert old.rows[0]["query"] == "질문 0"
-            result_id = old.rows[0]["results"][0]["result_id"]
-            assert len(await store.rows("p", "s", result_id)) == 120
-            import pytest
-            with pytest.raises(PermissionError):
-                await store.rows("p", "another", result_id)
-        finally:
-            await store.client.drop_database(store.db.name)
-            store.client.close()
-    asyncio.run(scenario())
 
 
 def test_context_preserves_previous_result_summary_and_artifact_references():

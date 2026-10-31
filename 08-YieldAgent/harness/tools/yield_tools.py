@@ -41,7 +41,7 @@ async def query_yield(args, context):
 
 def register(registry):
     registry.add(ToolSpec("inspect_yield_coverage", "제품 미지정 탐색 가능. 파라미터 자료의 제품/공정별 최초·최신 측정 시점과 행 수를 조회한다.", CoverageInput, inspect_yield_coverage))
-    registry.add(ToolSpec("query_wafer_yield", "웨이퍼 측정값과 기간별 순위. metric=pass_rate는 전체 A-bin 수율이며 parameter 입력 금지. metric=parameter는 단위 미확정 원본 VALUE이며 수율%가 아니다. 특정 불량 bin 수율과 전체 기간 하위 N개는 query_defect_yield 사용.", WaferYieldInput, query_wafer_yield))
+    registry.add(ToolSpec("query_wafer_yield", "웨이퍼 측정값과 기간별 순위. metric=pass_rate는 전체 ?-bin 수율이며 parameter 입력 금지. metric=parameter는 단위 미확정 원본 VALUE이며 수율%가 아니다. 특정 불량 bin 수율과 전체 기간 하위 N개는 query_defect_yield 사용.", WaferYieldInput, query_wafer_yield))
     registry.add(ToolSpec("analyze_yield", "기존 수율 지표 방향에 따라 최신 두 기간 전체 상대 변화 항목과 표본 수를 계산한다. 원인/통계적 이상 검정이 아니다.", YieldInput, analyze_yield, eager=True))
     registry.add(ToolSpec("render_yield_scatter", "기존 측정 산점도 생성. 기간별 파라미터 행 제한이 있는 표본이며 전체 순위용이 아니다.", YieldInput, render_yield_scatter))
     registry.add(ToolSpec("query_yield", "제품별 PT1H/PT1C/GMS 수율과 표본 수를 기간 단위로 조회하고 전체 HTML 수율표 산출물도 생성한다.", YieldInput, query_yield, eager=True))
@@ -64,7 +64,7 @@ class WaferYieldInput(YieldInput):
         if self.metric == 'parameter' and self.parameter is None:
             raise ValueError('parameter is required for the parameter metric')
         if self.metric == 'pass_rate' and self.parameter is not None:
-            raise ValueError('pass_rate uses A-bin passes, not a parameter VALUE')
+            raise ValueError('pass_rate uses ?-bin passes, not a parameter VALUE')
         return self
 
 

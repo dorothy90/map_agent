@@ -1,0 +1,6043 @@
+{
+  "upstream": "5894e750",
+  "source_sha256": "6d362634879b8a2fd9d218c317075ad2eeee3cd34f784df7607388979d5aef3d",
+  "rpc": {
+    "a2a.forward": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "a2a.forward",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "a2a.forward"
+        }
+      }
+    },
+    "agents.list": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "agents.list",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "agents.list"
+        }
+      }
+    },
+    "approval.pending": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "approval.pending",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "approval.pending"
+        }
+      }
+    },
+    "approval.received": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "approval.received",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "approval.received"
+        }
+      }
+    },
+    "approval.respond": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "approval.respond",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "approval.respond"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "approval.respond"
+        }
+      }
+    },
+    "billing.auto_reload": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "billing.auto_reload",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "billing.auto_reload"
+        }
+      }
+    },
+    "billing.charge": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "billing.charge",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "billing.charge"
+        }
+      }
+    },
+    "billing.charge_status": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "billing.charge_status",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "billing.charge_status"
+        }
+      }
+    },
+    "billing.keep_going_on_credits": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "billing.keep_going_on_credits",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "billing.keep_going_on_credits"
+        }
+      }
+    },
+    "billing.state": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "billing.state",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "billing.state"
+        }
+      }
+    },
+    "billing.step_up": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "billing.step_up",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "billing.step_up"
+        }
+      }
+    },
+    "bot_relay.deliver": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "bot_relay.deliver",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "bot_relay.deliver"
+        },
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "bot_relay.deliver"
+        }
+      }
+    },
+    "bot_relay.outbox.drain": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "bot_relay.outbox.drain",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "bot_relay.outbox.drain"
+        }
+      }
+    },
+    "bot_relay.reply": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "bot_relay.reply",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "bot_relay.reply"
+        }
+      }
+    },
+    "bot_relay.roster.sync": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "bot_relay.roster.sync",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "bot_relay.roster.sync"
+        }
+      }
+    },
+    "bot_relay.settle": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "bot_relay.settle",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "bot_relay.settle"
+        }
+      }
+    },
+    "browser.manage": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "browser.manage",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "browser.manage"
+        }
+      }
+    },
+    "clarify.lock": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "clarify.lock",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "clarify.lock"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "clarify.lock"
+        }
+      }
+    },
+    "clarify.respond": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "clarify.respond",
+      "modes": {
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "clarify.respond"
+        }
+      }
+    },
+    "cli.exec": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "cli.exec",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "cli.exec"
+        }
+      }
+    },
+    "client.capabilities": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "client.capabilities",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "client.capabilities"
+        }
+      }
+    },
+    "clipboard.paste": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "clipboard.paste",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "clipboard.paste"
+        }
+      }
+    },
+    "command.dispatch": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "command.dispatch",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "command.dispatch"
+        }
+      }
+    },
+    "command.observe": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "command.observe",
+      "modes": {
+        "authority": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "command.observe"
+        }
+      }
+    },
+    "command.resolve": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "command.resolve",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "command.resolve"
+        }
+      }
+    },
+    "commands.catalog": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "commands.catalog",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "commands.catalog"
+        }
+      }
+    },
+    "complete.path": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "complete.path",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "complete.path"
+        }
+      }
+    },
+    "complete.slash": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "complete.slash",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "complete.slash"
+        }
+      }
+    },
+    "config.get": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "config.get",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "config.get"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "config.get"
+        }
+      }
+    },
+    "config.set": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "config.set",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "config.set"
+        },
+        "authority": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "config.set"
+        }
+      }
+    },
+    "config.show": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "config.show",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "config.show"
+        }
+      }
+    },
+    "connection.respond": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connection.respond",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connection.respond"
+        }
+      }
+    },
+    "connectors.accounts": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connectors.accounts",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connectors.accounts"
+        }
+      }
+    },
+    "connectors.accounts.remove": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connectors.accounts.remove",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connectors.accounts.remove"
+        }
+      }
+    },
+    "connectors.accounts.rename": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connectors.accounts.rename",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connectors.accounts.rename"
+        }
+      }
+    },
+    "connectors.catalog": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connectors.catalog",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connectors.catalog"
+        }
+      }
+    },
+    "connectors.connect": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connectors.connect",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connectors.connect"
+        }
+      }
+    },
+    "connectors.list": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connectors.list",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connectors.list"
+        }
+      }
+    },
+    "connectors.operation.status": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connectors.operation.status",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connectors.operation.status"
+        }
+      }
+    },
+    "connectors.operation.wake": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connectors.operation.wake",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connectors.operation.wake"
+        }
+      }
+    },
+    "connectors.policy.get": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connectors.policy.get",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connectors.policy.get"
+        }
+      }
+    },
+    "connectors.policy.set": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connectors.policy.set",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connectors.policy.set"
+        }
+      }
+    },
+    "connectors.tools": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connectors.tools",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "connectors.tools"
+        }
+      }
+    },
+    "cron.cancel": {
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "cron.cancel",
+      "modes": {
+        "authority": {
+          "classification": "stub",
+          "reason": "deferred_milestone_4",
+          "feature": "cron.cancel"
+        }
+      }
+    },
+    "cron.manage": {
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "cron.manage",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_4",
+          "feature": "cron.manage"
+        }
+      }
+    },
+    "cron.recover": {
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "cron.recover",
+      "modes": {
+        "authority": {
+          "classification": "stub",
+          "reason": "deferred_milestone_4",
+          "feature": "cron.recover"
+        }
+      }
+    },
+    "cron.status": {
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "cron.status",
+      "modes": {
+        "authority": {
+          "classification": "stub",
+          "reason": "deferred_milestone_4",
+          "feature": "cron.status"
+        }
+      }
+    },
+    "cron.submit": {
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "cron.submit",
+      "modes": {
+        "authority": {
+          "classification": "stub",
+          "reason": "deferred_milestone_4",
+          "feature": "cron.submit"
+        }
+      }
+    },
+    "delegation.pause": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "delegation.pause",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "delegation.pause"
+        }
+      }
+    },
+    "delegation.status": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "delegation.status",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "delegation.status"
+        }
+      }
+    },
+    "diagnostics.share_nous": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "diagnostics.share_nous",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "diagnostics.share_nous"
+        }
+      }
+    },
+    "display.install": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.install",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "display.install"
+        }
+      }
+    },
+    "display.lease.acquire": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.lease.acquire",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "display.lease.acquire"
+        }
+      }
+    },
+    "display.lease.release": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.lease.release",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "display.lease.release"
+        }
+      }
+    },
+    "display.observe": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.observe",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "display.observe"
+        }
+      }
+    },
+    "display.start": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.start",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "display.start"
+        }
+      }
+    },
+    "display.status": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.status",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "display.status"
+        }
+      }
+    },
+    "display.stop": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.stop",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "display.stop"
+        }
+      }
+    },
+    "display.switchSandboxImage": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.switchSandboxImage",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "display.switchSandboxImage"
+        }
+      }
+    },
+    "display.thumbnail": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.thumbnail",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "display.thumbnail"
+        }
+      }
+    },
+    "file.attach": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "file.attach",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "file.attach"
+        }
+      }
+    },
+    "free_tier.ack_notice": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "free_tier.ack_notice",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "free_tier.ack_notice"
+        }
+      }
+    },
+    "free_tier.challenge_result": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "free_tier.challenge_result",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "free_tier.challenge_result"
+        }
+      }
+    },
+    "free_tier.claim_nudge": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "free_tier.claim_nudge",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "free_tier.claim_nudge"
+        }
+      }
+    },
+    "free_tier.provision": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "free_tier.provision",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "free_tier.provision"
+        }
+      }
+    },
+    "free_tier.status": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "free_tier.status",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "free_tier.status"
+        }
+      }
+    },
+    "gateway.capabilities": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "gateway.capabilities",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "gateway.capabilities"
+        }
+      }
+    },
+    "groups.approve": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.approve",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.approve"
+        },
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.approve"
+        }
+      }
+    },
+    "groups.attachment.download": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.attachment.download",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.attachment.download"
+        }
+      }
+    },
+    "groups.attachment.upload": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.attachment.upload",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.attachment.upload"
+        }
+      }
+    },
+    "groups.capabilities": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.capabilities",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.capabilities"
+        }
+      }
+    },
+    "groups.create": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.create",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.create"
+        },
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.create"
+        }
+      }
+    },
+    "groups.demote": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.demote",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.demote"
+        }
+      }
+    },
+    "groups.disband": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.disband",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.disband"
+        }
+      }
+    },
+    "groups.discard": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.discard",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.discard"
+        }
+      }
+    },
+    "groups.list": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.list",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.list"
+        }
+      }
+    },
+    "groups.log": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.log",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.log"
+        }
+      }
+    },
+    "groups.peer.invite": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.peer.invite",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.peer.invite"
+        }
+      }
+    },
+    "groups.peer.register": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.peer.register",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.peer.register"
+        }
+      }
+    },
+    "groups.peer.revoke": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.peer.revoke",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.peer.revoke"
+        }
+      }
+    },
+    "groups.promote": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.promote",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.promote"
+        }
+      }
+    },
+    "groups.rename": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.rename",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.rename"
+        }
+      }
+    },
+    "groups.replica_state": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.replica_state",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.replica_state"
+        }
+      }
+    },
+    "groups.replicate": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.replicate",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.replicate"
+        }
+      }
+    },
+    "groups.retry": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.retry",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.retry"
+        },
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.retry"
+        }
+      }
+    },
+    "groups.send": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.send",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.send"
+        }
+      }
+    },
+    "groups.state": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.state",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.state"
+        }
+      }
+    },
+    "groups.stop": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "groups.stop",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "groups.stop"
+        }
+      }
+    },
+    "handoff.fail": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "handoff.fail",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "handoff.fail"
+        }
+      }
+    },
+    "handoff.request": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "handoff.request",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "handoff.request"
+        }
+      }
+    },
+    "handoff.state": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "handoff.state",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "handoff.state"
+        }
+      }
+    },
+    "i18n.catalog": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "i18n.catalog",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "i18n.catalog"
+        }
+      }
+    },
+    "i18n.languages": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "i18n.languages",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "i18n.languages"
+        }
+      }
+    },
+    "image.attach": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "image.attach",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "image.attach"
+        }
+      }
+    },
+    "image.attach_bytes": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "image.attach_bytes",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "image.attach_bytes"
+        },
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "image.attach_bytes"
+        }
+      }
+    },
+    "image.detach": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "image.detach",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "image.detach"
+        }
+      }
+    },
+    "image.generate": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "image.generate",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "image.generate"
+        }
+      }
+    },
+    "input.detect_drop": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "input.detect_drop",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "input.detect_drop"
+        }
+      }
+    },
+    "insights.get": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "insights.get",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "insights.get"
+        }
+      }
+    },
+    "kanban.run": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "kanban.run",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "kanban.run"
+        }
+      }
+    },
+    "learning.delete": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "learning.delete",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "learning.delete"
+        }
+      }
+    },
+    "learning.detail": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "learning.detail",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "learning.detail"
+        }
+      }
+    },
+    "learning.edit": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "learning.edit",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "learning.edit"
+        }
+      }
+    },
+    "learning.frames": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "learning.frames",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "learning.frames"
+        }
+      }
+    },
+    "llm.oneshot": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "llm.oneshot",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "llm.oneshot"
+        }
+      }
+    },
+    "machine.facts": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "machine.facts",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "machine.facts"
+        }
+      }
+    },
+    "mcp.catalog": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "mcp.catalog",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "mcp.catalog"
+        }
+      }
+    },
+    "mcp.servers.add": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "mcp.servers.add",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "mcp.servers.add"
+        }
+      }
+    },
+    "mcp.servers.list": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "mcp.servers.list",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "mcp.servers.list"
+        }
+      }
+    },
+    "mcp.servers.oauth.callback": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "mcp.servers.oauth.callback",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "mcp.servers.oauth.callback"
+        }
+      }
+    },
+    "mcp.servers.oauth.cancel": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "mcp.servers.oauth.cancel",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "mcp.servers.oauth.cancel"
+        }
+      }
+    },
+    "mcp.servers.oauth.poll": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "mcp.servers.oauth.poll",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "mcp.servers.oauth.poll"
+        }
+      }
+    },
+    "mcp.servers.oauth.start": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "mcp.servers.oauth.start",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "mcp.servers.oauth.start"
+        }
+      }
+    },
+    "mcp.servers.remove": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "mcp.servers.remove",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "mcp.servers.remove"
+        }
+      }
+    },
+    "mcp.servers.set_api_key": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "mcp.servers.set_api_key",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "mcp.servers.set_api_key"
+        }
+      }
+    },
+    "mcp.servers.status": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "mcp.servers.status",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "mcp.servers.status"
+        }
+      }
+    },
+    "mcp.servers.test": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "mcp.servers.test",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "mcp.servers.test"
+        }
+      }
+    },
+    "message.react": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "message.react",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "message.react"
+        }
+      }
+    },
+    "model.disconnect": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "model.disconnect",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "model.disconnect"
+        }
+      }
+    },
+    "model.options": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "model.options",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "model.options"
+        }
+      }
+    },
+    "model.save_key": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "model.save_key",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "model.save_key"
+        }
+      }
+    },
+    "onboarding.set_run": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "onboarding.set_run",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "onboarding.set_run"
+        }
+      }
+    },
+    "onboarding.skip": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "onboarding.skip",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "onboarding.skip"
+        }
+      }
+    },
+    "onboarding.start": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "onboarding.start",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "onboarding.start"
+        }
+      }
+    },
+    "onboarding.state": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "onboarding.state",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "onboarding.state"
+        }
+      }
+    },
+    "paste.collapse": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "paste.collapse",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "paste.collapse"
+        }
+      }
+    },
+    "pdf.attach": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pdf.attach",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pdf.attach"
+        }
+      }
+    },
+    "pet.cancel": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.cancel",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.cancel"
+        }
+      }
+    },
+    "pet.cells": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.cells",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.cells"
+        }
+      }
+    },
+    "pet.disable": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.disable",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.disable"
+        }
+      }
+    },
+    "pet.export": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.export",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.export"
+        }
+      }
+    },
+    "pet.gallery": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.gallery",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.gallery"
+        }
+      }
+    },
+    "pet.generate": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.generate",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.generate"
+        }
+      }
+    },
+    "pet.generate.status": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.generate.status",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.generate.status"
+        }
+      }
+    },
+    "pet.hatch": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.hatch",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.hatch"
+        }
+      }
+    },
+    "pet.info": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.info",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.info"
+        }
+      }
+    },
+    "pet.info.meta": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.info.meta",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.info.meta"
+        }
+      }
+    },
+    "pet.remove": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.remove",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.remove"
+        }
+      }
+    },
+    "pet.rename": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.rename",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.rename"
+        }
+      }
+    },
+    "pet.scale": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.scale",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.scale"
+        }
+      }
+    },
+    "pet.select": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.select",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.select"
+        }
+      }
+    },
+    "pet.thumb": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.thumb",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "pet.thumb"
+        }
+      }
+    },
+    "ping": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "ping",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "ping"
+        }
+      }
+    },
+    "plugins.catalog.lookup": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "plugins.catalog.lookup",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "plugins.catalog.lookup"
+        }
+      }
+    },
+    "plugins.list": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "plugins.list",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "plugins.list"
+        }
+      }
+    },
+    "plugins.manage": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "plugins.manage",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "plugins.manage"
+        }
+      }
+    },
+    "preview.restart": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "preview.restart",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "preview.restart"
+        }
+      }
+    },
+    "process.kill": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "process.kill",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "process.kill"
+        }
+      }
+    },
+    "process.list": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "process.list",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "process.list"
+        }
+      }
+    },
+    "process.stop": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "process.stop",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "process.stop"
+        }
+      }
+    },
+    "profiles.configure": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "profiles.configure",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "profiles.configure"
+        }
+      }
+    },
+    "profiles.create": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "profiles.create",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "profiles.create"
+        }
+      }
+    },
+    "profiles.describe": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "profiles.describe",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "profiles.describe"
+        }
+      }
+    },
+    "profiles.get_asset": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "profiles.get_asset",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "profiles.get_asset"
+        }
+      }
+    },
+    "profiles.list": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "profiles.list",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "profiles.list"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "profiles.list"
+        }
+      }
+    },
+    "profiles.set_asset": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "profiles.set_asset",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "profiles.set_asset"
+        }
+      }
+    },
+    "project.facts": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "project.facts",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "project.facts"
+        }
+      }
+    },
+    "projects.add_folder": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.add_folder",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.add_folder"
+        }
+      }
+    },
+    "projects.archive": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.archive",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.archive"
+        }
+      }
+    },
+    "projects.create": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.create",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.create"
+        }
+      }
+    },
+    "projects.delete": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.delete",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.delete"
+        }
+      }
+    },
+    "projects.discover_repos": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.discover_repos",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.discover_repos"
+        }
+      }
+    },
+    "projects.for_cwd": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.for_cwd",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.for_cwd"
+        }
+      }
+    },
+    "projects.get": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.get",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.get"
+        }
+      }
+    },
+    "projects.list": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.list",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.list"
+        }
+      }
+    },
+    "projects.project_sessions": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.project_sessions",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.project_sessions"
+        }
+      }
+    },
+    "projects.record_repos": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.record_repos",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.record_repos"
+        }
+      }
+    },
+    "projects.remove_folder": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.remove_folder",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.remove_folder"
+        }
+      }
+    },
+    "projects.set_active": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.set_active",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.set_active"
+        }
+      }
+    },
+    "projects.set_primary": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.set_primary",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.set_primary"
+        }
+      }
+    },
+    "projects.tree": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.tree",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.tree"
+        }
+      }
+    },
+    "projects.update": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.update",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "projects.update"
+        }
+      }
+    },
+    "prompt.background": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "prompt.background",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "prompt.background"
+        }
+      }
+    },
+    "prompt.btw": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "prompt.btw",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "prompt.btw"
+        }
+      }
+    },
+    "prompt.cancel": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "prompt.cancel",
+      "modes": {
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "prompt.cancel"
+        }
+      }
+    },
+    "prompt.receipt": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "prompt.receipt",
+      "modes": {
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "prompt.receipt"
+        }
+      }
+    },
+    "prompt.replace_queued": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "prompt.replace_queued",
+      "modes": {
+        "authority": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "prompt.replace_queued"
+        }
+      }
+    },
+    "prompt.resolve_unknown": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "prompt.resolve_unknown",
+      "modes": {
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "prompt.resolve_unknown"
+        }
+      }
+    },
+    "prompt.steer_queued": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "prompt.steer_queued",
+      "modes": {
+        "authority": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "prompt.steer_queued"
+        }
+      }
+    },
+    "prompt.submit": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "prompt.submit",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "prompt.submit"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "prompt.submit"
+        }
+      }
+    },
+    "reload.env": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "reload.env",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "reload.env"
+        }
+      }
+    },
+    "reload.mcp": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "reload.mcp",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "reload.mcp"
+        }
+      }
+    },
+    "request.answer": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "request.answer",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "request.answer"
+        }
+      }
+    },
+    "rollback.diff": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "rollback.diff",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "rollback.diff"
+        }
+      }
+    },
+    "rollback.list": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "rollback.list",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "rollback.list"
+        }
+      }
+    },
+    "rollback.restore": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "rollback.restore",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "rollback.restore"
+        }
+      }
+    },
+    "rollback.session_diff": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "rollback.session_diff",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "rollback.session_diff"
+        }
+      }
+    },
+    "runtime.describe": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "runtime.describe",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "runtime.describe"
+        }
+      }
+    },
+    "session.activate": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.activate",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.activate"
+        }
+      }
+    },
+    "session.active_list": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.active_list",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.active_list"
+        }
+      }
+    },
+    "session.archive": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.archive",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.archive"
+        }
+      }
+    },
+    "session.automation": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "session.automation",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "session.automation"
+        }
+      }
+    },
+    "session.branch": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.branch",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.branch"
+        }
+      }
+    },
+    "session.branch_stored": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.branch_stored",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.branch_stored"
+        }
+      }
+    },
+    "session.branch_whole": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.branch_whole",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.branch_whole"
+        }
+      }
+    },
+    "session.close": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.close",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.close"
+        }
+      }
+    },
+    "session.compress": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.compress",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.compress"
+        }
+      }
+    },
+    "session.context_breakdown": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.context_breakdown",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.context_breakdown"
+        }
+      }
+    },
+    "session.control": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.control",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.control"
+        }
+      }
+    },
+    "session.control.read": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.control.read",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.control.read"
+        }
+      }
+    },
+    "session.create": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.create",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.create"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.create"
+        }
+      }
+    },
+    "session.cwd.set": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "session.cwd.set",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "session.cwd.set"
+        }
+      }
+    },
+    "session.delete": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.delete",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.delete"
+        }
+      }
+    },
+    "session.detach": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.detach",
+      "modes": {
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.detach"
+        }
+      }
+    },
+    "session.events.since": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.events.since",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.events.since"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.events.since"
+        }
+      }
+    },
+    "session.events.stats": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.events.stats",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.events.stats"
+        }
+      }
+    },
+    "session.export": {
+      "classification": "stub",
+      "reason": "server_download_deferred",
+      "feature": "session.export",
+      "modes": {
+        "authority": {
+          "classification": "stub",
+          "reason": "server_download_deferred",
+          "feature": "session.export"
+        }
+      }
+    },
+    "session.foreign.import": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "session.foreign.import",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "session.foreign.import"
+        }
+      }
+    },
+    "session.foreign.list": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "session.foreign.list",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "session.foreign.list"
+        }
+      }
+    },
+    "session.foreign.preview": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "session.foreign.preview",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "session.foreign.preview"
+        }
+      }
+    },
+    "session.history": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.history",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.history"
+        }
+      }
+    },
+    "session.info": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.info",
+      "modes": {
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.info"
+        }
+      }
+    },
+    "session.interrupt": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.interrupt",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.interrupt"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.interrupt"
+        }
+      }
+    },
+    "session.list": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.list",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.list"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.list"
+        }
+      }
+    },
+    "session.most_recent": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.most_recent",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.most_recent"
+        }
+      }
+    },
+    "session.mutate": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.mutate",
+      "modes": {
+        "authority": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.mutate"
+        }
+      }
+    },
+    "session.prune": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.prune",
+      "modes": {
+        "authority": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.prune"
+        }
+      }
+    },
+    "session.redirect": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "session.redirect",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "session.redirect"
+        },
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "session.redirect"
+        }
+      }
+    },
+    "session.resume": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.resume",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.resume"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.resume"
+        }
+      }
+    },
+    "session.save": {
+      "classification": "unsupported",
+      "reason": "local_file_save_disabled",
+      "feature": "session.save",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "local_file_save_disabled",
+          "feature": "session.save"
+        }
+      }
+    },
+    "session.set_hidden": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.set_hidden",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.set_hidden"
+        }
+      }
+    },
+    "session.stats": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.stats",
+      "modes": {
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.stats"
+        }
+      }
+    },
+    "session.status": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.status",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.status"
+        }
+      }
+    },
+    "session.steer": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "session.steer",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "session.steer"
+        },
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "session.steer"
+        }
+      }
+    },
+    "session.title": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.title",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.title"
+        }
+      }
+    },
+    "session.undo": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.undo",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "session.undo"
+        }
+      }
+    },
+    "session.usage": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.usage",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.usage"
+        }
+      }
+    },
+    "session.workspace.move": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "session.workspace.move",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "session.workspace.move"
+        }
+      }
+    },
+    "setup.runtime_check": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "setup.runtime_check",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "setup.runtime_check"
+        }
+      }
+    },
+    "setup.status": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "setup.status",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "setup.status"
+        }
+      }
+    },
+    "shared_metrics.desktop_daily": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "shared_metrics.desktop_daily",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shared_metrics.desktop_daily"
+        }
+      }
+    },
+    "shared_metrics.desktop_dislike": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "shared_metrics.desktop_dislike",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shared_metrics.desktop_dislike"
+        }
+      }
+    },
+    "shared_metrics.desktop_feature_use": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "shared_metrics.desktop_feature_use",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shared_metrics.desktop_feature_use"
+        }
+      }
+    },
+    "shared_metrics.desktop_friction": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "shared_metrics.desktop_friction",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shared_metrics.desktop_friction"
+        }
+      }
+    },
+    "shared_metrics.desktop_onboarding": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "shared_metrics.desktop_onboarding",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shared_metrics.desktop_onboarding"
+        }
+      }
+    },
+    "shared_metrics.set": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "shared_metrics.set",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shared_metrics.set"
+        }
+      }
+    },
+    "shared_metrics.slash_command": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "shared_metrics.slash_command",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shared_metrics.slash_command"
+        }
+      }
+    },
+    "shared_metrics.startup_latency": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "shared_metrics.startup_latency",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shared_metrics.startup_latency"
+        }
+      }
+    },
+    "shared_metrics.status": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "shared_metrics.status",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shared_metrics.status"
+        }
+      }
+    },
+    "shared_metrics.update_run": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "shared_metrics.update_run",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shared_metrics.update_run"
+        }
+      }
+    },
+    "shell.exec": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "shell.exec",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shell.exec"
+        },
+        "authority": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "shell.exec"
+        }
+      }
+    },
+    "skills.manage": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "skills.manage",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "skills.manage"
+        }
+      }
+    },
+    "skills.reload": {
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "skills.reload",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone_3",
+          "feature": "skills.reload"
+        }
+      }
+    },
+    "slash.exec": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "slash.exec",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "slash.exec"
+        }
+      }
+    },
+    "spawn_tree.list": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "spawn_tree.list",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "spawn_tree.list"
+        }
+      }
+    },
+    "spawn_tree.load": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "spawn_tree.load",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "spawn_tree.load"
+        }
+      }
+    },
+    "spawn_tree.save": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "spawn_tree.save",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "spawn_tree.save"
+        }
+      }
+    },
+    "subagent.interrupt": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subagent.interrupt",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "subagent.interrupt"
+        }
+      }
+    },
+    "subagent.list": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subagent.list",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "subagent.list"
+        }
+      }
+    },
+    "subagent.steer": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subagent.steer",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "subagent.steer"
+        }
+      }
+    },
+    "subagent.tail": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subagent.tail",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "subagent.tail"
+        }
+      }
+    },
+    "subscription.change": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subscription.change",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "subscription.change"
+        }
+      }
+    },
+    "subscription.preview": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subscription.preview",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "subscription.preview"
+        }
+      }
+    },
+    "subscription.resume": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subscription.resume",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "subscription.resume"
+        }
+      }
+    },
+    "subscription.state": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subscription.state",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "subscription.state"
+        }
+      }
+    },
+    "subscription.upgrade": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subscription.upgrade",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "subscription.upgrade"
+        }
+      }
+    },
+    "system.battery": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "system.battery",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "system.battery"
+        }
+      }
+    },
+    "terminal.resize": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "terminal.resize",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "terminal.resize"
+        }
+      }
+    },
+    "tools.configure": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "tools.configure",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "tools.configure"
+        }
+      }
+    },
+    "tools.list": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "tools.list",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "tools.list"
+        }
+      }
+    },
+    "tools.show": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "tools.show",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "tools.show"
+        }
+      }
+    },
+    "toolsets.list": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "toolsets.list",
+      "modes": {
+        "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "toolsets.list"
+        }
+      }
+    },
+    "usage.bars": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "usage.bars",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "usage.bars"
+        }
+      }
+    },
+    "vault.add": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "vault.add",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "vault.add"
+        }
+      }
+    },
+    "vault.list": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "vault.list",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "vault.list"
+        }
+      }
+    },
+    "vault.lock": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "vault.lock",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "vault.lock"
+        }
+      }
+    },
+    "vault.remove": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "vault.remove",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "vault.remove"
+        }
+      }
+    },
+    "vault.source.set": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "vault.source.set",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "vault.source.set"
+        }
+      }
+    },
+    "vault.sources": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "vault.sources",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "vault.sources"
+        }
+      }
+    },
+    "vault.unlock": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "vault.unlock",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "vault.unlock"
+        }
+      }
+    },
+    "verification.status": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "verification.status",
+      "modes": {
+        "legacy": {
+          "classification": "stub",
+          "reason": "deferred_milestone",
+          "feature": "verification.status"
+        }
+      }
+    },
+    "voice.record": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "voice.record",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "voice.record"
+        }
+      }
+    },
+    "voice.toggle": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "voice.toggle",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "voice.toggle"
+        }
+      }
+    },
+    "voice.tts": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "voice.tts",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "voice.tts"
+        }
+      }
+    },
+    "wake.feed": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "wake.feed",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "wake.feed"
+        }
+      }
+    },
+    "wake.pause": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "wake.pause",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "wake.pause"
+        }
+      }
+    },
+    "wake.resume": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "wake.resume",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "wake.resume"
+        }
+      }
+    },
+    "wake.start": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "wake.start",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "wake.start"
+        }
+      }
+    },
+    "wake.status": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "wake.status",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "wake.status"
+        }
+      }
+    },
+    "wake.stop": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "wake.stop",
+      "modes": {
+        "legacy": {
+          "classification": "unsupported",
+          "reason": "disabled_by_policy",
+          "feature": "wake.stop"
+        }
+      }
+    },
+    "worker.adopt": {
+      "classification": "unsupported",
+      "reason": "external_worker_control_not_needed",
+      "feature": "worker.adopt",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "external_worker_control_not_needed",
+          "feature": "worker.adopt"
+        }
+      }
+    },
+    "worker.persist": {
+      "classification": "unsupported",
+      "reason": "external_worker_control_not_needed",
+      "feature": "worker.persist",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "external_worker_control_not_needed",
+          "feature": "worker.persist"
+        }
+      }
+    },
+    "worker.register": {
+      "classification": "unsupported",
+      "reason": "external_worker_control_not_needed",
+      "feature": "worker.register",
+      "modes": {
+        "authority": {
+          "classification": "unsupported",
+          "reason": "external_worker_control_not_needed",
+          "feature": "worker.register"
+        }
+      }
+    }
+  },
+  "events": {
+    "agent.print": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "agent.print"
+    },
+    "agent.step": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "agent.step"
+    },
+    "agent.terminal.output": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "agent.terminal.output"
+    },
+    "approval.cancelled": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "approval.cancelled"
+    },
+    "approval.request": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "approval.request"
+    },
+    "approval.settled": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "approval.settled"
+    },
+    "background.complete": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "background.complete"
+    },
+    "billing.step_up.verification": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "billing.step_up.verification"
+    },
+    "bot_relay.outbox.pending": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "bot_relay.outbox.pending"
+    },
+    "browser.progress": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "browser.progress"
+    },
+    "btw.complete": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "btw.complete"
+    },
+    "clarify.request": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "clarify.request"
+    },
+    "clarify.settled": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "clarify.settled"
+    },
+    "connection.request": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connection.request"
+    },
+    "connection.update": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "connection.update"
+    },
+    "cron.changed": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "cron.changed"
+    },
+    "display.install.done": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.install.done"
+    },
+    "display.install.log": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.install.log"
+    },
+    "display.lease": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.lease"
+    },
+    "display.status": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.status"
+    },
+    "error": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "error"
+    },
+    "free_tier.challenge": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "free_tier.challenge"
+    },
+    "gateway.ready": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "gateway.ready"
+    },
+    "message.complete": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "message.complete"
+    },
+    "message.delta": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "message.delta"
+    },
+    "message.interim": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "message.interim"
+    },
+    "message.reaction": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "message.reaction"
+    },
+    "message.start": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "message.start"
+    },
+    "moa.aggregating": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "moa.aggregating"
+    },
+    "moa.phase": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "moa.phase"
+    },
+    "moa.progress": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "moa.progress"
+    },
+    "moa.reference": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "moa.reference"
+    },
+    "notice": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "notice"
+    },
+    "notification.clear": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "notification.clear"
+    },
+    "notification.show": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "notification.show"
+    },
+    "onboarding.ended": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "onboarding.ended"
+    },
+    "pairing.changed": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pairing.changed"
+    },
+    "pane.reveal": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pane.reveal"
+    },
+    "pet.changed": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.changed"
+    },
+    "pet.generate.progress": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.generate.progress"
+    },
+    "pet.hatch.progress": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "pet.hatch.progress"
+    },
+    "platforms.changed": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "platforms.changed"
+    },
+    "preview.close": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "preview.close"
+    },
+    "preview.open": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "preview.open"
+    },
+    "preview.restart.complete": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "preview.restart.complete"
+    },
+    "preview.restart.progress": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "preview.restart.progress"
+    },
+    "projects.changed": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "projects.changed"
+    },
+    "reaction": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "reaction"
+    },
+    "reasoning.available": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "reasoning.available"
+    },
+    "reasoning.delta": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "reasoning.delta"
+    },
+    "request.cancel": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "request.cancel"
+    },
+    "review.summary": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "review.summary"
+    },
+    "session.control.update": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.control.update"
+    },
+    "session.info": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.info"
+    },
+    "session.reclaimed": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.reclaimed"
+    },
+    "session.replay_gap": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.replay_gap"
+    },
+    "session.resume_progress": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.resume_progress"
+    },
+    "session.title": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.title"
+    },
+    "session.tools_changed": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "session.tools_changed"
+    },
+    "session.updated": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.updated"
+    },
+    "session.usage": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "session.usage"
+    },
+    "sessions.changed": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "sessions.changed"
+    },
+    "setup.ready": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "setup.ready"
+    },
+    "skills.changed": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "skills.changed"
+    },
+    "skin.changed": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "skin.changed"
+    },
+    "status.update": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "status.update"
+    },
+    "subagent.complete": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subagent.complete"
+    },
+    "subagent.progress": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subagent.progress"
+    },
+    "subagent.spawn_requested": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subagent.spawn_requested"
+    },
+    "subagent.start": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subagent.start"
+    },
+    "subagent.thinking": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subagent.thinking"
+    },
+    "subagent.tool": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "subagent.tool"
+    },
+    "terminal.close": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "terminal.close"
+    },
+    "thinking.delta": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "thinking.delta"
+    },
+    "tip.show": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "tip.show"
+    },
+    "todo.updated": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "todo.updated"
+    },
+    "tool.complete": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "tool.complete"
+    },
+    "tool.generating": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "tool.generating"
+    },
+    "tool.output_risk": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "tool.output_risk"
+    },
+    "tool.progress": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "tool.progress"
+    },
+    "tool.start": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "tool.start"
+    },
+    "voice.interrupted": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "voice.interrupted"
+    },
+    "voice.partial": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "voice.partial"
+    },
+    "voice.status": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "voice.status"
+    },
+    "voice.transcript": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "voice.transcript"
+    },
+    "wake.detected": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "wake.detected"
+    }
+  },
+  "server_requests": {
+    "approval": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "approval"
+    },
+    "clarify": {
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "clarify"
+    },
+    "display.install.sudo": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "display.install.sudo"
+    },
+    "preview.act": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "preview.act"
+    },
+    "preview.read": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "preview.read"
+    },
+    "secret": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "secret"
+    },
+    "setup_beat": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "setup_beat"
+    },
+    "sudo": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "sudo"
+    },
+    "terminal.read": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "terminal.read"
+    },
+    "theme.apply": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "theme.apply"
+    },
+    "theme.pick": {
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "theme.pick"
+    },
+    "tour": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "tour"
+    },
+    "vault.code": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "vault.code"
+    },
+    "vault.save_login": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "vault.save_login"
+    },
+    "vault.unlock_prompt": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "vault.unlock_prompt"
+    },
+    "window.read": {
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "window.read"
+    }
+  },
+  "routes": [
+    {
+      "method": "DELETE",
+      "path": "/api/credentials/pool/{provider}/{index}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/credentials/pool/{provider}/{index}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/cron/jobs/{job_id}",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/jobs/{job_id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/dashboard/agent-plugins/{name:path}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/dashboard/agent-plugins/{name:path}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/env",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/env"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/files",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/files"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/learning/node",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/learning/node"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/local-models/models/{model_id}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/models/{model_id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/mcp/oauth/flows/{flow_id}",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/mcp/oauth/flows/{flow_id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/mcp/servers/{name}",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/mcp/servers/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/messaging/telegram/onboarding/{pairing_id}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/messaging/telegram/onboarding/{pairing_id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/messaging/whatsapp/onboarding/{pairing_id}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/messaging/whatsapp/onboarding/{pairing_id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/ops/hooks",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/hooks"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/profiles/{name}",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/profiles/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/providers/custom-endpoints/{endpoint_id}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/custom-endpoints/{endpoint_id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/providers/oauth/sessions/{session_id}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/oauth/sessions/{session_id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/providers/oauth/{provider_id}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/oauth/{provider_id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/empty",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/sessions/empty"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/sessions/{session_id}",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/sessions/{session_id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/webhooks/{name}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/webhooks/{name}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/actions/{name}/status",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/actions/{name}/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/analytics/models",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/analytics/models"
+    },
+    {
+      "method": "GET",
+      "path": "/api/analytics/usage",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/analytics/usage"
+    },
+    {
+      "method": "GET",
+      "path": "/api/audio/elevenlabs/voices",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/audio/elevenlabs/voices"
+    },
+    {
+      "method": "GET",
+      "path": "/api/audio/voice-config",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/audio/voice-config"
+    },
+    {
+      "method": "GET",
+      "path": "/api/audio/voice-live/status",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/audio/voice-live/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/chat/workspaces",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/chat/workspaces"
+    },
+    {
+      "method": "GET",
+      "path": "/api/config",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/config"
+    },
+    {
+      "method": "GET",
+      "path": "/api/config/defaults",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/config/defaults"
+    },
+    {
+      "method": "GET",
+      "path": "/api/config/raw",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/config/raw"
+    },
+    {
+      "method": "GET",
+      "path": "/api/config/schema",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/config/schema"
+    },
+    {
+      "method": "GET",
+      "path": "/api/credentials/pool",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/credentials/pool"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cron/blueprints",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/blueprints"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cron/delivery-targets",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/delivery-targets"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cron/jobs",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/jobs"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cron/jobs/{job_id}",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/jobs/{job_id}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/cron/jobs/{job_id}/runs",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/jobs/{job_id}/runs"
+    },
+    {
+      "method": "GET",
+      "path": "/api/curator",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/curator"
+    },
+    {
+      "method": "GET",
+      "path": "/api/dashboard/font",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/dashboard/font"
+    },
+    {
+      "method": "GET",
+      "path": "/api/dashboard/plugins",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/dashboard/plugins"
+    },
+    {
+      "method": "GET",
+      "path": "/api/dashboard/plugins/catalog",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/dashboard/plugins/catalog"
+    },
+    {
+      "method": "GET",
+      "path": "/api/dashboard/plugins/hub",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/dashboard/plugins/hub"
+    },
+    {
+      "method": "GET",
+      "path": "/api/dashboard/plugins/rescan",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/dashboard/plugins/rescan"
+    },
+    {
+      "method": "GET",
+      "path": "/api/dashboard/themes",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/dashboard/themes"
+    },
+    {
+      "method": "GET",
+      "path": "/api/delegation/routing",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/delegation/routing"
+    },
+    {
+      "method": "GET",
+      "path": "/api/egress/status",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/egress/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/env",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/env"
+    },
+    {
+      "method": "GET",
+      "path": "/api/files",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/files"
+    },
+    {
+      "method": "GET",
+      "path": "/api/files/download",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/files/download"
+    },
+    {
+      "method": "GET",
+      "path": "/api/files/read",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/files/read"
+    },
+    {
+      "method": "GET",
+      "path": "/api/files/stream",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/files/stream"
+    },
+    {
+      "method": "GET",
+      "path": "/api/fs/default-cwd",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/fs/default-cwd"
+    },
+    {
+      "method": "GET",
+      "path": "/api/fs/download",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/fs/download"
+    },
+    {
+      "method": "GET",
+      "path": "/api/fs/git-root",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/fs/git-root"
+    },
+    {
+      "method": "GET",
+      "path": "/api/fs/list",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/fs/list"
+    },
+    {
+      "method": "GET",
+      "path": "/api/fs/read-data-url",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/fs/read-data-url"
+    },
+    {
+      "method": "GET",
+      "path": "/api/fs/read-text",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/fs/read-text"
+    },
+    {
+      "method": "GET",
+      "path": "/api/gateway/migrate/plan",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/gateway/migrate/plan"
+    },
+    {
+      "method": "GET",
+      "path": "/api/git/base-branches",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/base-branches"
+    },
+    {
+      "method": "GET",
+      "path": "/api/git/branches",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/branches"
+    },
+    {
+      "method": "GET",
+      "path": "/api/git/file-diff",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/file-diff"
+    },
+    {
+      "method": "GET",
+      "path": "/api/git/gh-auth",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/gh-auth"
+    },
+    {
+      "method": "GET",
+      "path": "/api/git/review/commit-context",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/commit-context"
+    },
+    {
+      "method": "GET",
+      "path": "/api/git/review/diff",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/diff"
+    },
+    {
+      "method": "GET",
+      "path": "/api/git/review/list",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/list"
+    },
+    {
+      "method": "GET",
+      "path": "/api/git/review/rev-parse",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/rev-parse"
+    },
+    {
+      "method": "GET",
+      "path": "/api/git/review/ship-info",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/ship-info"
+    },
+    {
+      "method": "GET",
+      "path": "/api/git/status",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/git/worktrees",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/worktrees"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/health"
+    },
+    {
+      "method": "GET",
+      "path": "/api/health/idle",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/health/idle"
+    },
+    {
+      "method": "GET",
+      "path": "/api/hermes/update/check",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/hermes/update/check"
+    },
+    {
+      "method": "GET",
+      "path": "/api/hermes/update/receipt",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/hermes/update/receipt"
+    },
+    {
+      "method": "GET",
+      "path": "/api/host/identity",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/host/identity"
+    },
+    {
+      "method": "GET",
+      "path": "/api/learning/graph",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/learning/graph"
+    },
+    {
+      "method": "GET",
+      "path": "/api/learning/node",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/learning/node"
+    },
+    {
+      "method": "GET",
+      "path": "/api/local-models/catalog",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/catalog"
+    },
+    {
+      "method": "GET",
+      "path": "/api/local-models/hardware",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/hardware"
+    },
+    {
+      "method": "GET",
+      "path": "/api/local-models/jobs",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/jobs"
+    },
+    {
+      "method": "GET",
+      "path": "/api/local-models/jobs/{job_id}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/jobs/{job_id}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/local-models/search",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/search"
+    },
+    {
+      "method": "GET",
+      "path": "/api/local-models/search/files",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/search/files"
+    },
+    {
+      "method": "GET",
+      "path": "/api/local-models/status",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/logs",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/logs"
+    },
+    {
+      "method": "GET",
+      "path": "/api/mcp/catalog",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/mcp/catalog"
+    },
+    {
+      "method": "GET",
+      "path": "/api/mcp/oauth/callback/{server_name:path}",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/mcp/oauth/callback/{server_name:path}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/mcp/oauth/flows/{flow_id}",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/mcp/oauth/flows/{flow_id}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/mcp/servers",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/mcp/servers"
+    },
+    {
+      "method": "GET",
+      "path": "/api/media",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/media"
+    },
+    {
+      "method": "GET",
+      "path": "/api/media/proxy",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/media/proxy"
+    },
+    {
+      "method": "GET",
+      "path": "/api/memory",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/memory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/memory/providers/{name}/config",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/memory/providers/{name}/config"
+    },
+    {
+      "method": "GET",
+      "path": "/api/messaging/platforms",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/messaging/platforms"
+    },
+    {
+      "method": "GET",
+      "path": "/api/messaging/telegram/onboarding/{pairing_id}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/messaging/telegram/onboarding/{pairing_id}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/messaging/whatsapp/onboarding/{pairing_id}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/messaging/whatsapp/onboarding/{pairing_id}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/model/auxiliary",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/model/auxiliary"
+    },
+    {
+      "method": "GET",
+      "path": "/api/model/info",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/model/info"
+    },
+    {
+      "method": "GET",
+      "path": "/api/model/moa",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/model/moa"
+    },
+    {
+      "method": "GET",
+      "path": "/api/model/options",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/model/options"
+    },
+    {
+      "method": "GET",
+      "path": "/api/model/recommended-default",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/model/recommended-default"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ops/backup/download",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/backup/download"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ops/checkpoints",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/checkpoints"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ops/hooks",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/hooks"
+    },
+    {
+      "method": "GET",
+      "path": "/api/pairing",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/pairing"
+    },
+    {
+      "method": "GET",
+      "path": "/api/portal",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/portal"
+    },
+    {
+      "method": "GET",
+      "path": "/api/profiles",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/profiles"
+    },
+    {
+      "method": "GET",
+      "path": "/api/profiles/active",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/profiles/active"
+    },
+    {
+      "method": "GET",
+      "path": "/api/profiles/projects/tree",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/profiles/projects/tree"
+    },
+    {
+      "method": "GET",
+      "path": "/api/profiles/sessions",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/profiles/sessions"
+    },
+    {
+      "method": "GET",
+      "path": "/api/profiles/sessions/sidebar",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/profiles/sessions/sidebar"
+    },
+    {
+      "method": "GET",
+      "path": "/api/profiles/{name}/desktop-overlay",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/profiles/{name}/desktop-overlay"
+    },
+    {
+      "method": "GET",
+      "path": "/api/profiles/{name}/setup-command",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/profiles/{name}/setup-command"
+    },
+    {
+      "method": "GET",
+      "path": "/api/profiles/{name}/soul",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/profiles/{name}/soul"
+    },
+    {
+      "method": "GET",
+      "path": "/api/providers/custom-endpoints",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/custom-endpoints"
+    },
+    {
+      "method": "GET",
+      "path": "/api/providers/oauth",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/oauth"
+    },
+    {
+      "method": "GET",
+      "path": "/api/providers/oauth/nous/handoff",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/oauth/nous/handoff"
+    },
+    {
+      "method": "GET",
+      "path": "/api/providers/oauth/{provider_id}/poll/{session_id}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/oauth/{provider_id}/poll/{session_id}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/sessions"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/empty/count",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/sessions/empty/count"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/search",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/sessions/search"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/stats",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/sessions/stats"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{session_id}",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/sessions/{session_id}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{session_id}/export",
+      "classification": "stub",
+      "reason": "server_download_deferred",
+      "feature": "/api/sessions/{session_id}/export"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{session_id}/latest-descendant",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/sessions/{session_id}/latest-descendant"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{session_id}/messages",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/sessions/{session_id}/messages"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{session_id}/messages/around",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/sessions/{session_id}/messages/around"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{session_id}/mutation-snapshot",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/sessions/{session_id}/mutation-snapshot"
+    },
+    {
+      "method": "GET",
+      "path": "/api/sessions/{session_id}/timeline",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/sessions/{session_id}/timeline"
+    },
+    {
+      "method": "GET",
+      "path": "/api/shared-metrics/consent",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/shared-metrics/consent"
+    },
+    {
+      "method": "GET",
+      "path": "/api/skills",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/skills"
+    },
+    {
+      "method": "GET",
+      "path": "/api/skills/content",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/skills/content"
+    },
+    {
+      "method": "GET",
+      "path": "/api/skills/hub/official",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/skills/hub/official"
+    },
+    {
+      "method": "GET",
+      "path": "/api/skills/hub/preview",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/skills/hub/preview"
+    },
+    {
+      "method": "GET",
+      "path": "/api/skills/hub/scan",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/skills/hub/scan"
+    },
+    {
+      "method": "GET",
+      "path": "/api/skills/hub/search",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/skills/hub/search"
+    },
+    {
+      "method": "GET",
+      "path": "/api/skills/hub/sources",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/skills/hub/sources"
+    },
+    {
+      "method": "GET",
+      "path": "/api/ssh/ownership",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ssh/ownership"
+    },
+    {
+      "method": "GET",
+      "path": "/api/status",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/system/stats",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/system/stats"
+    },
+    {
+      "method": "GET",
+      "path": "/api/tools/computer-use/status",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/tools/computer-use/status"
+    },
+    {
+      "method": "GET",
+      "path": "/api/tools/terminal/backends",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/tools/terminal/backends"
+    },
+    {
+      "method": "GET",
+      "path": "/api/tools/toolsets",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/tools/toolsets"
+    },
+    {
+      "method": "GET",
+      "path": "/api/tools/toolsets/{name}/config",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/tools/toolsets/{name}/config"
+    },
+    {
+      "method": "GET",
+      "path": "/api/tools/toolsets/{name}/models",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/tools/toolsets/{name}/models"
+    },
+    {
+      "method": "GET",
+      "path": "/api/webhooks",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/webhooks"
+    },
+    {
+      "method": "GET",
+      "path": "/dashboard-plugins/@{profile}/{plugin_name}/{file_path:path}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/dashboard-plugins/@{profile}/{plugin_name}/{file_path:path}"
+    },
+    {
+      "method": "GET",
+      "path": "/dashboard-plugins/{plugin_name}/{file_path:path}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/dashboard-plugins/{plugin_name}/{file_path:path}"
+    },
+    {
+      "method": "HEAD",
+      "path": "/api/files/stream",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/files/stream"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/profiles/{name}",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/profiles/{name}"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/sessions/{session_id}",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/sessions/{session_id}"
+    },
+    {
+      "method": "POST",
+      "path": "/api/audio/speak",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/audio/speak"
+    },
+    {
+      "method": "POST",
+      "path": "/api/audio/stt-lease",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/audio/stt-lease"
+    },
+    {
+      "method": "POST",
+      "path": "/api/audio/transcribe",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/audio/transcribe"
+    },
+    {
+      "method": "POST",
+      "path": "/api/audio/tts-lease",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/audio/tts-lease"
+    },
+    {
+      "method": "POST",
+      "path": "/api/audio/voice-live/session",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/audio/voice-live/session"
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/image-upload",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/chat/image-upload"
+    },
+    {
+      "method": "POST",
+      "path": "/api/credentials/pool",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/credentials/pool"
+    },
+    {
+      "method": "POST",
+      "path": "/api/cron/blueprints/instantiate",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/blueprints/instantiate"
+    },
+    {
+      "method": "POST",
+      "path": "/api/cron/fire",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/fire"
+    },
+    {
+      "method": "POST",
+      "path": "/api/cron/jobs",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/jobs"
+    },
+    {
+      "method": "POST",
+      "path": "/api/cron/jobs/{job_id}/pause",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/jobs/{job_id}/pause"
+    },
+    {
+      "method": "POST",
+      "path": "/api/cron/jobs/{job_id}/resume",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/jobs/{job_id}/resume"
+    },
+    {
+      "method": "POST",
+      "path": "/api/cron/jobs/{job_id}/trigger",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/jobs/{job_id}/trigger"
+    },
+    {
+      "method": "POST",
+      "path": "/api/curator/run",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/curator/run"
+    },
+    {
+      "method": "POST",
+      "path": "/api/dashboard/agent-plugins/activate",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/dashboard/agent-plugins/activate"
+    },
+    {
+      "method": "POST",
+      "path": "/api/dashboard/agent-plugins/install",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/dashboard/agent-plugins/install"
+    },
+    {
+      "method": "POST",
+      "path": "/api/dashboard/agent-plugins/{name:path}/disable",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/dashboard/agent-plugins/{name:path}/disable"
+    },
+    {
+      "method": "POST",
+      "path": "/api/dashboard/agent-plugins/{name:path}/enable",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/dashboard/agent-plugins/{name:path}/enable"
+    },
+    {
+      "method": "POST",
+      "path": "/api/dashboard/agent-plugins/{name:path}/update",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/dashboard/agent-plugins/{name:path}/update"
+    },
+    {
+      "method": "POST",
+      "path": "/api/dashboard/plugins/{name:path}/visibility",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/dashboard/plugins/{name:path}/visibility"
+    },
+    {
+      "method": "POST",
+      "path": "/api/env/reveal",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/env/reveal"
+    },
+    {
+      "method": "POST",
+      "path": "/api/files/mkdir",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/files/mkdir"
+    },
+    {
+      "method": "POST",
+      "path": "/api/files/upload",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/files/upload"
+    },
+    {
+      "method": "POST",
+      "path": "/api/files/upload-stream",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/files/upload-stream"
+    },
+    {
+      "method": "POST",
+      "path": "/api/fs/write-text",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/fs/write-text"
+    },
+    {
+      "method": "POST",
+      "path": "/api/gateway/drain",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/gateway/drain"
+    },
+    {
+      "method": "POST",
+      "path": "/api/gateway/migrate",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/gateway/migrate"
+    },
+    {
+      "method": "POST",
+      "path": "/api/gateway/restart",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/gateway/restart"
+    },
+    {
+      "method": "POST",
+      "path": "/api/gateway/start",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/gateway/start"
+    },
+    {
+      "method": "POST",
+      "path": "/api/gateway/stop",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/gateway/stop"
+    },
+    {
+      "method": "POST",
+      "path": "/api/git/branch/switch",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/branch/switch"
+    },
+    {
+      "method": "POST",
+      "path": "/api/git/review/commit",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/commit"
+    },
+    {
+      "method": "POST",
+      "path": "/api/git/review/create-pr",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/create-pr"
+    },
+    {
+      "method": "POST",
+      "path": "/api/git/review/pr-list",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/pr-list"
+    },
+    {
+      "method": "POST",
+      "path": "/api/git/review/push",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/push"
+    },
+    {
+      "method": "POST",
+      "path": "/api/git/review/revert",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/revert"
+    },
+    {
+      "method": "POST",
+      "path": "/api/git/review/stage",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/stage"
+    },
+    {
+      "method": "POST",
+      "path": "/api/git/review/unstage",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/review/unstage"
+    },
+    {
+      "method": "POST",
+      "path": "/api/git/worktree/add",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/worktree/add"
+    },
+    {
+      "method": "POST",
+      "path": "/api/git/worktree/remove",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/git/worktree/remove"
+    },
+    {
+      "method": "POST",
+      "path": "/api/health/retirement",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/health/retirement"
+    },
+    {
+      "method": "POST",
+      "path": "/api/hermes/update",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/hermes/update"
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-models/activate",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/activate"
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-models/download",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/download"
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-models/download-browsed",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/download-browsed"
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-models/download/pause",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/download/pause"
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-models/download/resume",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/download/resume"
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-models/eject",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/eject"
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-models/quickstart",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/quickstart"
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-models/runtime/install",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/runtime/install"
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-models/server",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/server"
+    },
+    {
+      "method": "POST",
+      "path": "/api/local-models/sideload",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/local-models/sideload"
+    },
+    {
+      "method": "POST",
+      "path": "/api/mcp/catalog/install",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/mcp/catalog/install"
+    },
+    {
+      "method": "POST",
+      "path": "/api/mcp/servers",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/mcp/servers"
+    },
+    {
+      "method": "POST",
+      "path": "/api/mcp/servers/{name}/auth",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/mcp/servers/{name}/auth"
+    },
+    {
+      "method": "POST",
+      "path": "/api/mcp/servers/{name}/test",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/mcp/servers/{name}/test"
+    },
+    {
+      "method": "POST",
+      "path": "/api/memory/providers/{name}/setup",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/memory/providers/{name}/setup"
+    },
+    {
+      "method": "POST",
+      "path": "/api/memory/reset",
+      "classification": "unsupported",
+      "reason": "global_memory_reset_before_user_isolation",
+      "feature": "/api/memory/reset"
+    },
+    {
+      "method": "POST",
+      "path": "/api/messaging/platforms/{platform_id}/test",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/messaging/platforms/{platform_id}/test"
+    },
+    {
+      "method": "POST",
+      "path": "/api/messaging/telegram/onboarding/start",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/messaging/telegram/onboarding/start"
+    },
+    {
+      "method": "POST",
+      "path": "/api/messaging/telegram/onboarding/{pairing_id}/apply",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/messaging/telegram/onboarding/{pairing_id}/apply"
+    },
+    {
+      "method": "POST",
+      "path": "/api/messaging/whatsapp/onboarding/start",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/messaging/whatsapp/onboarding/start"
+    },
+    {
+      "method": "POST",
+      "path": "/api/messaging/whatsapp/onboarding/{pairing_id}/apply",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/messaging/whatsapp/onboarding/{pairing_id}/apply"
+    },
+    {
+      "method": "POST",
+      "path": "/api/model/set",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/model/set"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/backup",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/backup"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/checkpoints/prune",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/checkpoints/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/config-migrate",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/config-migrate"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/debug-share",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/debug-share"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/doctor",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/doctor"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/dump",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/dump"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/hooks",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/hooks"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/import",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/import"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/import-upload",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/import-upload"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/prompt-size",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/prompt-size"
+    },
+    {
+      "method": "POST",
+      "path": "/api/ops/security-audit",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/ops/security-audit"
+    },
+    {
+      "method": "POST",
+      "path": "/api/pairing/approve",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/pairing/approve"
+    },
+    {
+      "method": "POST",
+      "path": "/api/pairing/clear-pending",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/pairing/clear-pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/pairing/revoke",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/pairing/revoke"
+    },
+    {
+      "method": "POST",
+      "path": "/api/profiles",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/profiles"
+    },
+    {
+      "method": "POST",
+      "path": "/api/profiles/active",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/profiles/active"
+    },
+    {
+      "method": "POST",
+      "path": "/api/profiles/import",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/profiles/import"
+    },
+    {
+      "method": "POST",
+      "path": "/api/profiles/sessions/pull-requests",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/profiles/sessions/pull-requests"
+    },
+    {
+      "method": "POST",
+      "path": "/api/profiles/{name}/describe-auto",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/profiles/{name}/describe-auto"
+    },
+    {
+      "method": "POST",
+      "path": "/api/profiles/{name}/export",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/profiles/{name}/export"
+    },
+    {
+      "method": "POST",
+      "path": "/api/profiles/{name}/open-terminal",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/profiles/{name}/open-terminal"
+    },
+    {
+      "method": "POST",
+      "path": "/api/providers/custom-endpoints",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/custom-endpoints"
+    },
+    {
+      "method": "POST",
+      "path": "/api/providers/custom-endpoints/validate",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/custom-endpoints/validate"
+    },
+    {
+      "method": "POST",
+      "path": "/api/providers/custom-endpoints/{endpoint_id}/activate",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/custom-endpoints/{endpoint_id}/activate"
+    },
+    {
+      "method": "POST",
+      "path": "/api/providers/oauth/{provider_id}/start",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/oauth/{provider_id}/start"
+    },
+    {
+      "method": "POST",
+      "path": "/api/providers/oauth/{provider_id}/submit",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/oauth/{provider_id}/submit"
+    },
+    {
+      "method": "POST",
+      "path": "/api/providers/validate",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/providers/validate"
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/bulk-delete",
+      "classification": "unsupported",
+      "reason": "cross_user_session_management",
+      "feature": "/api/sessions/bulk-delete"
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/import",
+      "classification": "unsupported",
+      "reason": "cross_user_session_management",
+      "feature": "/api/sessions/import"
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/owner-backfill",
+      "classification": "unsupported",
+      "reason": "cross_user_session_management",
+      "feature": "/api/sessions/owner-backfill"
+    },
+    {
+      "method": "POST",
+      "path": "/api/sessions/prune",
+      "classification": "unsupported",
+      "reason": "cross_user_session_management",
+      "feature": "/api/sessions/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/api/skills",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/skills"
+    },
+    {
+      "method": "POST",
+      "path": "/api/skills/hub/install",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/skills/hub/install"
+    },
+    {
+      "method": "POST",
+      "path": "/api/skills/hub/uninstall",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/skills/hub/uninstall"
+    },
+    {
+      "method": "POST",
+      "path": "/api/skills/hub/update",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/skills/hub/update"
+    },
+    {
+      "method": "POST",
+      "path": "/api/tools/computer-use/permissions/grant",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/tools/computer-use/permissions/grant"
+    },
+    {
+      "method": "POST",
+      "path": "/api/tools/toolsets/{name}/post-setup",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/tools/toolsets/{name}/post-setup"
+    },
+    {
+      "method": "POST",
+      "path": "/api/webhooks",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/webhooks"
+    },
+    {
+      "method": "POST",
+      "path": "/api/webhooks/enable",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/webhooks/enable"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/config",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/config"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/config/raw",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/config/raw"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/cron/jobs/{job_id}",
+      "classification": "stub",
+      "reason": "deferred_milestone_4",
+      "feature": "/api/cron/jobs/{job_id}"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/curator/paused",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/curator/paused"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/dashboard/font",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/dashboard/font"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/dashboard/plugin-providers",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/dashboard/plugin-providers"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/dashboard/theme",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/dashboard/theme"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/delegation/backend",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/delegation/backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/delegation/backends/model_map",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/delegation/backends/model_map"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/delegation/backends/profile_routes",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/delegation/backends/profile_routes"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/env",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/env"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/learning/node",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/learning/node"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/mcp/servers",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/mcp/servers"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/mcp/servers/{name}/enabled",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/mcp/servers/{name}/enabled"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/memory/provider",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/memory/provider"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/memory/providers/{name}/config",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/memory/providers/{name}/config"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/messaging/platforms/{platform_id}",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/messaging/platforms/{platform_id}"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/model/moa",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/model/moa"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/profiles/{name}/description",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/profiles/{name}/description"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/profiles/{name}/model",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/profiles/{name}/model"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/profiles/{name}/soul",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/profiles/{name}/soul"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/shared-metrics/consent",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/shared-metrics/consent"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/skills/content",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/skills/content"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/skills/toggle",
+      "classification": "stub",
+      "reason": "deferred_milestone_3",
+      "feature": "/api/skills/toggle"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/tools/terminal/backend",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/tools/terminal/backend"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/tools/toolsets/{name}",
+      "classification": "stub",
+      "reason": "deferred_milestone",
+      "feature": "/api/tools/toolsets/{name}"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/tools/toolsets/{name}/env",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/tools/toolsets/{name}/env"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/tools/toolsets/{name}/model",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/tools/toolsets/{name}/model"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/tools/toolsets/{name}/provider",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/tools/toolsets/{name}/provider"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/webhooks/{name}/enabled",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/webhooks/{name}/enabled"
+    },
+    {
+      "method": "WEBSOCKET",
+      "path": "/api/audio/speak-stream",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/audio/speak-stream"
+    },
+    {
+      "method": "WEBSOCKET",
+      "path": "/api/audio/transcribe-stream",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/audio/transcribe-stream"
+    },
+    {
+      "method": "WEBSOCKET",
+      "path": "/api/console",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/console"
+    },
+    {
+      "method": "WEBSOCKET",
+      "path": "/api/display/ws",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/display/ws"
+    },
+    {
+      "method": "WEBSOCKET",
+      "path": "/api/events",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/events"
+    },
+    {
+      "method": "WEBSOCKET",
+      "path": "/api/pty",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/pty"
+    },
+    {
+      "method": "WEBSOCKET",
+      "path": "/api/pub",
+      "classification": "unsupported",
+      "reason": "disabled_by_policy",
+      "feature": "/api/pub"
+    },
+    {
+      "method": "WEBSOCKET",
+      "path": "/api/ws",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/ws"
+    }
+  ]
+}

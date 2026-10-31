@@ -211,6 +211,11 @@ from harness.router import router as harness_router, uses_harness, compatibility
 
 app.include_router(harness_router, tags=["harness"])
 
+# Opt-in only; the default resolver denies all gateway requests until platform auth is defined.
+if os.getenv("GATEWAY_M1_ENABLED", "false").lower() == "true":
+    from harness.gateway.routes import build_gateway_router
+    app.include_router(build_gateway_router(), prefix="/gateway-m1", tags=["gateway-m1"])
+
 # ── Wiki vault graph endpoint (Day 5) ────────────────────
 from wiki_router import router as wiki_router  # noqa: E402
 
@@ -482,7 +487,9 @@ async def list_sessions(request: Request):
     ]
     async for doc in request.app.state.harness.store.runs.aggregate(harness_pipeline):
         results.append(SessionSummary(session_id=doc["_id"], last_query=doc["last_query"], turn_count=doc["turn_count"], updated_at=doc["updated_at"]))
-    return sorted(results, key=lambda item: item.updated_at, reverse=True)[:50]
+    def _utc(value):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    return sorted(results, key=lambda item: _utc(item.updated_at), reverse=True)[:50]
 
 
 # ── 세션 대화 이력 조회 ──────────────────────────────────

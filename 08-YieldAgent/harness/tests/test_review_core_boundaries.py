@@ -54,7 +54,7 @@ def test_child_can_run_isolated_python_and_reuses_parent_budget(monkeypatch):
     from langgraph.checkpoint.memory import InMemorySaver
     from harness.delegation import register_delegation
     from harness.executor import ExecutionContext, ToolExecutor
-    from harness.runtime.container import ContainerRuntime
+    from harness.runtime.process import ProcessRuntime
     from harness.store import HarnessStore
     from harness.tools.registry import domain_registry
 
@@ -65,7 +65,7 @@ def test_child_can_run_isolated_python_and_reuses_parent_budget(monkeypatch):
             payloads.append(datasets)
             return {'status': 'success', 'tables': [{'table_id': 'sum', 'title': 'Sum',
                 'rows': [{'sum': 7}], 'complete': True}], 'plots': [], 'stdout': '', 'stderr': ''}
-        monkeypatch.setattr(ContainerRuntime, 'execute', execute)
+        monkeypatch.setattr(ProcessRuntime, 'execute', execute)
         try:
             await store.setup()
             run = await store.start_run('p', 's', 'r', 'delegate computation')

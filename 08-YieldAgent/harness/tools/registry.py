@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 from pydantic import BaseModel
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from ..types import ResultTable
+from ..types import ResultPage, ResultTable
 
 
 @dataclass
@@ -17,6 +17,7 @@ class ToolResult:
     status: str | None = None
     data_origin: str = "live"
     tables: list[ResultTable] = field(default_factory=list)
+    page: ResultPage | None = None
 
     def __post_init__(self):
         if self.rows and self.tables:
@@ -38,6 +39,8 @@ class ToolSpec:
     effect: Literal['read', 'artifact', 'persistent_write'] | None = None
     availability: Callable | None = None
     eager: bool = False
+    group: str | None = None
+    replaces: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.effect is None:
@@ -50,6 +53,7 @@ class ToolSpec:
 class ToolRegistry:
     def __init__(self):
         self.tools: dict[str, ToolSpec] = {}
+        self.hidden_groups: set[str] = set()
 
     def add(self, spec: ToolSpec):
         if spec.name in self.tools:
@@ -57,8 +61,15 @@ class ToolRegistry:
         self.tools[spec.name] = spec
 
     def model_tools(self, principal_id=None):
+        replaced = {
+            name
+            for spec in self.tools.values()
+            for name in spec.replaces
+        }
         tools = []
         for spec in self.tools.values():
+            if spec.name in replaced or spec.group in self.hidden_groups:
+                continue
             tool = convert_to_openai_tool(spec.schema)
             tool["function"].update(name=spec.name, description=spec.description)
             tools.append(tool)
@@ -74,6 +85,14 @@ class ToolRegistry:
 
 
 def domain_registry():
+    import os
+    registry = ToolRegistry()
+    if os.environ.get('HARNESS_NO_YIELD_TOOLS') == '1':
+        from .python_tools import register as python
+        from .query_db import register as query_db
+        python(registry)
+        query_db(registry)
+        return registry
     from .yield_tools import register as yields
     from .wads_tools import register as wads
     from .lot_tools import register as lots
@@ -83,7 +102,9 @@ def domain_registry():
     from .map_tools import register as maps
     from .document_tools import register as documents
     from .defect_tools import register as defects
-    registry = ToolRegistry()
     for register in (yields, wads, lots, python, analysis, artifacts, maps, documents, defects):
         register(registry)
+    if os.environ.get('HARNESS_WAFER_SET_TOOLS') == '1':
+        from .wafer_set_register import register as wafer_set
+        wafer_set(registry)
     return registry

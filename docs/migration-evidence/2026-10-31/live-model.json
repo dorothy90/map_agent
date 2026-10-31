@@ -1,0 +1,12 @@
+{
+  "data_origin": "fixture",
+  "live_model": true,
+  "requested_rows": 158,
+  "model_rows": 158,
+  "summary": "원본 158행 중 offset=0부터 158행 표시",
+  "reload_rows": 158,
+  "tool_status": "success",
+  "model": "z-ai/glm-5.3-flash",
+  "last_row_verified": true,
+  "passed": true
+}

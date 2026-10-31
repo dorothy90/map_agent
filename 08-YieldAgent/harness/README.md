@@ -1,5 +1,7 @@
 # 목표 기반 Yield Harness
 
+보안망 이식은 [2026-10-31 현재 상태 이식 안내](INTERNAL_MIGRATION_2026_10_31.md)에서 시작한다. 참조 커밋 고정, 오프라인 의존성, 사내 연결 작업과 검증 범위를 함께 확인한다.
+
 사용자 목표 → 필요한 도구 선택 → 실행 결과 관찰 → 추가 조사 → 근거 검증을 반복한다. 기존 웹 앱의 `/chat/stream`과 로컬 MCP에서 같은 도메인 도구를 사용한다.
 
 ## 실행
@@ -56,7 +58,7 @@ GLM 가상 데이터 시험에서 temperature=0의 반복 코드 생성이 관�
 
 모델 입력은 결과 목록과 현재 선택한 근거를 한 번씩 조립한다. 이전 대화의 결과는 짧은 참조로 전달하고, 모델의 `select_results`가 현재 읽을 결과를 교체한다. 새로 조회한 결과는 선택에 추가되며, 불필요해진 결과를 선택에서 빼도 원본은 삭제하지 않는다. 같은 소유권·출처의 동일 문서 ID와 내용만 중복 제거한다. 숫자 행이나 내용이 바뀐 문서는 합치지 않는다. 표는 예산 안에서 완전한 행을 유지하고 생략 여부와 원본 읽기 방법을 표시한다.
 
-도구 스키마를 포함한 전체 입력이 context 한도에 가까워지면 이전 대화를 요약한다. 원문을 소유권이 적용된 archive에 저장하고 실제로 더 작은 요약이 나온 경우에만 작업 대화를 교체한다. 요약과 archive ID는 다음 실행에도 유지되며, `recall_session(archive_id=...)`로 원문을 다시 읽을 수 있다. 요약 실패 시 기존 대화를 유지하고 사용한 토큰은 예산에 반영한다.
+도구 스키마를 포함한 전체 입력이 context 한도에 가까워지면 이전 대화를 요약한다. 원문을 소유권이 적용된 archive에 저장하고 실제로 더 작은 요약이 나온 경우에만 작업 대화를 교체한다. 요약과 archive ID는 다음 실행에도 유지된다. Hermes native mode의 이전 대화 검색은 전용 profile의 `state.db`를 사용하는 engine `session_search`가 담당한다. 요약 실패 시 기존 대화를 유지하고 사용한 토큰은 예산에 반영한다.
 
 `update_worklog`는 선택적인 조사 메모이며 새 메모로 교체할 수 있다. 사용자 원문과 정정을 덮어쓰지 않는다. 모델은 도구 호출 또는 일반 텍스트 답변을 선택한다. 데이터 답변의 `finish`는 `answer`, `result_ids`, 선택적인 `scope`·`limitations`만 제출하며 수치별 claims/coverage 양식을 요구하지 않는다.
 
@@ -105,7 +107,7 @@ MCP 호스트에는 이 명령과 작업 디렉터리를 등록한다. 공통 re
 
 ### Hermes core adaptation (2026-10-05)
 
-Reference commit: `NousResearch/hermes-agent@e473f5a9c976a0b5bc292aa415dae28c638a47c3`. This backend adapts the core loop; it does not embed the complete Hermes CLI/gateway/memory-learning runtime. See `docs/superpowers/plans/2026-10-05-hermes-core-alignment.md` for the source-by-source comparison.
+Historical reference commit (2026-10-05): `NousResearch/hermes-agent@e473f5a9c976a0b5bc292aa415dae28c638a47c3`. The current bundle is pinned to `5894e750c3dba980d43b25aa29e3958149ba2c61` (2026-10 sync; `engine/UPSTREAM.json`). This backend adapts the core loop; it does not embed the complete Hermes CLI/gateway/memory-learning runtime. See `docs/superpowers/plans/2026-10-05-hermes-core-alignment.md` for the source-by-source comparison.
 
 `ToolSpec(eager=True)` exposes a core tool immediately. Specialist tools use `load_tools`; its `mode=replace` replaces only the explicitly loaded set and cannot hide core tools. Eager and loaded schemas are omitted from the deferred catalog to avoid duplication.
 
@@ -118,7 +120,7 @@ The context includes an observational notice after three consecutive equivalent 
 
 ### Bundled Hermes engine (2026-10-06)
 
-New runs default to `HARNESS_ENGINE=hermes`; existing runs keep their engine. `HARNESS_ENGINE=langgraph` retains the custom loop described above. The engine source is included in `harness/engine/`, pinned to upstream `e473f5a9c976a0b5bc292aa415dae28c638a47c3`. It runs with the backend's Python 3.11 interpreter. No Hermes package, external checkout, Python 3.14, or separate server is required. A child process isolates upstream module names from the backend; the backend owns its lifetime.
+New runs default to `HARNESS_ENGINE=hermes`; existing runs keep their engine. `HARNESS_ENGINE=langgraph` retains the custom loop described above. The engine source is included in `harness/engine/`, currently pinned to upstream `5894e750c3dba980d43b25aa29e3958149ba2c61` (2026-10 sync; `engine/UPSTREAM.json`). It runs with the backend's Python 3.11 interpreter. No Hermes package, external checkout, Python 3.14, or separate server is required. A child process isolates upstream module names from the backend; the backend owns its lifetime.
 
 Install the ordinary libraries declared in the repository `requirements.txt`/`pyproject.toml` through your approved package process. `scripts/setup_hermes.sh` now only verifies imports; it does not install anything. Do not install from `engine/pyproject.toml`: that is retained upstream metadata, not this backend's dependency specification.
 

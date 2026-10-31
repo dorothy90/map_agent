@@ -1,0 +1,7 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Ubuntu 24.04의 restricted unprivileged user namespaces 환경에서만 설치한다.
+profile yieldrun-bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}

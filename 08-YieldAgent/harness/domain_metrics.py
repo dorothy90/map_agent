@@ -1,11 +1,12 @@
 """Numeric contracts, independent of model wording and presentation previews."""
 from collections import defaultdict
 import json
+from typing import Callable
 
 
 def metric_metadata(metric):
     definitions = {
-        'pass_rate': {'unit': 'percent', 'numerator': 'A-bin die observations',
+        'pass_rate': {'unit': 'percent', 'numerator': '?-bin die observations',
                       'denominator': 'all MAP entries in the selected measurement', 'direction': 'higher_is_better',
                       'source': 'LANGGRAPH_DATA.MAP_VAL_JSON'},
         'parameter': {'unit': 'source_value_unit_unspecified', 'numerator': 'VALUE',
@@ -17,17 +18,31 @@ def metric_metadata(metric):
     return dict(definitions[metric])
 
 
-def wafer_pass_metric(map_json, target_bin=None, bin_type='left_bin'):
+def wafer_pass_metric(map_json, target_bin=None, bin_type='left_bin',
+                      fail_matcher: Callable[[str, str], bool] | None = None):
     raw = json.loads(map_json) if isinstance(map_json, str) else map_json
     index = 2 if bin_type == 'left_bin' else 3
     entries = raw['MAP']
+    if fail_matcher is not None:
+        passed = unmatched = 0
+        for entry in entries:
+            parts = entry.split(',')
+            left = parts[2] if len(parts) > 2 else None
+            right = parts[3] if len(parts) > 3 else None
+            valid_pair = (isinstance(left, str) and isinstance(right, str)
+                          and len(left) == 1 and len(right) == 1)
+            if not valid_pair:
+                unmatched += 1
+            passed += not valid_pair or not fail_matcher(left, right)
+        return {'value': 100 * passed / len(entries) if entries else None,
+                'pass_count': passed, 'die_count': len(entries), 'unmatched_cells': unmatched}
     bins = []
     for entry in entries:
         parts = entry.split(',')
         if len(parts) <= index or not parts[index]:
             raise ValueError('Map contains a die without the selected bin value')
         bins.append(parts[index])
-    passed = sum(b != target_bin if target_bin is not None else b == 'A' for b in bins)
+    passed = sum(b != target_bin if target_bin is not None else b == '?' for b in bins)
     return {'value': 100 * passed / len(bins) if bins else None,
             'pass_count': passed, 'die_count': len(bins)}
 

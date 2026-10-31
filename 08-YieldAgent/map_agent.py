@@ -262,7 +262,7 @@ def _parse_wafer_for_cummap(args):
     """단일 wafer 파싱 (cummap 병렬 처리용) → (rows, cols, passes)
 
     args: (map_val_json, bin_type, target_bin)
-      target_bin이 None이면 기존 로직 (A=Pass, 나머지=Fail)
+      target_bin이 None이면 기존 로직 (?=Pass, 나머지=Fail)
       target_bin이 지정되면 해당 bin이 아닌 die가 Pass (category별 수율)
     """
     map_val_json, bin_type, target_bin = args
@@ -277,7 +277,7 @@ def _parse_wafer_for_cummap(args):
         if target_bin:
             passes.append(0 if bin_val == target_bin else 1)
         else:
-            passes.append(1 if bin_val == "A" else 0)
+            passes.append(1 if bin_val == "?" else 0)
     return rows, cols, passes
 
 

@@ -5,49 +5,243 @@ import sys
 import threading
 import uuid
 import time
-from queue import Queue
+from queue import Empty
 from pathlib import Path
 
+# -I ignores PYTHONDONTWRITEBYTECODE; keep the bundled engine read-only too.
+sys.dont_write_bytecode = True
 # Both projects contain a top-level tools package. Resolve the pinned engine's
 # packages before this adapter's directory in the separate interpreter.
 sys.path.insert(0, str(Path(__file__).resolve().with_name('engine')))
 sys.path.append(str(Path(__file__).resolve().parent))
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+import native_ipc as ipc
+
+
+class WorkerControl:
+    def __init__(self, pending):
+        self.pending = pending
+        self.agents = []
+        self.lock = threading.Lock()
+        self.interrupted = False
+
+    def add(self, agent):
+        with self.lock:
+            self.agents.append(agent)
+            interrupted = self.interrupted
+        if interrupted:
+            agent.interrupt()
+
+    def remove(self, agent):
+        with self.lock:
+            self.agents[:] = [active for active in self.agents if active is not agent]
+
+    def snapshot(self):
+        with self.lock:
+            return list(self.agents)
+
+    def handle(self, message):
+        if message['action'] != 'interrupt':
+            return
+        self.pending.close(ipc.CANCELLED)
+        with self.lock:
+            self.interrupted = True
+            agents = list(self.agents)
+        for active in agents:
+            try:
+                active.interrupt()
+            except Exception:
+                print('Worker interrupt callback failed', file=sys.stderr)
+
+
+def configure_engine(registry, executor, limit, agent_class):
+    if type(limit) is not int or not 1 <= limit <= 8:
+        raise ValueError('parallel_tool_limit must be between 1 and 8')
+    executor._MAX_TOOL_WORKERS = min(executor._MAX_TOOL_WORKERS, limit)
+    def denied(args, **kwargs):
+        print('D09: delegation call denied', file=sys.stderr)
+        return json.dumps({'error': 'delegate_disabled', 'status': 'error',
+            'message': '하위 에이전트는 이 서비스에서 사용할 수 없습니다.', 'code': 'D09'}, ensure_ascii=False)
+    for name in registry.get_tool_names_for_toolset('delegation'):
+        registry.get_entry(name).handler = denied
+    # Upstream tool_executor._resolve_sequential_dispatch and invoke_tool's
+    # INLINE_TOOL_EXECUTORS bypass the registry for delegate_task.
+    agent_class._dispatch_delegate_task = lambda self, args: registry.get_entry('delegate_task').handler(args)
+
+
+def enabled_toolsets(startup):
+    return ['yield_backend', 'yield_evidence', 'skills', 'memory', 'delegation'] \
+        + (['code_execution', 'file', 'terminal', 'todo', 'session_search', 'vision', 'clarify']
+           if startup.get('no_yield_tools', False) else []) \
+        + (['clarify'] if native_prompts_enabled(startup) and not startup.get('no_yield_tools', False) else [])
+
+
+def native_prompts_enabled(startup):
+    return bool(startup.get('native_prompts', False) or startup.get('no_yield_tools', False))
+
+
+def engine_provider(base_url):
+    from agent.model_metadata import _infer_provider_from_url
+    return _infer_provider_from_url(base_url) or 'custom'
+
+
+def configure_runtime_tool_availability(registry, startup):
+    if not startup.get('no_yield_tools', False):
+        return
+    if startup.get('api_key'):
+        # The isolation scrub removes provider keys from os.environ. Vision still uses
+        # the main model credential bound below, so its import-time env probe is stale.
+        registry.get_entry('vision_analyze').check_fn = lambda: True
+    refusal = json.dumps({'status': 'error',
+        'error': 'Background processes are unsupported by the confined yieldrun runtime.'})
+    terminal = registry.get_entry('terminal')
+    terminal_handler = getattr(terminal, 'handler', None)
+    if callable(terminal_handler) and not getattr(terminal_handler, '_yield_foreground_only', False):
+        original = terminal.handler
+        def foreground_only(args, **kwargs):
+            if args.get('background', False):
+                return refusal
+            return original(args, **kwargs)
+        foreground_only._yield_foreground_only = True
+        terminal.handler = foreground_only
+    process = registry.get_entry('process_manage')
+    process_handler = getattr(process, 'handler', None)
+    if callable(process_handler):
+        process.handler = lambda args, **kwargs: refusal
+    if not callable(terminal_handler) and not callable(process_handler):
+        return
+    from tools import terminal_tool
+    terminal_tool.spawn_background_process = lambda **kwargs: {
+        'status': 'error', 'error': json.loads(refusal)['error']}
+    from tools import code_kernel_remote
+    code_kernel_remote.execute_in_remote_kernel = lambda *args, **kwargs: None
+
+
+def constrain_session_search(search_module):
+    def profile_local_db(profile):
+        if profile is None or not str(profile).strip():
+            return None
+        raise ValueError('cross-profile session search is disabled')
+    search_module._resolve_profile_db = profile_local_db
+
+
+def configure_agent_environment(isolation):
+    if not isinstance(isolation, dict) or isolation.get('ssh_user') != 'yieldrun':
+        raise RuntimeError('verified yieldrun isolation configuration is required')
+    workdir = Path(isolation['workdir'])
+    for name in list(os.environ):
+        upper = name.upper()
+        if (upper in {'PYTHONPATH', 'PYTHONHOME', 'BASH_ENV', 'ENV', 'SSH_AUTH_SOCK', 'SSH_AGENT_PID'}
+                or upper.endswith(('_PASSWORD', '_SECRET', '_TOKEN', '_API_KEY'))
+                or upper.startswith(('ORACLE_', 'MONGO_', 'DATABASE_', 'HARNESS_MONGO_',
+                                     'AWS_', 'AZURE_', 'GOOGLE_'))):
+            os.environ.pop(name, None)
+    venv = Path(isolation['analysis_venv'])
+    os.environ.update({
+        'TERMINAL_ENV': 'ssh', 'TERMINAL_CWD': str(workdir),
+        'TERMINAL_SSH_HOST': isolation['ssh_host'], 'TERMINAL_SSH_USER': isolation['ssh_user'],
+        'TERMINAL_SSH_PORT': str(isolation['ssh_port']), 'TERMINAL_SSH_KEY': isolation['ssh_key'],
+        'VIRTUAL_ENV': str(venv), 'PATH': str(venv / 'bin') + os.pathsep + os.defpath,
+        'HERMES_WRITE_SAFE_ROOT': str(workdir),
+    })
+    # The adapter validates the fixed target and disables profile synchronization.
+    engine_dir = str(Path(__file__).resolve().with_name('engine'))
+    if engine_dir not in sys.path:
+        sys.path.insert(0, engine_dir)
+    from harness.isolation.backend import IsolatedSSHBackend
+    from harness.config import IsolationSettings
+    config = IsolationSettings.model_validate({key: isolation[key] for key in (
+        'ssh_host', 'ssh_user', 'ssh_port', 'ssh_key', 'known_hosts', 'home', 'work_root',
+        'analysis_venv', 'launcher', 'sandbox')})
+    run_id = isolation.get('run_id')
+    principal_id = isolation.get('principal_id')
+    if not run_id or not principal_id:
+        raise RuntimeError('exact authenticated isolation scope is required')
+    IsolatedSSHBackend(config, run_id, principal_id).install_engine_adapter()
+    return workdir
+
+
+def verify_isolated_engine(startup):
+    if not startup.get('no_yield_tools', False):
+        return
+    from tools.terminal_tool import _get_env_config
+    from tools import terminal_tool_backends
+    config = _get_env_config()
+    isolation = startup['isolation']
+    if (config.get('env_type') != 'ssh' or config.get('cwd') != isolation['workdir']
+            or not getattr(terminal_tool_backends._SSHEnvironment, '_yield_isolated', False)):
+        raise RuntimeError('Hermes isolated SSH backend was replaced or misconfigured')
+
+
+def install_tools_payload_logger(path):
+    if not path:
+        return
+    from agent import turn_api_request
+    original = turn_api_request._fire_pre_api_request_hook
+
+    def log_tools(agent, api_kwargs, *args, **kwargs):
+        names = []
+        for tool in api_kwargs.get('tools') or []:
+            function = tool.get('function') or {}
+            name = function.get('name') or tool.get('name')
+            if name:
+                names.append(name)
+        record = {'api_request_id': kwargs.get('api_request_id'), 'tools': names}
+        with open(path, 'a', encoding='utf-8') as output:
+            output.write(json.dumps(record, ensure_ascii=False) + '\n')
+        return original(agent, api_kwargs, *args, **kwargs)
+
+    turn_api_request._fire_pre_api_request_hook = log_tools
+
+
+def prompt_options(startup, rpc, current_review):
+    """H/tui_gateway/server.py:1104-1115; run_agent.py:253 has no approval callback."""
+    if not native_prompts_enabled(startup):
+        return {}
+
+    def clarify(questions):
+        cancelled = {'answers': {}, 'outcome': 'cancelled'}
+        if current_review():
+            return cancelled
+        wire = [{'qid': q['qid'], 'question': q['question'], 'choices': q.get('choices'),
+                 'multi_select': bool(q.get('multi_select', False))} for q in questions]
+        try:
+            result = rpc('server_request', request='clarify', params={'questions': wire})
+        except (Empty, BrokenPipeError, ConnectionError):
+            return cancelled
+        if not isinstance(result, dict) or 'error' in result or result.get('outcome') == 'cancelled':
+            return cancelled
+        return {key: result[key] for key in ('answers', 'outcome', 'notice') if key in result}
+
+    return {'clarify_callback': clarify}
 
 
 def main():
-    startup = json.loads(sys.stdin.readline())
+    input_stream = getattr(sys.stdin, 'buffer', sys.stdin)
+    startup = json.loads(input_stream.readline())
+    if startup.get('no_yield_tools', False):
+        configure_agent_environment(startup.get('isolation'))
     output = sys.stdout
     sys.stdout = sys.stderr  # Upstream diagnostic output must not corrupt RPC.
     lock = threading.Lock()
-    pending = {}
+    pending = ipc.Waiters()
+    controller = WorkerControl(pending)
     deadline = time.monotonic() + startup['run_budget_seconds']
     review_id = None
     review_known_ids = set()
     def emit(message):
         with lock:
-            output.write(json.dumps(message, ensure_ascii=False, default=str) + '\n')
+            output.write(ipc.encode(message))
             output.flush()
-    def receive():
-        for line in sys.stdin:
-            item = json.loads(line)
-            with lock:
-                queue = pending.get(item['id'])
-            if queue is not None:
-                queue.put(item['result'])
-        with lock:
-            for queue in pending.values():
-                queue.put({'error': 'Backend connection closed'})
-    threading.Thread(target=receive, daemon=True).start()
+    threading.Thread(target=ipc.receive, args=(input_stream, pending, controller.handle), daemon=True).start()
     def rpc(kind, **payload):
-        identity, queue = str(uuid.uuid4()), Queue()
-        with lock:
-            pending[identity] = queue
+        identity, queue = pending.register()
         try:
-            emit({'type': kind, 'id': identity, **payload})
+            if pending.closed is None:
+                emit(ipc.call(kind, identity, **payload))
             return queue.get(timeout=max(.1, deadline - time.monotonic()))
         finally:
-            with lock:
-                pending.pop(identity, None)
+            pending.discard(identity)
     def handler(name):
         def call(args, **kwargs):
             if review_id and name != 'read_result':
@@ -60,7 +254,10 @@ def main():
         return call
     budget = None
     restore_gate = None
-    agents = []
+    agent = None
+    db = None
+    terminal = None
+    agents = controller.agents
     try:
         from native_verification import REVIEW_SCHEMA, checked_report, unknown, final_messages
         from native_budget import install_http_budget
@@ -79,11 +276,23 @@ def main():
         from tools import skills_tool
         skills_tool.SKILLS_DIR = Path(startup['skills_path'])
         from tools.registry import registry
+        if startup.get('no_yield_tools', False):
+            from tools.registry import discover_builtin_tools
+            discover_builtin_tools()
+        configure_runtime_tool_availability(registry, startup)
+        verify_isolated_engine(startup)
         for tool in startup['tools']:
             schema = tool['function']
             registry.register(name=schema['name'], toolset='yield_evidence' if schema['name'] == 'read_result' else 'yield_backend', schema=schema,
                 handler=handler(schema['name']), description=schema['description'])
         from run_agent import AIAgent
+        from agent import tool_executor
+        # Import registers delegation before replacing only its model-facing handler.
+        from tools import delegate_tool
+        configure_engine(registry, tool_executor, startup.get('parallel_tool_limit', 8), AIAgent)
+        from tools import session_search_tool
+        constrain_session_search(session_search_tool)
+        install_tools_payload_logger(startup.get('tools_log'))
         from gateway.session_context import declare_stateless_channel
         # This worker exits after its response; delegated results must arrive before then.
         declare_stateless_channel()
@@ -96,15 +305,27 @@ def main():
             if budget.exhausted_reason or time.monotonic() >= deadline:
                 for active in agents:
                     active.interrupt()
+        provider = engine_provider(startup['base_url']) if startup.get('no_yield_tools', False) else None
+        if provider:
+            from agent.auxiliary_client import set_runtime_main
+            set_runtime_main(provider, startup['model'], base_url=startup['base_url'],
+                api_key=startup['api_key'], api_mode='chat_completions', session_id=startup['session_id'])
+        from hermes_state_registry import acquire
+        db = acquire(Path(os.environ['HERMES_HOME']) / 'state.db')
+        if db.get_session(startup['session_id']):
+            db.reopen_session(startup['session_id'])
         agent = AIAgent(model=startup['model'], base_url=startup['base_url'], api_key=startup['api_key'],
-            enabled_toolsets=['yield_backend', 'yield_evidence', 'skills', 'memory', 'delegation'],
+            provider=provider,
+            enabled_toolsets=enabled_toolsets(startup),
+            **prompt_options(startup, rpc, lambda: review_id),
             max_iterations=startup['max_iterations'], max_tokens=startup['max_tokens'],
-            run_budget_seconds=startup['run_budget_seconds'], session_id=startup['session_id'],
+            run_budget_seconds=startup['run_budget_seconds'], session_db=db,
+            session_id=startup['session_id'], platform='api_server',
             reasoning_config={'enabled': True, 'effort': startup['reasoning_effort']} if startup.get('reasoning_effort') else None,
             request_overrides={'temperature': startup['temperature']},
             quiet_mode=True, skip_context_files=False, load_soul_identity=False,
             step_callback=step, interim_assistant_callback=lambda content: emit({'type': 'commentary', 'content': content}))
-        agents.append(agent)
+        controller.add(agent)
         from tools.delegate_tool import _build_child_preserving_parent_tools, _run_single_child
         from tools.delegation_output_schema import extract_json_candidate
         review_attempt = 0
@@ -130,8 +351,13 @@ def main():
                     child.max_tokens = startup['max_tokens']
                     child.step_callback = step
                     child._delegate_output_schema = REVIEW_SCHEMA
-                    agents.append(child)
-                    entry = _run_single_child(review_attempt, goal, child=child, parent_agent=agent)
+                    controller.add(child)
+                    entry = None
+                    try:
+                        entry = _run_single_child(review_attempt, goal, child=child, parent_agent=agent)
+                    finally:
+                        if not isinstance(entry, dict) or entry.get('status') != 'timeout':
+                            controller.remove(child)
                     # Use the same JSON envelope parsing as Hermes' schema check.
                     entry['summary'] = extract_json_candidate(entry.get('summary') or '')
                     report = checked_report(entry, set(bundle['known_result_ids']) | review_known_ids)
@@ -158,17 +384,50 @@ def main():
         totals = usage()
         result.update(messages=messages, input_tokens=totals['input_tokens'], output_tokens=totals['output_tokens'],
             total_tokens=totals['tokens'], api_calls=totals['models'])
-        emit({'type': 'result', 'result': result})
+        terminal = {'type': 'result', 'result': result}
     except Exception as exc:
         message = str(exc).replace(startup.get('api_key') or 'UNUSED_SECRET', '[redacted]')
-        emit({'type': 'error', 'message': type(exc).__name__ + ': ' + message[:1000]})
+        terminal = {'type': 'error', 'message': type(exc).__name__ + ': ' + message[:1000]}
     finally:
         if restore_gate:
             restore_gate()
-        for active in agents:
-            active.close()
+        if any(active is not agent for active in controller.snapshot()):
+            from hermes_state_registry import stats
+            settle_deadline = time.monotonic() + 10
+            while stats()['total_refcounts'] > 1 and time.monotonic() < settle_deadline:
+                time.sleep(.05)
+            if stats()['total_refcounts'] <= 1:
+                for active in controller.snapshot():
+                    if active is not agent:
+                        controller.remove(active)
+        if agent is not None:
+            session_messages = getattr(agent, '_session_messages', None)
+            if isinstance(session_messages, list) and session_messages:
+                try:
+                    agent._persist_session(session_messages, startup['history'])
+                except Exception:
+                    print('Worker final session persist failed', file=sys.stderr)
+            try:
+                agent.close()
+            except Exception:
+                print('Worker parent cleanup failed', file=sys.stderr)
+            controller.remove(agent)
+        if db is not None:
+            from hermes_state_registry import release_or_close
+            try:
+                release_or_close(db)
+            except Exception:
+                print('Worker session store cleanup failed', file=sys.stderr)
         # Keep HTTP admission active until this dedicated interpreter exits.
+    if terminal is not None:
+        emit(terminal)
 
 
 if __name__ == '__main__':
     main()
+    # The daemon receiver can still hold stdin's buffered lock. After main's
+    # cleanup, flush output and bypass interpreter teardown of that live reader.
+    sys.__stdout__.flush()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

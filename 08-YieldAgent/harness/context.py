@@ -2,7 +2,7 @@ import hashlib
 import json
 from datetime import datetime
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, messages_from_dict
-from .types import ToolObservation
+from .types import ResultPage, ToolObservation
 
 
 def serialized_size(value):
@@ -52,6 +52,8 @@ def descriptor(observation):
     view.pop("preview_rows", None)
     for table in view.get('tables', []):
         table.pop('preview_rows', None)
+    if observation.get("page"):
+        ResultPage.model_validate(observation["page"]).project(view)
     view["summary"] = view["summary"][:240]
     view["column_count"] = len(view["columns"])
     view["columns"] = view["columns"][:40]
@@ -154,6 +156,8 @@ def evidence_views(observations, *, token_budget=8000):
                 omitted_rows=max(0, group['table']['total_rows'] - count), truncated=count < group['table']['total_rows'])
             if len(groups) > 1:
                 table_view['preview_rows'] = group['shown']
+        if observation.get("page"):
+            ResultPage.model_validate(observation["page"]).project(view)
         if view['truncated']:
             view['read_more'] = 'read_result(result_id, table_id, columns, offset, limit); run_python reads complete stored tables'
     return [source['view'] for source in sources]
@@ -225,7 +229,7 @@ def build_context(state, instructions, *, final=False, evidence_tokens=8000):
         "focus_result_ids": focus, "result_index": index, "evidence": evidence,
         "history_archives": state.get("context_archives", [])[-10:],
         "older_results": max(0, len(observations) - len(index)),
-        "retrieval": "Historical results are references. select_results replaces working evidence; read_result loads needed rows/columns; recall_session recovers older dialogue. Summaries are working notes; stored data is the numerical source."}
+        "retrieval": "Historical results are references. select_results replaces working evidence; read_result loads needed rows/columns. Summaries are working notes; stored data is the numerical source."}
     messages = state.get("messages", [])
     if final:
         metadata["instruction"] = "추가 조사 예산을 남기지 않고 답변을 마무리한다. 확보한 근거로 finish에 답변하고 미확인 사항은 limitations에 적는다."

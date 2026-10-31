@@ -19,6 +19,8 @@ import time
 from datetime import date, timedelta
 from typing import Any, Type
 
+from bin_mapping import BIN_CHAR_TO_PARAM, PASS_BIN
+
 import httpx
 from pydantic import BaseModel
 
@@ -190,35 +192,9 @@ GMS_HIGHER_IS_BETTER: set[str] = set(GMS_COLUMNS)  # gms는 전부 높을수록 
 HIGHER_IS_BETTER: set[str] = {"VTH", "IDSAT", "PT1C", "CFTA"}
 
 # bin_value ↔ bin_category 매핑
-# A = Pass(양품), B~Z = 25개 PARA_COLUMNS에 1:1 대응하는 fail bin
-BIN_CATEGORY_MAP: dict[str, str] = {
-    "A": "PASS",
-    "B": "VTH",
-    "C": "IDSAT",
-    "D": "IDLIN",
-    "E": "ION",
-    "F": "IGATE",
-    "G": "IDDQ",
-    "H": "IOFF",
-    "I": "VMIN",
-    "J": "FMAX",
-    "K": "TPD",
-    "L": "GM_MAX",
-    "M": "SS",
-    "N": "DIBL",
-    "O": "RON",
-    "P": "RDS_ON",
-    "Q": "BVDS",
-    "R": "LEAK_ID",
-    "S": "LEAK_IG",
-    "T": "CGB",
-    "U": "CGS",
-    "V": "CGD",
-    "W": "CDS",
-    "X": "RSH",
-    "Y": "RD",
-    "Z": "RS",
-}
+# ? = Pass, 나머지 50개는 bin_mapping.py 통합 대응(DF_SYMBOL_BIN seed와 동일
+# 출처); A도 fail bin(GM_MAX)
+BIN_CATEGORY_MAP: dict[str, str] = {PASS_BIN: "PASS", **BIN_CHAR_TO_PARAM}
 
 CATEGORY_TO_BIN: dict[str, str] = {
     v: k for k, v in BIN_CATEGORY_MAP.items() if v != "PASS"

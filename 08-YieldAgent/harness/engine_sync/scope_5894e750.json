@@ -1,0 +1,26 @@
+{
+  "top_level_directories": [
+    "acp_adapter",
+    "agent",
+    "cron",
+    "gateway",
+    "hermes_cli",
+    "hermes_platform",
+    "plugins",
+    "pm",
+    "providers",
+    "tools",
+    "tui_gateway"
+  ],
+  "top_level_extensions": [
+    ".json",
+    ".md",
+    ".py",
+    ".sh",
+    ".tflite",
+    ".toml",
+    ".txt",
+    ".wav",
+    ".yaml"
+  ]
+}

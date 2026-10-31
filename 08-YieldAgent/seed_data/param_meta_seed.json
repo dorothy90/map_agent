@@ -1,0 +1,56 @@
+{
+  "source_id": "wafer_parameter",
+  "discarded_params": ["YIELD"],
+  "kinds": {
+    "item": {
+      "unit": "unspecified",
+      "value_basis": "item parameter value as stored",
+      "better_when": "unknown"
+    },
+    "bin": {
+      "unit": "fraction",
+      "value_basis": "fraction of the wafer-process dies whose left+right bin pair fullmatches the DF_SYMBOL_BIN regex of this parameter",
+      "better_when": "lower"
+    },
+    "yield": {
+      "unit": "fraction",
+      "value_basis": "fraction of the wafer-process dies whose left+right bin pair equals the pass-bin pair; the pass-bin symbol is defined by the source data contract",
+      "better_when": "higher"
+    }
+  },
+  "source_guides": [
+    {
+      "source_id": "map",
+      "question_type": "map_drawing",
+      "guidance": "Use source map for drawing, coordinates, binmap, and cumulative-map questions."
+    },
+    {
+      "source_id": "wafer_parameter",
+      "question_type": "numeric_yield_fail",
+      "guidance": "Use source wafer_parameter for numeric yield, fail-number, ranking, and average questions; PT1H and PT1C parameters are the pass-pair die fraction of that process; select parameters by PARAM_KIND from metric_definitions."
+    },
+    {
+      "source_id": "wafer_parameter",
+      "question_type": "yield_parameter_selection",
+      "guidance": "For yield (수율), use parameter PT1H unless a process is specified; then use the yield-kind parameter for that process."
+    }
+  ],
+  "comments": [
+    {"target": "TABLE DF_DIE_TO_WF_YLD", "text": "Wafer-process parameter values used by registered table-question sources."},
+    {"target": "COLUMN DF_DIE_TO_WF_YLD.PARAM", "text": "Parameter name; interpret through DF_PARAM_META for the selected source, lot, and process."},
+    {"target": "COLUMN DF_DIE_TO_WF_YLD.VALUE", "text": "Stored parameter value; unit and value basis are defined by DF_PARAM_META."},
+    {"target": "TABLE DF_PARAM_META", "text": "Source-qualified parameter kind, unit, value basis, and preferred direction."},
+    {"target": "COLUMN DF_PARAM_META.SOURCE_ID", "text": "Registered source identifier."},
+    {"target": "COLUMN DF_PARAM_META.LOT_CD", "text": "Product scope for the parameter definition."},
+    {"target": "COLUMN DF_PARAM_META.PROCESS", "text": "Definition process, matched exactly or as a whitespace-delimited prefix."},
+    {"target": "COLUMN DF_PARAM_META.PARAM_NM", "text": "Parameter name within the source, product, and process scope."},
+    {"target": "COLUMN DF_PARAM_META.PARAM_KIND", "text": "Parameter kind: item, bin, or yield."},
+    {"target": "COLUMN DF_PARAM_META.UNIT", "text": "Unit of the stored source value."},
+    {"target": "COLUMN DF_PARAM_META.VALUE_BASIS", "text": "Database-owned description of what the value represents."},
+    {"target": "COLUMN DF_PARAM_META.BETTER_WHEN", "text": "Preferred direction: higher, lower, neutral, or unknown."},
+    {"target": "TABLE DF_SOURCE_GUIDE", "text": "Database-owned usage guidance by registered source and question type."},
+    {"target": "COLUMN DF_SOURCE_GUIDE.SOURCE_ID", "text": "Registered source identifier."},
+    {"target": "COLUMN DF_SOURCE_GUIDE.QUESTION_TYPE", "text": "Generic question category for the guidance."},
+    {"target": "COLUMN DF_SOURCE_GUIDE.GUIDANCE", "text": "Usage guidance supplied to source discovery."}
+  ]
+}

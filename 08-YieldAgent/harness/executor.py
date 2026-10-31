@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 import random
 import time
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError, Time
 from pydantic import ValidationError
 from langchain_core.messages import convert_to_openai_messages
 from .config import Settings
+from .primary_result import PrimaryResult, classify_primary
 from .store import Conflict, BudgetExceeded
 from .types import now
 
@@ -44,6 +46,23 @@ def _input_token_units(model, messages):
             request[key] = kwargs[key]
     serialized = json.dumps(request, ensure_ascii=False, separators=(",", ":"))
     return max(1, math.ceil(len(serialized.encode("utf-8")) / 3))
+
+
+def log_model_tools_payload(path, model, *, request_id):
+    if not path:
+        return
+    kwargs = getattr(model, 'kwargs', {})
+    tools = kwargs.get('tools')
+    if tools is None:
+        tools = kwargs.get('functions') or []
+    names = []
+    for tool in tools:
+        function = tool.get('function') or tool
+        name = function.get('name')
+        if name:
+            names.append(name)
+    with open(path, 'a', encoding='utf-8') as output:
+        output.write(json.dumps({'api_request_id': request_id, 'tools': names}, ensure_ascii=False) + '\n')
 
 
 def estimate_model_tokens(model, messages, max_output_tokens):
@@ -190,6 +209,8 @@ class ExecutionContext:
                     "review": "답변의 내용과 근거를 확인하고 있습니다.",
                     "compaction": "긴 대화의 맥락을 정리하고 있습니다."}.get(purpose, "모델 응답을 기다리고 있습니다.")
                 await self.store.event(run_id, "progress", {"name": purpose, "message": message}, epoch=epoch)
+                log_model_tools_payload(os.environ.get('HARNESS_LOG_TOOLS_PAYLOAD'), bounded_model,
+                    request_id=f'{run_id}:{purpose}:{attempt + 1}')
                 response = await asyncio.wait_for(bounded_model.ainvoke(messages), min(self.settings.call_timeout, available_seconds))
             except BaseException as exc:
                 # Unknown provider billing keeps the full reservation, including
@@ -292,8 +313,12 @@ class ToolExecutor:
                     await ctx.check()
             rows, artifacts, tables = result.rows, result.artifacts, result.tables
             observation.update(status=result.status or ("success" if rows or artifacts or any(t.rows for t in tables) else "empty"), summary=result.summary,
-                scope=result.scope, source_result_ids=result.source_result_ids)
+                scope=result.scope, source_result_ids=result.source_result_ids,
+                page=result.page.model_dump() if result.page else None)
             observation["provenance"]["data_origin"] = result.data_origin
+            if spec.group == "wafer_set" and observation["status"] in {"success", "partial", "empty"}:
+                if classify_primary(result) is PrimaryResult.ZERO:
+                    observation["provenance"].update(tool_group="wafer_set", empty_result=True)
         except (Conflict, asyncio.CancelledError):
             raise
         except Exception as exc:

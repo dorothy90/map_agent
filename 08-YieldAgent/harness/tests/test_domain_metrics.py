@@ -10,12 +10,22 @@ def metrics():
 
 def test_bin_pass_and_parameter_are_different_metrics():
     m = metrics()
-    r = m.wafer_pass_metric({'MAP': ['0,0,A', '0,1,B', '1,0,A']})
+    r = m.wafer_pass_metric({'MAP': ['0,0,?', '0,1,B', '1,0,?']})
     assert r['value'] == pytest.approx(200 / 3)
     assert r['die_count'] == 3
     assert m.metric_metadata('pass_rate')['unit'] == 'percent'
     assert m.metric_metadata('parameter')['unit'] == 'source_value_unit_unspecified'
     assert m.wafer_pass_metric({'MAP': []})['value'] is None
+
+
+def test_optional_symbol_matcher_changes_pass_metric_without_changing_default():
+    m = metrics()
+    source = {'MAP': ['0,0,B,A', '0,1,A,B', '0,2,A,A', '0,3,AB,B']}
+    legacy = m.wafer_pass_metric(source)
+    matcher = lambda left, right: (left + right) in {'BA', 'AB'} if len(left) == len(right) == 1 else False
+    symbol = m.wafer_pass_metric(source, fail_matcher=matcher)
+    assert legacy == {'value': 0, 'pass_count': 0, 'die_count': 4}
+    assert symbol == {'value': 50, 'pass_count': 2, 'die_count': 4, 'unmatched_cells': 1}
 
 
 def test_ranking_beyond_preview_and_ties_and_empty_period():

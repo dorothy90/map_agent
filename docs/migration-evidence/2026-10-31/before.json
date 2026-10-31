@@ -1,0 +1,11 @@
+{
+  "data_origin": "fixture",
+  "live_model": false,
+  "requested_rows": 158,
+  "model_rows": 10,
+  "summary": "원본 158행 중 offset=0부터 158행",
+  "reload_rows": 10,
+  "tool_status": "success",
+  "passed": false,
+  "error_type": "AssertionError"
+}

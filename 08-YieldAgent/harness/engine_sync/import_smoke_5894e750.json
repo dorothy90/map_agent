@@ -1,0 +1,23 @@
+{
+  "results": [
+    {
+      "module": "hermes_bootstrap",
+      "success": true,
+      "error": null
+    },
+    {
+      "module": "model_tools",
+      "success": true,
+      "error": null
+    },
+    {
+      "module": "run_agent",
+      "success": true,
+      "error": null
+    }
+  ],
+  "returncode": 0,
+  "isolation": "temporary HOME/HERMES_HOME; clean environment; audit guard blocks .env access, network, subprocesses, and writes outside temporary home",
+  "python": "/Users/daehwankim/yield-agent/.venv/bin/python",
+  "path_setup": "engine inserted at sys.path[0]; harness appended, as native_worker.py"
+}

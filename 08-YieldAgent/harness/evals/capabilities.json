@@ -204,9 +204,6 @@
         "harness.memory.load_profile",
         "harness.memory.update_memory"
       ],
-      "tools": [
-        "recall_session"
-      ],
       "required_services": [
         "mongo"
       ],

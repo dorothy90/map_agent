@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+EMPTY_RESULT_SUMMARY = "결과 0건"
 
 
 def now() -> str:
@@ -36,6 +40,29 @@ class ResultTable(Contract):
     missing_reason: str | None = None
 
 
+class ResultPage(Contract):
+    table_id: str = Field(min_length=1)
+    source_total_rows: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1, le=1000)
+
+    def summary(self, visible_rows: int) -> str:
+        return f"원본 {self.source_total_rows}행 중 offset={self.offset}부터 {visible_rows}행 표시"
+
+    def project(self, payload: dict) -> None:
+        if payload.get("status") == "error":
+            return
+        tables = payload.get("tables", [])
+        table = next((table for table in tables if table["table_id"] == self.table_id), None)
+        rows = payload.get("preview_rows", []) if len(tables) == 1 else (table or {}).get("preview_rows", [])
+        count = len(rows) if table is not None else 0
+        next_offset = self.offset + count
+        payload["summary"] = self.summary(count)
+        payload["page"] = {**self.model_dump(), "read_rows": table["total_rows"] if table else 0,
+            "visible_rows": count, "next_offset": next_offset if next_offset < self.source_total_rows else None}
+        payload["truncated"] = bool(payload.get("truncated")) or self.offset > 0 or next_offset < self.source_total_rows
+
+
 class TableRef(Contract):
     table_id: str
     title: str
@@ -51,6 +78,7 @@ class TableRef(Contract):
 class ToolObservation(Contract):
     schema_version: str = "harness-observation/v2"
     tables: list[TableRef] = Field(default_factory=list)
+    page: ResultPage | None = None
     principal_id: str
     session_id: str
     run_id: str
@@ -87,11 +115,16 @@ class ToolObservation(Contract):
     def model_view(self):
         """Keep audit identifiers and repeated tool inputs out of model context."""
         payload = self.model_dump(mode="json", include={"result_id", "tool_name", "status", "summary", "columns", "preview_rows", "total_rows", "truncated", "artifact_refs", "source_result_ids", "scope", "error"})
-        payload["preview_rows"] = payload["preview_rows"][:10]
-        payload["truncated"] = self.truncated or len(self.preview_rows) > 10
-        payload["tables"] = [{**table.model_dump(mode="json", exclude={"data_ref"}),
-            "preview_rows": [] if self.status == "error" else table.preview_rows[:10],
-            "truncated": table.total_rows > min(len(table.preview_rows), 10)} for table in self.tables]
+        single_page = self.page is not None and len(self.tables) == 1 and self.tables[0].table_id == self.page.table_id
+        row_limit = self.page.limit if single_page else 10
+        payload["preview_rows"] = payload["preview_rows"][:row_limit]
+        payload["truncated"] = self.truncated or len(self.preview_rows) > row_limit
+        payload["tables"] = []
+        for table in self.tables:
+            limit = self.page.limit if self.page and table.table_id == self.page.table_id else 10
+            payload["tables"].append({**table.model_dump(mode="json", exclude={"data_ref"}),
+                "preview_rows": [] if self.status == "error" else table.preview_rows[:limit],
+                "truncated": table.total_rows > min(len(table.preview_rows), limit)})
         # A single table is already represented by the legacy preview fields.
         if len(self.tables) == 1:
             payload["tables"][0].pop("preview_rows")
@@ -103,6 +136,14 @@ class ToolObservation(Contract):
                 payload["error"] = {k: str(v)[:1200] if isinstance(v, str) else v for k, v in self.error.items()}
         payload["artifact_count"] = len(self.artifact_refs)
         payload["artifact_refs"] = self.artifact_refs[:5]
+        if (os.environ.get("HARNESS_WAFER_SET_TOOLS") == "1"
+                and self.status in {"success", "partial", "empty"}
+                and self.provenance.get("tool_group") == "wafer_set"
+                and self.provenance.get("empty_result") is True):
+            payload["empty_result"] = True
+            payload["empty_result_message"] = EMPTY_RESULT_SUMMARY
+        if self.page:
+            self.page.project(payload)
         return payload
 
 

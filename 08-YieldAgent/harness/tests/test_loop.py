@@ -122,6 +122,6 @@ def test_declared_core_tools_are_available_without_discovery():
         async def call(*args, **kwargs): return AIMessage(content='ready')
         node = Nodes(model, domain_registry(), SimpleNamespace(settings=Settings(), check=check, model_call=call), '')
         await node.think({'goal': {}, 'observations': [], 'messages': []})
-        assert {'read_result', 'run_python', 'recall_session', 'query_yield', 'analyze_yield', 'query_defect_yield'} <= seen[-1]
+        assert {'read_result', 'run_python', 'query_yield', 'analyze_yield', 'query_defect_yield'} <= seen[-1]
         assert 'query_wads' not in seen[-1]
     asyncio.run(scenario())

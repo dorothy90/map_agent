@@ -1,4 +1,4 @@
-"""Execute analysis in a separate POSIX process, not a security sandbox."""
+"""Execute analysis locally, or through the required yieldrun SSH boundary."""
 import asyncio
 import json
 import os
@@ -7,12 +7,18 @@ import signal
 import sys
 import tempfile
 
+from ..isolation.backend import IsolatedSSHBackend
+
 
 class ProcessRuntime:
-    def __init__(self, executable=None):
+    def __init__(self, executable=None, *, isolation=None, run_id=None, principal_id=None):
         self.executable = executable or sys.executable
+        self.isolated = (IsolatedSSHBackend(isolation, run_id, principal_id)
+                         if isolation is not None else None)
 
     async def execute(self, code, datasets, timeout=60):
+        if self.isolated is not None:
+            return await self.isolated.execute_python(code, datasets, timeout)
         with tempfile.TemporaryDirectory(prefix="yield-harness-") as root:
             directory = Path(root)
             inputs, outputs = directory / "input", directory / "output"

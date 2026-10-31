@@ -1,0 +1,4 @@
+#!/bin/sh
+# sshd invokes the account shell before applying the authorized_keys forced command.
+# Ignore all shell arguments so yieldrun-controlled startup files can never run first.
+exec /usr/local/libexec/yieldrun-launcher

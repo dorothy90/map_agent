@@ -12,7 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
-from .types import ResultTable, TableRef, ToolObservation, now
+from .types import ResultPage, ResultTable, TableRef, ToolObservation, now
 
 
 class Conflict(RuntimeError):
@@ -37,6 +37,13 @@ class HarnessStore:
         self.calls = self.db.harness_invocations
 
     async def setup(self):
+        # PR-7a host persistence (PB:575,664,702); existing admission unchanged.
+        await self.db.gateway_event_logs.create_index([("principal_id", 1), ("session_id", 1)], unique=True)
+        await self.db.gateway_event_logs.create_index("opened_at")
+        await self.db.gateway_receipts.create_index([("principal_id", 1), ("session_id", 1), ("request_id", 1)], unique=True)
+        await self.db.gateway_receipts.create_index([("principal_id", 1), ("session_id", 1), ("admission_id", 1)], unique=True)
+        await self.db.gateway_receipts.create_index([("principal_id", 1), ("session_id", 1), ("sequence", 1)], unique=True)
+        await self.db.gateway_receipt_counters.create_index([("principal_id", 1), ("session_id", 1)], unique=True)
         await self.db.harness_sessions.create_index([("principal_id", 1), ("session_id", 1)], unique=True)
         await self.runs.create_index([("principal_id", 1), ("session_id", 1), ("request_id", 1)], unique=True)
         await self.runs.create_index([("principal_id", 1), ("session_id", 1)], unique=True, partialFilterExpression={"active": True})
@@ -88,6 +95,7 @@ class HarnessStore:
             if old["principal_id"] != principal_id or old["session_id"] != session_id:
                 raise PermissionError("Result unavailable")
             return ToolObservation.model_validate(old["observation"])
+        page = ResultPage.model_validate(observation["page"]) if observation.get("page") else None
         payload = json.dumps([t.model_dump() for t in tables], ensure_ascii=False, allow_nan=False).encode()
         blob_ids = []
         metadata_attempted = False
@@ -97,10 +105,14 @@ class HarnessStore:
                 data_id = await self.blobs.upload_from_stream(result_id + ":" + table.table_id,
                     json.dumps(table.rows, ensure_ascii=False, allow_nan=False).encode())
                 blob_ids.append(data_id)
-                preview, preview_bytes = [], 0
-                for row in table.rows[:50]:
+                is_page = page is not None and page.table_id == table.table_id
+                row_limit, byte_limit = (page.limit, 1024 * 1024) if is_page else (50, 32000)
+                preview, preview_bytes = [], 2 if is_page else 0
+                for row in table.rows[:row_limit]:
                     row_bytes = len(json.dumps(row, ensure_ascii=False).encode())
-                    if preview_bytes + row_bytes > 32000:
+                    if is_page and preview:
+                        row_bytes += 2
+                    if preview_bytes + row_bytes > byte_limit:
                         break
                     preview.append(row)
                     preview_bytes += row_bytes
@@ -127,6 +139,8 @@ class HarnessStore:
                 "truncated": any(t.total_rows > len(t.preview_rows) for t in table_refs),
                 "columns": single.columns if single else [], "artifact_refs": refs,
             })
+            if page and obs.status != "error":
+                obs.summary = obs.model_view()["summary"]
             metadata_attempted = True
             await self.results.insert_one({"result_id": result_id, "principal_id": principal_id, "session_id": session_id,
                 "checksum": hashlib.sha256(payload).hexdigest(), "observation": obs.model_dump(mode="json")})
@@ -298,6 +312,10 @@ class HarnessStore:
     async def event(self, run_id, kind, payload, *, event_key=None, epoch=None):
         # Embedded bounded run events allocate sequence and payload in one atomic write.
         query = {"_id": run_id, "status": "running", "active": True}
+        # PB:663: control.cancel sets cancelling BEFORE native cleanup. Only
+        # pending teardown may still publish; execution/epoch fencing is unchanged.
+        if epoch is not None and kind in ('clarify.settled', 'approval.settled', 'approval.cancelled'):
+            query['status'] = {'$in': ['running', 'cancelling']}
         if event_key:
             query["events.event_key"] = {"$ne": event_key}
         if epoch is not None:

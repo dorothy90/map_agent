@@ -69,7 +69,7 @@
 | `runtime/` | 기존 동기 업무 함수 격리, 생성 Python 코드의 별도 프로세스 실행(기본) 또는 Docker 실행 |
 | `tests/`, `evals/` | 합성 검증과 실제 서비스 평가 도구 |
 
-Hermes를 별도 설치하거나 최신 upstream으로 교체하지 않는다. 현재 내장 버전은 `e473f5a9c976a0b5bc292aa415dae28c638a47c3`이다. `native_hermes.py`의 루트 경로 계산, `scripts/setup_hermes.sh`의 경로는 사내 디렉터리 구조에 맞게 점검한다.
+Hermes를 별도 설치하거나 임의의 최신 upstream으로 교체하지 않는다. 현재 내장 버전은 `harness/engine/UPSTREAM.json`에 고정된 `5894e750c3dba980d43b25aa29e3958149ba2c61`이다(2026-10 동기화). `native_hermes.py`의 루트 경로 계산, `scripts/setup_hermes.sh`의 경로는 사내 디렉터리 구조에 맞게 점검한다.
 
 ### 3.2 기존 파일에 필요한 부분만 병합
 

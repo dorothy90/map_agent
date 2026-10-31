@@ -7,14 +7,26 @@ import pytest
 def test_process_computes_tables_and_plots(monkeypatch):
     from harness.runtime.process import ProcessRuntime
     monkeypatch.setenv('HARNESS_API_KEY', 'must-not-be-inherited')
+    monkeypatch.setenv('HARNESS_MONGO_URI', 'must-not-be-inherited')
+    monkeypatch.setenv('PYTHONPATH', '/must/not/be/inherited')
+    monkeypatch.setenv('BASH_ENV', '/must/not/be/inherited')
+    monkeypatch.setenv('SSH_AUTH_SOCK', '/must/not/be/inherited')
     result = asyncio.run(ProcessRuntime(sys.executable).execute(
-        "import os; assert 'HARNESS_API_KEY' not in os.environ\n"
+        "import os; assert not {'HARNESS_API_KEY','HARNESS_MONGO_URI','PYTHONPATH','BASH_ENV','SSH_AUTH_SOCK'} & os.environ.keys()\n"
         "print(len(df)); emit_table(df.agg({'n':'sum'}).to_frame().T); emit_plot(px.bar(df, y='n'))",
         {'r1': [{'n': i} for i in range(120)]}))
     assert result['status'] == 'success'
     assert result['tables'][0]['rows'][0]['n'] == 7140
     assert '120' in result['stdout']
     assert '<html>' in result['plots'][0]
+
+
+def test_legacy_process_namespace_keeps_scipy_and_statsmodels():
+    from harness.runtime.process import ProcessRuntime
+    result = asyncio.run(ProcessRuntime(sys.executable).execute(
+        "assert scipy.__name__ == 'scipy'; assert sm.__name__ == 'statsmodels.api'; print('ok')", {}))
+    assert result['status'] == 'success'
+    assert result['stdout'].strip() == 'ok'
 
 
 def test_process_errors_and_timeout():

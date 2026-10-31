@@ -1,6 +1,6 @@
 --- a/hermes_bootstrap.py
 +++ b/hermes_bootstrap.py
-@@ -489,33 +489,8 @@
+@@ -489,22 +489,7 @@
      os.chdir(_root)
  
  
@@ -22,7 +22,21 @@
 -# without this, ``pm`` is unimportable and the launch silently skips PM adoption.
 +# Embedded source is resolved locally; standalone updater handoff is disabled.
  harden_import_path(str(_root))
--
+ 
+ 
+@@ -541,7 +526,7 @@
+         recovery.relaunch_after_restore()
+ 
+ 
+-_settle_interrupted_update()
++# Embedded backend: standalone interrupted-update recovery is disabled.
+ 
+ 
+ def _pin_launcher_home() -> None:
+@@ -557,66 +542,12 @@
+ 
+ _pin_launcher_home()
+ 
 -_legacy_post_swap = _legacy_post_swap_invocation(sys.argv[1:])
 -if _legacy_post_swap is not None:
 -    # This continuation exists precisely because the replacement tree may not
@@ -32,10 +46,11 @@
 -
 -    _handoff_path, _argv_tail = _legacy_post_swap
 -    raise SystemExit(_continue_legacy_post_swap(_handoff_path, argv_tail=_argv_tail))
- 
- 
+-
+-
  class RelaunchExit(SystemExit):
-@@ -524,49 +499,6 @@
+     """Exit carrying a relaunched child's status: that child already produced this run's output,
+     so callers that report their own boot failures (the Bot Chat delivery runner) must not."""
      relaunched = True
  
  
@@ -88,7 +103,7 @@
  export_scratch_tmp_env()
 --- a/model_tools.py
 +++ b/model_tools.py
-@@ -159,7 +159,8 @@
+@@ -160,7 +160,8 @@
      # slow or unreachable (#16856). - gateway/run.py            -> start_gateway() uses run_in_executor -
      # acp_adapter/server.py     -> asyncio.to_thread on session init
      from hermes_cli.plugins import discover_plugins
@@ -100,7 +115,7 @@
  
 --- a/pm/extras.py
 +++ b/pm/extras.py
-@@ -189,51 +189,8 @@
+@@ -187,51 +187,8 @@
      — including when a platform gate excludes this machine."""
      if available(extra):
          return

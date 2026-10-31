@@ -2,6 +2,7 @@
 from collections import defaultdict
 from datetime import date
 from io import BytesIO
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -27,7 +28,9 @@ class MapInput(Contract):
     oper: Literal['PT1H', 'PT1C']
     map_type: Literal['binmap', 'cummap'] = 'cummap'
     target_bin: str | None = Field(default=None, min_length=1, max_length=20,
-        description='For cummap: all dies other than this bin count as pass. Null means A-bin pass.')
+        description='For cummap: all dies other than this bin count as pass. Null means ?-bin pass.')
+    symbol_bin_parameters: list[str] = Field(default_factory=list, max_length=25,
+        description='Optional named product/process definitions used to classify die failures from the two source bin values.')
     bin_type: Literal['left_bin', 'right_bin'] = 'left_bin'
     measurement_policy: Literal['all_measurements', 'latest_per_wafer'] = 'all_measurements'
 
@@ -51,6 +54,10 @@ class MapInput(Contract):
             raise ValueError('wf_rem must be smaller than wf_mod')
         if self.map_type == 'binmap' and self.target_bin is not None:
             raise ValueError('target_bin is a cumulative-map metric; binmap displays source categories')
+        if self.symbol_bin_parameters and self.map_type != 'cummap':
+            raise ValueError('symbol_bin_parameters is supported only for cummap')
+        if self.symbol_bin_parameters and self.target_bin is not None:
+            raise ValueError('symbol_bin_parameters and target_bin are mutually exclusive')
         return self
 
 
@@ -101,23 +108,87 @@ class CompareMapInput(Contract):
         return self
 
 
-def map_statistics(rows, target_bin=None, bin_type='left_bin'):
+def map_statistics(rows, target_bin=None, bin_type='left_bin', fail_matchers=None, default_lot_cd=None):
     from map_agent import _parse_wafer_for_cummap
     counts = defaultdict(lambda: [0, 0])
-    total = passed = 0
+    total = passed = unmatched = 0
     for row in rows:
-        metric = wafer_pass_metric(row['map_val_json'], target_bin, bin_type)
+        matcher = None
+        if fail_matchers is not None:
+            lot_cd = row.get('lot_cd') or default_lot_cd
+            if not lot_cd:
+                raise ValueError('lot_cd is required for symbol bin matching')
+            try:
+                matcher = fail_matchers[lot_cd]
+            except KeyError as exc:
+                raise ValueError(f'No symbol bin definitions loaded for lot_cd {lot_cd!r}') from exc
+        metric = wafer_pass_metric(row['map_val_json'], target_bin, bin_type, fail_matcher=matcher)
         total += metric['die_count']
         passed += metric['pass_count']
-        rr, cc, pp = _parse_wafer_for_cummap((row['map_val_json'], bin_type, target_bin))
-        for r, c, p in zip(rr, cc, pp):
-            counts[(r, c)][0] += p
+        unmatched += metric.get('unmatched_cells', 0)
+        if matcher is None:
+            rr, cc, pp = _parse_wafer_for_cummap((row['map_val_json'], bin_type, target_bin))
+            observations = zip(rr, cc, pp)
+        else:
+            raw = json.loads(row['map_val_json']) if isinstance(row['map_val_json'], str) else row['map_val_json']
+            observations = []
+            coordinates = set()
+            for entry in raw['MAP']:
+                parts = entry.split(',')
+                coordinate = (int(parts[0]), int(parts[1]))
+                if coordinate in coordinates:
+                    raise ValueError('Map contains duplicate die coordinates')
+                coordinates.add(coordinate)
+                left = parts[2] if len(parts) > 2 else None
+                right = parts[3] if len(parts) > 3 else None
+                valid_pair = (isinstance(left, str) and isinstance(right, str)
+                              and len(left) == 1 and len(right) == 1)
+                observations.append((*coordinate, not valid_pair or not matcher(left, right)))
+        for r, c, is_pass in observations:
+            counts[(r, c)][0] += is_pass
             counts[(r, c)][1] += 1
     cells = [{'row': r, 'col': c, 'pass_count': p, 'die_observations': n, 'pass_percent': 100*p/n}
              for (r, c), (p, n) in sorted(counts.items())]
-    return {'measurement_count': len(rows), 'coordinate_count': len(cells), 'die_observations': total,
+    stats = {'measurement_count': len(rows), 'coordinate_count': len(cells), 'die_observations': total,
             'pooled_die_pass_percent': 100*passed/total if total else None,
-            'mean_coordinate_pass_percent': sum(c['pass_percent'] for c in cells)/len(cells) if cells else None}, cells
+            'mean_coordinate_pass_percent': sum(c['pass_percent'] for c in cells)/len(cells) if cells else None}
+    if fail_matchers is not None:
+        stats['unmatched_cells'] = unmatched
+    return stats, cells
+
+
+def _load_symbol_matchers(records, args):
+    from symbol_bin import make_symbol_fail_matcher
+    from symbol_bin_db import load_symbol_patterns
+
+    lot_codes = {row.get('lot_cd') or args.lotcd for row in records}
+    if args.lotcd:
+        lot_codes.add(args.lotcd)
+    lot_codes.discard(None)
+    if not lot_codes:
+        raise ValueError('lot_cd is required for symbol bin matching')
+    return {lot_cd: make_symbol_fail_matcher(
+        load_symbol_patterns(lot_cd, args.oper, args.symbol_bin_parameters)) for lot_cd in sorted(lot_codes)}
+
+
+def _symbol_cummap_image(cells, oper):
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    rows = [cell['row'] for cell in cells]
+    cols = [cell['col'] for cell in cells]
+    grid = np.full((max(rows) - min(rows) + 1, max(cols) - min(cols) + 1), np.nan)
+    for cell in cells:
+        grid[cell['row'] - min(rows), cell['col'] - min(cols)] = cell['pass_percent']
+    fig = Figure(figsize=(8, 7)); FigureCanvasAgg(fig)
+    ax = fig.subplots()
+    image = ax.imshow(grid, cmap='RdYlGn', vmin=0, vmax=100)
+    ax.set_title(f'{oper} cumulative pass percent')
+    ax.set_xticks([]); ax.set_yticks([])
+    fig.colorbar(image, ax=ax, label='Pass percent')
+    output = BytesIO(); fig.savefig(output, format='png', dpi=150, bbox_inches='tight')
+    return output.getvalue()
 
 
 def compare_statistics(period_cells):
@@ -154,32 +225,45 @@ def _fetch_maps(args):
 
 
 def _scope(args, complete):
-    return {**args.model_dump(mode='json'), 'complete': complete, 'interval': '[start_date, end_date)',
+    symbol_parameters = getattr(args, 'symbol_bin_parameters', [])
+    input_scope = args.model_dump(mode='json')
+    if not symbol_parameters:
+        input_scope.pop('symbol_bin_parameters', None)
+    scope = {**input_scope, 'complete': complete, 'interval': '[start_date, end_date)',
         'time_basis': 'end_tm', 'measurement_policy_scope': 'within_query_range; timestamp ties retained',
         'business_retest_policy': 'unconfirmed; explicit query policy used',
-        'pass_definition': f'bin != {args.target_bin}' if args.target_bin is not None else 'bin == A',
+        'pass_definition': ('not selected symbol-bin regex union' if symbol_parameters else
+                            f'bin != {args.target_bin}' if args.target_bin is not None else 'bin == ?'),
         'mean_coordinate_pass_percent': 'unweighted average of per-coordinate pass percentages (renderer metric)',
         'pooled_die_pass_percent': '100 * total passing die observations / total die observations',
         'missing_reason': None if complete else 'LOT query reached legacy 10000-row cap'}
+    if symbol_parameters:
+        scope.update({'bin_match': 'left+right', 'calculation_mode': 'symbol_bin_regex'})
+    return scope
 
 
 def _render_map(args):
     from map_agent import _visualize_binmap, _visualize_cummap
     records, complete = _fetch_maps(args)
-    stats, cells = map_statistics(records, args.target_bin, args.bin_type)
+    matchers = _load_symbol_matchers(records, args) if args.symbol_bin_parameters else None
+    stats, cells = map_statistics(records, args.target_bin, args.bin_type, matchers, args.lotcd)
     artifacts = []
     if cells:
-        if args.map_type == 'binmap':
+        if matchers is not None:
+            artifacts.append({'title': args.map_type, 'mime': 'image/png',
+                              'data': _symbol_cummap_image(cells, args.oper)})
+        elif args.map_type == 'binmap':
             path = _visualize_binmap(records, bin_type=args.bin_type, oper=args.oper)
         else:
             path, _ = _visualize_cummap(records, bin_type=args.bin_type, target_bin=args.target_bin, oper=args.oper)
-        if not path:
-            raise ValueError('Map rendering failed')
-        image = Path(path)
-        try:
-            artifacts.append({'title': args.map_type, 'mime': 'image/png', 'data': image.read_bytes()})
-        finally:
-            image.unlink(missing_ok=True)
+        if matchers is None:
+            if not path:
+                raise ValueError('Map rendering failed')
+            image = Path(path)
+            try:
+                artifacts.append({'title': args.map_type, 'mime': 'image/png', 'data': image.read_bytes()})
+            finally:
+                image.unlink(missing_ok=True)
     reason = None if complete else 'LOT query reached legacy 10000-row cap'
     return ToolResult(tables=[ResultTable(table_id='measurements', title='맵 원본 측정', rows=records, complete=complete, missing_reason=reason),
         ResultTable(table_id='map_summary', title='맵 평균 및 분모', rows=[stats], complete=complete, missing_reason=reason,
@@ -255,5 +339,5 @@ async def compare_wafer_maps(args, ctx):
 
 
 def register(registry):
-    registry.add(ToolSpec('render_wafer_map', 'LOT/웨이퍼 또는 제품/기간 맵. 특정 bin, 번호 필터, 명시한 재측정 기준과 평균 분모를 포함한 수치 표+이미지 반환.', MapInput, render_map))
+    registry.add(ToolSpec('render_wafer_map', '맵 조회 입력을 받아 좌표별 집계와 이미지를 반환한다. 선택적으로 제품·공정 정의의 정규식을 두 bin 값의 조합에 적용해 fail을 분류한다.', MapInput, render_map))
     registry.add(ToolSpec('compare_wafer_maps', '2~12개 제품/기간 맵 모두 보존. 첫 기간 대비 좌표별 차이(pp), 지정 사각 영역의 공유 좌표 평균 차이와 이미지를 반환.', CompareMapInput, compare_wafer_maps))

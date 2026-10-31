@@ -1,0 +1,192 @@
+{
+  "approval.respond": {
+    "legacy": {
+      "params": "ApprovalRespondParams",
+      "result": "ApprovalRespondResult"
+    },
+    "authority": {
+      "params": "CanonicalApprovalParams",
+      "result": "PromptResponseResult"
+    }
+  },
+  "bot_relay.deliver": {
+    "legacy": {
+      "params": "BotRelayDeliverParams",
+      "result": "BotRelayDeliverResult"
+    },
+    "authority": {
+      "params": "CanonicalBotDeliverParams",
+      "result": "CanonicalBotDeliverResult"
+    }
+  },
+  "clarify.lock": {
+    "legacy": {
+      "params": "ClarifyLockParams",
+      "result": "ClarifyLockResult"
+    },
+    "authority": {
+      "params": "ClarifyLockParams",
+      "result": "ClarifyLockResult"
+    }
+  },
+  "config.get": {
+    "legacy": {
+      "params": "ConfigGetParams",
+      "result": "ConfigGetResult"
+    },
+    "authority": {
+      "params": "ConfigGetParams",
+      "result": "CanonicalConfigGetResult"
+    }
+  },
+  "config.set": {
+    "legacy": {
+      "params": "ConfigSetParams",
+      "result": "ConfigSetResult"
+    },
+    "authority": {
+      "params": "CanonicalConfigSetParams",
+      "result": "ConfigSetResult"
+    }
+  },
+  "groups.approve": {
+    "legacy": {
+      "params": "GroupsApproveParams",
+      "result": "GroupsApproveResult"
+    },
+    "authority": {
+      "params": "CanonicalRoomApproveParams",
+      "result": "GroupsApproveResult"
+    }
+  },
+  "groups.create": {
+    "legacy": {
+      "params": "GroupsCreateParams",
+      "result": "GroupsCreateResult"
+    },
+    "authority": {
+      "params": "CanonicalRoomCreateParams",
+      "result": "GroupsCreateResult"
+    }
+  },
+  "groups.retry": {
+    "legacy": {
+      "params": "GroupsRetryParams",
+      "result": "GroupsRetryResult"
+    },
+    "authority": {
+      "params": "CanonicalRoomAttemptParams",
+      "result": "GroupsRetryResult"
+    }
+  },
+  "image.attach_bytes": {
+    "legacy": {
+      "params": "ImageAttachBytesParams",
+      "result": "AttachedImageResult"
+    },
+    "authority": {
+      "params": "ImageAttachBytesParams",
+      "result": "CanonicalAttachedImageResult"
+    }
+  },
+  "profiles.list": {
+    "legacy": {
+      "params": "ProfilesListParams",
+      "result": "ProfilesListResult"
+    },
+    "authority": {
+      "params": "CanonicalProfilesParams",
+      "result": "CanonicalProfilesResult"
+    }
+  },
+  "prompt.submit": {
+    "legacy": {
+      "params": "PromptSubmitParams",
+      "result": "PromptSubmitResult"
+    },
+    "authority": {
+      "params": "CanonicalSubmitParams",
+      "result": "CanonicalSubmitResult"
+    }
+  },
+  "session.create": {
+    "legacy": {
+      "params": "SessionCreateParams",
+      "result": "SessionCreateResult"
+    },
+    "authority": {
+      "params": "CanonicalCreateParams",
+      "result": "CanonicalSnapshot"
+    }
+  },
+  "session.events.since": {
+    "legacy": {
+      "params": "SessionEventsSinceParams",
+      "result": "SessionEventsSinceResult"
+    },
+    "authority": {
+      "params": "CanonicalEventsParams",
+      "result": "CanonicalEventsResult"
+    }
+  },
+  "session.interrupt": {
+    "legacy": {
+      "params": "SessionInterruptParams",
+      "result": "SessionInterruptResult"
+    },
+    "authority": {
+      "params": "CanonicalControlParams",
+      "result": "CanonicalSessionHandle"
+    }
+  },
+  "session.list": {
+    "legacy": {
+      "params": "SessionListParams",
+      "result": "SessionListResult"
+    },
+    "authority": {
+      "params": "CanonicalListParams",
+      "result": "CanonicalListResult"
+    }
+  },
+  "session.redirect": {
+    "legacy": {
+      "params": "SessionCorrectionParams",
+      "result": "SessionCorrectionResult"
+    },
+    "authority": {
+      "params": "CanonicalCorrectionParams",
+      "result": "CanonicalCorrectionResult"
+    }
+  },
+  "session.resume": {
+    "legacy": {
+      "params": "SessionResumeParams",
+      "result": "SessionResumeResult"
+    },
+    "authority": {
+      "params": "CanonicalResumeParams",
+      "result": "CanonicalSnapshot"
+    }
+  },
+  "session.steer": {
+    "legacy": {
+      "params": "SessionCorrectionParams",
+      "result": "SessionCorrectionResult"
+    },
+    "authority": {
+      "params": "CanonicalCorrectionParams",
+      "result": "CanonicalCorrectionResult"
+    }
+  },
+  "shell.exec": {
+    "legacy": {
+      "params": "ShellExecParams",
+      "result": "ShellExecResult"
+    },
+    "authority": {
+      "params": "CanonicalShellExecParams",
+      "result": "ShellExecResult"
+    }
+  }
+}

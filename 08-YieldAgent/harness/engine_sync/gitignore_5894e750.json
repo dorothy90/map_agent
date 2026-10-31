@@ -1,0 +1,58 @@
+[
+  {
+    "source": ".gitignore",
+    "line": "6",
+    "pattern": "dist/",
+    "path": "08-YieldAgent/harness/engine/plugins/hermes-achievements/dashboard/dist/index.js",
+    "already_tracked": false,
+    "ignored_by_git": true
+  },
+  {
+    "source": ".gitignore",
+    "line": "6",
+    "pattern": "dist/",
+    "path": "08-YieldAgent/harness/engine/plugins/hermes-achievements/dashboard/dist/style.css",
+    "already_tracked": false,
+    "ignored_by_git": true
+  },
+  {
+    "source": ".gitignore",
+    "line": "6",
+    "pattern": "dist/",
+    "path": "08-YieldAgent/harness/engine/plugins/kanban/dashboard/dist/index.js",
+    "already_tracked": false,
+    "ignored_by_git": true
+  },
+  {
+    "source": ".gitignore",
+    "line": "6",
+    "pattern": "dist/",
+    "path": "08-YieldAgent/harness/engine/plugins/kanban/dashboard/dist/style.css",
+    "already_tracked": false,
+    "ignored_by_git": true
+  },
+  {
+    "source": ".gitignore",
+    "line": "127",
+    "pattern": ".gitignore",
+    "path": "08-YieldAgent/harness/engine/plugins/platforms/photon/sidecar/.gitignore",
+    "already_tracked": false,
+    "ignored_by_git": true
+  },
+  {
+    "source": ".gitignore",
+    "line": "86",
+    "pattern": "pyproject.toml",
+    "path": "08-YieldAgent/harness/engine/pm/pyproject.toml",
+    "already_tracked": true,
+    "ignored_by_git": false
+  },
+  {
+    "source": ".gitignore",
+    "line": "86",
+    "pattern": "pyproject.toml",
+    "path": "08-YieldAgent/harness/engine/pyproject.toml",
+    "already_tracked": true,
+    "ignored_by_git": false
+  }
+]

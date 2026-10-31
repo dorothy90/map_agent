@@ -17,7 +17,16 @@ Python 3.11을 유지하며 Hermes를 별도로 설치하지 않는다. `harness
 
 기준 소스는 `codex/goal-driven-harness` 브랜치의 내장 엔진 구현 커밋 `b41fd1a` 시점 전체 파일과 이 문서의 후속 보완이다. 하네스가 없던 사내 버전에 해당 커밋 하나만 cherry-pick하면 이전 하네스 구현이 빠질 수 있다. 전체 소스 스냅샷을 별도 참조 폴더에 두고 필요한 구성을 병합한다.
 
-검증 하위 에이전트 보완까지 이식할 때는 최신 `native_hermes.py`, `native_worker.py`, `native_verification.py`, `instructions/verifier.md` 및 대응 테스트를 함께 복사한다. 메인 답변 뒤 원본 Hermes 하위 실행으로 요청·입력·결과를 대조하며, 불일치가 확인되면 메인이 한 번 보완하고 재검증한다. 판단 불가나 검증 실패는 완료로 처리하지 않는다. 검증자는 같은 사용자·세션의 저장 자료를 `read_result`로만 읽으며, 메인과 시간·모델 호출·토큰 예산을 공유한다. 검증 기록은 `verify_answer` 실행 상세로 전달된다. 별도 모델 설정이나 서버 설치는 없다.
+검증 하위 에이전트 보완까지 이식할 때는 최신 `config.py`, `native_hermes.py`, `native_worker.py`, `native_verification.py`, `native_stop_gate.py`, `native_budget.py`, `instructions/verifier.md` 및 대응 테스트를 함께 복사한다. 메인 답변 뒤 원본 Hermes 하위 실행으로 요청·입력·결과를 대조하며, 불일치가 확인되면 메인이 한 번 보완하고 재검증한다. 판단 불가나 검증 실패는 완료로 처리하지 않는다. 검증자는 같은 사용자·세션의 저장 자료를 `read_result`로만 읽으며, 메인과 시간·모델 호출·토큰 예산을 공유한다. 검증 기록은 `verify_answer` 실행 상세로 전달된다. 별도 모델 설정이나 서버 설치는 없다.
+
+검증 보완은 원본 Hermes의 stop gate에서 같은 사용자 턴을 이어 실행한다. 내부 피드백에는 synthetic/hidden 메타데이터를 적용하여 대화 저장과 압축 기준 질문에서 제외한다. 조기 종료 시 현재 턴 경계를 확인할 수 없으면 기존 답변을 덮어쓰지 않고 요청과 미완료 응답을 추가한다. 최종 응답 교체 시 원본 API content sidecar도 제거한다.
+
+`HARNESS_TEMPERATURE`, `HARNESS_REASONING_EFFORT`, `HARNESS_CALL_TIMEOUT`을 내장 엔진에 전달한다. HTTPX 기반 OpenAI-compatible 호출의 공유 예산에는 일반 위임·검증·보조 호출·SDK 재시도를 포함하며, 요청별 timeout과 출력 토큰 상한을 적용한다. 입력은 UTF-8 바이트로 보수적으로 예약하고 응답의 실제 사용량으로 정산하므로, 실제 사용량이 한도 미만이어도 다음 요청의 예약량이 잔여 예산보다 크면 중단할 수 있다. 누락되거나 취소된 사용량은 예약량을 유지한다. 외부 프로세스 모델 provider는 이 경로의 지원 대상이 아니다.
+
+요청 생성시각과 실행 시간대는 `request_context`로 저장하고 메인과 검증자에게 동일하게 전달한다. 상대 기간의 기준과 DB 관측 기간을 구분한다.
+
+시간대 우선순위는 `HARNESS_TIMEZONE`/`HERMES_TIMEZONE`, 사용자 profile의 `timezone`, `Asia/Seoul` 순이다. 실행 시 profile의 실제 스킬을 별도 snapshot으로 복사하고, 그 내용과 해시를 run에 기록한다. 기존 profile을 소스 스킬로 자동 덮어쓰지 않는다. profile 밖 `skills.external_dirs`/`skills.create_dir`는 실행 스킬의 버전 보장이 불가능하므로 현재 어댑터에서 지원하지 않는다.
+
 
 1. 사내 저장소의 현재 변경을 확인하고 체크포인트 커밋 후 별도 이식 브랜치를 만든다. 기존 사용자 변경을 버리지 않는다.
 2. 실제 서버 진입점, 초기화·종료 처리, 세션·인증, 스트리밍, DB 연결, 기존 에이전트 목록을 조사한다.

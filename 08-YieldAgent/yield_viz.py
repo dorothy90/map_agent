@@ -1315,8 +1315,8 @@ def _build_cummap_grid_html(
     PT1C_PARAM_SET = set(PT1C_COLUMNS)  # {"PT1C", "CFTA"}
 
     columns: list[tuple[str, str | None, str]] = [
-        ("PT1H", None, "PT1H TEST"),  # PT1H 전체 pass rate (A=Pass)
-        ("PT1C", None, "PT1C TEST"),  # PT1C 전체 pass rate (A=Pass)
+        ("PT1H", None, "PT1H TEST"),  # PT1H 전체 pass rate (?=Pass)
+        ("PT1C", None, "PT1C TEST"),  # PT1C 전체 pass rate (?=Pass)
     ]
 
     improved = [a for a in anomaly_params if a["direction"] == "개선"][:3]
@@ -1422,7 +1422,7 @@ def _build_cummap_grid_html(
             if target_bin:
                 arr_pass = (arr_bins != target_bin).astype(np.int8)
             else:
-                arr_pass = (arr_bins == "A").astype(np.int8)
+                arr_pass = (arr_bins == "?").astype(np.int8)
 
             pass_sum = np.zeros((height, width), dtype=np.int32)
             np.add.at(pass_sum, (arr_rows, arr_cols), arr_pass)

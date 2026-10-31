@@ -10,7 +10,7 @@ from .run_live import evaluate
 def synthetic_registry():
     registry = domain_registry()
     for name, spec in registry.tools.items():
-        if name in ("run_python", "read_result", "recall_session"):
+        if name in ("run_python", "read_result"):
             continue
         async def fixture(args, ctx, name=name):
             rows = []
