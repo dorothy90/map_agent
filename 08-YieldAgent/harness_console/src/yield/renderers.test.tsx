@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { YieldVerify } from './YieldVerify'
 import { YieldTable } from './YieldTable'
 import { YieldArtifact } from './YieldArtifact'
+import { YieldResults } from './YieldResults'
 import { tableText } from '../core'
 afterEach(cleanup)
 it.each(['pending','pass','fail','none'] as const)('verification %s has no candidate body', state => {
@@ -36,6 +37,69 @@ it('preserves tableText formatting for number, null and object cells', () => {
  render(<YieldTable table={{table_id:'t', title:'결과', columns:['A'], rows:values.map(A => ({A})), total_rows:3, complete:true, offset:0, units:{}}} />)
  expect(screen.getAllByRole('cell').map(cell => cell.textContent)).toEqual(values.map(tableText))
  expect(screen.getAllByRole('cell').every(cell => !cell.hasAttribute('title'))).toBe(true)
+})
+it('previews five rows and toggles the complete table', async () => {
+ const rows=Array.from({length:8},(_,i) => ({A:i+1}))
+ render(<YieldTable table={{table_id:'t', title:'결과', columns:['A'], rows, total_rows:8, complete:true, offset:0, units:{}}} />)
+ expect(screen.getAllByRole('cell').map(cell => cell.textContent)).toEqual(['1','2','3','4','5'])
+ expect(screen.getByText('+3행 더 있음')).toBeTruthy()
+ fireEvent.click(screen.getByRole('button',{name:'전체 보기'}))
+ await waitFor(() => expect(screen.getAllByRole('cell')).toHaveLength(8))
+ fireEvent.click(screen.getByRole('button',{name:'미리 보기'}))
+ expect(screen.getAllByRole('cell')).toHaveLength(5)
+})
+it('downloads all original rows as escaped CSV', async () => {
+ const long='x'.repeat(250)
+ const loadAllRows=vi.fn().mockResolvedValue([{A:'첫째',B:'plain'},{A:'둘째',B:'comma, quote"\nline'},{A:long,B:null}])
+ let csv:Blob|undefined
+ const createObjectURL=vi.spyOn(URL,'createObjectURL').mockImplementation(blob => {csv=blob as Blob;return 'blob:test'})
+ const revokeObjectURL=vi.spyOn(URL,'revokeObjectURL').mockImplementation(() => {})
+ const click=vi.spyOn(HTMLAnchorElement.prototype,'click').mockImplementation(() => {})
+ render(<YieldTable table={{table_id:'t', title:'결과', columns:['A','B'], rows:[{A:'첫째',B:'plain'}], total_rows:3, complete:true, offset:0, units:{}}} loadAllRows={loadAllRows}/>)
+ fireEvent.click(screen.getByRole('button',{name:'CSV 다운로드'}))
+ await waitFor(() => expect(click).toHaveBeenCalledOnce())
+ expect(loadAllRows).toHaveBeenCalledOnce()
+ expect(await csv!.text()).toBe(`A,B\r\n첫째,plain\r\n둘째,"comma, quote""\nline"\r\n${long},`)
+ expect(createObjectURL).toHaveBeenCalledOnce()
+ expect(revokeObjectURL).toHaveBeenCalledWith('blob:test')
+})
+it('groups tool tables into nested disclosures collapsed by default', () => {
+ const run={run_id:'run',session_id:'session',query:'q',status:'completed',goal_revision:1,observations:[
+  {invocation_id:'i1',tool_name:'query_db',result_id:'result-1',status:'success',tables:[
+   {table_id:'a',title:'표 A',columns:['A'],total_rows:1,complete:true},
+   {table_id:'b',title:'표 B',columns:['B'],total_rows:1,complete:true},
+  ]},
+  {invocation_id:'i2',tool_name:'run_python',result_id:'result-2',status:'success',tables:[
+   {table_id:'c',title:'표 C',columns:['C'],total_rows:1,complete:true},
+  ]},
+ ]}
+ const tables=[
+  {runId:'run',resultId:'result-1',table:{table_id:'a',title:'표 A',columns:['A'],rows:[{A:1}],total_rows:1,complete:true,offset:0,units:{}}},
+  {runId:'run',resultId:'result-1',table:{table_id:'b',title:'표 B',columns:['B'],rows:[{B:2}],total_rows:1,complete:true,offset:0,units:{}}},
+  {runId:'run',resultId:'result-2',table:{table_id:'c',title:'표 C',columns:['C'],rows:[{C:3}],total_rows:1,complete:true,offset:0,units:{}}},
+ ]
+ render(<YieldResults runs={[run]} tables={tables} fetcher={vi.fn<typeof fetch>()}/>)
+ const evidence=screen.getByRole('button',{name:'조회·계산 근거 (2개 도구)'})
+ expect(evidence.getAttribute('aria-expanded')).toBe('false')
+ expect(screen.queryByRole('button',{name:/query_db/})).toBeNull()
+ fireEvent.click(evidence)
+ const query=screen.getByRole('button',{name:'query_db · 2개 표'})
+ expect(query.getAttribute('aria-expanded')).toBe('false')
+ expect(screen.queryByRole('region',{name:'표 A'})).toBeNull()
+ fireEvent.click(query)
+ expect(screen.getByRole('region',{name:'표 A'})).toBeTruthy()
+ expect(screen.getByRole('region',{name:'표 B'})).toBeTruthy()
+ expect(screen.queryByRole('region',{name:'표 C'})).toBeNull()
+})
+it('resets disclosures when the session-keyed panel changes', () => {
+ const result={runId:'run',resultId:'result',table:{table_id:'t',title:'표',columns:['A'],rows:[{A:1}],total_rows:1,complete:true,offset:0,units:{}}}
+ const run={run_id:'run',session_id:'first',query:'q',status:'completed',goal_revision:1,observations:[{invocation_id:'i',tool_name:'query_db',result_id:'result',status:'success'}]}
+ const {rerender}=render(<YieldResults key="first" runs={[run]} tables={[result]} fetcher={vi.fn<typeof fetch>()}/>)
+ fireEvent.click(screen.getByRole('button',{name:'조회·계산 근거 (1개 도구)'}))
+ expect(screen.getByRole('button',{name:'query_db · 1개 표'})).toBeTruthy()
+ rerender(<YieldResults key="second" runs={[{...run,session_id:'second'}]} tables={[result]} fetcher={vi.fn<typeof fetch>()}/>)
+ expect(screen.getByRole('button',{name:'조회·계산 근거 (1개 도구)'}).getAttribute('aria-expanded')).toBe('false')
+ expect(screen.queryByRole('button',{name:'query_db · 1개 표'})).toBeNull()
 })
 it('artifact links use server ids and never local paths', () => {
  render(<YieldArtifact sessionId="s" resultId="r" artifact={{artifact_id:'/tmp/a',title:'결과'}} />)

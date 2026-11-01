@@ -68,7 +68,7 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
    <SessionViewProvider value={view}><ChatRuntimeBoundary busy={actions.busy} suppressMessages={false} onCancel={actions.cancelRun} onEdit={actions.editMessage} onReload={actions.reloadFromMessage} onThreadMessagesChange={actions.handleThreadMessagesChange}>
     <div className="hermes-web-thread"><Thread gateway={host.gateway} sessionId={actions.activeSessionId} sessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun}/></div>
     {results.error && <p role="alert">{results.error.message}</p>}
-    {results.data && <YieldResults {...results.data} fetcher={fetcher} onArtifactTables={onArtifactTables}/>}
+    {results.data && <YieldResults key={actions.selectedStoredSessionId} {...results.data} fetcher={fetcher} onArtifactTables={onArtifactTables}/>}
     <div className="hermes-web-composer"><ChatBar gateway={host.gateway} busy={actions.busy} disabled={!ready || gatewayState!=='open'} sessionId={actions.activeSessionId} queueSessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun} onSubmit={actions.submitText} onSteer={actions.steerPrompt}
       state={{model:{model:'',provider:'',canSwitch:false},tools:{enabled:false,label:''},voice:{enabled:false,active:false}}}/></div>
    </ChatRuntimeBoundary></SessionViewProvider>

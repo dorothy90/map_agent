@@ -1,6 +1,20 @@
 import { useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { Run, TablePage } from '../types'
+export async function loadAllTableRows(fetcher:typeof fetch,sessionId:string,resultId:string,table:TablePage) {
+  const rows=[...table.rows]
+  let offset=table.offset + table.rows.length
+  while(offset<table.total_rows) {
+    const limit=Math.min(1000,table.total_rows-offset)
+    const response=await fetcher(`/harness/results/${encodeURIComponent(resultId)}?${new URLSearchParams({session_id:sessionId,table_id:table.table_id,offset:String(offset),limit:String(limit)})}`)
+    if(!response.ok) throw new Error(`결과 조회 실패 (${response.status})`)
+    const page=await response.json() as TablePage
+    if(!page.rows.length) throw new Error('전체 결과 조회 중 빈 페이지를 받았습니다.')
+    rows.push(...page.rows)
+    offset+=page.rows.length
+  }
+  return rows
+}
 export function useYieldResults(sessionId:string|null, busy:boolean, fetcher:typeof fetch) {
   const previous = useRef({sessionId,busy})
   const query = useQuery({queryKey:['yield-results',sessionId],enabled:!!sessionId,refetchInterval:busy ? 3000 : false,retry:false,
