@@ -1,8 +1,10 @@
 """Seed wafer bin ratios and yield into DF_DIE_TO_WF_YLD.
 
 Dry-run is the default and performs database reads only.  ``--apply`` creates a
-once-per-day CTAS backup, then replaces only configured bin/yield parameters in
-one DML transaction.  Ratios use 12 decimal places (half-even), limiting the
+once-per-day CTAS backup, then replaces configured bin/yield and catalog item
+parameters in one DML transaction. Each die has one exclusive bin assignment;
+item values are deterministic per wafer/process/parameter. Ratios use
+12 decimal places (half-even), limiting the
 absolute rounding error to 5e-13 while remaining well inside Oracle NUMBER.
 """
 
@@ -14,7 +16,9 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_EVEN
+import hashlib
 import json
+import math
 from pathlib import Path
 import random
 import re
@@ -49,9 +53,10 @@ class SeedPlan:
     item_scopes: set[tuple[str, str, str]]
     metadata_changes: "MetadataChanges"
     discarded_params: set[str]
-    skipped_missing_item: int
+    skipped_missing_metadata: int
     skipped_no_symbols: int
-    eligible: dict[tuple, tuple[list[tuple[str, str]], list[tuple[str, Pattern[str]]]]]
+    eligible: dict[tuple, tuple[list[tuple[str, str]], list[tuple[str, Pattern[str]]], str]]
+    items_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,7 @@ class MetadataChanges:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="wafer bin/yield fraction seed")
     parser.add_argument("--apply", action="store_true", help="write after backup and verification")
+    parser.add_argument("--items-only", action="store_true", help="replace catalog item rows only")
     return parser.parse_args()
 
 
@@ -147,75 +153,82 @@ def parse_map(payload: object) -> list[tuple[str, str]]:
     return pairs
 
 
+def classify_dies(
+    pairs: Sequence[tuple[str, str]], patterns: Sequence[tuple[str, Pattern[str]]],
+    pass_bin: str, process_param: str,
+) -> tuple[Counter[str], Counter[str]]:
+    if not pairs:
+        raise ValueError("empty die map")
+    bins: Counter[str] = Counter()
+    characters: Counter[str] = Counter()
+    for left, right in pairs:
+        if left == pass_bin and right == pass_bin:
+            bins[process_param] += 1
+            continue
+        char = next((value for value in (left, right) if value not in (pass_bin, " ")), None)
+        if char is None:
+            raise ValueError(f"non-pass pair lacks fail character: {(left, right)}")
+        matches = {name for name, pattern in patterns if pattern.fullmatch(char + char)}
+        if len(matches) != 1:
+            reason = "missing" if not matches else "ambiguous"
+            raise ValueError(f"{reason} bin mapping for selected character {char!r}")
+        bins[matches.pop()] += 1
+        characters[char] += 1
+    return bins, characters
+
+
 def compute_ratios(
     pairs: Sequence[tuple[str, str]], patterns: Sequence[tuple[str, Pattern[str]]],
     pass_bin: str, process_param: str,
 ) -> dict[str, Decimal]:
-    if not pairs:
-        raise ValueError("empty die map")
+    counts, _ = classify_dies(pairs, patterns, pass_bin, process_param)
     total = Decimal(len(pairs))
-    result = {
-        process_param: (Decimal(sum(left + right == pass_bin + pass_bin for left, right in pairs)) / total).quantize(
-            QUANTUM, rounding=ROUND_HALF_EVEN
-        )
-    }
-    for name, pattern in patterns:
-        count = sum(pattern.fullmatch(left + right) is not None for left, right in pairs)
-        result[name] = (Decimal(count) / total).quantize(QUANTUM, rounding=ROUND_HALF_EVEN)
+    result = {name: (Decimal(counts[name]) / total).quantize(QUANTUM, rounding=ROUND_HALF_EVEN)
+              for name in [process_param, *(name for name, _ in patterns)]}
+    if abs(sum(result.values()) - Decimal(1)) >= Decimal("1e-9"):
+        raise RuntimeError("bins-plus-pass fractions are not normalized")
     return result
 
 
-def _table_params(conn, table: str) -> set[str]:
-    if table != TARGET and not BACKUP_RE.fullmatch(table):
-        raise ValueError(f"unsafe table name: {table}")
-    with closing(conn.cursor()) as cur:
-        cur.execute(f"SELECT DISTINCT PARAM FROM {table}")
-        return {str(row[0]) for row in cur if row[0] is not None}
+def _item_value(lot: object, lotid: object, wfid: object, process: object,
+                param: object) -> Decimal:
+    payload = json.dumps(tuple(str(value) for value in (lot, lotid, wfid, process, param)),
+                         ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    seed = int.from_bytes(hashlib.sha256(payload).digest(), "big")
+    value = random.Random(seed).lognormvariate(math.log(0.01), 0.3)
+    clipped = min(1.0, max(0.0, value))
+    return Decimal(str(clipped)).quantize(QUANTUM, rounding=ROUND_HALF_EVEN)
 
 
-def _baseline_table(conn) -> str:
-    with closing(conn.cursor()) as cur:
-        cur.execute(
-            "SELECT TABLE_NAME FROM USER_TABLES "
-            "WHERE TABLE_NAME LIKE 'DF_DIE_TO_WF_YLD_BAK_%' ORDER BY TABLE_NAME"
-        )
-        names = [str(row[0]) for row in cur if BACKUP_RE.fullmatch(str(row[0]))]
-        fixed = f"DF_DIE_TO_WF_YLD_BAK_{BACKUP_DAY:%Y%m%d}"
-        return fixed if fixed in names else TARGET
-
-
-def load_item_baseline(
-    conn, symbol_scopes: set[tuple[str, str, str]], catalog_rows: list[tuple],
+def load_catalog_items(
+    symbol_scopes: set[tuple[str, str, str]], catalog_rows: list[tuple],
     discarded_params: set[str],
 ) -> set[tuple[str, str, str]]:
-    baseline = _baseline_table(conn)
-    source_params = _table_params(conn, baseline)
     items = set()
     for lot, process, _, parameter, _ in catalog_rows:
         scope = (str(lot), str(process), _valid_param(parameter))
-        if (scope[2] in source_params and scope[2] not in discarded_params
+        if (scope[2] not in discarded_params
                 and scope[2] != scope[1] and scope not in symbol_scopes):
             items.add(scope)
     return items
 
 
-def load_wafer_metadata(conn, item_scopes: set[tuple[str, str, str]]) -> dict[tuple, Metadata]:
-    if not item_scopes:
-        raise ValueError("no protected item parameters found in baseline")
-    item_names = {scope[2] for scope in item_scopes}
-    binds = {f"p{i}": name for i, name in enumerate(sorted(item_names))}
+def load_wafer_metadata(conn, supported_scopes: set[tuple[str, str]]) -> dict[tuple, Metadata]:
+    if not supported_scopes:
+        return {}
+    lots = {scope[0] for scope in supported_scopes}
+    binds = {f"p{i}": name for i, name in enumerate(sorted(lots))}
     placeholders = ",".join(f":p{i}" for i in range(len(binds)))
     with closing(conn.cursor()) as cur:
         cur.execute(
-            "SELECT LOT_CD,WEEK,YEAR,MONTH,LOTID,WFID,PROCESS,MEASURETIME_START,PARAM "
-            f"FROM {TARGET} WHERE PARAM IN ({placeholders})", binds,
+            "SELECT LOT_CD,WEEK,YEAR,MONTH,LOTID,WFID,PROCESS,MEASURETIME_START "
+            f"FROM {TARGET} WHERE LOT_CD IN ({placeholders})", binds,
         )
         metadata: dict[tuple, Metadata] = {}
-        for lot, week, year, month, lotid, wfid, process, measured_at, parameter in cur:
+        for lot, week, year, month, lotid, wfid, process, measured_at in cur:
             if not any(str(lot) == scope_lot
                        and (str(process) == prefix or str(process).startswith(prefix + " "))
-                       and str(parameter) == scope_param
-                       for scope_lot, prefix, scope_param in item_scopes):
+                       for scope_lot, prefix in supported_scopes):
                 continue
             try:
                 numeric_wfid = int(str(wfid))
@@ -224,7 +237,7 @@ def load_wafer_metadata(conn, item_scopes: set[tuple[str, str, str]]) -> dict[tu
             value = Metadata(str(lot), week, year, month, lotid, wfid, str(process), measured_at)
             key = (str(lot), str(lotid), numeric_wfid, str(process))
             if key in metadata and metadata[key] != value:
-                raise ValueError(f"inconsistent item metadata for {key}")
+                raise ValueError(f"inconsistent wafer metadata for {key}")
             metadata[key] = value
         return metadata
 
@@ -278,8 +291,11 @@ def plan_seed(conn, discarded_params: set[str]) -> SeedPlan:
     compiled = compile_patterns(symbol_rows)
     symbol_scopes = {(lot, prefix, name) for (lot, prefix), patterns in compiled.items()
                      for name, _ in patterns}
-    item_scopes = load_item_baseline(conn, symbol_scopes, catalog_rows, discarded_params)
-    metadata = load_wafer_metadata(conn, item_scopes)
+    item_scopes = load_catalog_items(symbol_scopes, catalog_rows, discarded_params)
+    metadata = load_wafer_metadata(conn, set(compiled))
+    items_by_scope = defaultdict(set)
+    for lot, prefix, name in item_scopes:
+        items_by_scope[(lot, prefix)].add(name)
     prefixes_by_lot = defaultdict(set)
     for lot, prefix in compiled:
         prefixes_by_lot[lot].add(prefix)
@@ -290,8 +306,10 @@ def plan_seed(conn, discarded_params: set[str]) -> SeedPlan:
             target_scopes.add((meta.lot, meta.process, prefix))
             target_scopes.update((meta.lot, meta.process, name)
                                  for name, _ in compiled[(meta.lot, prefix)])
+            target_scopes.update((meta.lot, meta.process, name)
+                                 for name in items_by_scope[(meta.lot, prefix)])
     rows, eligible, seen = [], {}, set()
-    missing_item = no_symbols = 0
+    missing_metadata = no_symbols = 0
     for lot, lotid, wfid, process, end_tm, pairs in iter_maps(conn):
         key = (lot, lotid, wfid, process)
         if key in seen:
@@ -299,7 +317,7 @@ def plan_seed(conn, discarded_params: set[str]) -> SeedPlan:
         seen.add(key)
         meta = metadata.get(key)
         if meta is None:
-            missing_item += 1
+            missing_metadata += 1
             continue
         if meta.measured_at != end_tm:
             raise ValueError(f"MAP.END_TM differs from MEASURETIME_START for {key}")
@@ -311,18 +329,43 @@ def plan_seed(conn, discarded_params: set[str]) -> SeedPlan:
         if any(name == prefix for name, _ in patterns):
             raise ValueError(f"yield parameter collides with a bin parameter for {(lot, prefix)}")
         ratios = compute_ratios(pairs, patterns, PASS_BIN, prefix)
+        item_ratios = {
+            name: _item_value(meta.lot, meta.lotid, meta.wfid, meta.process, name)
+            for name in sorted(items_by_scope[(lot, prefix)])
+        }
         for param, value in ratios.items():
             rows.append((meta.lot, meta.week, meta.year, meta.month, meta.lotid, meta.wfid,
                          param, value, meta.process, meta.measured_at))
-        eligible[key] = (pairs, patterns)
-    expected = sum(len(patterns) + 1 for _, patterns in eligible.values())
+        for param, value in item_ratios.items():
+            rows.append((meta.lot, meta.week, meta.year, meta.month, meta.lotid, meta.wfid,
+                         param, value, meta.process, meta.measured_at))
+        eligible[key] = (pairs, patterns, prefix)
+    expected = sum(len(patterns) + 1 + len(items_by_scope[(key[0], prefix)])
+                   for key, (_, patterns, prefix) in eligible.items())
     if len(rows) != expected or len({(r[0], str(r[4]), str(r[5]), r[6], r[8]) for r in rows}) != len(rows):
         raise RuntimeError("generated row cardinality or uniqueness check failed")
     if any(not Decimal(0) <= row[7] <= Decimal(1) for row in rows):
         raise RuntimeError("generated fraction outside [0,1]")
     changes = _metadata_changes(catalog_rows, discarded_params, set(compiled))
     return SeedPlan(rows, target_scopes, item_scopes, changes, discarded_params,
-                    missing_item, no_symbols, eligible)
+                    missing_metadata, no_symbols, eligible)
+
+
+def _items_only_plan(plan: SeedPlan) -> SeedPlan:
+    def is_item(lot: object, process: object, param: object) -> bool:
+        return any(str(lot) == scope_lot and str(param) == scope_param
+                   and (str(process) == prefix or str(process).startswith(prefix + " "))
+                   for scope_lot, prefix, scope_param in plan.item_scopes)
+
+    plan.rows = [row for row in plan.rows if is_item(row[0], row[8], row[6])]
+    plan.target_scopes = {scope for scope in plan.target_scopes if is_item(*scope)}
+    item_keys = {(str(row[0]), str(row[4]), int(str(row[5])), str(row[8]))
+                 for row in plan.rows}
+    plan.eligible = {key: value for key, value in plan.eligible.items() if key in item_keys}
+    plan.metadata_changes = MetadataChanges([], [], [])
+    plan.discarded_params = set()
+    plan.items_only = True
+    return plan
 
 
 def ensure_backup(conn, day: date) -> tuple[str, int, bool]:
@@ -434,7 +477,21 @@ def _scope_exclusion(scopes: set[tuple[str, str, str]], discarded: set[str]) -> 
     return (" AND NOT (" + " OR ".join(clauses) + ")") if clauses else "", binds
 
 
-def verify_items(conn, backup: str, scopes: set[tuple[str, str, str]], discarded: set[str]) -> None:
+def _unrelated_rows_snapshot(
+    conn, scopes: set[tuple[str, str, str]], discarded: set[str]
+) -> tuple[int, int]:
+    where, binds = _scope_exclusion(scopes, discarded)
+    with closing(conn.cursor()) as cur:
+        cur.execute(
+            f"SELECT COUNT(*),NVL(SUM(ORA_HASH(LOT_CD||'|'||LOTID||'|'||WFID||'|'||"
+            f"PROCESS||'|'||PARAM||'|'||TO_CHAR(VALUE))),0) FROM {TARGET} WHERE 1=1{where}",
+            binds,
+        )
+        count, checksum = cur.fetchone()
+    return int(count), int(checksum)
+
+
+def verify_unrelated_rows(conn, backup: str, scopes: set[tuple[str, str, str]], discarded: set[str]) -> None:
     if not BACKUP_RE.fullmatch(backup):
         raise ValueError("invalid backup identifier")
     where, binds = _scope_exclusion(scopes, discarded)
@@ -447,7 +504,7 @@ def verify_items(conn, backup: str, scopes: set[tuple[str, str, str]], discarded
         current_count = int(cur.fetchone()[0])
         cur.execute(f"SELECT COUNT(*) FROM {backup} WHERE 1=1{where}", binds)
         if current_count != int(cur.fetchone()[0]):
-            raise RuntimeError("protected item row count changed")
+            raise RuntimeError("unrelated row count changed")
         left, right = grouped.format(table=TARGET), grouped.format(table=backup)
         difference = (
             f"SELECT * FROM ({left} MINUS {right}) "
@@ -455,7 +512,7 @@ def verify_items(conn, backup: str, scopes: set[tuple[str, str, str]], discarded
         )
         cur.execute(f"SELECT COUNT(*) FROM ({difference})", binds)
         if cur.fetchone()[0]:
-            raise RuntimeError("protected item values differ from backup")
+            raise RuntimeError("unrelated rows differ from backup")
 
 
 def verify_sample(conn, plan: SeedPlan) -> int:
@@ -475,23 +532,37 @@ def verify_sample(conn, plan: SeedPlan) -> int:
             key = (str(lot), str(lotid), int(str(wfid)), str(process))
             if key in keys:
                 actual[key + (str(param),)] = Decimal(str(value))
+    def item_reference(key: tuple, prefix: str) -> dict[str, Decimal]:
+        lot, lotid, wfid, process = key
+        return {
+            name: _item_value(lot, lotid, wfid, process, name)
+            for scope_lot, scope_prefix, name in plan.item_scopes
+            if (scope_lot, scope_prefix) == (lot, prefix)
+        }
+
+    if plan.items_only:
+        for key in keys:
+            prefix = plan.eligible[key][2]
+            for name, expected in item_reference(key, prefix).items():
+                if actual.get(key + (name,)) != expected:
+                    raise RuntimeError(f"sample verification failed for {key} {name}")
+        return len(keys)
+
     checked = 0
     for lot, lotid, wfid, process, _, pairs in iter_maps(conn):
         key = (lot, lotid, wfid, process)
         if key not in keys:
             continue
-        patterns = plan.eligible[key][1]
-        total = Decimal(len(pairs))
-        prefix = next(param for scope_lot, scope_process, param in plan.target_scopes
-                      if scope_lot == lot and scope_process == process
-                      and param == match_process(process, [param]))
-        reference = {prefix: sum(left + right == PASS_BIN + PASS_BIN for left, right in pairs)}
-        reference.update({name: sum(rx.fullmatch(a + b) is not None for a, b in pairs)
-                          for name, rx in patterns})
-        for name, count in reference.items():
-            expected = (Decimal(count) / total).quantize(QUANTUM, rounding=ROUND_HALF_EVEN)
-            if actual[(lot, lotid, wfid, process, name)] != expected:
+        _, patterns, prefix = plan.eligible[key]
+        reference = compute_ratios(pairs, patterns, PASS_BIN, prefix)
+        reference.update(item_reference(key, prefix))
+        for name, expected in reference.items():
+            if actual.get((lot, lotid, wfid, process, name)) != expected:
                 raise RuntimeError(f"sample verification failed for {key} {name}")
+        bin_names = {prefix, *(name for name, _ in patterns)}
+        stored_sum = sum(actual[(lot, lotid, wfid, process, name)] for name in bin_names)
+        if abs(stored_sum - Decimal(1)) >= Decimal("1e-9"):
+            raise RuntimeError(f"sample bins-plus-pass sum differs from 1 for {key}")
         checked += 1
     if checked != 20:
         raise RuntimeError(f"sample MAP reread found {checked}/20 wafers")
@@ -526,14 +597,45 @@ def _verify_generated_counts(conn, plan: SeedPlan) -> None:
                            for lot, process, param, count in cur})
         if actual != expected:
             raise RuntimeError("generated counts by lot/process/parameter differ from plan")
+        if plan.items_only:
+            return
+        groups = defaultdict(set)
+        for (lot, _, _, process), (_, patterns, prefix) in plan.eligible.items():
+            groups[(lot, process)].update([prefix, *(name for name, _ in patterns)])
+        stored = defaultdict(dict)
+        for (lot, process), names in groups.items():
+            binds = {"lot": lot, "process": process}
+            binds.update({f"p{i}": name for i, name in enumerate(sorted(names))})
+            placeholders = ",".join(f":p{i}" for i in range(len(names)))
+            cur.execute(
+                f"SELECT LOT_CD,LOTID,WFID,PROCESS,PARAM,VALUE FROM {TARGET} "
+                f"WHERE LOT_CD=:lot AND PROCESS=:process AND PARAM IN ({placeholders})",
+                binds,
+            )
+            for row_lot, lotid, wfid, row_process, param, value in cur:
+                key = (str(row_lot), str(lotid), int(str(wfid)), str(row_process))
+                if key not in plan.eligible:
+                    continue
+                if str(param) in stored[key]:
+                    raise RuntimeError(f"duplicate generated bin row for {key} {param}")
+                stored[key][str(param)] = Decimal(str(value))
+        for key, (_, patterns, prefix) in plan.eligible.items():
+            names = {prefix, *(name for name, _ in patterns)}
+            if set(stored[key]) != names or abs(sum(stored[key].values()) - Decimal(1)) >= Decimal("1e-9"):
+                raise RuntimeError(f"stored bins-plus-pass sum differs from 1 for {key}")
 
 
 def _print_plan(plan: SeedPlan, existing_targets: int) -> None:
+    items_by_scope = Counter((lot, prefix) for lot, prefix, _ in plan.item_scopes)
+    item_rows = sum(items_by_scope[(key[0], prefix)]
+                    for key, (_, _, prefix) in plan.eligible.items())
     print(f"[PLAN] delete rows={existing_targets}, insert rows={len(plan.rows)}")
     print(f"[PLAN] target scopes={len(plan.target_scopes)}, metadata inserts={len(plan.metadata_changes.inserts)}, "
           f"renames={len(plan.metadata_changes.renames)}, stale deletes={len(plan.metadata_changes.deletes)}")
-    print(f"[PLAN] eligible MAP wafers={len(plan.eligible)}, skipped no item={plan.skipped_missing_item}, "
+    print(f"[PLAN] eligible MAP wafers={len(plan.eligible)}, skipped missing metadata={plan.skipped_missing_metadata}, "
           f"skipped no symbols={plan.skipped_no_symbols}")
+    print(f"[PLAN] regenerated item scopes={len(plan.item_scopes)}, "
+          f"item rows={item_rows}")
     print(f"[PLAN] generated by PARAM={dict(sorted(Counter(r[6] for r in plan.rows).items()))}")
 
 
@@ -545,6 +647,8 @@ def main() -> int:
     conn = get_oracle_connection()
     try:
         plan = plan_seed(conn, discarded_params)
+        if args.items_only:
+            plan = _items_only_plan(plan)
         existing = _target_count(conn, plan.target_scopes)
         _print_plan(plan, existing)
         if not args.apply:
@@ -565,11 +669,21 @@ def main() -> int:
         with closing(conn.cursor()) as cur:
             cur.execute(f"LOCK TABLE {TARGET} IN EXCLUSIVE MODE")
         plan = plan_seed(conn, discarded_params)
+        if args.items_only:
+            plan = _items_only_plan(plan)
         verify_replacement_coverage(conn, plan)
-        verify_items(conn, backup, plan.target_scopes, plan.discarded_params)
-        update_yield_metadata(conn, plan)
+        if plan.items_only:
+            unrelated_before = _unrelated_rows_snapshot(
+                conn, plan.target_scopes, plan.discarded_params)
+        else:
+            verify_unrelated_rows(conn, backup, plan.target_scopes, plan.discarded_params)
+            update_yield_metadata(conn, plan)
         deleted = replace_rows(conn, plan)
-        verify_items(conn, backup, plan.target_scopes, plan.discarded_params)
+        if plan.items_only:
+            if _unrelated_rows_snapshot(conn, plan.target_scopes, plan.discarded_params) != unrelated_before:
+                raise RuntimeError("unrelated rows changed during items-only replace")
+        else:
+            verify_unrelated_rows(conn, backup, plan.target_scopes, plan.discarded_params)
         inserted_count = _target_count(conn, plan.target_scopes)
         if inserted_count != len(plan.rows):
             raise RuntimeError(f"generated row count mismatch: {inserted_count} != {len(plan.rows)}")
