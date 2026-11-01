@@ -66,6 +66,8 @@ def _resolved(names: list[str], available: dict[str, str]) -> list[str]:
 
 
 def _serialize(value):
+    if callable(getattr(value, "read", None)):
+        return _serialize(value.read())
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
@@ -214,6 +216,7 @@ def register(registry):
     registry.add(ToolSpec(
         "query_db",
         "현재 Oracle 스키마의 물리 테이블 하나를 조회해 전체 제한 결과를 저장하고 격리 환경에 CSV를 만든다. "
-        "반환된 absolute CSV path는 실행 간 유지되며 마지막 수정 후 7일 동안 다시 열 수 있다.",
+        "반환된 absolute CSV path는 실행 간 유지되며 마지막 수정 후 7일 동안 다시 열 수 있다. "
+        "후속 Python 분석은 tables[result_id][table_id]를 사용하며 table_id는 이 도구가 반환한다.",
         QueryDBInput, query_db, read_only=True, effect="artifact", eager=True,
     ))

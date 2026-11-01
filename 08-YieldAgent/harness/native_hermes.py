@@ -13,8 +13,8 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
-from .completion import render_results
 from .executor import ToolExecutor
+from .instructions import load_native_instructions
 from .store import LeaseLost, BudgetExceeded
 from .gateway import publication
 from . import native_ipc as ipc
@@ -280,6 +280,14 @@ class NativeBridge:
         self.registry = registry
         self.context = context
         self.allowed = {name for name, spec in registry.tools.items() if spec.effect in ('read', 'artifact')}
+        settings = getattr(context, 'settings', None)
+        requested = getattr(settings, 'native_allowed_tools', None)
+        if requested is not None:
+            unknown = set(requested) - set(registry.tools)
+            if unknown:
+                raise ValueError('native_allowed_tools contains unknown tools: '
+                    + ', '.join(sorted(unknown)))
+            self.allowed &= set(requested) | {'read_result'}
         self.executor = ToolExecutor(registry, context)
         self.observations = []
         self.review_observations = []
@@ -301,9 +309,11 @@ class NativeBridge:
         executor = ToolExecutor(self.registry, replace(self.context, parent_invocation_id=review_id)) if review_id else self.executor
         observation = await executor.execute(call)
         (self.review_observations if review_id else self.observations).append(observation.model_dump(mode='json'))
-        if call['name'] == 'query_db' and observation.status in {'success', 'partial', 'empty'}:
-            facts = observation.scope['query_db']
-            return {'result_id': observation.result_id, **facts,
+        if call['name'] in {'query_db', 'list_tables'} and observation.status in {
+            'success', 'partial', 'empty'}:
+            facts = observation.scope[call['name']]
+            return {'result_id': observation.result_id,
+                'table_id': observation.tables[0].table_id, **facts,
                 'status': observation.status, 'summary': observation.summary}
         return observation.model_view()
 
@@ -450,11 +460,13 @@ async def run_native(context, registry, *, history=None):
         'parallel_tool_limit': settings.parallel_tool_limit,
         'max_iterations': settings.model_limit - prior_usage.get('models', 0), 'run_budget_seconds': context.remaining_seconds(),
         'token_limit': max(0, settings.token_limit - prior_usage.get('tokens', 0)), 'session_id': run['session_id'],
-        'query': run.get('goal_request', run['query']), 'instructions': Path(__file__).with_name('instructions').joinpath('native.md').read_text(),
+        'query': run.get('goal_request', run['query']), 'instructions': load_native_instructions(),
         'verification_instructions': Path(__file__).with_name('instructions').joinpath('verifier.md').read_text(),
         'request_context': request_context,
         'tools': bridge.schemas(), 'history': history or [], 'upstream_commit': UPSTREAM_COMMIT,
         'no_yield_tools': settings.no_yield_tools}
+    if settings.native_allowed_tools is not None:
+        startup['allowed_tools'] = sorted(bridge.allowed)
     if isolation is not None:
         startup['isolation'] = isolation
     if tools_log := os.environ.get('HARNESS_LOG_TOOLS_PAYLOAD'):
@@ -580,10 +592,8 @@ async def run_native(context, registry, *, history=None):
                 'usage.models': prior_usage.get('models', 0) + (result.get('api_calls') or 0)}})
         observations = bridge.observations
         decision = publication.settle(result, reports, verified_candidates)
-        answer = decision['answer_text']
         # Unverified tool evidence is intentionally unchanged (see PORTING_BASELINE PB:523).
-        tables = render_results(observations, source_index={o['result_id']: o for o in observations})
-        return {**decision, 'answer': answer + ('\n\n' + tables if tables else ''),
+        return {**decision, 'answer': decision['answer_text'],
             'observations': observations + bridge.review_observations + verification_observations, 'result_ids': [o['result_id'] for o in observations],
             'native_messages': prompt_history(result.get('messages', [])) if use_native_prompts else result.get('messages', []), 'native_usage': {k: result.get(k) for k in
                 ('api_calls', 'input_tokens', 'output_tokens', 'total_tokens')},

@@ -90,8 +90,10 @@ def domain_registry():
     if os.environ.get('HARNESS_NO_YIELD_TOOLS') == '1':
         from .python_tools import register as python
         from .query_db import register as query_db
+        from .list_tables import register as list_tables
         python(registry)
         query_db(registry)
+        list_tables(registry)
         return registry
     from .yield_tools import register as yields
     from .wads_tools import register as wads

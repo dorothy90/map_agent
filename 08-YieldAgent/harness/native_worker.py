@@ -70,6 +70,9 @@ def configure_engine(registry, executor, limit, agent_class):
 
 
 def enabled_toolsets(startup):
+    if startup.get('allowed_tools') is not None:
+        return ['yield_backend', 'yield_evidence'] + (
+            ['clarify'] if native_prompts_enabled(startup) else [])
     return ['yield_backend', 'yield_evidence', 'skills', 'memory', 'delegation'] \
         + (['code_execution', 'file', 'terminal', 'todo', 'session_search', 'vision', 'clarify']
            if startup.get('no_yield_tools', False) else []) \
@@ -78,6 +81,18 @@ def enabled_toolsets(startup):
 
 def native_prompts_enabled(startup):
     return bool(startup.get('native_prompts', False) or startup.get('no_yield_tools', False))
+
+
+def register_backend_tools(startup, registry, handler):
+    allowed = startup.get('allowed_tools')
+    allowed = None if allowed is None else set(allowed)
+    for tool in startup['tools']:
+        schema = tool['function']
+        if allowed is not None and schema['name'] not in allowed:
+            continue
+        registry.register(name=schema['name'],
+            toolset='yield_evidence' if schema['name'] == 'read_result' else 'yield_backend',
+            schema=schema, handler=handler(schema['name']), description=schema['description'])
 
 
 def engine_provider(base_url):
@@ -281,10 +296,7 @@ def main():
             discover_builtin_tools()
         configure_runtime_tool_availability(registry, startup)
         verify_isolated_engine(startup)
-        for tool in startup['tools']:
-            schema = tool['function']
-            registry.register(name=schema['name'], toolset='yield_evidence' if schema['name'] == 'read_result' else 'yield_backend', schema=schema,
-                handler=handler(schema['name']), description=schema['description'])
+        register_backend_tools(startup, registry, handler)
         from run_agent import AIAgent
         from agent import tool_executor
         # Import registers delegation before replacing only its model-facing handler.

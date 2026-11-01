@@ -24,6 +24,13 @@ def resolve_allowed_tools(registry, raw):
     return names
 
 
+def apply_allowed_tools(controller, raw, allowed):
+    if raw is not None:
+        controller.settings = controller.settings.model_copy(update={
+            'native_allowed_tools': allowed,
+        })
+
+
 def make_real_app(uri, database):
     if os.environ.get('PR9_REAL_MODEL') != '1':
         raise SystemExit('PR9_REAL_MODEL opt-in required')
@@ -39,7 +46,10 @@ def make_real_app(uri, database):
     from pr9_dev_server import make_app, GatewayServices, HarnessStore
     from harness.tools.registry import domain_registry
 
-    allowed = resolve_allowed_tools(domain_registry(), os.environ.get('PR9_ALLOW_TOOLS', ''))
+    raw = os.environ.get('PR9_ALLOW_TOOLS')
+    allowed = resolve_allowed_tools(
+        domain_registry(), raw if raw is not None else ''
+    )
     if allowed:
         print('PR9_ALLOW_TOOLS enabled (read-only tools may query configured external DBs): '
               + ','.join(allowed), file=sys.stderr, flush=True)
@@ -71,6 +81,7 @@ def make_real_app(uri, database):
             try:
                 async with harness_app.router.lifespan_context(harness_app):
                     ctrl = harness_app.state.harness
+                    apply_allowed_tools(ctrl, raw, allowed)
                     base = ctrl.registry_factory
                     ctrl.blocked, ctrl.launches = [], []
 

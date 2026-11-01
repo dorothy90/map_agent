@@ -184,6 +184,37 @@ def test_scalar_serialization_and_csv_escaping(monkeypatch, tmp_path):
     assert parsed[0]["TEXT"] == values[3]
 
 
+def test_lob_is_read_before_connection_closes(monkeypatch, tmp_path):
+    payload = '{"map": ["A1", "B2"]}'
+    connection = FakeConnection([], ("MAP_VAL_JSON",))
+
+    class FakeLOB:
+        def read(self):
+            assert not connection.closed
+            return payload
+
+    connection.fake_cursor.rows = [(FakeLOB(),)]
+    uploaded = {}
+
+    import harness.tools.query_db as query_db
+
+    async def upload(self, data, timeout=60):
+        uploaded["data"] = data
+        return str(self.results_dir / "query-lob.csv")
+
+    monkeypatch.setattr(query_db, "_connection", lambda: connection)
+    monkeypatch.setattr(query_db.IsolatedSSHBackend, "upload_bytes", upload)
+    result = asyncio.run(query_db.query_db(
+        query_db.QueryDBInput(table="people"), context(tmp_path)
+    ))
+
+    assert result.tables[0].rows == [{"MAP_VAL_JSON": payload}]
+    assert list(csv.DictReader(io.StringIO(uploaded["data"].decode()))) == [
+        {"MAP_VAL_JSON": payload}
+    ]
+    assert connection.closed
+
+
 def test_unsupported_result_scalar_closes_resources(monkeypatch, tmp_path):
     import harness.tools.query_db as query_db
 
@@ -325,7 +356,8 @@ def test_native_bridge_returns_only_query_facts_from_stored_observation():
         summary="결과 1건", scope={"query_db": {
             "columns": ["ID"], "row_count": 1, "truncated": False,
             "path": "/remote/query.csv",
-        }}, preview_rows=[{"ID": 1}], total_rows=1,
+        }}, columns=["ID"], preview_rows=[{"ID": 1}], total_rows=1,
+        data_ref="stored-blob",
     )
 
     async def execute(call):
@@ -335,7 +367,8 @@ def test_native_bridge_returns_only_query_facts_from_stored_observation():
     view = asyncio.run(bridge.invoke({"name": "query_db", "id": "c", "args": {}}))
 
     assert view == {
-        "result_id": "store-result-id", "columns": ["ID"], "row_count": 1,
+        "result_id": "store-result-id", "table_id": "default",
+        "columns": ["ID"], "row_count": 1,
         "truncated": False, "path": "/remote/query.csv", "status": "success",
         "summary": "결과 1건",
     }
@@ -370,6 +403,7 @@ def test_executor_stores_capped_evidence_and_projects_store_result_id(monkeypatc
             self.calls = Collection()
             self.runs = Collection()
             self.tables = None
+            self.saved = None
 
         async def fence(self, run_id, epoch):
             return run
@@ -390,7 +424,7 @@ def test_executor_stores_capped_evidence_and_projects_store_result_id(monkeypatc
                              *, tables=None):
             self.tables = tables
             table = tables[0]
-            return ToolObservation(
+            self.saved = ToolObservation(
                 **observation, principal_id=principal_id, session_id=session_id,
                 result_id="store-supplied-id", columns=table.columns,
                 preview_rows=table.rows, total_rows=len(table.rows),
@@ -401,6 +435,16 @@ def test_executor_stores_capped_evidence_and_projects_store_result_id(monkeypatc
                     data_ref="stored-blob",
                 )],
             )
+            return self.saved
+
+        async def observation(self, principal_id, session_id, result_id):
+            assert result_id == self.saved.result_id
+            return self.saved
+
+        async def rows(self, principal_id, session_id, result_id, table_id=None):
+            assert result_id == self.saved.result_id
+            assert table_id == self.saved.tables[0].table_id
+            return self.tables[0].rows
 
     connection = FakeConnection([(1, "a"), (2, "b"), (3, "c")])
 
@@ -422,9 +466,23 @@ def test_executor_stores_capped_evidence_and_projects_store_result_id(monkeypatc
     }))
 
     assert view["result_id"] == "store-supplied-id"
+    assert view["table_id"] == "query_db"
     assert view["row_count"] == 2 and view["truncated"] is True
     assert store.tables[0].rows == [{"ID": 1, "NAME": "a"}, {"ID": 2, "NAME": "b"}]
     assert store.tables[0].complete is False
+
+    from harness.tools.python_tools import PythonInput, run_python
+
+    python_context = SimpleNamespace(
+        store=store, run={"principal_id": "p", "session_id": "s"},
+        settings=Settings(),
+    )
+    analyzed = asyncio.run(run_python(PythonInput(
+        input_result_ids=[view["result_id"]],
+        code=f"emit_table(tables[{view['result_id']!r}][{view['table_id']!r}], name='copied')",
+    ), python_context))
+    assert analyzed.status == "partial"
+    assert analyzed.tables[0].rows == store.tables[0].rows
 
 
 def test_query_db_registers_seven_day_absolute_path_lifetime():
@@ -437,3 +495,4 @@ def test_query_db_registers_seven_day_absolute_path_lifetime():
     description = registry.tools["query_db"].description
     assert "absolute" in description.lower()
     assert "7일" in description
+    assert "tables[result_id][table_id]" in description

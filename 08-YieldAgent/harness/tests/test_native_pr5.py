@@ -111,7 +111,7 @@ def test_native_publication_boundary(monkeypatch, tmp_path, verdicts, flags, fin
             assert result['answer_text'].startswith('최종 검증을 통과하지 못해 답변을 확정하지 못했습니다.')
             for candidate in [*candidates, final_text]: assert candidate not in result['answer']
         assert candidates[0] not in json.dumps(result, ensure_ascii=False)
-        assert table not in result['answer_text'] and result['answer'].endswith(table)
+        assert table not in result['answer_text'] and result['answer'] == result['answer_text']
         assert len(saved) == len(verdicts)
         for index, observation in enumerate(saved):
             candidate = candidates[0] if len(verdicts) > 1 and index == 0 else candidates[1]

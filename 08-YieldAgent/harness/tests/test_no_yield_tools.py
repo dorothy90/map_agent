@@ -36,13 +36,19 @@ def test_no_yield_tools_keeps_python_tools_and_default_hermes_toolsets(monkeypat
     monkeypatch.setenv("HARNESS_NO_YIELD_TOOLS", "1")
     monkeypatch.setenv("HARNESS_WAFER_SET_TOOLS", "1")
     registry = domain_registry()
-    assert model_tool_names() == ["read_result", "run_python", "query_db"]
+    assert model_tool_names() == [
+        "read_result", "run_python", "query_db", "list_tables",
+    ]
     assert registry.tools["read_result"].handler.__module__ == "harness.tools.python_tools"
     assert registry.tools["run_python"].handler.__module__ == "harness.tools.python_tools"
     assert registry.tools["query_db"].handler.__module__ == "harness.tools.query_db"
     assert registry.tools["query_db"].read_only is True
     assert registry.tools["query_db"].effect == "artifact"
     assert registry.tools["query_db"].eager is True
+    assert registry.tools["list_tables"].handler.__module__ == "harness.tools.list_tables"
+    assert registry.tools["list_tables"].read_only is True
+    assert registry.tools["list_tables"].effect == "read"
+    assert registry.tools["list_tables"].eager is True
     worker = worker_module()
     assert worker.enabled_toolsets({"no_yield_tools": True}) == [
         "yield_backend", "yield_evidence", "skills", "memory", "delegation",
@@ -82,7 +88,7 @@ def test_no_yield_engine_toolsets_resolve_requested_tools(monkeypatch):
         "skill_manage", "skill_view", "skills_list", "memory", "delegate_task",
         "execute_code", "patch", "read_file", "search_files", "write_file",
         "process_manage", "terminal", "todo_list", "session_search", "vision_analyze",
-        "clarify", "read_result", "run_python", "query_db",
+        "clarify", "read_result", "run_python", "query_db", "list_tables",
     }
 
 

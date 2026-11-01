@@ -86,6 +86,7 @@ class Settings(BaseModel):
     python_executable: str | None = None
     python_image: str = "yield-harness-python:2"
     no_yield_tools: bool = False
+    native_allowed_tools: list[str] | None = None
     isolation: IsolationSettings | None = None
     principal: str = "local"
     enabled: bool = False

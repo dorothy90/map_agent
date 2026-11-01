@@ -30,7 +30,7 @@ for source in Path(sys.argv[1]).with_name('tools').glob('*.py'):
     for node in ast.walk(ast.parse(source.read_text())):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'ToolSpec':
             yield_names.add(ast.literal_eval(node.args[0]))
-assert len(yield_names) == 37  # query_db 포함 기존 22 + 15개 고유 wafer_set 추가 도구
+assert len(yield_names) == 38  # list_tables 포함 기존 23 + 15개 고유 wafer_set 추가 도구
 for name in (*yield_names, 'clarify', 'manage_connections', 'unknown_tool'):
     assert _batch_admission(call(name), None) is None, name
     bridge = NS(function=NS(name='tool_call', arguments=json.dumps({'calls': [{'name': name, 'arguments': {}}]})))
