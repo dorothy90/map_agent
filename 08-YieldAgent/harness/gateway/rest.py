@@ -123,8 +123,9 @@ async def messages(rpc, sid, query, profile):
     selected = selected[offset:offset + page_limit]
     if latest:
         selected.reverse()
-    # REST uses content/id, WS uses text/row_id; same publication decision.
-    projected = [{'role': row['role'], 'content': row['text'],
+    # REST uses content/id for text rows; compact tool rows keep their card fields.
+    projected = [dict(row) if row['role'] == 'tool' else
+                 {'role': row['role'], 'content': row['text'],
                   **({'id': row['row_id']} if 'row_id' in row else {})} for row in selected]
     return {'session_id': sid, 'profile': profile, 'messages': projected,
             'pagination': {'limit': page_limit, 'offset': offset,

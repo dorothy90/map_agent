@@ -50,6 +50,7 @@ def test_connected_ping_and_manifest_policy():
 
 import asyncio
 from copy import deepcopy
+from datetime import datetime
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -61,6 +62,7 @@ from harness.gateway.auth import DenyPrincipalResolver
 from harness.gateway.connection import GatewayConnection
 from harness.gateway.events import new_log, replay, retain, project_run_event
 from harness.gateway.execution import RpcError
+from harness.gateway.publication import candidate_digest
 from harness.gateway.services import GatewayScope, GatewayServices
 
 
@@ -461,6 +463,163 @@ def test_history_and_push_never_project_unverified_body():
         assert 'SECRET-CANDIDATE' not in json.dumps(call(ws, 'session.history', {'session_id': sid}))
         for event_type in ('message.delta', 'message.interim', 'message.complete'):
             assert project_run_event(run, {'type': event_type, 'payload': {'text': 'SECRET-CANDIDATE'}}) is None
+
+
+def test_history_projects_native_tools_in_order_without_cumulative_duplicates():
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        long_args = {'query': '수율 ' * 30, 'limit': 5}
+        first_history = [
+            {'role': 'user', 'content': 'first question'},
+            {'role': 'assistant', 'content': '', 'tool_calls': [
+                {'id': 'call-1', 'function': {'name': 'search_yield',
+                    'arguments': json.dumps(long_args, ensure_ascii=False)}},
+                {'id': 'call-2', 'function': {'name': 'read_result'}}]},
+            {'role': 'tool', 'tool_call_id': 'call-1', 'content': 'PRIVATE FULL RESULT ONE'},
+            {'role': 'tool', 'tool_call_id': 'call-2', 'content': 'PRIVATE FULL RESULT TWO'},
+            {'role': 'assistant', 'content': 'PRIVATE NATIVE ANSWER ONE'}]
+        second_history = first_history + [
+            {'role': 'user', 'content': 'second question'},
+            {'role': 'assistant', 'content': '', 'tool_calls': [
+                {'id': 'call-3', 'function': {'name': 'query_lot', 'arguments': '{bad json'}}]},
+            {'role': 'tool', 'tool_call_id': 'call-3', 'content': 'PRIVATE FULL RESULT THREE'},
+            {'role': 'assistant', 'content': 'PRIVATE NATIVE ANSWER TWO'}]
+        for number, (query, answer, history) in enumerate((
+                ('first question', 'verified one', first_history),
+                ('second question', 'verified two', second_history))):
+            services.runs.append({'principal_id': 'alice', 'session_id': sid,
+                'run_id': f'run-{number}', 'created_at': number, 'query': query,
+                'active': False, 'status': 'completed', 'answer_text': answer,
+                'native_messages': history,
+                'observations': [{'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'},
+                    'validated_arguments': candidate_digest(answer)}]})
+
+        messages = call(ws, 'session.history', {'session_id': sid})['result']['messages']
+        assert [row['role'] for row in messages] == [
+            'user', 'tool', 'tool', 'assistant', 'user', 'tool', 'assistant']
+        assert [row.get('text') for row in messages if row['role'] != 'tool'] == [
+            'first question', 'verified one', 'second question', 'verified two']
+        assert messages[1]['name'] == 'search_yield'
+        assert messages[1]['tool_call_id'] == 'call-1'
+        assert messages[1]['args'] == long_args
+        assert 0 < len(messages[1]['context']) <= 80
+        assert messages[2] == {'role': 'tool', 'name': 'read_result', 'context': '',
+            'tool_call_id': 'call-2', 'args': {}}
+        assert messages[5] == {'role': 'tool', 'name': 'query_lot', 'context': '',
+            'tool_call_id': 'call-3', 'args': {}}
+        encoded = json.dumps(messages)
+        assert 'PRIVATE FULL RESULT' not in encoded
+        assert 'PRIVATE NATIVE ANSWER' not in encoded
+
+
+def test_history_uses_same_verified_artifact_text_as_live_completion():
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        answer = 'verified answer'
+        run = {'principal_id': 'alice', 'session_id': sid, 'run_id': 'run-artifacts',
+            'created_at': 1, 'query': 'show artifacts', 'active': False,
+            'status': 'completed', 'answer_text': answer, 'observations': [
+                {'tool_name': 'run_python', 'artifact_refs': [
+                    {'artifact_id': 'map.png', 'title': 'Wafer map', 'mime': 'image/png'},
+                    {'artifact_id': 'report.html', 'title': 'HTML report', 'mime': 'text/html'},
+                    {'artifact_id': 'analysis.py', 'title': '분석 코드', 'mime': 'text/plain'},
+                ]},
+                {'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'},
+                    'validated_arguments': candidate_digest(answer)},
+            ]}
+        services.runs.append(run)
+
+        history_text = call(ws, 'session.history', {'session_id': sid})['result']['messages'][-1]['text']
+        live_text = project_run_event(run, {'type': 'run_finished', 'payload': {}})['payload']['text']
+        assert history_text == live_text
+        assert '![Wafer map](/harness/artifacts/map.png?' in history_text
+        assert '[HTML report](/harness/artifacts/report.html?' in history_text
+        assert '분석 코드' not in history_text
+
+
+def test_history_keeps_native_tools_when_final_answer_is_unverified():
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        services.runs.append({'principal_id': 'alice', 'session_id': sid,
+            'run_id': 'running', 'created_at': 1, 'query': 'question', 'active': True,
+            'status': 'running', 'answer_text': 'PRIVATE DRAFT', 'native_messages': [
+                {'role': 'user', 'content': 'question'},
+                {'role': 'assistant', 'tool_calls': [
+                    {'id': 'missing-call', 'function': {'name': 'fallback_tool', 'arguments': None}}]},
+                {'role': 'tool', 'tool_call_id': 'missing-call', 'content': 'PRIVATE RESULT'}]})
+
+        messages = call(ws, 'session.history', {'session_id': sid})['result']['messages']
+        assert messages == [
+            {'role': 'user', 'text': 'question'},
+            {'role': 'tool', 'name': 'fallback_tool', 'context': '',
+                'tool_call_id': 'missing-call', 'args': {}}]
+        assert 'PRIVATE' not in json.dumps(messages)
+
+
+def test_history_projects_ordered_gateway_tool_rows_without_result_bodies():
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        services.sessions['alice', sid]['rows'] = [
+            {'id': 1, 'role': 'user', 'content': 'stored question'},
+            {'id': 2, 'role': 'assistant', 'content': '', 'tool_calls': [
+                {'id': 'stored-call', 'function': {
+                    'name': 'stored_tool', 'arguments': '{"value":7}'}}]},
+            {'id': 3, 'role': 'tool', 'tool_call_id': 'stored-call',
+                'tool_name': 'stored_tool', 'content': 'PRIVATE STORED RESULT'}]
+
+        messages = call(ws, 'session.history', {'session_id': sid})['result']['messages']
+        assert messages == [
+            {'role': 'user', 'text': 'stored question', 'row_id': 1},
+            {'role': 'tool', 'name': 'stored_tool', 'context': '{"value":7}',
+                'tool_call_id': 'stored-call', 'args': {'value': 7}}]
+        assert 'PRIVATE' not in json.dumps(messages)
+
+
+def test_history_scopes_cumulative_native_tools_by_goal_request():
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        first = [
+            {'role': 'user', 'content': 'original'},
+            {'role': 'assistant', 'tool_calls': [{'id': 'old', 'function': {
+                'name': 'old_tool', 'arguments': '{}'}}]},
+            {'role': 'tool', 'tool_call_id': 'old', 'content': 'old result'}]
+        services.runs.extend([
+            {'principal_id': 'alice', 'session_id': sid, 'run_id': 'one', 'created_at': 1,
+                'query': 'original', 'active': False, 'status': 'partial', 'native_messages': first},
+            {'principal_id': 'alice', 'session_id': sid, 'run_id': 'two', 'created_at': 2,
+                'query': 'latest edit', 'goal_request': 'original\nlatest edit', 'active': True,
+                'status': 'running', 'native_messages': first + [
+                    {'role': 'user', 'content': 'original\nlatest edit'},
+                    {'role': 'assistant', 'tool_calls': [{'id': 'new', 'function': {
+                        'name': 'new_tool', 'arguments': '{}'}}]},
+                    {'role': 'tool', 'tool_call_id': 'new', 'content': 'new result'}]}])
+
+        messages = call(ws, 'session.history', {'session_id': sid})['result']['messages']
+        assert [row.get('tool_call_id') for row in messages if row['role'] == 'tool'] == ['old', 'new']
+        assert [row['text'] for row in messages if row['role'] == 'user'] == ['original', 'latest edit']
+
+
+def test_history_tolerates_malformed_stored_tool_metadata():
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        services.sessions['alice', sid]['rows'] = [
+            {'id': 1, 'role': 'user', 'content': 'question'},
+            {'id': 2, 'role': 'assistant', 'tool_calls': 7},
+            {'id': 3, 'role': 'assistant', 'tool_calls': [
+                {'id': ['not', 'hashable'], 'function': {'name': 'ignored', 'arguments': {}}},
+                {'id': 'bad-args', 'function': {
+                    'name': 'stored_tool', 'arguments': {'when': datetime(2026, 1, 1)}}}]},
+            {'id': 4, 'role': 'tool', 'tool_call_id': 'bad-args', 'content': 'PRIVATE RESULT'}]
+
+        messages = call(ws, 'session.history', {'session_id': sid})['result']['messages']
+        assert messages[-1] == {'role': 'tool', 'name': 'stored_tool', 'context': '',
+            'tool_call_id': 'bad-args', 'args': {}}
 
 
 @pytest.mark.parametrize('bad', [[], True, 'params'])

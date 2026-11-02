@@ -39,6 +39,43 @@ def test_projection_never_replays_drafts():
         assert 'DRAFT' not in str(result)
 
 
+def test_projection_maps_internal_tool_events_to_hermes_lifecycle_payloads():
+    from harness.gateway.events import project_run_event
+
+    run = {'run_id': 'r', 'status': 'running', 'active': True}
+    args = {'lot': 'L-1'}
+    start = project_run_event(run, {'type': 'tool_started', 'payload': {
+        'name': 'query_yield', 'invocation_id': 'call-1', 'args': args,
+        'context': '{"lot":"L-1"}', 'state': 'running', 'elapsed_seconds': 0}})
+    assert start == {'type': 'tool.start', 'payload': {
+        'tool_id': 'call-1', 'name': 'query_yield', 'args': args,
+        'context': '{"lot":"L-1"}'}}
+
+    result = {'status': 'error', 'summary': 'query failed', 'error': {'code': 'QueryError'}}
+    complete = project_run_event(run, {'type': 'tool_finished', 'payload': {
+        'name': 'query_yield', 'invocation_id': 'call-1', 'args': args,
+        'result': result, 'summary': 'query failed', 'status': 'error',
+        'elapsed_seconds': 1.25, 'result_id': 'stored-result'}})
+    assert complete == {'type': 'tool.complete', 'payload': {
+        'tool_id': 'call-1', 'name': 'query_yield', 'args': args,
+        'result': result, 'summary': 'query failed', 'duration_s': 1.25}}
+
+
+def test_projection_preserves_canonical_tool_payloads_and_progress_message():
+    from harness.gateway.events import project_run_event
+
+    run = {'run_id': 'r', 'status': 'running', 'active': True}
+    complete_payload = {'tool_id': 'call-1', 'name': 'query_yield',
+        'args': {'lot': 'L-1'}, 'result': {'status': 'success'},
+        'summary': 'done', 'duration_s': .5}
+    assert project_run_event(run, {'type': 'tool.complete', 'payload': complete_payload}) == {
+        'type': 'tool.complete', 'payload': complete_payload}
+    progress_payload = {'tool_id': 'call-1', 'name': 'query_yield',
+        'progress': 2.0, 'total': 4.0, 'percent': 50, 'message': '2/4 lots'}
+    assert project_run_event(run, {'type': 'tool.progress', 'payload': progress_payload}) == {
+        'type': 'tool.progress', 'payload': progress_payload}
+
+
 def test_receipt_states_and_validation():
     from harness.gateway.execution import receipt_value, submit_values, RpcError
     import pytest
@@ -498,14 +535,23 @@ def test_run_generation_survives_frozen_ring_and_both_since_paths():
         generation = receipt['execution_generation']
         kinds = ('run_started', 'progress', 'tool_started', 'tool_finished', 'approval.request',
                  'clarify.request', 'run_finished')
+        projected_kinds = ('run_started', 'progress', 'tool.start', 'tool.complete', 'approval.request',
+                           'clarify.request', 'run_finished')
         for kind in kinds:
-            payload = {'execution_generation': generation} if kind.endswith('.request') else {}
+            payload = {'execution_generation': generation} if kind.endswith('.request') else {
+                'tool_started': {'name': 'query_yield', 'invocation_id': 'call-1',
+                    'args': {'lot': 'L-1'}, 'context': '{"lot":"L-1"}'},
+                'tool_finished': {'name': 'query_yield', 'invocation_id': 'call-1',
+                    'args': {'lot': 'L-1'}, 'result': {'status': 'success'},
+                    'summary': 'done', 'elapsed_seconds': .5},
+            }.get(kind, {})
             await store.event(receipt['run_id'], kind, payload)
         epoch = (await a.events.watermark('s'))['replay_epoch']
         params = {'session_id': 's', 'replay_epoch': epoch, 'last_sequence': 0}
         first = (await a.rpc('session.events.since', 's', params))['result']
         frames = first['events']
-        assert [frame['type'] for frame in frames] == list(kinds)
+        assert [frame['type'] for frame in frames] == list(projected_kinds)
+        assert [frame['payload']['tool_id'] for frame in frames[2:4]] == ['call-1', 'call-1']
         assert [frame['seq'] for frame in frames] == list(range(1, len(kinds) + 1))
         assert all(frame['execution_generation'] == generation for frame in frames)
         for frame in frames:
@@ -599,7 +645,7 @@ def test_created_run_is_recovered_on_same_id_submit_without_new_run():
 
 
 def test_projection_requires_matching_last_verification_and_terminal_run():
-    from harness.gateway.events import verified_answer, project_run_event
+    from harness.gateway.events import verified_answer, verified_answer_with_artifacts, project_run_event
     from harness.gateway.publication import candidate_digest
     run = {'status': 'completed', 'active': False, 'answer_text': 'FINAL', 'observations': [{
         'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'}, 'validated_arguments': candidate_digest('FINAL')}]}
@@ -615,6 +661,22 @@ def test_projection_requires_matching_last_verification_and_terminal_run():
     for kind in ('reasoning.delta', 'reasoning.available', 'thinking.delta', 'agent.print'):
         event = project_run_event(run, {'type': kind, 'payload': {'text': 'UNVERIFIED'}})
         assert event is not None and 'UNVERIFIED' not in str(event)
+
+    run.update(session_id='session / 1', observations=[
+        {'tool_name': 'run_python', 'artifact_refs': [
+            {'artifact_id': 'map / one', 'title': 'Wafer [map]', 'mime': 'image/png'},
+            {'artifact_id': 'report one', 'title': 'HTML report', 'mime': 'text/html'},
+            {'artifact_id': 'analysis.py', 'title': '분석 코드', 'mime': 'text/plain'},
+        ]},
+        {'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'},
+            'validated_arguments': candidate_digest('FINAL')},
+    ])
+    expected = ('FINAL\n\n![Wafer \\[map\\]](/harness/artifacts/map%20%2F%20one?session_id=session+%2F+1)'
+                '\n\n[HTML report](/harness/artifacts/report%20one?session_id=session+%2F+1)')
+    assert verified_answer_with_artifacts(run) == expected
+    assert project_run_event(run, {'type': 'run_finished', 'payload': {}}) == {
+        'type': 'message.complete', 'payload': {'text': expected}}
+    assert '분석 코드' not in expected
 
 
 def test_legacy_replay_keeps_legacy_keys_and_restores_open_requests():

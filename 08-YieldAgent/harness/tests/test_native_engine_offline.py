@@ -118,11 +118,15 @@ def test_real_worker_verifier_and_denial_without_network(monkeypatch, tmp_path, 
             assert result['native_engine']['verification'][-1]['result_ids'] == ['review-read']
             assert result['native_usage']['total_tokens'] == result['native_usage']['api_calls'] * 40
             assert [c['name'] for c in calls] == ['synthetic_read', 'read_result']
+            history_tool_ids = {call.get('id') or call.get('tool_call_id')
+                for message in result['native_messages'] if message.get('role') == 'assistant'
+                for call in message.get('tool_calls') or []}
+            assert calls[0]['id'] in history_tool_ids
             if mode == 'delegate':
                 assert 'delegate_disabled' in json.dumps(result['native_messages'])
         assert processes[0].returncode is not None
         assert not any(e[1] == 'commentary' for e in events)
-        assert all(call['id'].startswith('call-') for call in calls)
+        assert all(call['id'] for call in calls)
         return result if mode != 'cancel' else None
     first_result = asyncio.run(scenario())
     if mode == 'read':

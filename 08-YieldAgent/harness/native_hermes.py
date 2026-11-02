@@ -486,7 +486,8 @@ async def run_native(context, registry, *, history=None):
             review_id = message.get('review_id')
             if review_id and review_id not in reviews:
                 raise PermissionError('Unknown verification invocation')
-            value = await bridge.invoke({'id': message['call_id'], 'name': message['name'], 'args': message['args']}, review_id=review_id)
+            value = await bridge.invoke({'id': message.get('tool_call_id') or message['call_id'],
+                'name': message['name'], 'args': message['args']}, review_id=review_id)
         except asyncio.CancelledError:
             await send(ipc.reply(message['call_id'], ipc.CANCELLED))
             raise
@@ -538,8 +539,12 @@ async def run_native(context, registry, *, history=None):
                 review_id = message['review_id']
                 reviews[review_id] = {'attempt': message['attempt'],
                     **publication.candidate_digest(message['candidate'])}
+                context_preview = json.dumps(reviews[review_id], ensure_ascii=False, separators=(',', ':'))
+                if len(context_preview) > 80:
+                    context_preview = context_preview[:77] + '...'
                 await context.store.event(run['run_id'], 'tool_started', {'name': 'verify_answer',
-                    'invocation_id': review_id, 'state': 'running', 'elapsed_seconds': 0}, epoch=run['epoch'])
+                    'invocation_id': review_id, 'state': 'running', 'elapsed_seconds': 0,
+                    'tool_id': review_id, 'args': reviews[review_id], 'context': context_preview}, epoch=run['epoch'])
                 evidence = []
                 known = set()
                 for raw in bridge.observations:

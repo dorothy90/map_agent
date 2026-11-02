@@ -39,6 +39,74 @@ def test_native_bridge_uses_existing_executor_and_preserves_result_ids(monkeypat
     assert bridge.observations[0]['result_id'] == 'stored'
 
 
+def test_executor_completion_uses_history_tool_call_id_and_hermes_payload():
+    from harness.executor import ToolExecutor
+
+    events = []
+    class Runs:
+        async def update_one(self, *args, **kwargs):
+            return None
+    class Store:
+        runs = Runs()
+        async def event(self, run_id, kind, payload, **kwargs):
+            events.append((kind, payload))
+
+    observation = ToolObservation(principal_id='p', session_id='s', run_id='r',
+        invocation_id='call-1', result_id='stored-result', tool_name='query_yield',
+        validated_arguments={'lot': 'L-1'}, status='error', summary='query failed',
+        provenance={'elapsed_seconds': 1.25}, error={'code': 'QueryError'})
+    executor = ToolExecutor(ToolRegistry(), SimpleNamespace(store=Store()))
+
+    asyncio.run(executor.publish(observation, {'run_id': 'r', 'epoch': 1}))
+
+    assert events == [('tool_finished', {
+        'name': 'query_yield', 'status': 'error', 'state': 'error',
+        'invocation_id': 'call-1', 'parent_invocation_id': None,
+        'elapsed_seconds': 1.25, 'result_id': 'stored-result',
+        'summary': 'query failed', 'tool_id': 'call-1',
+        'args': {'lot': 'L-1'}, 'result': {
+            'result_id': 'stored-result', 'tool_name': 'query_yield',
+            'status': 'error', 'summary': 'query failed', 'error': {'code': 'QueryError'}},
+        'duration_s': 1.25})]
+
+
+def test_executor_auth_failure_completes_started_hermes_card():
+    from harness.config import Settings
+    from harness.executor import ExecutionContext, ToolAuthenticationError, ToolExecutor
+
+    class Unauthorized(RuntimeError):
+        status_code = 401
+    async def fail(_args, _context):
+        raise Unauthorized('private provider response')
+    registry = ToolRegistry()
+    registry.add(ToolSpec('query_yield', 'query', Contract, fail))
+    events = []
+    run = {'_id': 'r', 'run_id': 'r', 'epoch': 1, 'principal_id': 'p', 'session_id': 's',
+        'status': 'running', 'active': True, 'usage': {}}
+    class Calls:
+        async def find_one(self, *args, **kwargs): return None
+        async def count_documents(self, *args, **kwargs): return 0
+        async def update_one(self, *args, **kwargs): return None
+    class Store:
+        calls = Calls()
+        async def fence(self, *args, **kwargs): return run
+        async def claim_invocation(self, *args, **kwargs): return None
+        async def reserve_tool_call(self, *args, **kwargs): return None
+        async def event(self, run_id, kind, payload, **kwargs):
+            events.append((kind, payload))
+    executor = ToolExecutor(registry, ExecutionContext(Store(), Settings(), run))
+
+    with pytest.raises(ToolAuthenticationError):
+        asyncio.run(executor.execute({'id': 'history-call', 'name': 'query_yield', 'args': {}}))
+
+    assert [kind for kind, _ in events] == ['tool_started', 'tool_finished']
+    assert [payload['tool_id'] for _, payload in events] == ['history-call', 'history-call']
+    assert events[-1][1]['result'] == {
+        'tool_name': 'query_yield', 'status': 'error',
+        'summary': 'Tool authentication failed',
+        'error': {'code': 'authentication_error', 'status_code': 401}}
+
+
 def test_native_result_does_not_turn_failed_or_interrupted_into_completed():
     from harness.native_hermes import result_status
     assert result_status({'completed': True}) == 'completed'

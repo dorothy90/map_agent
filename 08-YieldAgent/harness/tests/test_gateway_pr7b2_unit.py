@@ -187,6 +187,41 @@ def test_verified_history_and_mixed_history_fail_closed():
             assert response.json()['error']['code'] == 'handler_not_connected'
 
 
+def test_rest_and_ws_preserve_the_same_native_tool_projection():
+    services = seeded()
+    services.sessions['alice', 'alice-session']['rows'] = []
+    answer = 'Verified answer'
+    services.runs.append({'principal_id': 'alice', 'session_id': 'alice-session',
+        'run_id': 'run', 'created_at': 1, 'query': 'Question', 'active': False,
+        'status': 'completed', 'answer_text': answer, 'native_messages': [
+            {'role': 'user', 'content': 'Question'},
+            {'role': 'assistant', 'tool_calls': [
+                {'id': 'call', 'function': {
+                    'name': 'query_yield', 'arguments': '{"lot":"L-1"}'}},
+                {'id': 'non-finite', 'function': {
+                    'name': 'broken_tool', 'arguments': {'value': float('nan')}}}]},
+            {'role': 'tool', 'tool_call_id': 'call', 'content': 'PRIVATE RESULT BODY'},
+            {'role': 'tool', 'tool_call_id': 'non-finite', 'content': 'PRIVATE NAN RESULT'},
+            {'role': 'assistant', 'content': 'PRIVATE NATIVE ANSWER'}],
+        'observations': [{'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'},
+            'validated_arguments': candidate_digest(answer)}]})
+
+    with client_for(services) as client:
+        rest = client.get(PREFIX + '/api/sessions/alice-session/messages').json()['messages']
+        with client.websocket_connect(PREFIX + '/api/ws') as ws:
+            wire = call(ws, 'session.history', {'session_id': 'alice-session'})['result']['messages']
+
+    assert rest == [
+        {'role': 'user', 'content': 'Question'},
+        {'role': 'tool', 'name': 'query_yield', 'context': '{"lot":"L-1"}',
+            'tool_call_id': 'call', 'args': {'lot': 'L-1'}},
+        {'role': 'tool', 'name': 'broken_tool', 'context': '',
+            'tool_call_id': 'non-finite', 'args': {}},
+        {'role': 'assistant', 'content': answer}]
+    assert wire[1:3] == rest[1:3]
+    assert 'PRIVATE' not in json.dumps(rest)
+
+
 @pytest.mark.parametrize('query,status', [('limit=-1', 422), ('offset=-1', 422),
     ('limit=bad', 422), ('order=bad', 400), ('archived=bad', 400),
     ('full=true', 503), ('cwd_prefix=/private/host', 503)])

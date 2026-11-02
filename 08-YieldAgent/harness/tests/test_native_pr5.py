@@ -100,6 +100,16 @@ def test_native_publication_boundary(monkeypatch, tmp_path, verdicts, flags, fin
         # Tool evidence keeps the existing artifact event, independently of answers.
         await original_bridge(ToolRegistry(), context).executor.publish(evidence, run)
         result = await native.run_native(context, ToolRegistry())
+        starts = [event['payload'] for event in events if event['type'] == 'tool_started']
+        assert len(starts) == len(verdicts)
+        assert all(payload['tool_id'] == payload['invocation_id'] for payload in starts)
+        assert all(payload['name'] == 'verify_answer' and payload['args'] for payload in starts)
+        completions = [event['payload'] for event in events if event['type'] == 'tool_finished']
+        assert completions
+        assert all(payload['tool_id'] == payload['invocation_id'] for payload in completions)
+        assert all(payload['result']['tool_name'] == payload['name'] for payload in completions)
+        assert [payload['args'] for payload in completions[1:]] == [item['validated_arguments'] for item in saved]
+        assert all(payload['duration_s'] == payload['elapsed_seconds'] for payload in completions)
         wire = json.dumps([events, saved, updates], ensure_ascii=False)
         for candidate in [*candidates, final_text]: assert candidate not in wire
         assert table not in wire and not any(e['type'] == 'run_finished' for e in events)

@@ -195,6 +195,10 @@ sys.addaudithook(audit_embedded)
             return
         assert result['status'] == 'completed', result
         assert calls and calls[0]['name'] == 'synthetic_read', result['native_messages']
+        history_tool_ids = {call.get('id') or call.get('tool_call_id')
+            for message in result['native_messages'] if message.get('role') == 'assistant'
+            for call in message.get('tool_calls') or []}
+        assert calls[0]['id'] in history_tool_ids
         assert result['result_ids'] == ['stored-synthetic']
         assert 'Synthetic result is 7.' in result['answer']
         assert any('stored-synthetic' in json.dumps(r) for r in requests)

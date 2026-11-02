@@ -8,6 +8,7 @@ import hashlib
 import json
 import time
 import uuid
+from urllib.parse import quote, urlencode
 
 from pymongo.errors import DuplicateKeyError
 
@@ -98,18 +99,44 @@ def verified_answer(run):
     return decision['answer_text'] if decision['status'] == 'completed' else None
 
 
+def verified_answer_with_artifacts(run):
+    """Append stored display deliverables only after the answer passes verification."""
+    answer = verified_answer(run)
+    if answer is None:
+        return None
+    attachments = []
+    seen = set()
+    query = urlencode({'session_id': run.get('session_id', '')})
+    for observation in run.get('observations', []):
+        for artifact in observation.get('artifact_refs', []):
+            artifact_id = artifact.get('artifact_id')
+            mime = artifact.get('mime')
+            if not isinstance(artifact_id, str) or not artifact_id or mime not in ('image/png', 'text/html'):
+                continue
+            key = (artifact_id, mime)
+            if key in seen:
+                continue
+            seen.add(key)
+            title = str(artifact.get('title') or ('Image' if mime == 'image/png' else 'HTML report'))
+            title = title.replace('\\', '\\\\').replace('[', '\\[').replace(']', '\\]').replace('\n', ' ')
+            url = f"/harness/artifacts/{quote(artifact_id, safe='')}?{query}"
+            attachments.append(f'![{title}]({url})' if mime == 'image/png' else f'[{title}]({url})')
+    return '\n\n'.join([answer, *attachments])
+
+
 def project_run_event(run, event):
     """Additional host projection (existing publication.py has no event projector).
 
     No original equivalent → PB:503-505,639. Unknown events fail closed.
-    The source event type is preserved; run_finished becomes message.complete
-    only for the PR-5 verified final answer. Model-authored complete is withheld.
+    Internal tool lifecycle names are translated to the Hermes wire contract;
+    run_finished becomes message.complete only for the PR-5 verified final answer.
+    Model-authored complete is withheld.
     """
     kind, payload = event['type'], event.get('payload') or {}
     if kind in ('message.delta', 'message.interim', 'message.complete', 'commentary'):
         return None
     if kind == 'run_finished':
-        answer = verified_answer(run)
+        answer = verified_answer_with_artifacts(run)
         if answer is not None:
             return {'type': 'message.complete', 'payload': {'text': answer}}
         return {'type': kind, 'payload': {'status': run.get('status')}}
@@ -117,13 +144,28 @@ def project_run_event(run, event):
         return {'type': kind, 'payload': {'kind': 'status', 'text': '', 'status': 'running'}}
     if kind in ('reasoning', 'thinking', 'agent.print', 'message.start', 'progress', 'run_started'):
         return {'type': kind, 'payload': {'status': 'running'}}
+    if kind == 'tool_started':
+        tool_id = payload.get('tool_id') or payload.get('invocation_id')
+        projected = {'tool_id': tool_id, 'name': payload.get('name')}
+        for key in ('args', 'context'):
+            if key in payload:
+                projected[key] = deepcopy(payload[key])
+        return {'type': 'tool.start', 'payload': projected}
+    if kind == 'tool_finished':
+        tool_id = payload.get('tool_id') or payload.get('invocation_id')
+        projected = {'tool_id': tool_id, 'name': payload.get('name')}
+        for key in ('args', 'result', 'summary'):
+            if key in payload:
+                projected[key] = deepcopy(payload[key])
+        duration = payload.get('duration_s', payload.get('elapsed_seconds'))
+        if duration is not None:
+            projected['duration_s'] = duration
+        return {'type': 'tool.complete', 'payload': projected}
     fields = {
-        'tool_started': ('name', 'invocation_id', 'state', 'elapsed_seconds'),
-        'tool_finished': ('name', 'invocation_id', 'state', 'status', 'elapsed_seconds', 'result_id'),
-        'tool.start': ('tool_id', 'name'),
-        'tool.complete': ('tool_id', 'name', 'duration_s'),
+        'tool.start': ('tool_id', 'name', 'args', 'context'),
+        'tool.complete': ('tool_id', 'name', 'args', 'result', 'summary', 'duration_s'),
         'tool.generating': ('name',),
-        'tool.progress': ('tool_id', 'name', 'progress', 'total', 'percent'),
+        'tool.progress': ('tool_id', 'name', 'progress', 'total', 'percent', 'message'),
         'session.title': ('session_id', 'title'),
         'session.resume_progress': ('phase', 'status', 'message_count'),
         'session.reclaimed': ('session_id', 'stored_session_id', 'reason'),

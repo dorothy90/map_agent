@@ -280,8 +280,12 @@ class ToolExecutor:
             tool_limit=ctx.settings.tool_limit, child_kind=ctx.namespace + "tools" if ctx.depth else None)
         await store.calls.update_one({"run_id": run["run_id"], "invocation_id": call_id}, {"$set": {"fingerprint": fingerprint}})
         started = time.monotonic()
+        context = json.dumps(args, ensure_ascii=False, separators=(",", ":"))
+        if len(context) > 80:
+            context = context[:77] + "..."
         await store.event(run["run_id"], "tool_started", {"name": name, "invocation_id": call_id,
-            "parent_invocation_id": ctx.parent_invocation_id or None, "state": "running", "elapsed_seconds": 0},
+            "parent_invocation_id": ctx.parent_invocation_id or None, "state": "running", "elapsed_seconds": 0,
+            "tool_id": call_id, "args": args, "context": context},
             event_key=call_id + ":started", epoch=run["epoch"])
         observation = {"run_id": run["run_id"], "invocation_id": call_id, "tool_name": name, "validated_arguments": args,
             "provenance": {"executed_at": now(), "source_system": name, "query_fingerprint": fingerprint, "data_origin": "live"}}
@@ -324,6 +328,15 @@ class ToolExecutor:
         except Exception as exc:
             code = error_status(exc)
             if code in (401, 403):
+                duration = round(time.monotonic() - started, 3)
+                summary = "Tool authentication failed"
+                await store.event(run["run_id"], "tool_finished", {"name": name, "status": "error",
+                    "state": "error", "invocation_id": call_id,
+                    "parent_invocation_id": ctx.parent_invocation_id or None,
+                    "elapsed_seconds": duration, "summary": summary, "tool_id": call_id, "args": args,
+                    "result": {"tool_name": name, "status": "error", "summary": summary,
+                        "error": {"code": "authentication_error", "status_code": code}},
+                    "duration_s": duration}, event_key=call_id + ":finished", epoch=run["epoch"])
                 raise ToolAuthenticationError(name, code) from None
             message = "도구 실행에 실패했습니다. 다른 접근이나 필요한 설정을 확인하세요."
             if isinstance(exc, ValidationError):
@@ -345,12 +358,15 @@ class ToolExecutor:
 
     async def publish(self, obs, run):
         store = self.context.store
+        result = obs.model_dump(mode="json", include={"result_id", "tool_name", "status", "summary", "error"})
+        duration = obs.provenance.get('elapsed_seconds', 0)
         await store.runs.update_one({"_id": run["run_id"], "epoch": run["epoch"], "status": "running"},
             {"$addToSet": {"observations": obs.model_dump(mode="json")}})
         await store.event(run["run_id"], "tool_finished", {"name": obs.tool_name, "status": obs.status,
             "state": obs.status, "invocation_id": obs.invocation_id,
             "parent_invocation_id": obs.provenance.get('parent_invocation_id'),
-            "elapsed_seconds": obs.provenance.get('elapsed_seconds', 0),
-            "result_id": obs.result_id, "summary": obs.summary}, event_key=obs.invocation_id + ":finished", epoch=run["epoch"])
+            "elapsed_seconds": duration, "result_id": obs.result_id, "summary": obs.summary,
+            "tool_id": obs.invocation_id, "args": obs.validated_arguments, "result": result,
+            "duration_s": duration}, event_key=obs.invocation_id + ":finished", epoch=run["epoch"])
         for artifact in obs.artifact_refs:
             await store.event(run["run_id"], "artifact", artifact, event_key="artifact:" + artifact["artifact_id"], epoch=run["epoch"])

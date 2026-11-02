@@ -257,11 +257,18 @@ def main():
             return queue.get(timeout=max(.1, deadline - time.monotonic()))
         finally:
             pending.discard(identity)
+    active_tool_call = threading.local()
+    def tool_start(call_id, _name, _args):
+        active_tool_call.id = call_id
+    def tool_complete(call_id, _name, _args, _result):
+        if getattr(active_tool_call, 'id', None) == call_id:
+            del active_tool_call.id
     def handler(name):
         def call(args, **kwargs):
             if review_id and name != 'read_result':
                 return json.dumps({'error': 'Verifier can only read stored results'})
-            result = rpc('tool_call', name=name, args=args, review_id=review_id)
+            result = rpc('tool_call', name=name, args=args, review_id=review_id,
+                tool_call_id=getattr(active_tool_call, 'id', None))
             if review_id and result.get('status') in ('success', 'partial', 'empty'):
                 review_known_ids.add(result['result_id'])
                 review_known_ids.update(result.get('source_result_ids', []))
@@ -336,7 +343,8 @@ def main():
             reasoning_config={'enabled': True, 'effort': startup['reasoning_effort']} if startup.get('reasoning_effort') else None,
             request_overrides={'temperature': startup['temperature']},
             quiet_mode=True, skip_context_files=False, load_soul_identity=False,
-            step_callback=step, interim_assistant_callback=lambda content: emit({'type': 'commentary', 'content': content}))
+            step_callback=step, interim_assistant_callback=lambda content: emit({'type': 'commentary', 'content': content}),
+            tool_start_callback=tool_start, tool_complete_callback=tool_complete)
         controller.add(agent)
         from tools.delegate_tool import _build_child_preserving_parent_tools, _run_single_child
         from tools.delegation_output_schema import extract_json_candidate

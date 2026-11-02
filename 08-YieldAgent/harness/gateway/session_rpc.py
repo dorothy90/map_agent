@@ -4,9 +4,10 @@ Only public projections: no agent objects, model/provider, filesystem or secrets
 Host run transcript projection has no upstream equivalent → PB:503,575,639,664.
 """
 import hashlib
+import json
 import uuid
 
-from .events import verified_answer
+from .events import verified_answer_with_artifacts
 from .execution import RpcError, string
 
 
@@ -62,12 +63,101 @@ class SessionRPC:
             if not runs:
                 if not include_compacted:
                     rows = await self.db.get_messages(ancestor, include_compacted=False)
-                messages.extend({'role': 'user', 'text': row.get('content') or '',
-                                 'row_id': row['id']} for row in rows
-                                if row['role'] == 'user' and row.get('display_kind') != 'hidden')
+                tool_calls = {}
+                for row in rows:
+                    if row.get('display_kind') == 'hidden':
+                        continue
+                    if row['role'] == 'assistant':
+                        calls = row.get('tool_calls')
+                        for call in calls if isinstance(calls, list) else []:
+                            if not isinstance(call, dict):
+                                continue
+                            function = call.get('function') if isinstance(call.get('function'), dict) else {}
+                            call_id = call.get('id') or call.get('tool_call_id')
+                            call_id = call_id if isinstance(call_id, str) else ''
+                            name = function.get('name') or call.get('name') or call.get('tool_name')
+                            name = name if isinstance(name, str) and name else 'tool'
+                            raw_args = function.get('arguments', call.get('args', {}))
+                            if isinstance(raw_args, str):
+                                try:
+                                    raw_args = json.loads(raw_args)
+                                except (TypeError, ValueError):
+                                    raw_args = {}
+                            args = raw_args if isinstance(raw_args, dict) else {}
+                            try:
+                                json.dumps(args, allow_nan=False)
+                            except (TypeError, ValueError):
+                                args = {}
+                            if call_id:
+                                tool_calls[call_id] = (name, args)
+                    elif row['role'] == 'user':
+                        messages.append({'role': 'user', 'text': row.get('content') or '',
+                                         'row_id': row['id']})
+                    elif row['role'] == 'tool':
+                        call_id = row.get('tool_call_id')
+                        call_id = call_id if isinstance(call_id, str) else ''
+                        name, args = tool_calls.get(call_id, (row.get('tool_name') or row.get('name') or 'tool', {}))
+                        name = name if isinstance(name, str) and name else 'tool'
+                        preview = json.dumps(args, ensure_ascii=False, separators=(',', ':')) if args else ''
+                        if len(preview) > 80:
+                            preview = preview[:77] + '...'
+                        messages.append({'role': 'tool', 'name': name or 'tool', 'context': preview,
+                                         'tool_call_id': call_id, 'args': args})
+            previous_native = None
             for run in runs:
                 messages.append({'role': 'user', 'text': run['query']})
-                answer = verified_answer(run)
+                native = run.get('native_messages')
+                if isinstance(native, list):
+                    if previous_native is not None and native[:len(previous_native)] == previous_native:
+                        turn = native[len(previous_native):]
+                    else:
+                        start = None
+                        prompt = run.get('goal_request', run['query'])
+                        for index, item in enumerate(native):
+                            if (isinstance(item, dict) and item.get('role') == 'user'
+                                    and item.get('content') == prompt):
+                                start = index
+                        turn = native[start:] if start is not None else native
+                    previous_native = native
+                    tool_calls = {}
+                    for item in turn:
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get('role') == 'assistant':
+                            calls = item.get('tool_calls')
+                            for call in calls if isinstance(calls, list) else []:
+                                if not isinstance(call, dict):
+                                    continue
+                                function = call.get('function') if isinstance(call.get('function'), dict) else {}
+                                call_id = call.get('id') or call.get('tool_call_id')
+                                call_id = call_id if isinstance(call_id, str) else ''
+                                name = function.get('name') or call.get('name') or call.get('tool_name')
+                                name = name if isinstance(name, str) and name else 'tool'
+                                raw_args = function.get('arguments', call.get('args', {}))
+                                if isinstance(raw_args, str):
+                                    try:
+                                        raw_args = json.loads(raw_args)
+                                    except (TypeError, ValueError):
+                                        raw_args = {}
+                                args = raw_args if isinstance(raw_args, dict) else {}
+                                try:
+                                    json.dumps(args, allow_nan=False)
+                                except (TypeError, ValueError):
+                                    args = {}
+                                if call_id:
+                                    tool_calls[call_id] = (name, args)
+                        elif item.get('role') == 'tool':
+                            call_id = item.get('tool_call_id')
+                            call_id = call_id if isinstance(call_id, str) else ''
+                            name, args = tool_calls.get(call_id,
+                                (item.get('tool_name') or item.get('name') or 'tool', {}))
+                            name = name if isinstance(name, str) and name else 'tool'
+                            preview = json.dumps(args, ensure_ascii=False, separators=(',', ':')) if args else ''
+                            if len(preview) > 80:
+                                preview = preview[:77] + '...'
+                            messages.append({'role': 'tool', 'name': name or 'tool', 'context': preview,
+                                             'tool_call_id': call_id, 'args': args})
+                answer = verified_answer_with_artifacts(run)
                 if answer is not None:
                     messages.append({'role': 'assistant', 'text': answer})
         return messages
