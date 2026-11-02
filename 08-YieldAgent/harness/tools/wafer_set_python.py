@@ -174,9 +174,8 @@ async def run_python(args: CompatiblePythonInput, ctx):
     tables.append(ResultTable(table_id="execution_manifest", title="Execution manifest",
         rows=[manifest], columns=list(manifest), complete=runtime_success and input_complete,
         missing_reason=None if runtime_success and input_complete else reason))
-    artifacts = [{"title": "분석 코드", "mime": "text/plain", "data": args.code}]
-    artifacts.extend({"title": f"분석 차트 {index + 1}", "mime": "text/html", "data": plot}
-        for index, plot in enumerate(result.get("plots", [])))
+    artifacts = [{"title": f"분석 차트 {index + 1}", "mime": "text/html", "data": plot}
+        for index, plot in enumerate(result.get("plots", []))]
     origins = {table.observation.provenance.get("data_origin", "unknown") for table in resolved}
     origin = origins.pop() if len(origins) == 1 else "unknown"
     status = "error" if not runtime_success else "partial" if not input_complete else "success"

@@ -57,8 +57,8 @@ async def run_python(args, ctx):
         runtime = (ContainerRuntime(ctx.settings.python_image) if ctx.settings.python_runtime == "docker"
             else ProcessRuntime(ctx.settings.python_executable))
     result = await runtime.execute(args.code, datasets)
-    artifacts = [{"title": "분석 코드", "mime": "text/plain", "data": args.code}]
-    artifacts.extend({"title": f"분석 차트 {i+1}", "mime": "text/html", "data": html} for i, html in enumerate(result["plots"]))
+    artifacts = [{"title": f"분석 차트 {i+1}", "mime": "text/html", "data": html}
+        for i, html in enumerate(result["plots"])]
     complete = result["status"] == "success" and not limitations
     reason = "; ".join(limitations) or (None if complete else "Python execution did not complete")
     tables = [ResultTable.model_validate({**table, "complete": complete, "missing_reason": reason})

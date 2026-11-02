@@ -78,6 +78,21 @@ async def test_handle_python_passes_only_selected_tables_and_adds_manifest(monke
     assert result.tables[-1].rows[0]["output_table_count"] == 1
     assert result.scope["unit_origin"] == "caller_declared"
     assert result.source_result_ids == ["source"]
+    assert result.artifacts == [{"title": "분석 차트 1", "mime": "text/html",
+        "data": "<div>plot</div>"}]
+
+
+@pytest.mark.asyncio
+async def test_legacy_python_keeps_charts_without_saving_analysis_code(monkeypatch):
+    from harness.tools import python_tools as tool
+
+    runtime = Runtime({"status": "success", "tables": [], "plots": ["<div>plot</div>"],
+        "stdout": "ok", "stderr": "", "error": None})
+    monkeypatch.setattr(tool, "ProcessRuntime", lambda executable: runtime)
+    result = await tool.run_python(tool.PythonInput(code="print('secret')",
+        input_result_ids=["source"]), context())
+    assert result.artifacts == [{"title": "분석 차트 1", "mime": "text/html",
+        "data": "<div>plot</div>"}]
 
 
 @pytest.mark.asyncio
