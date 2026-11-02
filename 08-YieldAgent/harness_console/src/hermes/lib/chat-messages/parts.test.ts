@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { appendAssistantTextPart, chatMessageText, mediaTagValues, renderMediaTags } from './parts'
+import { toChatMessages } from './hydration'
 
 const SPACED = '/home/hermes/Morten - Nobly Kickoff - Opening and cue cards EN.docx'
 const CARD = `[File: Morten - Nobly Kickoff - Opening and cue cards EN.docx](#media:${encodeURIComponent(SPACED)})`
@@ -57,5 +58,33 @@ describe('inline-code MEDIA paths', () => {
     expect(mediaTagValues("MEDIA:/tmp/john's.md x")).toEqual(["/tmp/john's.md"])
     expect(renderMediaTags("MEDIA:'/tmp/a b.md' x")).toBe(`${card('/tmp/a b.md')} x`)
     expect(renderMediaTags('MEDIA:/tmp/a.png')).toBe('[Image: a.png](#media:%2Ftmp%2Fa.png)')
+  })
+})
+
+describe('stored gateway tool rows', () => {
+  it('hydrates the compact history projection into a completed tool card', () => {
+    const messages = toChatMessages([
+      { role: 'user', content: 'Question' },
+      {
+        role: 'tool',
+        name: 'query_yield',
+        context: '{"lot":"L-1"}',
+        tool_call_id: 'call-1',
+        args: { lot: 'L-1' }
+      },
+      { role: 'assistant', content: 'Verified answer' }
+    ] as never)
+
+    const tool = messages[1].parts[0]
+    expect(messages[1].role).toBe('assistant')
+    expect(tool).toMatchObject({
+      type: 'tool-call',
+      toolCallId: 'call-1',
+      toolName: 'query_yield',
+      unpairedStoredToolResult: true,
+      args: { lot: 'L-1', context: '{"lot":"L-1"}' },
+      result: { context: '{"lot":"L-1"}' },
+      isError: false
+    })
   })
 })

@@ -2,7 +2,7 @@ import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { clampHtmlNestingDepth } from '@/lib/markdown-html-depth'
-import { mediaKind, mediaMarkdownHref } from '@/lib/media'
+import { isHarnessArtifactUrl, mediaKind, mediaMarkdownHref } from '@/lib/media'
 import { previewMarkdownHref } from '@/lib/preview-targets'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 import { linkifySessionRefs } from '@/lib/session-refs'
@@ -513,6 +513,10 @@ function routeFileLinksToPreview(text: string): string {
   return text.replace(FILE_LINK_RE, (match: string, ...args: unknown[]) => {
     const groups = args.at(-1) as { label: string; target: string }
     const target = groups.target.replace(/^<|>$/g, '')
+
+    if (isHarnessArtifactUrl(target)) {
+      return match
+    }
 
     const href = mediaKind(target) === 'file' ? previewMarkdownHref(target) : mediaMarkdownHref(target)
 

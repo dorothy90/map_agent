@@ -98,7 +98,11 @@ export function pathToLocalFileUrl(path: string): string {
 }
 
 export function isInlineMediaSrc(path: string): boolean {
-  return /^(?:https?|data):/i.test(path)
+  return /^(?:https?|data):/i.test(path) || isHarnessArtifactUrl(path)
+}
+
+export function isHarnessArtifactUrl(path: string): boolean {
+  return path.startsWith('/harness/artifacts/')
 }
 
 export function isArtifactFilePath(path: string): boolean {

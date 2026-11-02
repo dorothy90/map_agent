@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { computed } from 'nanostores'
+import { useEffect, useMemo, useState } from 'react'
 import { useStore } from '@nanostores/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HashRouter, useNavigate } from 'react-router'
@@ -16,9 +15,6 @@ import { WebHostAdapter, type WebHostOptions } from '../platform/web-host'
 import { webConnectionResolver } from './connection'
 import { withWebGatewayCompat } from './gateway-compat'
 import { useWebSession } from './use-web-session'
-import { useYieldResults } from '../yield/use-yield-results'
-import { YieldResults } from '../yield/YieldResults'
-import { omitDuplicateTables, type ComparableTable } from '../yield/table-dedupe'
 export type ConnectionResolver = NonNullable<WebHostOptions['getWebSocketConnection']>
 export interface HermesWebOptions { resolver?:ConnectionResolver; fetcher?:typeof fetch; host?:WebHostAdapter }
 const browserFetch:typeof fetch = (...args) => globalThis.fetch(...args)
@@ -28,21 +24,13 @@ export function HermesWebApp({resolver,fetcher=browserFetch,host:injected}:Herme
  useEffect(() => () => client.clear(),[client])
  if (!host) return <main className="hermes-web"><p role="alert">인증 연결 resolver가 지정되지 않았습니다. 연결하지 않았습니다.</p></main>
  if (host.rpcMode!=='authority') return <p role="alert">채팅에는 authority 연결이 필요합니다.</p>
- return <QueryClientProvider client={client}><I18nProvider configClient={null} initialLocale="ko"><HashRouter><WebChat host={host} fetcher={fetcher}/></HashRouter></I18nProvider></QueryClientProvider>
+ return <QueryClientProvider client={client}><I18nProvider configClient={null} initialLocale="ko"><HashRouter><WebChat host={host}/></HashRouter></I18nProvider></QueryClientProvider>
 }
-function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
+function WebChat({host}:{host:WebHostAdapter}) {
  const navigate=useNavigate()
  const actions=useWebSession(host), gatewayState=useStore($gatewayState), sessions=useStore($sessions)
  const listError=useStore($sessionsLoadError)
  const [error,setError]=useState(''),[ready,setReady]=useState(false)
- const [artifactTables,setArtifactTables]=useState<Record<string,ComparableTable[]>>({})
- const onArtifactTables=useCallback((id:string,tables:ComparableTable[]) => setArtifactTables(current => ({...current,[id]:tables})),[])
- useEffect(() => setArtifactTables({}),[actions.selectedStoredSessionId])
- const results=useYieldResults(ready ? actions.selectedStoredSessionId : null,actions.busy,fetcher)
- useEffect(() => {
-   if(ready && actions.selectedStoredSessionId && !actions.busy) void results.refetch()
- },[ready,actions.selectedStoredSessionId,actions.busy,results.refetch])
- const view=useMemo(() => ({...PRIMARY_SESSION_VIEW,$messages:computed(PRIMARY_SESSION_VIEW.$messages,messages => messages.map(message => message.role==='assistant' ? {...message,parts:message.parts.map(part => part.type==='text' ? {...part,text:omitDuplicateTables(part.text,[...(results.data?.tables.map(t => t.table) ?? []),...Object.values(artifactTables).flat()])} : part)} : message))}),[results.data,artifactTables])
  useEffect(() => {
    let disposed=false
    const releaseApi=host.installApiBridge(),releaseDesktop=host.installDesktopBridge()
@@ -65,10 +53,8 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
   <div className="hermes-web-chat">
    {!ready && <p role={error ? 'alert' : 'status'}>{error || '게이트웨이 연결 중…'}</p>}
    <UsageClock/><ConfirmHost/>
-   <SessionViewProvider value={view}><ChatRuntimeBoundary busy={actions.busy} suppressMessages={false} onCancel={actions.cancelRun} onEdit={actions.editMessage} onReload={actions.reloadFromMessage} onThreadMessagesChange={actions.handleThreadMessagesChange}>
+   <SessionViewProvider value={PRIMARY_SESSION_VIEW}><ChatRuntimeBoundary busy={actions.busy} suppressMessages={false} onCancel={actions.cancelRun} onEdit={actions.editMessage} onReload={actions.reloadFromMessage} onThreadMessagesChange={actions.handleThreadMessagesChange}>
     <div className="hermes-web-thread"><Thread gateway={host.gateway} sessionId={actions.activeSessionId} sessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun}/></div>
-    {results.error && <p role="alert">{results.error.message}</p>}
-    {results.data && <YieldResults key={actions.selectedStoredSessionId} {...results.data} fetcher={fetcher} onArtifactTables={onArtifactTables}/>}
     <div className="hermes-web-composer"><ChatBar gateway={host.gateway} busy={actions.busy} disabled={!ready || gatewayState!=='open'} sessionId={actions.activeSessionId} queueSessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun} onSubmit={actions.submitText} onSteer={actions.steerPrompt}
       state={{model:{model:'',provider:'',canSwitch:false},tools:{enabled:false,label:''},voice:{enabled:false,active:false}}}/></div>
    </ChatRuntimeBoundary></SessionViewProvider>

@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { isMarkdownDocumentPath, mediaMarkdownHref } from '@/lib/media'
+import { isInlineMediaSrc, isMarkdownDocumentPath, mediaMarkdownHref } from '@/lib/media'
 
 import { MarkdownTextContent } from './markdown-text'
 
@@ -66,5 +66,19 @@ describe('markdown documents delivered via MEDIA', () => {
     expect(screen.getByText('Download')).toBeTruthy()
     expect(screen.getByText('report.pdf')).toBeTruthy()
     expect(screen.queryByText(/^Open report/)).toBeNull()
+  })
+
+  it('keeps harness HTML artifacts as ordinary links and admits artifact images', async () => {
+    const image = '/harness/artifacts/map%201?session_id=session-1'
+    const html = '/harness/artifacts/report%201?session_id=session-1'
+
+    expect(isInlineMediaSrc(image)).toBe(true)
+    render(<MarkdownTextContent isRunning={false} text={`![Wafer map](${image})\n\n[HTML report](${html})`} />)
+
+    const renderedImage = await screen.findByRole('img', { name: 'Wafer map' })
+    expect(renderedImage.getAttribute('src')).toBe(image)
+    const link = await screen.findByRole('link', { name: 'HTML report' })
+    expect(link.getAttribute('href')).toBe(html)
+    expect(screen.queryByText('Download')).toBeNull()
   })
 })

@@ -60,10 +60,15 @@ it('routes a sidebar click through HashRouter, resumes and keeps selection until
  })
  vi.spyOn(host,'api').mockImplementation(async call => {
    if(call.path.split('?')[0]==='/api/sessions') return {sessions:[{id:'alice-result',title:'표와 검증 결과',source:'cli',started_at:0,last_active:0,message_count:0}],total:1}
-   if(call.path.includes('/messages')) return {session_id:'alice-result',messages:[]}
+   if(call.path.includes('/messages')) return {session_id:'alice-result',messages:[
+    {id:1,role:'user',content:'표를 보여줘'},
+    {id:2,role:'assistant',content:'|A|B|\n|---|---|\n|1|2|'},
+   ]}
    return {}
  })
- const fetcher=vi.fn<typeof fetch>().mockImplementation(async () => new Response(JSON.stringify({runs:[]})))
+ const fetcher=vi.fn<typeof fetch>().mockImplementation(async url => new Response(JSON.stringify(String(url).startsWith('/harness/results/') ?
+  {table_id:'t',title:'표',columns:['A','B'],rows:[{A:1,B:2}],offset:0,total_rows:1,complete:true,units:{}} :
+  {runs:[{run_id:'run',session_id:'alice-result',query:'표를 보여줘',status:'completed',goal_revision:1,observations:[{invocation_id:'i',tool_name:'query_db',result_id:'result',status:'success',tables:[{table_id:'t',title:'표',columns:['A','B'],total_rows:1,complete:true}]}]}]})))
  render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host} fetcher={fetcher}/>)
  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
  fireEvent.click(screen.getByRole('button',{name:'표와 검증 결과'}))
@@ -75,6 +80,7 @@ it('routes a sidebar click through HashRouter, resumes and keeps selection until
  expect($selectedStoredSessionId.get()).toBe('alice-result')
  expect(screen.getByRole('button',{name:'표와 검증 결과'}).getAttribute('aria-current')).toBe('page')
  expect($activeSessionId.get()).toBe('runtime-alice-result')
+ expect(screen.getByRole('table')).toBeTruthy()
  await act(async () => {await vi.advanceTimersByTimeAsync(11000)})
  expect($selectedStoredSessionId.get()).toBe('alice-result')
  expect(window.location.hash).toBe(`#${sessionRoute('alice-result')}`)
@@ -86,4 +92,5 @@ it('routes a sidebar click through HashRouter, resumes and keeps selection until
  expect($activeSessionId.get()).toBeNull()
  expect($freshDraftReady.get()).toBe(true)
  expect(request.mock.calls.filter(([method]) => method==='session.resume')).toHaveLength(1)
+ expect(fetcher.mock.calls.some(([url]) => String(url).startsWith('/harness/sessions/'))).toBe(false)
 })
