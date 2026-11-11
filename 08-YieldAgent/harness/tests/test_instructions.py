@@ -47,18 +47,17 @@ def test_yield_report_recipe_is_native_only_and_keeps_contract():
         assert "PARAM_SEQNO" in recipe
         assert "x100 소수 1자리" in recipe
         assert "호환용으로 받지만" in recipe
-        assert "DF_WF_ALL_PRB_V2에서" in recipe
-        assert "PARAM_NM을 필터링하지 않고 모든 PARAM_NM을" in recipe
-        assert "distinct GORUPKEY" in recipe
+        for field in ("lot_cd", "period", "recent_weeks", "base_date", "weeks", "report_totals", "weekly_counts"):
+            assert field in recipe
         assert "DF_DIE_TO_WF_YLD" not in recipe
         assert "기준일이 속한 주를 포함하고 오래된 주부터" in recipe
-        assert "result_id" in recipe
-        assert "붙여넣" in recipe
+        assert "주별 수를 더해 기간 합계로 쓰거나" in recipe
+        assert "all-time counts" in recipe
         assert "report mode" not in recipe
         assert "mode=" not in recipe
         assert "delta_row" not in recipe
     assert "수율 리포트는" not in notes
-    assert load_native_instructions().count("PARAM_NM을 필터링하지 않고 모든 PARAM_NM을") == 1
+    assert "PARAM_NM을 필터링하지 않고 모든 PARAM_NM을" not in load_native_instructions()
 
 
 def test_native_yield_questions_clarify_all_missing_product_and_period_together():

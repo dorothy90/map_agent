@@ -10,7 +10,7 @@ from harness.tools.table_artifact import YieldTableInput, _resolve_report_result
 
 def group_args(**extra):
     payload = dict(
-        title="group report", period_kind="group",
+        title="group report",
         periods=[{"period": "today", "label": "선택 자재"}, {"period": "rest", "label": "나머지"}],
         rows=[
             {"period": group, "process": "PT1H TEST", "param": param, "value": value}
@@ -110,8 +110,8 @@ def test_saved_counts_cannot_overwrite_group_metadata():
         asyncio.run(_resolve_report_results(args, ctx))
 
 
-def test_weekly_labels_are_escaped_without_format_options():
-    args = YieldTableInput(title="weekly", period_kind="week", periods=[
+def test_group_labels_are_escaped_without_format_options():
+    args = YieldTableInput(title="weekly", periods=[
         {"period": "2026-W45", "label": '<img src=x onerror="alert(1)">'},
     ])
     assert "<img" not in _html(args)
@@ -168,8 +168,8 @@ def test_comparison_selects_named_groups_not_last_two_rows():
     assert ">+25.0</td>" in _html(args)
 
 
-def test_weekly_compatibility_formats_use_report_scaling():
-    args = YieldTableInput(title="weekly", period_kind="week", rows=[
+def test_group_compatibility_formats_use_report_scaling():
+    args = YieldTableInput(title="groups", comparison={"current": "2026-W45", "baseline": "2026-W44"}, rows=[
         {"period": "2026-W44", "process": "pt1h", "param": "VTH", "value": 1.234},
         {"period": "2026-W45", "process": "pt1h", "param": "VTH", "value": 1.236},
     ], parameter_formats=[{"process": "pt1h", "param": "VTH", "kind": "number", "decimals": 3}])

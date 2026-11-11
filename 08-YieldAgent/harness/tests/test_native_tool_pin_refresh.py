@@ -58,7 +58,7 @@ def test_refresh_respects_effective_allowlist():
     old = tool('render_yield_table')
     store = Store({'version': 'engine-revision', 'tools': [old]})
     startup = {'session_id': 'same-session', 'allowed_tools': ['read_result'],
-               'tools': [tool('render_yield_table', period_kind={'type': 'string'})]}
+               'tools': [tool('render_yield_table', period={'type': 'string'})]}
     assert not worker_module().refresh_backend_tool_pin(store, startup)
     assert store.writes == []
 
@@ -77,7 +77,7 @@ def test_refresh_failure_does_not_continue_with_stale_contract():
         raise RuntimeError('storage unavailable')
     store.update_session_tool_names = fail
     with pytest.raises(RuntimeError, match='storage unavailable'):
-        worker_module().refresh_backend_tool_pin(store, {'session_id': 'same-session', 'tools': [tool('render_yield_table', period_kind={})]})
+        worker_module().refresh_backend_tool_pin(store, {'session_id': 'same-session', 'tools': [tool('render_yield_table', period={})]})
 
 
 def test_engine_restoration_uses_refreshed_same_version_schema():
@@ -98,7 +98,7 @@ assert not removed.intersection(new['function']['parameters']['properties'])
 pin = {'version':tool_pin_version(), 'tools':[old]}
 agent = SimpleNamespace(tools=[new], valid_tool_names={'render_yield_table'})
 restore_agent_tool_prefix(agent, pin)
-assert 'period_kind' not in agent.tools[0]['function']['parameters']['properties']
+assert 'period' not in agent.tools[0]['function']['parameters']['properties']
 assert {'mode', 'columns'} <= agent.tools[0]['function']['parameters']['properties'].keys()
 class DB:
     def get_session(self, sid): return {'tool_names':json.dumps(pin)}
@@ -107,7 +107,7 @@ native_worker.refresh_backend_tool_pin(DB(), {'session_id':'same-session','tools
 agent = SimpleNamespace(tools=[new], valid_tool_names={'render_yield_table'})
 restore_agent_tool_prefix(agent, pin)
 assert agent.tools == [new]
-assert 'period_kind' in agent.tools[0]['function']['parameters']['properties']
+assert 'period' in agent.tools[0]['function']['parameters']['properties']
 assert not removed.intersection(agent.tools[0]['function']['parameters']['properties'])
 print('same-version restore: stale before, current after')
 '''

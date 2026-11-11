@@ -1,4 +1,5 @@
 from harness.tests.report_table_fakes import fake_report_metadata
+from harness.tests.test_weekly_report_data import weekly_db
 import asyncio
 
 import pytest
@@ -8,7 +9,7 @@ from harness.tools.registry import ToolRegistry
 from harness.tools.table_artifact import YieldTableInput, register
 
 
-REMOVED_FIELDS = {"mode", "columns", "column_groups", "column_formats", "delta_row"}
+REMOVED_FIELDS = {"mode", "columns", "column_groups", "column_formats", "delta_row", "period_kind"}
 
 
 def report_registry():
@@ -28,15 +29,12 @@ def test_model_contract_only_exposes_report_inputs():
     assert "mode=" not in tool["description"]
 
 
-def test_explicit_week_renders_a_weekly_report():
+def test_explicit_week_renders_a_weekly_report(weekly_db):
     result = asyncio.run(report_registry().invoke("render_yield_table", {
-        "title": "weekly", "period_kind": "week",
-        "rows": [
-            {"period": "2026-W44", "process": "pt1h", "param": "VTH", "value": 1.2},
-            {"period": "2026-W45", "process": "pt1h", "param": "VTH", "value": 1.3},
-        ],
+        "title": "weekly", "lot_cd": "4SS",
+        "period": {"kind": "weeks", "weeks": ["2026-43", "2026-44", "2026-45", "2026-46"]},
     }, None))
-    assert {k: result.scope[k] for k in ("title", "row_count", "column_count", "parameter_count")} == {"title": "weekly", "row_count": 2, "column_count": 12, "parameter_count": 4}
+    assert {k: result.scope[k] for k in ("title", "row_count", "column_count", "parameter_count")} == {"title": "weekly", "row_count": 4, "column_count": 11, "parameter_count": 3}
     assert 'th-section-pt1h' in result.artifacts[0]["data"]
     assert '<tr class="delta">' in result.artifacts[0]["data"]
 
@@ -61,7 +59,7 @@ def test_group_report_keeps_105_metadata_parameters_including_zeroes(monkeypatch
     monkeypatch.setattr(table_artifact, '_fetch_parameter_metadata',
                         lambda lot: [('PT1H', param, i, 'P', 'o') for i, param in enumerate(params)])
     result = asyncio.run(report_registry().invoke("render_yield_table", {
-        "title": "group report", "period_kind": "group",
+        "title": "group report",
         "periods": [{"period": "chosen", "label": "선택"}, {"period": "rest", "label": "나머지"}],
         "rows": [{"period": group, "process": "pt1h", "param": param,
                   "value": 0 if index < 27 else index}

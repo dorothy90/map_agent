@@ -1,4 +1,5 @@
 from yield_viz import GMS_COLUMNS
+from harness.tests.test_weekly_report_data import weekly_db
 from harness.tests.report_table_fakes import fake_report_metadata, report_data, report_rows, report_html, COLUMNS
 import asyncio
 import importlib
@@ -18,7 +19,7 @@ def test_render_yield_table_is_registered():
     assert spec.read_only is True
 
 
-def test_render_yield_table_saves_html_and_returns_artifact_ref():
+def test_render_yield_table_saves_html_and_returns_artifact_ref(weekly_db):
     from harness.store import HarnessStore
     from harness.tools.registry import domain_registry
 
@@ -65,31 +66,29 @@ def test_render_yield_table_saves_html_and_returns_artifact_ref():
         async def delete(self, artifact_id):
             self.data.pop(str(artifact_id), None)
 
+    cursor, _ = weekly_db
+    cursor.yields = [r for r in cursor.yields if r[0] in ('2026-43', '2026-44')]
+    cursor.counts = cursor.counts[:2]
+    cursor.gms = cursor.gms[:2]
+
     async def scenario():
         store = HarnessStore.__new__(HarnessStore)
         store.results = Results()
         store.blobs = Blobs()
         result = await domain_registry().invoke("render_yield_table", {
-            "title": "주간 수율", "period_kind": "week",
-            "rows": [
-                {"period": "2026-W44", "process": "pt1h", "param": "VTH", "value": 1.234},
-                {"period": "2026-W45", "process": "pt1h", "param": "VTH", "value": 1.244},
-            ],
-            "periods": [
-                {"period": "2026-W44", "lot_count": 7, "wf_count": 14},
-                {"period": "2026-W45", "lot_count": 8, "wf_count": 16},
-            ],
+            "title": "주간 수율", "lot_cd": "4SS",
+            "period": {"kind": "weeks", "weeks": ["2026-43", "2026-44"]},
         }, None)
 
         assert "Δ = latest week − previous week" in result.summary
         assert {k: result.scope[k] for k in ("title", "row_count", "column_count", "parameter_count")} == {
-            "title": "주간 수율", "row_count": 2, "column_count": 12, "parameter_count": 4,
+            "title": "주간 수율", "row_count": 2, "column_count": 11, "parameter_count": 3,
         }
         assert len(result.artifacts) == 1
         artifact = result.artifacts[0]
         assert artifact["title"] == "주간 수율"
         assert artifact["mime"] == "text/html"
-        assert "2026-W44" in artifact["data"]
+        assert "2026-44" in artifact["data"]
         assert "th-section-pt1h" in artifact["data"]
         assert '<tr class="delta">' in artifact["data"]
 
@@ -100,19 +99,18 @@ def test_render_yield_table_saves_html_and_returns_artifact_ref():
         )
         page = await store.read_result("owner", "session", observation.result_id,
                                        limit=1000)
-        assert page["table_id"] == "displayed_yield_table"
+        assert page["table_id"] == "report_totals"
         assert page["rows"] == result.tables[0].rows
         assert await store.rows("owner", "session", observation.result_id) == result.tables[0].rows
         from harness.tools.python_tools import ReadInput, read_result
         ctx = SimpleNamespace(store=store, run={"principal_id": "owner", "session_id": "session"})
         for table in result.tables:
             read = await read_result(ReadInput(result_id=observation.result_id,
-                table_id=None if table.table_id == "displayed_yield_table" else table.table_id, limit=1000), ctx)
+                table_id=None if table.table_id == "report_totals" else table.table_id, limit=1000), ctx)
             assert read.tables[0].table_id == table.table_id
             assert read.tables[0].rows == table.rows
-        assert result.tables[1].rows[-1]["YIELD_TABLE"] == "x "
-        assert result.tables[1].rows[-1]["displayed"] is False
-        assert all(row["displayed"] for row in result.tables[1].rows[:-1])
+        metadata = result.tables[-1].rows
+        assert [r['PARAM_NM'] for r in metadata if not r['displayed']] == ['EXCLUDED']
         observation.scope = {}
         with pytest.raises(ValueError, match="Select table_id"):
             store._select_table(observation, None)
@@ -134,7 +132,6 @@ def test_render_yield_table_saves_html_and_returns_artifact_ref():
 def test_render_yield_table_handles_empty_rows_and_escapes_labels():
     module = importlib.import_module("harness.tools.table_artifact")
     empty = asyncio.run(module.render_yield_table(module.YieldTableInput(
-        period_kind="week",
         title="빈 리포트", rows=[],
     ), None))
     assert {k: empty.scope[k] for k in ("title", "row_count", "column_count", "parameter_count")} == {
@@ -143,7 +140,6 @@ def test_render_yield_table_handles_empty_rows_and_escapes_labels():
     assert empty.artifacts[0]["mime"] == "text/html"
 
     escaped = asyncio.run(module.render_yield_table(module.YieldTableInput(
-        period_kind="week",
         title="report", periods=[{
             "period": "2026-W45", "label": "<script>alert('x')</script>",
         }],
@@ -155,7 +151,6 @@ def test_render_yield_table_handles_empty_rows_and_escapes_labels():
 def test_report_result_ids_render_identically_to_inline_rows():
     module = importlib.import_module("harness.tools.table_artifact")
     inline = module.YieldTableInput(
-        period_kind="week",
         title="4SA weekly report",
         product_label="4SA",
         rows=[
@@ -196,7 +191,6 @@ def test_report_result_ids_render_identically_to_inline_rows():
             return {"rows": [{key: row.get(key) for key in columns} for row in rows]}
 
     by_id = module.YieldTableInput(
-        period_kind="week",
         title="4SA weekly report",
         product_label="4SA",
         long_result_id="long",
@@ -222,7 +216,6 @@ def test_report_result_ids_render_identically_to_inline_rows():
 def test_report_result_counts_match_the_rendered_table_without_changing_html():
     module = importlib.import_module("harness.tools.table_artifact")
     args = module.YieldTableInput(
-        period_kind="week",
         title="4SA weekly report",
         product_label="4SA",
         rows=[
@@ -250,7 +243,6 @@ def test_report_result_counts_match_the_rendered_table_without_changing_html():
 def test_report_counts_only_keeps_metadata_parameter_columns():
     module = importlib.import_module("harness.tools.table_artifact")
     args = module.YieldTableInput(
-        period_kind="week",
         title="counts only",
         periods=[
             {"period": "2026-W43", "lot_count": 7, "wf_count": 14},
@@ -303,7 +295,6 @@ def test_partial_gms_mapping_does_not_request_unmapped_optional_columns():
             }]}
 
     args = module.YieldTableInput(
-        period_kind="week",
         title="partial GMS",
         gms_result_id="gms",
         gms_columns={
@@ -336,7 +327,6 @@ def test_unknown_saved_column_names_mapping_key_and_available_columns():
             }
 
     args = module.YieldTableInput(
-        period_kind="week",
         title="bad mapping",
         counts_result_id="counts",
         counts_columns={"period": "WEEK", "lot": "LOTS", "wf": "wf_count"},
@@ -364,7 +354,6 @@ def test_report_result_id_unavailable_returns_factual_error(result_id):
             raise PermissionError("Result unavailable")
 
     args = module.YieldTableInput(
-        period_kind="week",
         title="report", long_result_id=result_id,
     )
     ctx = SimpleNamespace(
@@ -381,7 +370,6 @@ def test_report_result_id_unavailable_returns_factual_error(result_id):
 def test_generated_report_html_posts_observed_height():
     module = importlib.import_module("harness.tools.table_artifact")
     html = report_html(module.YieldTableInput(
-        period_kind="week",
         title="small", rows=[{"period": "2026-W45", "process": "pt1h", "param": "VTH", "value": 1}],
     ))
 
@@ -389,45 +377,6 @@ def test_generated_report_html_posts_observed_height():
     assert "type: 'yield-table-height'" in html
     assert "document.body.getBoundingClientRect().height" in html
     assert "new ResizeObserver(sendHeight).observe(document.body)" in html
-
-
-def test_week_report_drops_gms_and_count_weeks_outside_yield_rows():
-    module = importlib.import_module("harness.tools.table_artifact")
-    weeks = [f"2026-{n}" for n in range(46, 50)]
-    saved = {
-        "long": [{"WEEK_HYNIX": w, "PROCESS": "PT1H TEST", "PARAM_NM": "VTH", "VALUE": 1.0} for w in weeks],
-        "counts": [{"WEEK_HYNIX": f"2026-{n}", "lot_count": 1, "wf_count": 25} for n in range(37, 50)],
-        "gms": [{"PERIOD_DATE": f"2026{n}", "CUM0_YIELD": 80.0 + n % 10, "FAB_YIELD": 90.0, "PRB_YIELD": 85.0}
-                for n in range(37, 49)],
-    }
-
-    class Store:
-        async def read_result(self, principal_id, session_id, result_id, **kwargs):
-            columns = kwargs.get("columns")
-            if columns is None:
-                return {"columns": list(saved[result_id][0]), "rows": saved[result_id][:1]}
-            return {"rows": [{key: row.get(key) for key in columns} for row in saved[result_id]]}
-
-    args = module.YieldTableInput(
-        period_kind="week", title="4SS 4 weeks",
-        long_result_id="long",
-        long_columns={"period": "WEEK_HYNIX", "process": "PROCESS", "param": "PARAM_NM", "value": "VALUE"},
-        counts_result_id="counts",
-        counts_columns={"period": "WEEK_HYNIX", "lot": "lot_count", "wf": "wf_count"},
-        gms_result_id="gms",
-        gms_columns={"period": "PERIOD_DATE", "cum0": "CUM0_YIELD", "fab": "FAB_YIELD", "prb": "PRB_YIELD"},
-    )
-    ctx = SimpleNamespace(store=Store(), run={"principal_id": "owner", "session_id": "session"})
-
-    resolved = asyncio.run(module._resolve_report_results(args, ctx))
-    rendered = report_data(resolved)
-    assert len(rendered.rows) == 4
-    by_week = {module._period_key(resolved, p.period): p for p in resolved.periods}
-    assert sorted(by_week) == sorted(module._period_key(resolved, w) for w in weeks)
-    assert by_week[module._period_key(resolved, "2026-46")].gms.cum0 == 86.0
-    assert by_week[module._period_key(resolved, "2026-49")].gms.cum0 is None
-    result = asyncio.run(module.render_yield_table(args, ctx))
-    assert result.scope["row_count"] == 4
 
 
 @pytest.mark.parametrize("mapping", [
@@ -448,7 +397,7 @@ def test_gms_standard_columns_fill_only_unmapped_fields(mapping, extra):
             return {"columns": columns, "rows": [{k: row[k] for k in columns}]}
     ctx = SimpleNamespace(store=Store(), run={"principal_id": "owner", "session_id": "session"})
     result = asyncio.run(_resolve_report_results(YieldTableInput(
-        title="GMS", period_kind="week", gms_result_id="gms", gms_columns=mapping), ctx))
+        title="GMS", gms_result_id="gms", gms_columns=mapping), ctx))
     period = result.periods[0]
     assert period.period == ("202643" if mapping.get("period") == "CUSTOM_PERIOD" else "202644")
     assert period.gms.model_dump() == {

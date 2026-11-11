@@ -112,20 +112,21 @@ def test_report_builder_uses_original_units_one_decimal_and_integer_counts():
 
 def _long_report_args(module):
     return module.YieldTableInput(
-        period_kind="week",
-        title="4SA weekly report",
+        title="4SA group report", period_label="WEEK",
+        comparison={"current": "2026-W44", "baseline": "2026-W43"},
         product_label="4SA",
         rows=[
-            {"period": "2026-43", "process": "PT1H TEST", "param": "VTH", "value": 0.02},
-            {"period": "202644", "process": "pt1h", "param": "VTH", "value": 0.01},
+            {"period": "2026-W43", "process": "PT1H TEST", "param": "VTH", "value": 0.02},
+            {"period": "2026-W44", "process": "pt1h", "param": "VTH", "value": 0.01},
             {"period": "2026-W44", "process": "PT1C TEST", "param": "PT1C", "value": 0.91},
             {"period": "2026-W44", "process": "pt1c", "param": "CFTA", "value": 1.25},
             {"period": "2026-W44", "process": "pt1h", "param": "NOT_FIXED", "value": 999},
         ],
         periods=[
             {"period": "2026-W42"},
+            {"period": "2026-W43"},
             {
-                "period": "202644",
+                "period": "2026-W44",
                 "lot_count": 7,
                 "wf_count": 14,
                 "gms": {"fab": 98.1, "prb": None, "cum0": 97.2, "cum2": 98.3, "pnt": 99.1},
@@ -203,8 +204,8 @@ def test_report_matches_builder_with_metadata_columns_and_formats():
                 })
 
     args = module.YieldTableInput(
-        period_kind="week",
-        title="report", product_label="4SA",
+        title="report", product_label="4SA", period_label="WEEK",
+        comparison={"current": "2026-W44", "baseline": "2026-W43"},
         rows=long_rows, periods=periods,
     )
 
@@ -216,19 +217,19 @@ def test_report_matches_builder_with_metadata_columns_and_formats():
 
 
 @pytest.mark.parametrize("field", ["rows", "periods"])
-def test_report_rejects_duplicate_normalized_keys(field):
+def test_report_rejects_duplicate_group_keys(field):
     module = importlib.import_module("harness.tools.table_artifact")
     payload = {
         "title": "duplicates",
         "rows": [
-            {"period": "2026-44", "process": "pt1h", "param": "VTH", "value": 0.1},
+            {"period": "2026-W44", "process": "pt1h", "param": "VTH", "value": 0.1},
         ],
         "periods": [{"period": "2026-W44"}],
     }
     payload[field] = payload[field] * 2
 
     with pytest.raises(ValidationError, match="duplicate"):
-        module.YieldTableInput(period_kind="week", **payload)
+        module.YieldTableInput(**payload)
 
 
 @pytest.mark.parametrize(
@@ -245,7 +246,7 @@ def test_report_rejects_custom_presentation(extra):
     payload = {"title": "report", "rows": [], **extra}
 
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        module.YieldTableInput(period_kind="week", **payload)
+        module.YieldTableInput(**payload)
 
 
 def test_report_escapes_by_rejecting_unstructured_values():
@@ -253,7 +254,6 @@ def test_report_escapes_by_rejecting_unstructured_values():
 
     with pytest.raises(ValidationError):
         module.YieldTableInput(
-            period_kind="week",
             title="report",
             rows=[{
                 "period": "2026-W44", "process": "pt1h", "param": "VTH",
@@ -262,7 +262,6 @@ def test_report_escapes_by_rejecting_unstructured_values():
         )
 
     args = module.YieldTableInput(
-        period_kind="week",
         title="<script>title</script>",
         product_label="<img src=x onerror=alert(1)>", rows=[],
     )

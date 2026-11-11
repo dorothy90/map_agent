@@ -19,7 +19,7 @@ def named_rows():
 def test_arbitrary_names_render_by_default_without_period_metadata():
     args = YieldTableInput(title="groups", rows=named_rows())
     html = _html(args)
-    assert args.period_kind == "group"
+    assert args.period is None
     assert html.index("오늘(11/6)</td>") < html.index("이번 주 나머지</td>")
     assert '<tr class="delta">' not in html
     assert "th-section-pt1h" in html
@@ -39,8 +39,8 @@ def test_week_shaped_group_names_are_not_normalized_or_sorted_by_default():
     assert html.index("2026-W99</td>") < html.index("2026-01</td>")
 
 
-def test_explicit_week_keeps_iso_validation():
-    with pytest.raises(ValidationError, match="period must be"):
+def test_old_week_pass_in_contract_is_rejected():
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         YieldTableInput(title="weekly", period_kind="week", rows=named_rows())
 
 
@@ -77,10 +77,11 @@ def test_model_schema_explains_group_default_optional_metadata_and_week_opt_in()
     registry = ToolRegistry()
     register(registry)
     schema = registry.model_tools()[0]["function"]["parameters"]["properties"]
-    assert schema["period_kind"]["default"] == "group"
+    assert schema["period"]["default"] is None
+    assert "period_kind" not in schema
     assert "group name" in schema["rows"]["items"]["properties"]["period"]["description"]
     assert "first" in schema["periods"]["description"]
-    assert "explicit" in schema["period_kind"]["description"]
+    assert "explicit" in schema["period"]["description"]
 
 
 def test_old_wide_rows_are_still_rejected():

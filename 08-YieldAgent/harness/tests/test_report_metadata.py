@@ -7,16 +7,15 @@ import pytest
 from harness.tools import table_artifact as report
 
 
-@pytest.mark.parametrize('mode', ['week', 'group'])
-def test_metadata_columns_values_and_evidence(monkeypatch, mode):
+def test_metadata_columns_values_and_evidence(monkeypatch):
     main_thread = threading.get_ident()
     def metadata(lot):
         assert lot == '4SS'
         assert threading.get_ident() != main_thread
         return [('PT1H', 'VTH(V)', 1, 'P', 'o'), ('PT1H', 'DDA(d)', 2, 'P', 'o'), ('PT1H', 'Missing', 3, 'P', 'o'), ('PT1C', 'PT1C', 26, 'P', 'o')]
     monkeypatch.setattr(report, '_fetch_parameter_metadata', metadata, raising=False)
-    periods = ['2026-W43', '2026-W44'] if mode == 'week' else ['selected', 'rest']
-    args = report.YieldTableInput(title='report', product_label=' 4SS ', period_kind=mode,
+    periods = ['selected', 'rest']
+    args = report.YieldTableInput(title='report', product_label=' 4SS ',
         rows=[{'period': p, 'process': 'PT1H TEST', 'param': param, 'value': value}
               for p, param, value in [(periods[0], 'VTH(V)', .7469), (periods[1], 'VTH(V)', .7569),
                                       (periods[0], 'DDA(d)', .0107), (periods[0], 'DDA(D)', .99),
