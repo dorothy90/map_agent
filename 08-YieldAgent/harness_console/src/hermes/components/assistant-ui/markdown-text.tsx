@@ -27,6 +27,7 @@ import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
   isFileMediaPath,
+  isHtmlHarnessArtifact,
   isHarnessArtifactUrl,
   isMarkdownDocumentPath,
   isRemoteGateway,
@@ -47,6 +48,7 @@ import { useForcedTextDirection } from '@/store/text-direction'
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
+import { YieldTableArtifactFrame } from './embeds/frame-embed'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
 
@@ -279,6 +281,50 @@ function flattenChildrenToText(node: unknown): string {
   return ''
 }
 
+function HarnessArtifactLink({ children, className, href = '', ...props }: ComponentProps<'a'>) {
+  const [isHtml, setIsHtml] = useState(false)
+  const label = flattenChildrenToText(children) || 'HTML artifact'
+
+  useEffect(() => {
+    const controller = new AbortController()
+    let current = true
+    setIsHtml(false)
+    void isHtmlHarnessArtifact(href, controller.signal).then((value) => {
+      if (current) setIsHtml(value)
+    })
+    return () => {
+      current = false
+      controller.abort()
+    }
+  }, [href])
+
+  return (
+    isHtml ? (
+      <YieldTableArtifactFrame src={href} title={label}>
+        <a
+          className={cn('ref wrap-anywhere', className)}
+          href={href}
+          rel="noopener noreferrer"
+          target="_blank"
+          {...props}
+        >
+          {children}
+        </a>
+      </YieldTableArtifactFrame>
+    ) : (
+      <a
+        className={cn('ref wrap-anywhere', className)}
+        href={href}
+        rel="noopener noreferrer"
+        target="_blank"
+        {...props}
+      >
+        {children}
+      </a>
+    )
+  )
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
@@ -317,6 +363,14 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   }
 
   const target = href ? normalizeExternalUrl(href) : href
+
+  if (href && isHarnessArtifactUrl(href)) {
+    return (
+      <HarnessArtifactLink className={className} href={href} {...props}>
+        {children}
+      </HarnessArtifactLink>
+    )
+  }
 
   if (!target || !/^https?:\/\//i.test(target)) {
     // A plain filesystem href (`[report](/home/user/report.md)`, `file://…`,

@@ -164,11 +164,21 @@ async def read_result(result_id: str, session_id: str, request: Request, offset:
         raise HTTPException(422, str(exc)) from None
 
 
-@router.get("/harness/artifacts/{artifact_id}")
+@router.api_route("/harness/artifacts/{artifact_id}", methods=["GET", "HEAD"])
 async def artifact(artifact_id: str, session_id: str, request: Request):
     try:
         ref, data = await controller(request).store.artifact(principal(request), session_id, artifact_id)
-        return Response(data, media_type=ref["mime"], headers={"Content-Disposition": "attachment", "X-Content-Type-Options": "nosniff"})
+        is_html = ref["mime"].split(";", 1)[0].strip().lower() == "text/html"
+        headers = {
+            "Content-Disposition": "inline" if is_html else "attachment",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if is_html:
+            headers["Content-Security-Policy"] = (
+                "sandbox allow-scripts; frame-ancestors 'self'; object-src 'none'; "
+                "base-uri 'none'; form-action 'none'"
+            )
+        return Response(data, media_type=ref["mime"], headers=headers)
     except PermissionError:
         raise HTTPException(404, "Artifact not found") from None
 

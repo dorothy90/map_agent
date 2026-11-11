@@ -13,14 +13,15 @@ import uuid
 
 
 def resolve_allowed_tools(registry, raw):
-    """Validate explicit read-only exceptions without invoking or mutating tools."""
+    """Validate explicit safe exceptions without invoking or mutating tools."""
     names = list(dict.fromkeys(name.strip() for name in raw.split(',') if name.strip()))
     for name in names:
         spec = registry.tools.get(name)
         if spec is None:
             raise ValueError('PR9_ALLOW_TOOLS contains an unknown tool')
-        if spec.read_only is not True or spec.effect != 'read':
-            raise ValueError('PR9_ALLOW_TOOLS requires read_only=True and effect=read')
+        safe_artifact = name == 'render_yield_table' and spec.effect == 'artifact'
+        if spec.read_only is not True or (spec.effect != 'read' and not safe_artifact):
+            raise ValueError('PR9_ALLOW_TOOLS requires a read tool or render_yield_table')
     return names
 
 

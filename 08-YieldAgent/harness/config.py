@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 from typing import Literal
 from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
@@ -22,6 +23,7 @@ class IsolationSettings(BaseModel):
     analysis_venv: Path
     launcher: Path
     sandbox: Literal["auto", "required"] = "auto"
+    retain_python_files: bool = False
 
     @model_validator(mode="after")
     def validate_boundary(self):
@@ -58,6 +60,47 @@ class IsolationSettings(BaseModel):
         return self
 
 
+class SeatbeltIsolationSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    backend: Literal["seatbelt"] = "seatbelt"
+    home: Path
+    work_root: Path
+    analysis_venv: Path
+    launcher: Path
+    sandbox: Literal["required"] = "required"
+    retain_python_files: bool = False
+
+    @model_validator(mode="after")
+    def validate_boundary(self):
+        if sys.platform != "darwin":
+            raise ValueError("Seatbelt isolation is supported only on macOS")
+        for name in ("home", "work_root", "analysis_venv", "launcher"):
+            path = getattr(self, name).expanduser()
+            if not path.is_absolute():
+                raise ValueError(f"isolation {name.replace('_', ' ')} must be absolute")
+            if path.is_symlink():
+                raise ValueError(f"isolation {name.replace('_', ' ')} must not be a symlink")
+            try:
+                resolved = path.resolve(strict=True)
+            except OSError as exc:
+                raise ValueError(f"isolation {name.replace('_', ' ')} must exist") from exc
+            if resolved == REPOSITORY_ROOT or REPOSITORY_ROOT in resolved.parents:
+                raise ValueError(f"isolation {name.replace('_', ' ')} must be outside the repository")
+            info = resolved.stat()
+            if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+                raise ValueError(f"isolation {name.replace('_', ' ')} is writable by another user")
+            setattr(self, name, resolved)
+        if not self.home.is_dir() or not self.work_root.is_dir() or not self.analysis_venv.is_dir():
+            raise ValueError("isolation home, work root, and analysis venv must be directories")
+        if not self.launcher.is_file():
+            raise ValueError("isolation launcher must be a file")
+        if self.work_root.parent != self.home:
+            raise ValueError("isolation work root must be directly inside the dedicated home")
+        if self.analysis_venv == self.home or self.home in self.analysis_venv.parents:
+            raise ValueError("analysis venv must be outside the dedicated sandbox home")
+        return self
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     engine: Literal["hermes", "langgraph"] = "langgraph"
@@ -87,7 +130,7 @@ class Settings(BaseModel):
     python_image: str = "yield-harness-python:2"
     no_yield_tools: bool = False
     native_allowed_tools: list[str] | None = None
-    isolation: IsolationSettings | None = None
+    isolation: IsolationSettings | SeatbeltIsolationSettings | None = None
     principal: str = "local"
     enabled: bool = False
 
@@ -109,6 +152,29 @@ class Settings(BaseModel):
         no_yield_tools = os.getenv("HARNESS_NO_YIELD_TOOLS") == "1"
         isolation = None
         if no_yield_tools:
+            backend = os.getenv("HARNESS_ISOLATION_BACKEND", "ssh")
+            if backend == "seatbelt":
+                names = {
+                    "home": "HARNESS_ISOLATION_HOME",
+                    "work_root": "HARNESS_ISOLATION_WORK_ROOT",
+                    "analysis_venv": "HARNESS_ISOLATION_ANALYSIS_VENV",
+                    "launcher": "HARNESS_ISOLATION_LAUNCHER",
+                    "sandbox": "HARNESS_ISOLATION_SANDBOX",
+                }
+                missing = [env_name for field, env_name in names.items()
+                           if field != "sandbox" and not os.getenv(env_name)]
+                if missing:
+                    raise ValueError("missing isolation configuration: " + ", ".join(missing))
+                isolation = SeatbeltIsolationSettings(
+                    home=os.environ[names["home"]], work_root=os.environ[names["work_root"]],
+                    analysis_venv=os.environ[names["analysis_venv"]],
+                    launcher=os.environ[names["launcher"]],
+                    sandbox=os.getenv(names["sandbox"], "required"),
+                    retain_python_files=os.getenv("HARNESS_RETAIN_PYTHON_FILES") == "1",
+                )
+            elif backend != "ssh":
+                raise ValueError("HARNESS_ISOLATION_BACKEND must be ssh or seatbelt")
+        if no_yield_tools and isolation is None:
             names = {
                 "ssh_host": "HARNESS_ISOLATION_SSH_HOST",
                 "ssh_user": "HARNESS_ISOLATION_SSH_USER",
@@ -131,7 +197,8 @@ class Settings(BaseModel):
                 ssh_key=os.environ[names["ssh_key"]], known_hosts=os.environ[names["known_hosts"]],
                 home=os.environ[names["home"]], work_root=os.environ[names["work_root"]],
                 analysis_venv=os.environ[names["analysis_venv"]], launcher=os.environ[names["launcher"]],
-                sandbox=os.getenv(names["sandbox"], "auto"))
+                sandbox=os.getenv(names["sandbox"], "auto"),
+                retain_python_files=os.getenv("HARNESS_RETAIN_PYTHON_FILES") == "1")
         return cls(
             engine=os.getenv("HARNESS_ENGINE", "hermes"),
             model=os.getenv("HARNESS_MODEL", cls.model_fields["model"].default),

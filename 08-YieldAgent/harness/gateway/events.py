@@ -12,6 +12,7 @@ from urllib.parse import quote, urlencode
 
 from pymongo.errors import DuplicateKeyError
 
+from ..artifact_delivery import ARTIFACT_DELIVERY
 from . import publication
 
 # H/tui_gateway/event_replay.py:29-35. Bytes count frozen params WITHOUT seq.
@@ -100,10 +101,12 @@ def verified_answer(run):
 
 
 def verified_answer_with_artifacts(run):
-    """Append stored display deliverables only after the answer passes verification."""
+    """Preserve each run's pinned delivery policy after answer verification."""
     answer = verified_answer(run)
     if answer is None:
         return None
+    if run.get("artifact_delivery") == ARTIFACT_DELIVERY:
+        return answer
     attachments = []
     seen = set()
     query = urlencode({'session_id': run.get('session_id', '')})

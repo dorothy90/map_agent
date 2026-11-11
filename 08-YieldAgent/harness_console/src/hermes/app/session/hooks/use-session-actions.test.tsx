@@ -1961,7 +1961,7 @@ describe('resumeSession failure recovery', () => {
     expect(clarifyMessages).toHaveLength(1)
     expect(clarifyMessages[0].pending).toBe(true)
     expect(state?.streamId).toBe(clarifyMessages[0].id)
-    expect($clarifyRequests.get()['runtime-1']).toMatchObject({
+    expect($clarifyRequests.get()['runtime-1']['req-resumed']).toMatchObject({
       requestId: 'req-resumed',
       questions: [{ question: 'Which path?' }]
     })
@@ -2030,7 +2030,7 @@ describe('resumeSession failure recovery', () => {
     await runResume(requestGateway, { sessionStateByRuntimeIdRef: stateMapRef })
 
     const state = stateMapRef.current.get('runtime-1')
-    const request = $clarifyRequests.get()['runtime-1']
+    const request = $clarifyRequests.get()['runtime-1']['req-batch-resumed']
     expect(request).toMatchObject({
       lockedAnswers: { q0: 'Blue' },
       requestId: 'req-batch-resumed'
@@ -4750,7 +4750,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       clarifyMessages[0].parts.find(part => part.type === 'tool-call' && part.toolName === 'clarify')
     ).toMatchObject({ toolCallId: 'call-provider' })
     expect(resumedState?.streamId).toBe(clarifyMessages[0].id)
-    expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-warm' })
+    expect($clarifyRequests.get()['rt-A']['req-warm']).toMatchObject({ requestId: 'req-warm' })
   })
 
   function answerableClarifyRows(messages: ClientSessionState['messages'] | undefined) {
@@ -5072,7 +5072,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
     })
     await resumePromise
 
-    expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-newer' })
+    expect($clarifyRequests.get()['rt-A']['req-newer']).toMatchObject({ requestId: 'req-newer' })
   })
 
   it.each(['none', 'epoch', 'lineage', 'route', 'messaging'] as const)(

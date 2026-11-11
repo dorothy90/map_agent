@@ -32,7 +32,7 @@ def test_unknown_or_unsafe_tools_are_rejected(raw):
 def test_all_domain_tools_follow_both_safety_conditions():
     registry = domain_registry()
     for name, spec in registry.tools.items():
-        if spec.read_only is True and spec.effect == 'read':
+        if spec.read_only is True and (spec.effect == 'read' or name == 'render_yield_table'):
             assert resolve_allowed_tools(registry, name) == [name]
         else:
             with pytest.raises(ValueError):
@@ -55,6 +55,14 @@ def test_list_tables_is_a_strict_read_only_exception(monkeypatch):
     monkeypatch.setenv('HARNESS_NO_YIELD_TOOLS', '1')
 
     assert resolve_allowed_tools(domain_registry(), 'list_tables') == ['list_tables']
+
+
+def test_yield_table_renderer_is_the_only_artifact_exception():
+    registry = domain_registry()
+
+    assert resolve_allowed_tools(registry, 'render_yield_table') == ['render_yield_table']
+    with pytest.raises(ValueError):
+        resolve_allowed_tools(registry, 'query_db')
 
 
 @pytest.mark.parametrize(('raw', 'expected'), [(None, None), ('', []), (' , ', [])])

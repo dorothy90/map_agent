@@ -6,7 +6,7 @@ import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actio
 import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
 import { settlePendingClarifyToolCall, textPart } from '@/lib/chat-messages'
-import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
+import { clarifyRequestById, clarifyRequestsForSession, clearClarifyRequest } from '@/store/clarify'
 import {
   type ConnectionRequest,
   normalizeConnectionRequest,
@@ -48,6 +48,8 @@ const isConnectionRequestEvent = (event: GatewayEvent): event is ConnectionReque
 const isConnectionUpdateEvent = (event: GatewayEvent): event is ConnectionUpdateEvent =>
   event.type === 'connection.update' && event.payload !== undefined
 
+const canonicalClarifyBase = (requestId: string): string | null => /^(.*):q\d+$/.exec(requestId)?.[1] ?? null
+
 /** `approval.settled` / `clarify.settled {prompt_id}`: take down the card
  *  parked under that server request id. Returns false for other events. */
 function handlePromptSettledEvent(ctx: GatewayEventContext): boolean {
@@ -64,14 +66,25 @@ function handlePromptSettledEvent(ctx: GatewayEventContext): boolean {
   }
 
   forgetServerRequest(promptId)
-  const key = sessionId ?? ''
-
   if (event.type === 'clarify.settled') {
-    if ($clarifyRequests.get()[key]?.requestId === promptId) {
-      clearClarifyRequest(promptId, sessionId)
+    const settledRequest = clarifyRequestById(sessionId, promptId)
+
+    if (settledRequest) {
+      const base = canonicalClarifyBase(promptId)
+      const settledRequests = base
+        ? clarifyRequestsForSession(sessionId).filter(request => canonicalClarifyBase(request.requestId) === base)
+        : [settledRequest]
+
+      for (const request of settledRequests) {
+        forgetServerRequest(request.requestId)
+        clearClarifyRequest(request.requestId, sessionId)
+      }
 
       if (sessionId) {
-        deps.updateSessionState(sessionId, state => ({ ...state, needsInput: false }))
+        deps.updateSessionState(sessionId, state => ({
+          ...state,
+          needsInput: clarifyRequestsForSession(sessionId).length > 0
+        }))
       }
     }
 
@@ -167,16 +180,17 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
+  const key = sessionId ?? ''
+
   // preview.act has no card. A timeout or interrupt still has to stop keystrokes
   // already queued for that type.
   abortPreviewTyping(id, typeof payload?.reason === 'string' ? payload.reason : 'interrupted')
 
   forgetServerRequest(id)
 
-  const key = sessionId ?? ''
+  const request = clarifyRequestById(sessionId, id)
 
-  if ($clarifyRequests.get()[key]?.requestId === id) {
-    const request = $clarifyRequests.get()[key]
+  if (request) {
 
     clearClarifyRequest(id, sessionId)
 
@@ -192,7 +206,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         return {
           ...state,
           messages: projection.messages,
-          needsInput: false,
+          needsInput: clarifyRequestsForSession(sessionId).length > 0,
           streamId: state.busy ? (projection.streamId ?? state.streamId) : null
         }
       })

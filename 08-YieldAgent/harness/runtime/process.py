@@ -7,14 +7,16 @@ import signal
 import sys
 import tempfile
 
-from ..isolation.backend import IsolatedSSHBackend
+from ..isolation.backend import IsolatedSSHBackend, isolation_backend
 
 
 class ProcessRuntime:
     def __init__(self, executable=None, *, isolation=None, run_id=None, principal_id=None):
         self.executable = executable or sys.executable
-        self.isolated = (IsolatedSSHBackend(isolation, run_id, principal_id)
-                         if isolation is not None else None)
+        self.isolated = None
+        if isolation is not None:
+            constructor = isolation_backend if getattr(isolation, "backend", None) == "seatbelt" else IsolatedSSHBackend
+            self.isolated = constructor(isolation, run_id, principal_id)
 
     async def execute(self, code, datasets, timeout=60):
         if self.isolated is not None:

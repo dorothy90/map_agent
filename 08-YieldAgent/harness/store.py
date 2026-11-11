@@ -12,6 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
+from .artifact_delivery import ARTIFACT_DELIVERY
 from .types import ResultPage, ResultTable, TableRef, ToolObservation, now
 
 
@@ -174,6 +175,8 @@ class HarnessStore:
     def _select_table(obs, table_id):
         if table_id is None and len(obs.tables) == 1:
             return obs.tables[0]
+        if table_id is None:
+            table_id = obs.scope.get("default_table_id")
         for table in obs.tables:
             if table.table_id == table_id:
                 return table
@@ -209,7 +212,7 @@ class HarnessStore:
             raise PermissionError("Artifact unavailable")
         ref = next(a for a in record["observation"]["artifact_refs"] if a["artifact_id"] == artifact_id)
         blob = await self.blobs.open_download_stream(ObjectId(artifact_id))
-        return ref, await blob.read()
+        return {"result_id": record["observation"]["result_id"], **ref}, await blob.read()
 
     async def start_run(self, principal_id, session_id, request_id, query, *, execution_kind="harness", ready=True, engine="langgraph"):
         key = {"principal_id": principal_id, "session_id": session_id, "request_id": request_id}
@@ -227,6 +230,8 @@ class HarnessStore:
             "execution_kind": execution_kind, "ready": ready, "engine": engine,
             "status": "created", "active": True, "epoch": 0, "lease_until": 0.0, "created_at": now(),
             "events": [], "goal_revision": 1, "usage": {"tools": 0, "models": 0, "tokens": 0, "active_seconds": 0.0}}
+        if engine == "hermes":
+            record["artifact_delivery"] = ARTIFACT_DELIVERY
         try:
             await self.runs.insert_one(record)
         except DuplicateKeyError:

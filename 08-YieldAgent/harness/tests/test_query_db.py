@@ -12,9 +12,10 @@ from pydantic import ValidationError
 
 
 class FakeCursor:
-    def __init__(self, rows, columns=("ID", "NAME")):
+    def __init__(self, rows, columns=("ID", "NAME"), data_types=None):
         self.rows = rows
         self.columns = columns
+        self.data_types = data_types or {}
         self.calls = []
         self.description = None
         self.closed = False
@@ -24,7 +25,9 @@ class FakeCursor:
         if "USER_TABLES" in sql:
             self._result = [("PEOPLE",)]
         elif "USER_TAB_COLUMNS" in sql:
-            self._result = [(column,) for column in self.columns]
+            self._result = [
+                (column, self.data_types.get(column, "VARCHAR2")) for column in self.columns
+            ]
         else:
             self._result = list(self.rows)
             self.description = [(column,) for column in self.columns]
@@ -44,8 +47,8 @@ class FakeCursor:
 
 
 class FakeConnection:
-    def __init__(self, rows, columns=("ID", "NAME")):
-        self.fake_cursor = FakeCursor(rows, columns)
+    def __init__(self, rows, columns=("ID", "NAME"), data_types=None):
+        self.fake_cursor = FakeCursor(rows, columns, data_types)
         self.closed = False
         self.cancelled = False
         self.call_timeout = None
@@ -84,10 +87,12 @@ def context(tmp_path):
     )
 
 
-def run_query(monkeypatch, tmp_path, rows, payload, columns=("ID", "NAME")):
+def run_query(
+    monkeypatch, tmp_path, rows, payload, columns=("ID", "NAME"), data_types=None
+):
     import harness.tools.query_db as query_db
 
-    connection = FakeConnection(rows, columns)
+    connection = FakeConnection(rows, columns, data_types)
     uploaded = {}
 
     async def upload(self, data, timeout=60):
@@ -138,6 +143,200 @@ def test_metadata_allowlist_binds_values_and_orders_before_cap(monkeypatch, tmp_
     assert result.tables[0].rows == [{"NAME": 1}]
     assert connection.call_timeout == 60_000
     assert connection.fake_cursor.closed and connection.closed
+
+
+def test_grouped_aggregates_are_computed_before_result_cap(monkeypatch, tmp_path):
+    connection, uploaded, result = run_query(
+        monkeypatch,
+        tmp_path,
+        [("A", Decimal("3.5"), 2)],
+        {
+            "table": "people",
+            "group_by": ["name"],
+            "aggregates": [
+                {"function": "avg", "column": "id", "alias": "average_id"},
+                {"function": "count", "alias": "row_count"},
+            ],
+            "order_by": [{"column": "average_id", "direction": "desc"}],
+            "limit": 1,
+        },
+    )
+
+    sql, binds = connection.fake_cursor.calls[-1]
+    assert sql.startswith(
+        'SELECT * FROM (SELECT "NAME", AVG("ID") AS "average_id", '
+        'COUNT(*) AS "row_count" FROM "PEOPLE" GROUP BY "NAME" '
+        'ORDER BY "average_id" DESC)'
+    )
+    assert sql.index("GROUP BY") < sql.index("ORDER BY") < sql.index("ROWNUM")
+    assert binds == {"row_limit": 2}
+    assert result.tables[0].columns == ["NAME", "average_id", "row_count"]
+    assert result.tables[0].rows == [
+        {"NAME": "A", "average_id": "3.5", "row_count": 2}
+    ]
+    assert uploaded["data"].decode().splitlines()[0] == "NAME,average_id,row_count"
+
+
+def test_count_distinct_uses_validated_column_and_preserves_alias_order_and_cap(
+    monkeypatch, tmp_path
+):
+    connection, _, result = run_query(
+        monkeypatch,
+        tmp_path,
+        [(2,)],
+        {
+            "table": "people",
+            "aggregates": [
+                {"function": "count_distinct", "column": "id", "alias": "unique_ids"}
+            ],
+            "order_by": [{"column": "unique_ids", "direction": "desc"}],
+            "limit": 1,
+        },
+    )
+
+    sql, binds = connection.fake_cursor.calls[-1]
+    assert sql == (
+        'SELECT * FROM (SELECT COUNT(DISTINCT "ID") AS "unique_ids" '
+        'FROM "PEOPLE" ORDER BY "unique_ids" DESC) WHERE ROWNUM <= :row_limit'
+    )
+    assert binds == {"row_limit": 2}
+    assert result.tables[0].rows == [{"unique_ids": 2}]
+
+
+def test_global_aggregate_and_aggregate_projection_validation(monkeypatch, tmp_path):
+    _, _, result = run_query(
+        monkeypatch,
+        tmp_path,
+        [(4,)],
+        {
+            "table": "people",
+            "aggregates": [{"function": "count", "alias": "total"}],
+        },
+    )
+    assert result.tables[0].rows == [{"total": 4}]
+
+    import harness.tools.query_db as query_db
+
+    for payload, message in [
+        (
+            {
+                "table": "people",
+                "columns": ["id"],
+                "group_by": ["name"],
+                "aggregates": [{"function": "count", "alias": "total"}],
+            },
+            "grouped",
+        ),
+        (
+            {
+                "table": "people",
+                "group_by": ["name"],
+                "aggregates": [{"function": "count", "alias": "name"}],
+            },
+            "alias",
+        ),
+        (
+            {
+                "table": "people",
+                "aggregates": [{"function": "avg", "alias": "average"}],
+            },
+            "column",
+        ),
+        (
+            {
+                "table": "people",
+                "aggregates": [
+                    {"function": "count_distinct", "alias": "unique_ids"}
+                ],
+            },
+            "column",
+        ),
+        (
+            {
+                "table": "people",
+                "aggregates": [
+                    {
+                        "function": "count_distinct",
+                        "column": "missing",
+                        "alias": "unique_ids",
+                    }
+                ],
+            },
+            "Unknown column",
+        ),
+    ]:
+        connection = FakeConnection([])
+        monkeypatch.setattr(query_db, "_connection", lambda: connection)
+        with pytest.raises(ValueError, match=message):
+            query_db._query(
+                query_db.QueryDBInput.model_validate(payload),
+                threading.Event(),
+                {},
+                threading.Lock(),
+            )
+
+
+@pytest.mark.parametrize(
+    ("data_type", "value", "expression", "bound"),
+    [
+        ("DATE", "2026-01-02", "TO_DATE(:value_0, 'YYYY-MM-DD')", "2026-01-02"),
+        (
+            "TIMESTAMP(6)",
+            "2026-01-02T03:04:05.123456",
+            "TO_TIMESTAMP(:value_0, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF6')",
+            "2026-01-02T03:04:05.123456",
+        ),
+        (
+            "TIMESTAMP(6) WITH TIME ZONE",
+            "2026-01-02T03:04:05.123456+09:00",
+            "TO_TIMESTAMP_TZ(:value_0, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF6TZH:TZM')",
+            "2026-01-02T03:04:05.123456+09:00",
+        ),
+    ],
+)
+def test_temporal_filters_use_explicit_oracle_conversions(
+    monkeypatch, tmp_path, data_type, value, expression, bound
+):
+    connection, _, _ = run_query(
+        monkeypatch,
+        tmp_path,
+        [],
+        {
+            "table": "people",
+            "filters": [
+                {"column": "stamp", "op": "ge", "value": value},
+                {"column": "stamp", "op": "lt", "value": value},
+            ],
+        },
+        columns=("STAMP",),
+        data_types={"STAMP": data_type},
+    )
+    sql, binds = connection.fake_cursor.calls[-1]
+    assert f'"STAMP" >= {expression}' in sql
+    assert f'"STAMP" < {expression.replace("value_0", "value_1")}' in sql
+    assert binds["value_0"] == bound
+
+
+@pytest.mark.parametrize(
+    ("data_type", "value"),
+    [
+        ("DATE", "01/02/2026"),
+        ("TIMESTAMP(6)", "2026-01-02T03:04:05.1234567"),
+        ("TIMESTAMP(6) WITH TIME ZONE", "2026-01-02T03:04:05"),
+        ("TIMESTAMP(6) WITH TIME ZONE", "2026-01-02T03:04:05+99:99"),
+    ],
+)
+def test_temporal_filters_reject_ambiguous_values(monkeypatch, data_type, value):
+    import harness.tools.query_db as query_db
+
+    connection = FakeConnection([], ("STAMP",), {"STAMP": data_type})
+    monkeypatch.setattr(query_db, "_connection", lambda: connection)
+    args = query_db.QueryDBInput.model_validate({
+        "table": "people",
+        "filters": [{"column": "stamp", "op": "ge", "value": value}],
+    })
+    with pytest.raises(ValueError, match="ISO|offset|precision"):
+        query_db._query(args, threading.Event(), {}, threading.Lock())
 
 
 @pytest.mark.parametrize(

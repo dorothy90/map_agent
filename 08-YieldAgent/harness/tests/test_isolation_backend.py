@@ -65,7 +65,7 @@ def test_ssh_command_uses_pinned_identity_and_ignores_user_config(tmp_path):
     assert request == {
         "v": 1,
         "principal": hashlib.sha256(b"alice").hexdigest(),
-        "run": hashlib.sha256(b"run-1").hexdigest(),
+        "run": hashlib.sha256(b'["alice","run-1"]').hexdigest(),
         "op": "command",
         "command": "true",
     }
@@ -651,3 +651,17 @@ def test_setup_installs_root_owned_external_key_and_force_command(name):
     assert "ForceCommand /usr/local/libexec/yieldrun-launcher" in content
     assert "PermitUserEnvironment no" in content
     assert ".ssh/authorized_keys" not in content
+
+
+def test_retained_python_workspace_survives_run_cleanup(monkeypatch, tmp_path):
+    config = isolation(tmp_path)
+    config.retain_python_files = True
+    backend = IsolatedSSHBackend(config, "run-kept", "alice")
+    output = backend.workdir / "python-call" / "output" / "result.json"
+    output.parent.mkdir(parents=True)
+    output.write_text('{"status":"success"}')
+    def unexpected_cleanup(*args, **kwargs):
+        pytest.fail("retained workspace must not invoke remote cleanup")
+    monkeypatch.setattr("harness.isolation.backend.subprocess.run", unexpected_cleanup)
+    backend.cleanup()
+    assert output.read_text() == '{"status":"success"}'

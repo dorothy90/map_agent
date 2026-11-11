@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from typing import Any, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .artifact_delivery import artifact_links
+
 
 EMPTY_RESULT_SUMMARY = "결과 0건"
 
@@ -135,7 +137,7 @@ class ToolObservation(Contract):
             if self.error:
                 payload["error"] = {k: str(v)[:1200] if isinstance(v, str) else v for k, v in self.error.items()}
         payload["artifact_count"] = len(self.artifact_refs)
-        payload["artifact_refs"] = self.artifact_refs[:5]
+        payload["artifact_refs"] = artifact_links(self.session_id, self.result_id, self.artifact_refs)
         if (os.environ.get("HARNESS_WAFER_SET_TOOLS") == "1"
                 and self.status in {"success", "partial", "empty"}
                 and self.provenance.get("tool_group") == "wafer_set"

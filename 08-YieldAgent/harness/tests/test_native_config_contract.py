@@ -61,6 +61,12 @@ def test_native_settings_and_profile_skill_snapshot(monkeypatch, tmp_path, profi
     startup = captured['startup']
     assert (startup['temperature'], startup['reasoning_effort'], startup['call_timeout']) == (.73, 'high', 17)
     assert startup['no_yield_tools'] is False
+    assert startup['allowed_tools'] == []
+    from harness.tests.test_no_yield_tools import worker_module
+    worker = worker_module()
+    assert worker.enabled_toolsets(startup) == ['yield_backend', 'yield_evidence']
+    assert worker.enabled_toolsets({**startup, 'no_yield_tools': True}) == [
+        'yield_backend', 'yield_evidence', 'clarify']
     assert captured['env']['HERMES_TIMEZONE'] == expected
     assert captured['env']['HERMES_HOME'] == str(profile)
     recorded = next(update['$set'] for update in updates if 'skill_versions' in update.get('$set', {}))
@@ -181,7 +187,14 @@ runpy.run_path(worker, run_name='__main__')
 def test_request_context_is_identical_for_planner_verifier_and_saved_run(monkeypatch, tmp_path, created_at):
     from datetime import datetime, timezone
     import harness.native_hermes as native
+    from harness.types import ToolObservation
     monkeypatch.setattr(native, 'ROOT', tmp_path)
+    observation = ToolObservation(principal_id='p', session_id='s', run_id='r', invocation_id='i',
+        result_id='required-result', source_result_ids=['required-source'], tool_name='query',
+        validated_arguments={'large': 'x' * 30_000}, status='success',
+        preview_rows=[{'large': 'x' * 30_000}], total_rows=1).model_dump(mode='json')
+    bridge = SimpleNamespace(observations=[observation], schemas=lambda: [], allowed=set())
+    monkeypatch.setattr(native, 'NativeBridge', lambda *args: bridge)
     updates, sent = [], []
     class Runs:
         async def update_one(self, query, update): updates.append(update)
@@ -206,6 +219,8 @@ def test_request_context_is_identical_for_planner_verifier_and_saved_run(monkeyp
         asyncio.run(native.run_native(context, ToolRegistry()))
     contract = sent[0]['request_context']
     assert contract == sent[1]['result']['request_context'] == run['request_context']
+    assert len(json.dumps(sent[1]['result']['evidence'], ensure_ascii=False)) <= 20_000
+    assert sent[1]['result']['known_result_ids'] == ['required-result', 'required-source']
     assert any(update.get('$set', {}).get('request_context') == contract for update in updates)
     assert json.dumps(contract, ensure_ascii=False) in sent[0]['instructions']
     assert contract['timezone'] == 'Asia/Seoul'

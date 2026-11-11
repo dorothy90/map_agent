@@ -107,30 +107,54 @@ export function normalizeQuestions(questions: unknown): ClarifyQuestion[] {
   return normalized
 }
 
-// Pending clarify requests keyed by the runtime session id that raised them.
+// Pending clarify requests keyed by the runtime session id that raised them,
+// then by the canonical prompt id. A native clarify batch is delivered as one
+// server request per question, so siblings in one session must coexist.
 // Storing per-session (instead of one shared slot) lets a *background* session
 // park its clarify request while the user is looking at a different chat, then
 // resolve it once they switch over — without a second concurrent clarify
 // clobbering the first. A request with no session id lands under the empty key.
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
-export const $clarifyRequests = atom<Record<string, ClarifyRequest>>({})
+export const $clarifyRequests = atom<Record<string, Record<string, ClarifyRequest>>>({})
+
+const requestsFor = (
+  requests: Record<string, Record<string, ClarifyRequest>>,
+  sessionId: string | null | undefined
+): ClarifyRequest[] => Object.values(requests[keyFor(sessionId)] ?? {})
+
+export const clarifyRequestsForSession = (sessionId: string | null | undefined): ClarifyRequest[] =>
+  requestsFor($clarifyRequests.get(), sessionId)
+
+export const clarifyRequestById = (
+  sessionId: string | null | undefined,
+  requestId: string
+): ClarifyRequest | null => $clarifyRequests.get()[keyFor(sessionId)]?.[requestId] ?? null
 
 // The clarify request for the currently-viewed session. The inline ClarifyTool
 // only ever mounts inside the active session's transcript, so it reads this
 // focus-scoped view rather than reaching into the whole map.
 export const $clarifyRequest = computed(
   [$clarifyRequests, $activeSessionId],
-  (requests, activeId) => requests[keyFor(activeId)] ?? null
+  (requests, activeId) => requestsFor(requests, activeId)[0] ?? null
 )
 
 /** The clarify request for one specific session — the tile counterpart of the
  *  active-session `$clarifyRequest` view (same map, fixed key). */
-export const sessionClarifyRequest = (sessionId: string | null) =>
-  computed($clarifyRequests, requests => requests[keyFor(sessionId)] ?? null)
+export const sessionClarifyRequests = (sessionId: string | null) =>
+  computed($clarifyRequests, requests => requestsFor(requests, sessionId))
+
+export const sessionClarifyRequest = (sessionId: string | null, requestId?: string) =>
+  computed(
+    $clarifyRequests,
+    requests => requests[keyFor(sessionId)]?.[requestId ?? ''] ?? requestsFor(requests, sessionId)[0] ?? null
+  )
 
 export function setClarifyRequest(request: ClarifyRequest): void {
-  $clarifyRequests.set({ ...$clarifyRequests.get(), [keyFor(request.sessionId)]: request })
+  const requests = $clarifyRequests.get()
+  const key = keyFor(request.sessionId)
+
+  $clarifyRequests.set({ ...requests, [key]: { ...requests[key], [request.requestId]: request } })
   forgetSettledClarify(request.requestId)
 }
 
@@ -156,6 +180,26 @@ function settleClarify(request: ClarifyRequest, result: Record<string, unknown>)
   $settledClarifyResults.set({ ...$settledClarifyResults.get(), [request.requestId]: result })
 }
 
+/** Settle one canonical question immediately after its lock succeeds. */
+export function settleAnsweredClarify(request: ClarifyRequest, answer: string): void {
+  const question = request.questions[0]
+
+  if (!question) {
+    return
+  }
+
+  settleClarify(request, {
+    outcome: 'submitted',
+    responses: [
+      {
+        question: question.question,
+        status: 'answered',
+        user_response: lockedAnswer(question, answer)
+      }
+    ]
+  })
+}
+
 export function clearClarifyRequest(requestId?: string, sessionId?: string | null): void {
   const requests = $clarifyRequests.get()
 
@@ -163,14 +207,22 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
   // inline ClarifyTool answering its own request).
   if (sessionId !== undefined) {
     const key = keyFor(sessionId)
-    const current = requests[key]
+    const sessionRequests = requests[key]
 
-    if (!current || (requestId && current.requestId !== requestId)) {
+    if (!sessionRequests || (requestId && !sessionRequests[requestId])) {
       return
     }
 
     const next = { ...requests }
-    delete next[key]
+
+    if (!requestId || Object.keys(sessionRequests).length === 1) {
+      delete next[key]
+    } else {
+      const remaining = { ...sessionRequests }
+      delete remaining[requestId]
+      next[key] = remaining
+    }
+
     $clarifyRequests.set(next)
 
     return
@@ -178,14 +230,24 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
 
   // Fallback with no session hint: drop every entry matching the request id
   // (or clear all when none is given).
-  const next: Record<string, ClarifyRequest> = {}
+  const next: Record<string, Record<string, ClarifyRequest>> = {}
   let changed = false
 
-  for (const [key, value] of Object.entries(requests)) {
-    if (requestId && value.requestId !== requestId) {
-      next[key] = value
-    } else {
+  for (const [key, sessionRequests] of Object.entries(requests)) {
+    if (!requestId) {
       changed = true
+      continue
+    }
+
+    const remaining = { ...sessionRequests }
+
+    if (remaining[requestId]) {
+      delete remaining[requestId]
+      changed = true
+    }
+
+    if (Object.keys(remaining).length > 0) {
+      next[key] = remaining
     }
   }
 
@@ -197,14 +259,14 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
 /** Whether `sessionId` has a clarify parked on it right now (imperative read —
  *  the composer checks this on Enter, not on every render). */
 export const hasClarifyRequest = (sessionId: string | null | undefined): boolean =>
-  Boolean($clarifyRequests.get()[keyFor(sessionId)])
+  clarifyRequestsForSession(sessionId).length > 0
 
 /** Clear a stale card at a turn boundary, but keep it while its backend request is still waiting. */
 export function clearSettledClarifyRequest(sessionId: string | null): void {
-  const request = $clarifyRequests.get()[keyFor(sessionId)]
-
-  if (request && !hasOpenServerRequest(request.requestId)) {
-    clearClarifyRequest(request.requestId, sessionId)
+  for (const request of clarifyRequestsForSession(sessionId)) {
+    if (!hasOpenServerRequest(request.requestId)) {
+      clearClarifyRequest(request.requestId, sessionId)
+    }
   }
 }
 
@@ -249,7 +311,7 @@ export function skipClarify(request: ClarifyRequest): void {
 }
 
 export async function skipClarifyRequest(sessionId: string | null | undefined): Promise<boolean> {
-  const request = $clarifyRequests.get()[keyFor(sessionId)]
+  const request = clarifyRequestsForSession(sessionId)[0]
 
   if (!request) {
     return false
@@ -262,7 +324,7 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
 
 /** Answer the clarify parked on `sessionId` with composer text: the answer to its first question not yet locked. */
 function answerClarifyText(sessionId: string, text: string): null | Promise<boolean> {
-  const request = $clarifyRequests.get()[keyFor(sessionId)]
+  const request = clarifyRequestsForSession(sessionId)[0]
 
   if (!request) {
     return null
@@ -370,7 +432,7 @@ function rollBackTypedAnswer(
   qid: string,
   answer: string
 ): void {
-  const current = $clarifyRequests.get()[keyFor(request.sessionId)]
+  const current = clarifyRequestById(request.sessionId, request.requestId)
 
   // The last answer cleared the card: bring it back while the server still waits.
   const live =

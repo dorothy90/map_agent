@@ -53,6 +53,11 @@ ALL_PARA_ROWS = tuple(
     )
     for param_seqno, param_nm in enumerate(columns, start=start_seqno)
 )
+def param_kind_cd(param_nm: str) -> str:
+    """PARAM_KIND_CD: item 파라미터는 I, bin(pass bin PT1H/PT1C 포함)은 B."""
+    return "I" if param_nm in PARA_COLUMNS else "B"
+
+
 TARGET_KEYS = frozenset((row[0], row[1], row[3]) for row in ALL_PARA_ROWS)
 
 CREATE_DDL = """
@@ -62,6 +67,9 @@ CREATE TABLE DF_ALL_PARA_PRB (
     YIELD_TABLE  CHAR(1)       CONSTRAINT NN_DF_ALL_PARA_PRB_YTBL NOT NULL,
     PARAM_NM     VARCHAR2(100) CONSTRAINT NN_DF_ALL_PARA_PRB_PARAM NOT NULL,
     PARAM_SEQNO  NUMBER(4)     CONSTRAINT NN_DF_ALL_PARA_PRB_SEQNO NOT NULL,
+    PARAM_KIND_CD CHAR(1)      CONSTRAINT NN_DF_ALL_PARA_PRB_KIND NOT NULL,
+    CONSTRAINT CK_DF_ALL_PARA_PRB_KIND
+        CHECK (PARAM_KIND_CD IN ('I', 'B')),
     CONSTRAINT CK_DF_ALL_PARA_PRB_LOT
         CHECK (LOT_CD IN ('4SA', '4SS')),
     CONSTRAINT CK_DF_ALL_PARA_PRB_PROC
@@ -238,10 +246,10 @@ def insert_rows(conn) -> int:
             cursor.executemany(
                 f"""
                 INSERT INTO {TABLE_NAME}
-                    (LOT_CD, PROC_GBN_CD, YIELD_TABLE, PARAM_NM, PARAM_SEQNO)
-                VALUES (:1, :2, :3, :4, :5)
+                    (LOT_CD, PROC_GBN_CD, YIELD_TABLE, PARAM_NM, PARAM_SEQNO, PARAM_KIND_CD)
+                VALUES (:1, :2, :3, :4, :5, :6)
                 """,
-                pending_rows,
+                [tuple(row) + (param_kind_cd(row[3]),) for row in pending_rows],
             )
 
         verified_rows = fetch_target_rows(cursor)

@@ -197,6 +197,7 @@
   "src/hermes/components/assistant-ui/embeds/mermaid-embed.test.tsx",
   "src/hermes/components/assistant-ui/embeds/mermaid-render-cache.test.ts",
   "src/hermes/components/assistant-ui/embeds/social-embed.test.tsx",
+  "src/hermes/components/assistant-ui/embeds/frame-embed.test.tsx",
   "src/hermes/components/assistant-ui/markdown-text.artifacts.test.tsx",
   "src/hermes/components/assistant-ui/markdown-text.bare-url.test.tsx",
   "src/hermes/components/assistant-ui/markdown-text.linklabels.test.tsx",

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { clarifyRequestById, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $sudoRequest, clearSudoRequest } from '@/store/prompts'
 import { resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId } from '@/store/session'
@@ -62,5 +63,41 @@ describe('Bot Screen install password card', () => {
 
     expect(handleInputRequestEvent(cancel('srq-1', 'chat-b'))).toBe(true)
     expect($sudoRequest.get()).toBeNull()
+  })
+})
+
+describe('canonical clarify settlement', () => {
+  afterEach(() => clearClarifyRequest())
+
+  it('settles the whole canonical sibling group when one prompt settles', () => {
+    for (const requestId of ['srq-1:q1', 'srq-1:q2']) {
+      setClarifyRequest({
+        questions: [{ choices: null, multiSelect: false, qid: requestId, question: requestId }],
+        requestId,
+        sessionId: 'session-1'
+      })
+    }
+
+    const payload = { prompt_id: 'srq-1:q1', status: 'resolved' }
+    const updateSessionState = vi.fn()
+
+    expect(
+      handleInputRequestEvent({
+        deps: { updateSessionState } as unknown as GatewayEventContext['deps'],
+        event: { payload: payload as never, type: 'clarify.settled' },
+        explicitSid: '',
+        fromActiveSource: () => true,
+        isActiveEvent: true,
+        occurredAt: 1,
+        payload: payload as never,
+        scheduleConfigRefresh: vi.fn(),
+        sessionId: 'session-1'
+      })
+    ).toBe(true)
+
+    expect(clarifyRequestById('session-1', 'srq-1:q1')).toBeNull()
+    expect(clarifyRequestById('session-1', 'srq-1:q2')).toBeNull()
+    const update = updateSessionState.mock.calls[0][1]
+    expect(update({ needsInput: true })).toMatchObject({ needsInput: false })
   })
 })

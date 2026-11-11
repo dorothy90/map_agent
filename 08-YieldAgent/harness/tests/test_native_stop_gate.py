@@ -6,23 +6,37 @@ def test_fail_continues_once_without_creating_a_new_user_turn():
                     {'verdict': 'pass', 'issues': [], 'result_ids': ['r']}])
     seen = []
     gate = NativeVerificationGate(lambda candidate: (seen.append(candidate['final_response']), next(reports))[1])
-    assert '내부' in gate.evaluate('draft')
+    nudge = gate.evaluate('draft')
+    assert '내부' in nudge and '한계' in nudge
     assert gate.evaluate('corrected') is None
     result = gate.finish({'completed': True, 'final_response': 'corrected'})
     assert result['completed'] and seen == ['draft', 'corrected']
     assert len(result['verification']) == 2
 
 
-def test_failed_or_unreviewed_candidate_never_becomes_final_success():
+def test_failed_candidate_preserves_latest_answer_with_last_issues():
     gate = NativeVerificationGate(lambda candidate: {'verdict': 'fail', 'issues': ['wrong'], 'result_ids': ['r']})
     assert gate.evaluate('draft')
     assert gate.evaluate('still wrong') is None
     result = gate.finish({'completed': True, 'final_response': 'still wrong'})
     assert result['partial'] and not result['completed']
-    assert 'still wrong' not in result['final_response']
+    assert result['verification_candidate'] == 'still wrong'
+    assert result['final_response'].startswith('still wrong\n\n---\n⚠️')
+    assert '- wrong' in result['final_response'] and 'draft' not in result['final_response']
+
+
+def test_unreviewed_or_unusable_candidate_keeps_fixed_fallback():
     gate = NativeVerificationGate(lambda candidate: {'verdict': 'pass', 'issues': [], 'result_ids': []})
     result = gate.finish({'completed': False, 'failed': True, 'final_response': 'runtime failure'})
-    assert not result['completed']
+    assert not result['completed'] and 'runtime failure' not in result['final_response']
+    assert result['final_response'].startswith('최종 검증을 통과하지 못해')
+
+    gate = NativeVerificationGate(lambda candidate: {'verdict': 'fail', 'issues': ['wrong'], 'result_ids': []})
+    gate.evaluate('reviewed')
+    for final_response in ('different', '', '   '):
+        result = gate.finish({'completed': True, 'final_response': final_response})
+        assert result['final_response'].startswith('최종 검증을 통과하지 못해')
+        assert 'verification_candidate' not in result
 
 
 def test_changed_final_after_review_is_not_accepted():
@@ -86,3 +100,19 @@ assert turn_final_response.apply_stop_gates is original
     result = subprocess.run([sys.executable, '-B', '-c', code, str(harness)],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_repair_feedback_explains_named_evidence_and_preserves_unknown():
+    gate = NativeVerificationGate(lambda candidate: {
+        'verdict': 'fail', 'issues': ['wafer_map_manifest 필드 누락'], 'result_ids': ['plot']})
+    nudge = gate.evaluate('draft')
+    assert "emit_table(manifest_df, name='wafer_map_manifest')" in nudge
+    assert "emit_table(members_df, name='wafer_map_members')" in nudge
+    assert "emit_table(cells_df, name='wafer_map_cells')" in nudge
+    assert 'wafer_map_manifest 필드 누락' in nudge
+    gate = NativeVerificationGate(lambda candidate: {
+        'verdict': 'unknown', 'issues': ['검증 예산 부족'], 'result_ids': []})
+    assert gate.evaluate('draft') is None
+    result = gate.finish({'completed': True, 'final_response': 'draft'})
+    assert result['partial'] and not result['completed']
+    assert '검증 예산 부족' in result['final_response']

@@ -24,7 +24,8 @@ def test_one_repair_then_recheck_and_no_unverified_success():
     assert len(reviews) == 2 and len(repairs) == 1
     assert out['partial'] and not out['completed']
     assert '범위 불일치' in out['final_response']
-    assert '수정한 답변' not in out['final_response']
+    assert out['final_response'].startswith('수정한 답변\n\n---\n⚠️')
+    assert '초안' not in out['final_response']
 
 
 def test_pass_never_repairs_and_unknown_never_passes():
@@ -33,6 +34,14 @@ def test_pass_never_repairs_and_unknown_never_passes():
     assert good['completed'] and good['final_response'] == '근거 있는 답변'
     unknown = verify_and_repair({'completed':True,'final_response':'초안'}, lambda c: {'verdict':'unknown','issues':['자료 부족'],'result_ids':[]}, forbidden)
     assert unknown['partial'] and not unknown['completed']
+    assert '초안' not in unknown['final_response']
+
+
+def test_empty_failed_answer_keeps_fixed_fallback():
+    out = verify_and_repair({'completed': True, 'final_response': '   '},
+        lambda c: {'verdict': 'fail', 'issues': ['근거 부족'], 'result_ids': []},
+        lambda candidate, report: {'completed': True, 'final_response': ''})
+    assert out['final_response'].startswith('최종 검증을 통과하지 못해')
 
 
 def test_internal_repair_and_rejected_draft_do_not_become_user_history():

@@ -105,6 +105,23 @@ export function isHarnessArtifactUrl(path: string): boolean {
   return path.startsWith('/harness/artifacts/')
 }
 
+export async function isHtmlHarnessArtifact(path: string, signal?: AbortSignal): Promise<boolean> {
+  try {
+    const url = new URL(path, window.location.href)
+
+    if (url.origin !== window.location.origin || !isHarnessArtifactUrl(url.pathname)) {
+      return false
+    }
+
+    const response = await fetch(path, { method: 'HEAD', redirect: 'error', signal })
+    const mime = response.headers.get('Content-Type')?.split(';', 1)[0]?.trim().toLowerCase()
+
+    return response.ok && !response.redirected && mime === 'text/html'
+  } catch {
+    return false
+  }
+}
+
 export function isArtifactFilePath(path: string): boolean {
   return /^(?:file:|\/|[~.][\\/]|\.\.[\\/]|[a-z]:[\\/]|\\\\)/i.test(path)
 }

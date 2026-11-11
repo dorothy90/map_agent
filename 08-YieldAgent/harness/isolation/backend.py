@@ -10,12 +10,13 @@ import logging
 import os
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import tarfile
 import time
 import uuid
 
-from ..config import IsolationSettings
+from ..config import IsolationSettings, SeatbeltIsolationSettings
 
 
 class IsolationError(RuntimeError):
@@ -57,7 +58,7 @@ class IsolatedSSHBackend:
     def __init__(self, config: IsolationSettings, run_id: str, principal_id: str | None = None):
         self.config = config
         self.run_id = run_id
-        self.run_hash = hashlib.sha256(run_id.encode()).hexdigest()
+        self.run_hash = hashlib.sha256(json.dumps([principal_id, run_id], ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
         self.workdir = config.work_root / "runs" / self.run_hash
         self.principal_id = principal_id
         self.results_dir = (
@@ -147,6 +148,9 @@ class IsolatedSSHBackend:
 
         backends._SSHEnvironment = HarnessSSHEnvironment
 
+    def _terminate(self, process):
+        process.kill()
+
     async def execute_python(self, code, datasets, timeout):
         invocation = "python-" + uuid.uuid4().hex
         remote_dir = self.workdir / invocation
@@ -161,7 +165,8 @@ class IsolatedSSHBackend:
                 info.size = len(content)
                 bundle.addfile(info, io.BytesIO(content))
         quoted = shlex.quote(str(remote_dir))
-        command = (f"umask 077; mkdir {quoted}; trap 'rm -rf {quoted}' EXIT HUP INT TERM; "
+        cleanup = "" if getattr(self.config, "retain_python_files", False) else f"trap 'rm -rf {quoted}' EXIT HUP INT TERM; "
+        command = (f"umask 077; mkdir {quoted}; {cleanup}"
                    f"tar xf - -C {quoted}; mkdir {quoted}/output; "
                    f"cd {quoted}; python3 -I -B worker.py --input-dir . --output-dir output --minimal-statistics; "
                    f"cat output/result.json")
@@ -175,12 +180,12 @@ class IsolatedSSHBackend:
         try:
             stdout, _stderr = await asyncio.wait_for(process.communicate(archive.getvalue()), timeout)
         except TimeoutError:
-            process.kill()
+            self._terminate(process)
             await asyncio.shield(process.wait())
             return {"status": "timeout", "tables": [], "plots": [], "stdout": "", "stderr": "",
                     "error": {"type": "execution_timeout"}}
         except asyncio.CancelledError:
-            process.kill()
+            self._terminate(process)
             await asyncio.shield(process.wait())
             raise
         if process.returncode != 0:
@@ -193,7 +198,15 @@ class IsolatedSSHBackend:
             raise IsolationError("isolated Python worker returned an invalid result") from exc
         if result.get("status") not in {"success", "error"} or not isinstance(result.get("tables"), list):
             raise IsolationError("isolated Python worker returned an invalid protocol")
+        if getattr(self.config, "retain_python_files", False):
+            result["workspace"] = {"directory": str(remote_dir), "input": str(remote_dir / "data.json"),
+                                   "code": str(remote_dir / "code.py"), "result": str(remote_dir / "output" / "result.json")}
         return result
+
+    def _results_directory_script(self, create):
+        return (_secure_directory_function() + f"base={str(self.config.work_root)!r}\n"
+                f"parts={self._results_parts()!r}\n"
+                f"directory=open_tree(base,parts,{create!r})\n")
 
     async def upload_bytes(self, data: bytes, timeout=60):
         results_dir = self._require_results_dir()
@@ -203,14 +216,11 @@ class IsolatedSSHBackend:
         digest = hashlib.sha256(data).hexdigest()
         script = (
             "import hashlib,os,sys\n"
-            + _secure_directory_function()
-            + f"base={str(self.config.work_root)!r}\n"
-            f"parts={self._results_parts()!r}\n"
+            + self._results_directory_script(True) +
             f"name={name!r}\n"
             f"pending={pending!r}\n"
             f"expected_size={len(data)!r}\n"
             f"expected_digest={digest!r}\n"
-            "directory=open_tree(base,parts,True)\n"
             "fd=None;published=False\n"
             "try:\n"
             " fd=os.open(pending,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=directory)\n"
@@ -247,7 +257,7 @@ class IsolatedSSHBackend:
         try:
             await asyncio.wait_for(process.communicate(data), timeout)
         except TimeoutError as exc:
-            process.kill()
+            self._terminate(process)
             await asyncio.shield(process.wait())
             try:
                 await asyncio.shield(self._cleanup_upload(name, pending, len(data), digest))
@@ -255,7 +265,7 @@ class IsolatedSSHBackend:
                 pass
             raise IsolationError("isolated CSV upload timed out") from exc
         except asyncio.CancelledError:
-            process.kill()
+            self._terminate(process)
             await asyncio.shield(process.wait())
             try:
                 await asyncio.shield(self._cleanup_upload(name, pending, len(data), digest))
@@ -263,7 +273,7 @@ class IsolatedSSHBackend:
                 pass
             raise
         except OSError as exc:
-            process.kill()
+            self._terminate(process)
             await asyncio.shield(process.wait())
             try:
                 await asyncio.shield(self._cleanup_upload(name, pending, len(data), digest))
@@ -281,12 +291,9 @@ class IsolatedSSHBackend:
     async def _cleanup_upload(self, name, pending, size, digest):
         script = (
             "import hashlib,os,stat\n"
-            + _secure_directory_function()
-            + f"base={str(self.config.work_root)!r}\n"
-            f"parts={self._results_parts()!r}\n"
-            f"names={({pending, name})!r}\n"
+            + self._results_directory_script(False) +
+            f"names={(pending, name)!r}\n"
             f"size={size!r};digest={digest!r}\n"
-            "directory=open_tree(base,parts,False)\n"
             "try:\n"
             " for item in names:\n"
             "  try: info=os.stat(item,dir_fd=directory,follow_symlinks=False)\n"
@@ -309,7 +316,7 @@ class IsolatedSSHBackend:
         try:
             await asyncio.wait_for(process.communicate(b""), 20)
         except BaseException:
-            process.kill()
+            self._terminate(process)
             await asyncio.shield(process.wait())
             raise
         if process.returncode != 0:
@@ -320,12 +327,9 @@ class IsolatedSSHBackend:
         cutoff = (time.time() if now is None else now) - RETENTION_SECONDS
         script = (
             "import os,stat,sys\n"
-            + _secure_directory_function()
-            + f"base={str(self.config.work_root)!r}\n"
-            f"parts={self._results_parts()!r}\n"
+            + "try:\n" + "".join(" " + line + "\n" for line in self._results_directory_script(False).splitlines())
+            + "except FileNotFoundError: raise SystemExit(0)\n" +
             f"cutoff={cutoff!r};limit={RETENTION_SCAN_LIMIT!r}\n"
-            "try: directory=open_tree(base,parts,False)\n"
-            "except FileNotFoundError: raise SystemExit(0)\n"
             "try:\n"
             " for index,entry in enumerate(os.scandir(directory)):\n"
             "  if index>=limit: break\n"
@@ -355,6 +359,8 @@ class IsolatedSSHBackend:
             LOGGER.warning("CSV retention deletion failed: %s", result.stderr.strip())
 
     def cleanup(self):
+        if getattr(self.config, "retain_python_files", False):
+            return None
         try:
             command = self.ssh_command()
             command.append(self._request("", operation="cleanup"))
@@ -367,8 +373,90 @@ class IsolatedSSHBackend:
             raise IsolationError("isolated run cleanup failed")
 
 
-def prepare_isolated_run(config: IsolationSettings, run_id: str, principal_id: str | None = None):
-    backend = IsolatedSSHBackend(config, run_id, principal_id)
+class SeatbeltIsolationBackend(IsolatedSSHBackend):
+    """Local macOS transport whose every tool command enters sandbox-exec."""
+
+    config: SeatbeltIsolationSettings
+
+    def _terminate(self, process):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def _results_directory_script(self, create):
+        return ("import stat\n"
+                "directory=os.dup(int(os.environ['YIELD_RESULTS_FD']))\n"
+                "info=os.fstat(directory)\n"
+                "if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode & 0o077: raise PermissionError('invalid results directory')\n")
+
+    def client_environment(self):
+        return {
+            "PATH": str(self.config.analysis_venv / "bin") + ":/usr/bin:/bin",
+            "LANG": "C", "LC_ALL": "C", "OPENBLAS_NUM_THREADS": "1",
+            "OMP_NUM_THREADS": "1", "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+
+    def ssh_command(self, remote_command: str | None = None):
+        if remote_command is None:
+            raise IsolationError("unscoped Seatbelt execution is disabled")
+        return [
+            str(self.config.analysis_venv / "bin" / "python3"),
+            str(self.config.launcher), "--home", str(self.config.home),
+            "--work-root", str(self.config.work_root), "--venv", str(self.config.analysis_venv),
+            self._request(remote_command),
+        ]
+
+    def install_engine_adapter(self):
+        try:
+            backends = importlib.import_module("tools.terminal_tool_backends")
+        except ImportError as exc:
+            raise IsolationError("Hermes local backend is unavailable") from exc
+        original = backends._LocalEnvironment
+        if getattr(original, "_yield_seatbelt_isolated", False):
+            return
+        boundary = self
+
+        class HarnessSeatbeltEnvironment(original):
+            _yield_seatbelt_isolated = True
+            uses_host_filesystem = False
+            is_local = False
+
+            def __init__(self, *args, **kwargs):
+                kwargs.update(cwd=str(boundary.workdir), env={}, persistent=False)
+                super().__init__(*args, **kwargs)
+
+            def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+                if login:
+                    login = False
+                from tools.environments.base_output import _popen_bash
+                return _popen_bash(boundary.ssh_command(cmd_string), stdin_data,
+                                   env=boundary.client_environment())
+
+            def get_temp_dir(self):
+                return str(boundary.workdir / "tmp")
+
+        backends._LocalEnvironment = HarnessSeatbeltEnvironment
+
+    def cleanup(self):
+        return None
+
+    def cleanup_results(self, *, now=None):
+        return super().cleanup_results(now=now)
+
+
+def isolation_backend(config, run_id: str, principal_id: str | None = None):
+    if isinstance(config, SeatbeltIsolationSettings):
+        return SeatbeltIsolationBackend(config, run_id, principal_id)
+    if isinstance(config, IsolationSettings):
+        return IsolatedSSHBackend(config, run_id, principal_id)
+    raise TypeError("unsupported isolation backend configuration")
+
+
+def prepare_isolated_run(config: IsolationSettings | SeatbeltIsolationSettings,
+                         run_id: str, principal_id: str | None = None):
+    backend = isolation_backend(config, run_id, principal_id)
     probe = (
         "import getpass,json,os,pathlib,sys;"
         "import pandas,numpy,plotly;"
@@ -379,20 +467,57 @@ def prepare_isolated_run(config: IsolationSettings, run_id: str, principal_id: s
         "'home':os.environ.get('HOME'),'python':sys.executable}))"
     )
     remote_command = "python3 -I -B -c " + shlex.quote(probe)
+    if isinstance(config, SeatbeltIsolationSettings):
+        from .seatbelt_local import file_read_probe
+        # This existing, non-secret source file is outside the sandbox read roots.
+        read_probe = file_read_probe(Path(__file__).resolve())
+        probe = (
+            "import json,os,pathlib,socket,sys;"
+            f"p=pathlib.Path({str(backend.workdir)!r});p.mkdir(parents=True,exist_ok=True);"
+            "q=p/'.probe';q.write_text('ok');q.unlink();"
+            "denied={};"
+            f"targets={{'repo':pathlib.Path({str(Path(__file__).resolve().parents[2])!r}),"
+            f"'other_run':pathlib.Path({str(config.work_root / 'runs' / ('0' * 64))!r}),"
+            f"'other_principal':pathlib.Path({str(config.work_root / 'profiles' / ('0' * 64))!r})}};"
+            "exec(\"for k,v in targets.items():\\n try: list(v.iterdir());denied[k]=False\\n except OSError: denied[k]=True\");"
+            f"exec({read_probe!r});"
+            "s=socket.socket();s.settimeout(.2);"
+            "exec(\"try: s.connect(('127.0.0.1',27017));denied['network']=False\\nexcept OSError: denied['network']=True\");"
+            "print(json.dumps({'marker':os.environ.get('YIELD_ISOLATED'),"
+            "'launcher':os.environ.get('YIELD_LAUNCHER'),'sandbox':os.environ.get('YIELD_SANDBOX'),"
+            "'uid':os.getuid(),'home':os.environ.get('HOME'),'python':sys.executable,"
+            "'own_write':True,'denied':denied}))"
+        )
+        remote_command = "python3 -I -B -c " + shlex.quote(probe)
     try:
         result = subprocess.run(backend.ssh_command(remote_command), input="", text=True,
                                 capture_output=True, timeout=20, check=False,
                                 env=backend.client_environment())
     except (OSError, subprocess.SubprocessError) as exc:
-        raise IsolationError("isolated SSH backend unavailable") from exc
+        raise IsolationError("isolated backend unavailable") from exc
     if result.returncode != 0:
-        raise IsolationError("isolated SSH backend unavailable or misconfigured")
+        raise IsolationError("isolated backend unavailable or misconfigured")
     try:
         evidence = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise IsolationError("isolated backend verification failed") from exc
     expected_python = str(config.analysis_venv / "bin" / "python3")
-    if not (
+    if isinstance(config, SeatbeltIsolationSettings):
+        verified = (
+            evidence.get("marker") == "1"
+            and evidence.get("launcher") == str(config.launcher)
+            and evidence.get("sandbox") == "sandbox-exec"
+            and evidence.get("uid") == os.geteuid()
+            and evidence.get("home") == str(backend.results_dir.parent)
+            and evidence.get("python") == expected_python
+            and evidence.get("own_write") is True
+            and evidence.get("denied") == {
+                "repo": True, "other_run": True, "other_principal": True, "network": True,
+                "file_open": True, "child_file_open": True,
+            }
+        )
+    else:
+        verified = (
         evidence.get("marker") == "1"
         and evidence.get("launcher") == str(config.launcher)
         and evidence.get("user") == "yieldrun"
@@ -401,12 +526,13 @@ def prepare_isolated_run(config: IsolationSettings, run_id: str, principal_id: s
         and evidence.get("home") == str(backend.results_dir.parent)
         and evidence.get("python") == expected_python
         and evidence.get("sandbox") in {"sandbox-exec", "bwrap"}
-    ):
+        )
+    if not verified:
         raise IsolationError("isolated backend verification failed")
     return {
         **config.model_dump(mode="json"),
         "workdir": str(backend.workdir),
-        "verified_user": evidence["user"],
+        "verified_user": evidence.get("user") or str(evidence["uid"]),
         "verified_uid": evidence["uid"],
         "selected_sandbox": evidence.get("sandbox") or "none",
         "run_id": run_id,
@@ -414,9 +540,11 @@ def prepare_isolated_run(config: IsolationSettings, run_id: str, principal_id: s
     }
 
 
-def cleanup_isolated_run(config: IsolationSettings, run_id: str, principal_id: str):
-    IsolatedSSHBackend(config, run_id, principal_id).cleanup()
+def cleanup_isolated_run(config: IsolationSettings | SeatbeltIsolationSettings,
+                         run_id: str, principal_id: str):
+    isolation_backend(config, run_id, principal_id).cleanup()
 
 
-def cleanup_profile_results(config: IsolationSettings, principal_id: str, *, now=None):
-    IsolatedSSHBackend(config, "retention", principal_id).cleanup_results(now=now)
+def cleanup_profile_results(config: IsolationSettings | SeatbeltIsolationSettings,
+                            principal_id: str, *, now=None):
+    isolation_backend(config, "retention", principal_id).cleanup_results(now=now)

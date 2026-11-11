@@ -38,8 +38,24 @@ describe('clarify store', () => {
     setClarifyRequest(clarify('session-a', 'req-a'))
     setClarifyRequest(clarify('session-b', 'req-b'))
 
-    expect($clarifyRequests.get()['session-a']?.requestId).toBe('req-a')
-    expect($clarifyRequests.get()['session-b']?.requestId).toBe('req-b')
+    expect($clarifyRequests.get()['session-a']?.['req-a']?.requestId).toBe('req-a')
+    expect($clarifyRequests.get()['session-b']?.['req-b']?.requestId).toBe('req-b')
+  })
+
+  it('keeps sibling prompt requests from the same canonical batch independent', () => {
+    setClarifyRequest(clarify('session-a', 'req-q1'))
+    setClarifyRequest(clarify('session-a', 'req-q2'))
+
+    expect(Object.keys($clarifyRequests.get()['session-a'] as unknown as object)).toEqual(['req-q1', 'req-q2'])
+  })
+
+  it('upserts a duplicate prompt replay without replacing its sibling', () => {
+    setClarifyRequest(clarify('session-a', 'req-q1'))
+    setClarifyRequest(clarify('session-a', 'req-q2'))
+    setClarifyRequest({ ...clarify('session-a', 'req-q1'), receivedAt: 2 })
+
+    expect(Object.keys($clarifyRequests.get()['session-a'])).toEqual(['req-q1', 'req-q2'])
+    expect($clarifyRequests.get()['session-a']['req-q1'].receivedAt).toBe(2)
   })
 
   it('exposes only the active session via the focus-scoped view', () => {
@@ -63,7 +79,7 @@ describe('clarify store', () => {
     clearClarifyRequest('req-a', 'session-a')
 
     expect($clarifyRequests.get()['session-a']).toBeUndefined()
-    expect($clarifyRequests.get()['session-b']?.requestId).toBe('req-b')
+    expect($clarifyRequests.get()['session-b']?.['req-b']?.requestId).toBe('req-b')
   })
 
   it('ignores a stale clear whose request id no longer matches', () => {
@@ -71,7 +87,7 @@ describe('clarify store', () => {
 
     clearClarifyRequest('req-a1', 'session-a')
 
-    expect($clarifyRequests.get()['session-a']?.requestId).toBe('req-a2')
+    expect($clarifyRequests.get()['session-a']?.['req-a2']?.requestId).toBe('req-a2')
   })
 
   it('clears by request id across sessions when no session hint is given', () => {
@@ -81,7 +97,7 @@ describe('clarify store', () => {
     clearClarifyRequest('shared')
 
     expect($clarifyRequests.get()['session-a']).toBeUndefined()
-    expect($clarifyRequests.get()['session-b']?.requestId).toBe('other')
+    expect($clarifyRequests.get()['session-b']?.other?.requestId).toBe('other')
   })
 })
 

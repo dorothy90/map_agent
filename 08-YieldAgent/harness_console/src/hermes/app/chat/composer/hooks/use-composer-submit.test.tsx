@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/utils'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
-import { $clarifyRequests } from '@/store/clarify'
+import { $clarifyRequests, clarifyRequestById, setClarifyRequest } from '@/store/clarify'
 import {
   clearComposerTerminalSelections,
   type ComposerAttachment,
@@ -601,12 +601,10 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     const requestId = `req-${sessionId}`
 
     rememberServerRequest({ fail: vi.fn(), id: requestId, method: 'clarify', params: {}, respond })
-    $clarifyRequests.set({
-      [sessionId]: {
-        requestId,
-        questions: [{ choices: ['a', 'b'], multiSelect: false, qid: 'q0', question: 'which one?' }],
-        sessionId
-      }
+    setClarifyRequest({
+      requestId,
+      questions: [{ choices: ['a', 'b'], multiSelect: false, qid: 'q0', question: 'which one?' }],
+      sessionId
     })
   }
 
@@ -683,15 +681,13 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     const request = vi.fn(async () => ({ status: 'ok', remaining: ['q1'] }))
     setGateway(request)
     rememberServerRequest({ fail: vi.fn(), id: 'req-two', method: 'clarify', params: {}, respond })
-    $clarifyRequests.set({
-      'runtime-session': {
-        requestId: 'req-two',
-        questions: [
-          { choices: ['Staging', 'Prod'], multiSelect: false, qid: 'q0', question: 'where?' },
-          { choices: null, multiSelect: false, qid: 'q1', question: 'why?' }
-        ],
-        sessionId: 'runtime-session'
-      }
+    setClarifyRequest({
+      requestId: 'req-two',
+      questions: [
+        { choices: ['Staging', 'Prod'], multiSelect: false, qid: 'q0', question: 'where?' },
+        { choices: null, multiSelect: false, qid: 'q1', question: 'why?' }
+      ],
+      sessionId: 'runtime-session'
     })
     const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'prod' })
 
@@ -703,7 +699,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       expect(request).toHaveBeenCalledWith('clarify.lock', { answer: 'Prod', question_id: 'q0', request_id: 'req-two' })
     )
     expect(onSteer).not.toHaveBeenCalled()
-    expect($clarifyRequests.get()['runtime-session']?.lockedAnswers).toEqual({ q0: 'Prod' })
+    expect(clarifyRequestById('runtime-session', 'req-two')?.lockedAnswers).toEqual({ q0: 'Prod' })
     expect(hasOpenServerRequest('req-two')).toBe(true)
   })
 
@@ -717,12 +713,10 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
 
     setGateway(request)
     rememberServerRequest({ fail: vi.fn(), id: 'req-pair', method: 'clarify', params: {}, respond })
-    $clarifyRequests.set({
-      'runtime-session': {
-        requestId: 'req-pair',
-        questions: ['q0', 'q1'].map(qid => ({ choices: null, multiSelect: false, qid, question: `${qid}?` })),
-        sessionId: 'runtime-session'
-      }
+    setClarifyRequest({
+      requestId: 'req-pair',
+      questions: ['q0', 'q1'].map(qid => ({ choices: null, multiSelect: false, qid, question: `${qid}?` })),
+      sessionId: 'runtime-session'
     })
 
     for (const text of ['first', 'second']) {
@@ -735,7 +729,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
 
     await act(async () => failFirst(new Error('socket closed')))
 
-    await waitFor(() => expect($clarifyRequests.get()['runtime-session']?.lockedAnswers).toEqual({}))
+    await waitFor(() => expect(clarifyRequestById('runtime-session', 'req-pair')?.lockedAnswers).toEqual({}))
     // The second answer waits on the first, so it never reaches the server without it.
     expect(request).toHaveBeenCalledTimes(1)
     expect(hasOpenServerRequest('req-pair')).toBe(true)

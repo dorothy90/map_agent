@@ -24,6 +24,8 @@ export interface TimelinePartMetadata {
   storedResultToolName?: string
   /** Durable source occurrence, even when several backend rows share a bubble. */
   sourceRowId?: number
+  /** Server request identity bound to a locally restored blocking-tool row. */
+  requestBackedId?: string
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata

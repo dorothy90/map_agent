@@ -7,6 +7,8 @@ yield_query_agent.py에서 분리.
 
 from __future__ import annotations
 
+from html import escape
+
 import os
 import uuid
 
@@ -33,6 +35,13 @@ from common import (
     CATEGORY_TO_BIN,
 )
 from wafer_zones import WAFER_ZONES, compute_zone_deltas, worst_zone
+from yield_table_renderer import (
+    ReportCell,
+    ReportColumn,
+    ReportGroup,
+    ReportRow,
+    render_report_html,
+)
 
 logger = logging.getLogger("yield_agent.yield_viz")
 
@@ -53,21 +62,31 @@ def _save_html_to_file(html: str, prefix: str) -> str:
 
 # ── 값 포맷터 ─────────────────────────────────────────────────
 def _fmt_val(val) -> str:
-    """raw value → 소수점 2자리 포맷. 숫자가 아니면 '-' 반환."""
+    """raw value → 소수점 1자리 포맷. 숫자가 아니면 '-' 반환."""
     if val in (None, "-", ""):
         return "-"
     try:
-        return f"{float(val):.2f}"
+        return f"{float(val):.1f}"
     except (TypeError, ValueError):
         return "-"
 
 
 def _fmt_gms_val(val) -> str:
-    """gms raw value → 소수점 2자리 (×100 없음, 이미 % 단위)"""
+    """gms raw value → 원 단위 소수점 1자리"""
     if val in (None, "-", ""):
         return "-"
     try:
-        return f"{float(val):.2f}"
+        return f"{float(val):.1f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _fmt_count(val) -> str:
+    """count value → 정수 포맷."""
+    if val in (None, "-", ""):
+        return "-"
+    try:
+        return f"{float(val):.0f}"
     except (TypeError, ValueError):
         return "-"
 
@@ -97,7 +116,11 @@ def _build_table(
 
     rows = []
     for wd in weeks_data:
-        row = [wd.get("week", "?"), wd.get("lotcount", "-"), wd.get("wfCount", "-")]
+        row = [
+            wd.get("week", "?"),
+            _fmt_count(wd.get("lotcount", "-")),
+            _fmt_count(wd.get("wfCount", "-")),
+        ]
         row += [_fmt_val(wd.get(col, "-")) for col in cols]
         row += [_fmt_val(wd.get(f"pt1c_{col}", "-")) for col in PT1C_COLUMNS]
         row += [_fmt_gms_val(wd.get(f"gms_{col}", "-")) for col in gms_cols]
@@ -484,6 +507,12 @@ def _build_html_table(
     filter_params=None,
     anomaly_params=None,
     unit: str = "weekly",
+    *,
+    period_label: str | None = None,
+    parameter_formats: dict[str, tuple[str, int]] | None = None,
+    comparison: tuple[int, int] | None = None,
+    parameter_columns: dict[str, list[str]] | None = None,
+    displayed_rows: list[dict] | None = None,
 ) -> str:
     """n기간치 데이터를 동적 HTML 테이블로 변환 (pt1h + pt1c + gms 3섹션)"""
     cols = (
@@ -491,13 +520,31 @@ def _build_html_table(
         if filter_params
         else PARA_COLUMNS
     )
+    pt1c_cols = PT1C_COLUMNS
+    if parameter_columns is not None:
+        cols = parameter_columns.get("pt1h", cols)
+        pt1c_cols = parameter_columns.get("pt1c", pt1c_cols)
     gms_cols = GMS_COLUMNS
-    BLUE_COLS = {"VTH", "IDSAT"}
-
-    # canonical key 기준(PT1H=bare param, PT1C="pt1c_"+param)으로 키잉 → 같은 이름이어도 공정 구분
+    blue_cols = {"VTH", "IDSAT"}
     anomaly_map = {a["key"]: a for a in anomaly_params} if anomaly_params else {}
 
-    # Delta 계산 (최신주 - 직전주, 화면 표시 기준과 동일하게 소수점 2자리 반올림 후 차이 계산)
+    def displayed_number(value):
+        number = float(value)
+        return round(number, 1)
+
+    def format_number(value, key):
+        if value in (None, "-", ""):
+            return "-"
+        try:
+            if parameter_formats is not None:
+                kind, decimals = parameter_formats.get(key, ("number", 2))
+                number = float(value) * (100 if kind in {"ratio", "scaled"} else 1)
+                return f"{number:.{decimals}f}" + ("%" if kind in {"ratio", "percent"} else "")
+            number = displayed_number(value)
+        except (TypeError, ValueError):
+            return "-"
+        return f"{number:.1f}"
+
     delta_pt1h: dict = {}
     delta_pt1c: dict = {}
     delta_gms: dict = {}
@@ -510,17 +557,17 @@ def _build_html_table(
                 delta_pt1h[col] = None
             else:
                 try:
-                    delta_pt1h[col] = round(float(cv), 2) - round(float(pv), 2)
+                    delta_pt1h[col] = displayed_number(cv) - displayed_number(pv)
                 except (TypeError, ValueError):
                     delta_pt1h[col] = None
-        for col in PT1C_COLUMNS:
+        for col in pt1c_cols:
             pv = prev.get(f"pt1c_{col}")
             cv = curr.get(f"pt1c_{col}")
             if pv in (None, "-", "") or cv in (None, "-", ""):
                 delta_pt1c[col] = None
             else:
                 try:
-                    delta_pt1c[col] = round(float(cv), 2) - round(float(pv), 2)
+                    delta_pt1c[col] = displayed_number(cv) - displayed_number(pv)
                 except (TypeError, ValueError):
                     delta_pt1c[col] = None
         for col in gms_cols:
@@ -530,371 +577,234 @@ def _build_html_table(
                 delta_gms[col] = None
             else:
                 try:
-                    delta_gms[col] = round(float(cv), 2) - round(float(pv), 2)
+                    delta_gms[col] = displayed_number(cv) - displayed_number(pv)
                 except (TypeError, ValueError):
                     delta_gms[col] = None
 
-    pt1h_span = len(cols)
-    pt1c_span = len(PT1C_COLUMNS)
-    gms_span = len(gms_cols)
+    def anomaly_presentation(key):
+        anomaly = anomaly_map.get(key)
+        if anomaly is None:
+            return "", None
+        badge = (
+            '<span class="badge-d">↓</span>'
+            if anomaly["direction"] == "열화"
+            else '<span class="badge-i">↑</span>'
+        )
+        title = (
+            f'{anomaly["prev_val"]} → {anomaly["curr_val"]} '
+            f'({anomaly["change_pct"]:+.1f}%)'
+        )
+        return badge, title
 
-    html = """<!DOCTYPE html>
-<html><head><meta charset="UTF-8">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  margin: 0;
-  padding: 8px;
-  background: #ffffff;
-  color: rgba(0, 0, 0, 0.85);
-  overflow-y: auto !important;
-  overflow-x: auto !important;
-}
-.table-container {
-  border-radius: 8px;
-  overflow-x: auto;
-  border: 1px solid #f0f0f0;
-  background: #ffffff;
-  display: block;
-  width: 100%;
-  max-width: 100%;
-}
-.table-container::-webkit-scrollbar {
-  height: 5px;
-}
-.table-container::-webkit-scrollbar-thumb {
-  background: #d9d9d9;
-  border-radius: 3px;
-}
-.table-container::-webkit-scrollbar-thumb:hover {
-  background: #bfbfbf;
-}
-table {
-  border-collapse: collapse;
-  width: 100%;
-  border: none;
-}
-th {
-  background: #fafafa !important;
-  color: rgba(0, 0, 0, 0.85);
-  font-size: 11px;
-  font-weight: 500;
-  border: 1px solid #f0f0f0;
-  vertical-align: middle;
-  padding: 8px 8px;
-}
-th.th-week {
-  background: #fafafa !important;
-  min-width: 70px;
-  text-align: center;
-  color: rgba(0, 0, 0, 0.85);
-  font-size: 11px;
-}
-th.th-meta {
-  background: #fafafa !important;
-  min-width: 36px;
-  text-align: center;
-  color: rgba(0, 0, 0, 0.85);
-  font-size: 11px;
-}
-th.th-section {
-  text-align: center;
-  padding: 8px;
-  font-size: 11px;
-  font-weight: 600;
-  color: rgba(0, 0, 0, 0.85);
-}
-th.th-section-pt1h {
-  border-top: 3px solid #1890ff;
-  background: #e6f7ff !important;
-  color: #0050b3 !important;
-}
-th.th-section-pt1c {
-  border-top: 3px solid #722ed1;
-  border-left: 2px solid #bfbfbf !important;
-  background: #f9f0ff !important;
-  color: #391085 !important;
-}
-th.th-section-gms  {
-  border-top: 3px solid #52c41a;
-  border-left: 2px solid #bfbfbf !important;
-  background: #f6ffed !important;
-  color: #237804 !important;
-}
-th.th-param {
-  width: 36px;
-  height: 75px;
-  padding: 0;
-  vertical-align: bottom;
-  background: #fafafa !important;
-  border-bottom: 1px solid #f0f0f0;
-  border-left: 1px solid #f0f0f0;
-}
-th.th-blue, th.th-amber, th.th-blue-pt1c, th.th-amber-pt1c, th.th-gms {
-  background: #fafafa;
-}
-
-.th-param-inner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  height: 100%;
-  padding: 4px 1px;
-}
-.hname {
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-  white-space: nowrap;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-  color: rgba(0, 0, 0, 0.85);
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.badge-d { color: #cf1322; font-size: 10px; font-weight: bold; }
-.badge-i { color: #389e0d; font-size: 10px; font-weight: bold; }
-
-td {
-  border: 1px solid #f0f0f0;
-  padding: 4px 6px;
-  text-align: right;
-  font-size: 11px;
-  color: rgba(0, 0, 0, 0.65);
-  font-family: 'JetBrains Mono', monospace;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  transition: background 0.3s ease;
-}
-td.td-week {
-  text-align: center;
-  font-family: 'Inter', sans-serif;
-  font-weight: 500;
-  font-size: 11px;
-  color: rgba(0, 0, 0, 0.65);
-  background: #fafafa !important;
-}
-tr td:not(.td-week) { background: #ffffff; }
-
-tr:hover td:not(.td-week) {
-  background: #fafafa !important;
-}
-
-td.degraded {
-  background: #fff1f0 !important;
-  color: #cf1322 !important;
-  font-weight: 500;
-}
-td.improved {
-  background: #f6ffed !important;
-  color: #389e0d !important;
-  font-weight: 500;
-}
-td.td-pt1c-sep { border-left: 2px solid #bfbfbf !important; }
-td.td-gms-sep  { border-left: 2px solid #bfbfbf !important; }
-
-tr.delta td {
-  background: #fafafa !important;
-  color: rgba(0, 0, 0, 0.85);
-  font-size: 10px;
-  font-weight: 500;
-  border-top: 1px solid #f0f0f0;
-}
-tr.delta td.delta-week {
-  text-align: center;
-  color: #1890ff;
-  font-weight: 600;
-  font-size: 11px;
-  font-family: 'Inter', sans-serif;
-}
-td.delta-neg { background: #fff1f0 !important; color: #cf1322 !important; font-weight: 500; }
-td.delta-pos { background: #f6ffed !important; color: #389e0d !important; font-weight: 500; }
-</style></head><body>
-<div class="table-container">
-<table>
-<thead>"""
-
-    period_label = _PERIOD_LABEL.get(unit, "WEEK")
-
-    # Row 1: 섹션 헤더
-    html += (
-        f"\n<tr>"
-        f'<th class="th-week" rowspan="2">{period_label}</th>'
-        f'<th class="th-meta" rowspan="2">LOT</th>'
-        f'<th class="th-meta" rowspan="2">WF</th>'
-        f'<th colspan="{pt1h_span}" class="th-section th-section-pt1h">pt1h</th>'
-        f'<th colspan="{pt1c_span}" class="th-section th-section-pt1c">pt1c</th>'
-        f'<th colspan="{gms_span}" class="th-section th-section-gms">gms</th>'
-        f"</tr>"
-    )
-
-    # Row 2: 서브헤더
-    html += "\n<tr>"
-
+    pt1h_columns = []
     for col in cols:
-        css = "th-blue" if col in BLUE_COLS else "th-amber"
-        badge = ""
-        if col in anomaly_map:
-            badge = (
-                '<span class="badge-d">↓</span>'
-                if anomaly_map[col]["direction"] == "열화"
-                else '<span class="badge-i">↑</span>'
+        badge, title = anomaly_presentation(col)
+        pt1h_columns.append(
+            ReportColumn(
+                label=escape(col) if parameter_columns is not None else col,
+                css_class="th-blue" if col in blue_cols else "th-amber",
+                title=title,
+                badge=badge,
             )
-        tip = ""
-        if col in anomaly_map:
-            a = anomaly_map[col]
-            tip = (
-                f' title="{a["prev_val"]} → {a["curr_val"]} ({a["change_pct"]:+.1f}%)"'
-            )
-        html += (
-            f'<th class="th-param {css}"{tip}>'
-            f'<div class="th-param-inner">'
-            f'<div class="hname">{col}{badge}</div>'
-            f"</div></th>"
         )
 
-    for j, col in enumerate(PT1C_COLUMNS):
-        sep = ' style="border-left: 2px solid #bfbfbf;"' if j == 0 else ""
-        akey = f"pt1c_{col}"
-        badge = ""
-        tip = ""
-        if akey in anomaly_map:
-            a = anomaly_map[akey]
-            badge = (
-                '<span class="badge-d">↓</span>'
-                if a["direction"] == "열화"
-                else '<span class="badge-i">↑</span>'
+    pt1c_columns = []
+    for index, col in enumerate(pt1c_cols):
+        badge, title = anomaly_presentation(f"pt1c_{col}")
+        pt1c_columns.append(
+            ReportColumn(
+                label=escape(col) if parameter_columns is not None else col,
+                css_class="th-amber-pt1c",
+                style="border-left: 2px solid #bfbfbf;" if index == 0 else "",
+                title=title,
+                badge=badge,
             )
-            tip = f' title="{a["prev_val"]} → {a["curr_val"]} ({a["change_pct"]:+.1f}%)"'
-        html += (
-            f'<th class="th-param th-amber-pt1c"{sep}{tip}>'
-            f'<div class="th-param-inner">'
-            f'<div class="hname">{col}{badge}</div>'
-            f"</div></th>"
         )
 
-    for j, col in enumerate(gms_cols):
-        sep = ' style="border-left: 2px solid #bfbfbf;"' if j == 0 else ""
-        html += (
-            f'<th class="th-param th-gms"{sep}>'
-            f'<div class="th-param-inner">'
-            f'<div class="hname">{col}</div>'
-            f"</div></th>"
+    gms_columns = [
+        ReportColumn(
+            label=escape(col) if parameter_columns is not None else col,
+            css_class="th-gms",
+            style="border-left: 2px solid #bfbfbf;" if index == 0 else "",
         )
+        for index, col in enumerate(gms_cols)
+    ]
+    groups = [
+        ReportGroup("pt1h", "th-section-pt1h", pt1h_columns),
+        ReportGroup("pt1c", "th-section-pt1c", pt1c_columns),
+        ReportGroup("gms", "th-section-gms", gms_columns),
+    ]
 
-    html += "\n</tr>\n</thead>\n<tbody>\n"
+    if parameter_columns is not None:
+        groups = [group for group in groups if group.columns]
 
+    report_rows = []
     last_idx = len(weeks_data) - 1
-    for i, wd in enumerate(weeks_data):
-        html += "<tr>"
-        html += f'<td class="td-week">{wd.get("week", "?")}</td>'
-
-        html += f"<td>{wd.get('lotcount', '-')}</td>"
-        html += f"<td>{wd.get('wfCount', '-')}</td>"
-
+    for index, wd in enumerate(weeks_data):
+        values = []
         for col in cols:
-            display = _fmt_val(wd.get(col, "-"))
-            if i == last_idx and col in anomaly_map:
-                a = anomaly_map[col]
-                css = "degraded" if a["direction"] == "열화" else "improved"
-                tip = f"{a['prev_val']} → {a['curr_val']} ({a['change_pct']:+.1f}%)"
-                html += f'<td class="{css}" title="{tip}">{display}</td>'
-            else:
-                html += f"<td>{display}</td>"
-
-        for j, col in enumerate(PT1C_COLUMNS):
-            display = _fmt_val(wd.get(f"pt1c_{col}", "-"))
-            sep_cls = "td-pt1c-sep" if j == 0 else ""
-            akey = f"pt1c_{col}"
-            if i == last_idx and akey in anomaly_map:
-                a = anomaly_map[akey]
-                anom_cls = "degraded" if a["direction"] == "열화" else "improved"
-                cls = f"{sep_cls} {anom_cls}".strip()
-                tip = f"{a['prev_val']} → {a['curr_val']} ({a['change_pct']:+.1f}%)"
-                html += f'<td class="{cls}" title="{tip}">{display}</td>'
-            else:
-                cls_attr = f' class="{sep_cls}"' if sep_cls else ""
-                html += f"<td{cls_attr}>{display}</td>"
-
-        for j, col in enumerate(gms_cols):
-            display = _fmt_gms_val(wd.get(f"gms_{col}", "-"))
-            sep = ' class="td-gms-sep"' if j == 0 else ""
-            html += f"<td{sep}>{display}</td>"
-
-        html += "</tr>\n"
-
-    # Δ 행
-    if len(weeks_data) >= 2:
-        html += '<tr class="delta">'
-        html += '<td class="delta-week">Δ</td>'
-        html += "<td>—</td><td>—</td>"
-
-        for col in cols:
-            d = delta_pt1h.get(col)
-            if d is None:
-                html += "<td>—</td>"
-            elif abs(d) < 0.005:  # 소수점 2자리 반올림 시 0인 미세 변화
-                html += "<td>0.00</td>"
-            else:
-                is_better = (col in HIGHER_IS_BETTER and d > 0) or (
-                    col not in HIGHER_IS_BETTER and d < 0
+            css_class = ""
+            title = None
+            if index == last_idx and col in anomaly_map:
+                anomaly = anomaly_map[col]
+                css_class = "degraded" if anomaly["direction"] == "열화" else "improved"
+                title = (
+                    f"{anomaly['prev_val']} → {anomaly['curr_val']} "
+                    f"({anomaly['change_pct']:+.1f}%)"
                 )
-                css = "delta-pos" if is_better else "delta-neg"
-                html += f'<td class="{css}">{d:+.2f}</td>'
+            values.append(ReportCell(
+                format_number(wd.get(col, "-"), col),
+                css_class,
+                title,
+            ))
 
-        for j, col in enumerate(PT1C_COLUMNS):
-            d = delta_pt1c.get(col)
-            sep = " td-pt1c-sep" if j == 0 else ""
-            if d is None:
-                html += f'<td class="{sep.strip()}">—</td>' if sep else "<td>—</td>"
-            elif abs(d) < 0.005:
-                html += f'<td class="{sep.strip()}">0.00</td>' if sep else "<td>0.00</td>"
+        for param_index, col in enumerate(pt1c_cols):
+            key = f"pt1c_{col}"
+            css_class = "td-pt1c-sep" if param_index == 0 else ""
+            title = None
+            if index == last_idx and key in anomaly_map:
+                anomaly = anomaly_map[key]
+                anomaly_class = (
+                    "degraded" if anomaly["direction"] == "열화" else "improved"
+                )
+                css_class = f"{css_class} {anomaly_class}".strip()
+                title = (
+                    f"{anomaly['prev_val']} → {anomaly['curr_val']} "
+                    f"({anomaly['change_pct']:+.1f}%)"
+                )
+            values.append(ReportCell(
+                format_number(wd.get(key, "-"), key),
+                css_class,
+                title,
+            ))
+
+        for param_index, col in enumerate(gms_cols):
+            values.append(
+                ReportCell(
+                    format_number(wd.get(f"gms_{col}", "-"), f"gms_{col}"),
+                    "td-gms-sep" if param_index == 0 else "",
+                )
+            )
+
+        report_rows.append(
+            ReportRow(
+                metadata=[
+                    ReportCell(escape(str(wd.get("week", "?"))), "td-week"),
+                    ReportCell(_fmt_count(wd.get("lotcount", "-"))),
+                    ReportCell(_fmt_count(wd.get("wfCount", "-"))),
+                ],
+                values=values,
+            )
+        )
+
+    delta_row = None
+    if len(weeks_data) >= 2:
+        delta_row = [
+            ReportCell("Δ", "delta-week"),
+            ReportCell("—"),
+            ReportCell("—"),
+        ]
+        for col in cols:
+            delta = delta_pt1h.get(col)
+            if delta is None:
+                delta_row.append(ReportCell("—"))
+            elif abs(delta) < 0.05:
+                delta_row.append(ReportCell("0.0"))
             else:
-                css = "delta-pos" + sep
-                html += f'<td class="{css}">{d:+.2f}</td>'
+                is_better = (col in HIGHER_IS_BETTER and delta > 0) or (
+                    col not in HIGHER_IS_BETTER and delta < 0
+                )
+                delta_row.append(
+                    ReportCell(
+                        f"{delta:+.1f}",
+                        "delta-pos" if is_better else "delta-neg",
+                    )
+                )
 
-        for j, col in enumerate(gms_cols):
-            d = delta_gms.get(col)
-            sep = " td-gms-sep" if j == 0 else ""
-            if d is None:
-                html += f'<td class="{sep.strip()}">—</td>' if sep else "<td>—</td>"
-            elif abs(d) < 0.005:
-                html += f'<td class="{sep.strip()}">0.00</td>' if sep else "<td>0.00</td>"
+        for index, col in enumerate(pt1c_cols):
+            delta = delta_pt1c.get(col)
+            separator = "td-pt1c-sep" if index == 0 else ""
+            if delta is None:
+                delta_row.append(ReportCell("—", separator))
+            elif abs(delta) < 0.05:
+                delta_row.append(ReportCell("0.0", separator))
             else:
-                is_better = col in GMS_HIGHER_IS_BETTER and d > 0
-                css = ("delta-pos" if is_better else "delta-neg") + sep
-                html += f'<td class="{css}">{d:+.2f}</td>'
+                css_class = "delta-pos"
+                if separator:
+                    css_class += f" {separator}"
+                delta_row.append(ReportCell(
+                    f"{delta:+.1f}",
+                    css_class,
+                ))
 
-        html += "</tr>\n"
+        for index, col in enumerate(gms_cols):
+            delta = delta_gms.get(col)
+            separator = "td-gms-sep" if index == 0 else ""
+            if delta is None:
+                delta_row.append(ReportCell("—", separator))
+            elif abs(delta) < 0.05:
+                delta_row.append(ReportCell("0.0", separator))
+            else:
+                is_better = col in GMS_HIGHER_IS_BETTER and delta > 0
+                css_class = "delta-pos" if is_better else "delta-neg"
+                if separator:
+                    css_class += f" {separator}"
+                delta_row.append(ReportCell(
+                    f"{delta:+.1f}", css_class,
+                ))
 
-    html += """</tbody></table>
-</div>
-<script>
-function sendHeight() {
-  var height = (document.documentElement.scrollHeight || document.body.scrollHeight) + 15;
-  window.parent.postMessage({ type: 'resize', height: height }, '*');
-  window.parent.postMessage({ type: 'set-height', height: height }, '*');
-  window.parent.postMessage({ height: height }, '*');
-}
-window.addEventListener('load', function() {
-  sendHeight();
-  setTimeout(sendHeight, 100);
-  setTimeout(sendHeight, 300);
-  setTimeout(sendHeight, 600);
-});
-window.addEventListener('resize', sendHeight);
-if (window.ResizeObserver) {
-  new ResizeObserver(sendHeight).observe(document.body);
-}
-</script>
-</body></html>"""
-    return html
+    if parameter_formats is not None:
+        delta_row = None
+        if comparison is not None:
+            baseline, current = (weeks_data[index] for index in comparison)
+            label = f"Δ {current.get('week', '?')} − {baseline.get('week', '?')}"
+            delta_row = [ReportCell(escape(label), "delta-week"), ReportCell("—"), ReportCell("—")]
+            keys = list(cols) + [f"pt1c_{col}" for col in pt1c_cols] + [f"gms_{col}" for col in gms_cols]
+            for key in keys:
+                before, after = baseline.get(key), current.get(key)
+                kind, decimals = parameter_formats.get(key, ("number", 2))
+                try:
+                    difference = (float(after) - float(before)) * (100 if kind in {"ratio", "scaled"} else 1)
+                    text = f"{difference:+.{decimals}f}"
+                    if float(text) == 0:
+                        text = f"{0:.{decimals}f}"
+                    if kind in {"ratio", "percent"}:
+                        text += "%p"
+                except (TypeError, ValueError):
+                    text = "—"
+                separator = "td-pt1c-sep" if pt1c_cols and key == f"pt1c_{pt1c_cols[0]}" else ""
+                if key == f"gms_{gms_cols[0]}":
+                    separator = "td-gms-sep"
+                delta_row.append(ReportCell(text, separator))
 
+    if displayed_rows is not None:
+        # Use the very same ReportCell strings as HTML; raw delta is in source units.
+        keys = ["lotcount", "wfCount", *cols, *(f"pt1c_{c}" for c in pt1c_cols),
+                *(f"gms_{c}" for c in gms_cols)]
+        names = ["lot", "wf", *(f"PT1H TEST/{c}" for c in cols),
+                 *(f"PT1C TEST/{c}" for c in pt1c_cols), *(f"GMS/{c}" for c in gms_cols)]
+        for source, rendered in zip(weeks_data, report_rows):
+            for key, name, cell in zip(keys, names, rendered.metadata[1:] + rendered.values):
+                raw = source.get(key)
+                displayed_rows.append({"row": source["week"], "column": name,
+                                       "raw": None if raw in (None, "-", "") else raw,
+                                       "shown": cell.text})
+        if delta_row is not None:
+            for key, name, cell in zip(keys, names, delta_row[1:]):
+                raw = None
+                if comparison is not None and key not in {"lotcount", "wfCount"}:
+                    before, after = (weeks_data[i].get(key) for i in comparison)
+                    if before not in (None, "-", "") and after not in (None, "-", ""):
+                        raw = float(after) - float(before)
+                displayed_rows.append({"row": "Δ", "column": name, "raw": raw, "shown": cell.text})
+
+    return render_report_html(
+        report_rows,
+        groups,
+        metadata_columns=["LOT", "WF"],
+        period_label=escape(period_label) if period_label is not None else _PERIOD_LABEL.get(unit, "WEEK"),
+        delta_row=delta_row,
+    )
 
 # ── 이상감지 ──────────────────────────────────────────────────
 TOP_N_ANOMALIES = int(os.getenv("TOP_N_ANOMALIES", "3"))

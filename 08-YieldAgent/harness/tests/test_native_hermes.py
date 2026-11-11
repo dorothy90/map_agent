@@ -1,4 +1,6 @@
 import asyncio
+import copy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -7,13 +9,99 @@ from harness.tools.registry import ToolRegistry, ToolSpec
 from harness.types import Contract, ToolObservation
 
 
+def test_verification_evidence_is_compact_complete_and_does_not_mutate_inputs():
+    import harness.native_hermes as native
+    from harness.types import TableRef
+    long = 'x' * 1000
+    observations = [ToolObservation(principal_id='p', session_id='s', run_id='r',
+        invocation_id='i', result_id='multi', source_result_ids=['source'], tool_name='query',
+        validated_arguments={'nested': {'value': long}}, status='success', summary=long,
+        tables=[
+            TableRef(table_id='a', title='A', columns=['one', 'two'], total_rows=3,
+                preview_rows=[{'one': i, 'two': long} for i in range(3)], complete=True, data_ref='a'),
+            TableRef(table_id='b', title='B', columns=['two', 'three'], total_rows=4,
+                preview_rows=[{'two': {'nested': long}, 'three': i} for i in range(4)], complete=True, data_ref='b'),
+        ])]
+    observations += [ToolObservation(principal_id='p', session_id='s', run_id='r',
+        invocation_id=f'i-{i}', result_id=f'wide-{i}', source_result_ids=[f'lineage-{i}'],
+        tool_name='query', validated_arguments={'value': long}, status='success', summary=long,
+        columns=[f'column-{j}' for j in range(80)],
+        preview_rows=[{f'column-{j}': long for j in range(80)} for _ in range(10)], total_rows=10)
+        for i in range(20)]
+    observations += [ToolObservation(principal_id='p', session_id='s', run_id='r',
+        invocation_id=f'm-{i}', result_id=f'metadata-{i}-' + 'r' * 100,
+        tool_name='query', status='empty') for i in range(300)]
+    required_id = 'required-' + 'z' * 200
+    observations.append(ToolObservation(principal_id='p', session_id='s', run_id='r',
+        invocation_id='required', result_id=required_id, source_result_ids=['required-source'],
+        tool_name='query', status='empty'))
+    original = copy.deepcopy(observations)
+
+    sample_evidence, _ = native._verification_evidence(observations[:1])
+    evidence, known = native._verification_evidence(observations)
+    repeated = native._verification_evidence(observations)
+
+    assert len(json.dumps(evidence, ensure_ascii=False)) <= 20_000
+    assert repeated == (evidence, known)
+    assert set(known) == ({obs.result_id for obs in observations}
+        | {source for obs in observations for source in obs.source_result_ids})
+    assert observations == original
+    multi = sample_evidence[0]
+    assert multi['total_rows'] == 7 and multi['column_count'] == 3
+    assert len(multi['preview_rows']) == 5
+    assert [row['table_id'] for row in multi['preview_rows']] == ['a', 'a', 'a', 'b', 'b']
+    assert len(multi['summary']) <= 240 and len(multi['args_summary']) <= 400
+    assert all(len(value) <= 160 for row in multi['preview_rows']
+        for value in row.values() if isinstance(value, str))
+    assert required_id in known and 'required-source' in known
+    assert not any(item['result_id'] == required_id for item in evidence)
+    assert evidence and all('summary' not in item and 'args_summary' not in item for item in evidence)
+
+
+def test_verification_evidence_drops_samples_before_reference_metadata():
+    import harness.native_hermes as native
+    observations = [ToolObservation(principal_id='p', session_id='s', run_id='r',
+        invocation_id=f'i-{i}', result_id=f'result-{i}', tool_name='query',
+        validated_arguments={'index': i}, status='success', summary='kept summary',
+        columns=['value'], preview_rows=[{'value': 'x' * 1000} for _ in range(5)], total_rows=5)
+        for i in range(30)]
+
+    evidence, known = native._verification_evidence(observations)
+
+    assert len(evidence) == len(observations)
+    assert all('summary' in item and 'args_summary' in item for item in evidence)
+    assert sum(len(item['preview_rows']) for item in evidence) < 30 * 5
+    assert known == sorted(f'result-{i}' for i in range(30))
+
+
+def test_verification_evidence_handles_empty_and_error_results():
+    import harness.native_hermes as native
+    assert native._verification_evidence([]) == ([], [])
+    error = ToolObservation(principal_id='p', session_id='s', run_id='r', invocation_id='i',
+        result_id='error', tool_name='query', status='error', preview_rows=[{'secret': 'row'}],
+        total_rows=1, error={'message': 'not copied'})
+
+    evidence, known = native._verification_evidence([error])
+
+    assert known == ['error']
+    assert evidence[0]['preview_rows'] == []
+    assert 'error' not in evidence[0]
+
+    oversized = ToolObservation(principal_id='p', session_id='s', run_id='r', invocation_id='i',
+        result_id='oversized', tool_name='query', status='success',
+        preview_rows=[{'value': 10 ** 500}], total_rows=1)
+    evidence, _ = native._verification_evidence([oversized])
+    assert isinstance(evidence[0]['preview_rows'][0]['value'], str)
+    assert len(evidence[0]['preview_rows'][0]['value']) <= 160
+
+
 def test_native_bridge_exposes_only_allowed_backend_tools():
     from harness.native_hermes import NativeBridge
     registry = ToolRegistry()
-    for name, effect in [('read', 'read'), ('plot', 'artifact'), ('write', 'persistent_write')]:
+    for name, effect in [('read_result', 'read'), ('render_yield_table', 'artifact'), ('write', 'persistent_write')]:
         registry.add(ToolSpec(name, name, Contract, lambda *a: None, effect=effect))
     bridge = NativeBridge(registry, None)
-    assert {x['function']['name'] for x in bridge.schemas()} == {'read', 'plot'}
+    assert {x['function']['name'] for x in bridge.schemas()} == {'read_result', 'render_yield_table'}
     with pytest.raises(PermissionError):
         asyncio.run(bridge.invoke({'name': 'write', 'args': {}, 'id': 'call'}))
 
@@ -31,9 +119,9 @@ def test_native_bridge_uses_existing_executor_and_preserves_result_ids(monkeypat
             return observed
     monkeypatch.setattr(native, 'ToolExecutor', Executor)
     registry = ToolRegistry()
-    registry.add(ToolSpec('read', 'read', Contract, lambda *a: None))
+    registry.add(ToolSpec('read_result', 'read', Contract, lambda *a: None))
     bridge = native.NativeBridge(registry, None)
-    result = asyncio.run(bridge.invoke({'name': 'read', 'args': {}, 'id': 'native-id'}))
+    result = asyncio.run(bridge.invoke({'name': 'read_result', 'args': {}, 'id': 'native-id'}))
     assert result['result_id'] == 'stored'
     assert calls[0]['id'] == 'native-id'
     assert bridge.observations[0]['result_id'] == 'stored'
@@ -211,3 +299,27 @@ def test_embedded_profile_disables_host_package_probe_without_losing_settings(mo
     assert saved['agent'] == {'environment_probe': False, 'stall_guards': False}
     assert saved['delegation'] == {'orchestrator_enabled': False, 'max_spawn_depth': 1}
     assert saved['auxiliary']['title_generation']['model_upgrade_enabled'] is False
+
+
+@pytest.mark.parametrize('requested,expected', [
+    (None, {'query_db', 'read_result'}),
+    ([], {'read_result'}),
+    (['extra'], {'extra', 'read_result'}),
+])
+def test_native_bridge_defaults_to_harness_capabilities(requested, expected):
+    from harness.native_hermes import NativeBridge
+    registry = ToolRegistry()
+    for name in ('query_db', 'read_result', 'extra', 'execute_code', 'terminal',
+                 'read_file', 'search_files', 'write_file', 'patch', 'delegate_task'):
+        registry.add(ToolSpec(name, name, Contract, lambda *a: None))
+    context = SimpleNamespace(settings=SimpleNamespace(native_allowed_tools=requested))
+    bridge = NativeBridge(registry, context)
+    assert bridge.allowed == expected
+    assert {tool['function']['name'] for tool in bridge.schemas()} == expected
+
+
+def test_native_bridge_rejects_unknown_explicit_capability():
+    from harness.native_hermes import NativeBridge
+    context = SimpleNamespace(settings=SimpleNamespace(native_allowed_tools=['missing']))
+    with pytest.raises(ValueError, match='unknown tools: missing'):
+        NativeBridge(ToolRegistry(), context)

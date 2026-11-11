@@ -5,10 +5,13 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
+import { handleInputRequestEvent } from '@/app/session/hooks/use-message-stream/gateway-event/input-requests'
+import type { GatewayEventContext } from '@/app/session/hooks/use-message-stream/gateway-event/types'
+import { handleServerRequest } from '@/app/session/hooks/use-message-stream/gateway-event/server-requests'
 import { hiddenPaneProps } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { I18nProvider } from '@/i18n'
-import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { clarifyRequestsForSession, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
@@ -212,7 +215,7 @@ describe('ClarifyTool live card stays mounted across settle', () => {
       ]
     }
 
-    renderClarify(<ClarifyTool {...props} args={args} argsText={JSON.stringify(args)} />)
+    renderClarify(<ClarifyTool {...props} args={args} argsText={JSON.stringify(args)} toolCallId="request-1" />)
 
     expect(screen.getByRole('button', { name: /staging/ }).hasAttribute('disabled')).toBe(false)
     expect(screen.queryByText('Which region?')).toBeNull()
@@ -234,8 +237,8 @@ describe('ClarifyTool live card stays mounted across settle', () => {
         { question: 'Which region?', choices: ['us', 'eu'] }
       ]
     }
-    const props = { ...liveClarifyProps(), args, argsText: JSON.stringify(args) }
-    renderClarify(<ClarifyTool {...props} />)
+    const props = { ...liveClarifyProps(), args, argsText: JSON.stringify(args), toolCallId: 'request-1' }
+    const { rerender } = renderClarify(<ClarifyTool {...props} />)
 
     fireEvent.click(screen.getByRole('button', { name: /staging/ }))
     fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
@@ -247,6 +250,7 @@ describe('ClarifyTool live card stays mounted across settle', () => {
         sessionId: 'session-1'
       })
     })
+    rerender(clarifyTree(<ClarifyTool {...props} toolCallId="request-2" />))
 
     await waitFor(() => expect(screen.getByRole('button', { name: /^.*eu/ }).hasAttribute('disabled')).toBe(false))
   })
@@ -1382,5 +1386,185 @@ describe('ClarifyTool one-entry batch hydration', () => {
         request_id: 'request-one-entry-open'
       })
     })
+  })
+})
+
+describe('ClarifyTool canonical per-question batch', () => {
+  const props = (toolCallId: string, questions: Array<{ choices: string[]; question: string }>) => ({
+    ...liveClarifyProps(),
+    args: { questions },
+    argsText: JSON.stringify({ questions }),
+    toolCallId
+  })
+
+  it('steps through sibling prompts, keeps answers on back, and submits each prompt id in order', async () => {
+    Element.prototype.animate = () => ({ cancel() {}, finished: Promise.resolve() }) as unknown as Animation
+    const request = vi.fn().mockResolvedValue({ status: 'resolved' })
+    const product = { choices: ['4SS', '8SS'], question: 'Choose an option' }
+    const period = { choices: ['2026-Q3', '2026-Q4'], question: 'Choose an option' }
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    const deps = {
+      activeSessionIdRef: { current: 'session-1' },
+      sessionInterrupted: () => false,
+      updateSessionState: vi.fn((_sessionId, update) =>
+        update({ busy: true, messages: [], needsInput: false } as never)
+      )
+    }
+
+    for (const [id, qid, question] of [
+      ['srq-1:q1', 'q1', product],
+      ['srq-1:q2', 'q2', period]
+    ] as const) {
+      handleServerRequest(
+        {
+          fail: vi.fn(),
+          id,
+          method: 'clarify',
+          params: { questions: [{ ...question, multi_select: false, qid }], session_id: 'session-1' },
+          profile: 'default',
+          respond: vi.fn()
+        },
+        deps as never,
+        'session-1'
+      )
+    }
+
+    renderClarify(
+      <SessionViewProvider value={{ $runtimeId: atom('session-1') } as unknown as SessionView}>
+        <ClarifyTool {...props('provider-batch', [product, period])} />
+        <ClarifyTool {...props('srq-1:q1', [product])} />
+        <ClarifyTool {...props('srq-1:q2', [period])} />
+      </SessionViewProvider>
+    )
+
+    expect(screen.getByText('1/2')).toBeTruthy()
+    expect(document.querySelectorAll('form[data-clarify-stepper]')).toHaveLength(1)
+    expect(document.querySelector('[data-clarify-batch-question="q1"]')).toBeTruthy()
+    expect(document.querySelector('[data-clarify-batch-question="q2"]')).toBeNull()
+
+    const productChoice = screen.getByRole('button', { name: /4SS/ })
+    fireEvent.click(productChoice)
+
+    fireEvent.click(screen.getByRole('button', { name: '다음 →' }))
+    expect(screen.getByText('2/2')).toBeTruthy()
+    expect(document.querySelector('[data-clarify-batch-question="q1"]')).toBeNull()
+    expect(document.querySelector('[data-clarify-batch-question="q2"]')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '← 이전' }))
+    expect(screen.getByText('1/2')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /4SS/ }).getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: '다음 →' }))
+    const periodChoice = screen.getByRole('button', { name: /2026-Q4/ })
+    fireEvent.click(periodChoice)
+    fireEvent.click(screen.getByRole('button', { name: '확인' }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
+        answer: '4SS',
+        question_id: 'q1',
+        request_id: 'srq-1:q1'
+      })
+      expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', {
+        answer: '2026-Q4',
+        question_id: 'q2',
+        request_id: 'srq-1:q2'
+      })
+    })
+
+    await waitFor(() => {
+      expect(clarifyRequestsForSession('session-1')).toEqual([])
+      expect(document.querySelector('form[data-clarify-stepper]')).toBeNull()
+      expect(document.querySelectorAll('[data-clarify-settled]')).toHaveLength(2)
+    })
+    expect(Array.from(document.querySelectorAll('[data-clarify-answer]')).map(row => row.textContent)).toEqual([
+      '4SS',
+      '2026-Q4'
+    ])
+  })
+
+  it('leaves one pending prompt on the existing single-question card', () => {
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    setClarifyRequest({
+      questions: [{ choices: ['4SS', '8SS'], multiSelect: false, qid: 'q1', question: 'Choose a product' }],
+      requestId: 'srq-2:q1',
+      sessionId: 'session-1'
+    })
+
+    renderClarify(<ClarifyTool {...props('srq-2:q1', [{ choices: ['4SS', '8SS'], question: 'Choose a product' }])} />)
+
+    expect(document.querySelector('form[data-clarify-batch="1"]')).toBeTruthy()
+    expect(document.querySelector('form[data-clarify-stepper]')).toBeNull()
+    expect(screen.getByRole('button', { name: /Confirm and continue/ })).toBeTruthy()
+  })
+
+  it('removes the rendered sibling stepper when the canonical group settles', () => {
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    const product = { choices: ['4SS', '8SS'], question: 'Choose a product' }
+    const period = { choices: ['2026-Q3', '2026-Q4'], question: 'Choose a period' }
+
+    for (const [requestId, qid, question] of [
+      ['srq-4:q1', 'q1', product],
+      ['srq-4:q2', 'q2', period]
+    ] as const) {
+      setClarifyRequest({
+        questions: [{ ...question, multiSelect: false, qid }],
+        requestId,
+        sessionId: 'session-1'
+      })
+    }
+
+    renderClarify(
+      <>
+        <ClarifyTool {...props('srq-4:q1', [product])} />
+        <ClarifyTool {...props('srq-4:q2', [period])} />
+      </>
+    )
+    expect(document.querySelector('form[data-clarify-stepper]')).toBeTruthy()
+
+    const payload = { prompt_id: 'srq-4:q2' }
+    act(() => {
+      handleInputRequestEvent({
+        deps: { updateSessionState: vi.fn() } as unknown as GatewayEventContext['deps'],
+        event: { payload: payload as never, type: 'clarify.settled' },
+        explicitSid: 'session-1',
+        fromActiveSource: () => true,
+        isActiveEvent: true,
+        occurredAt: 1,
+        payload: payload as never,
+        scheduleConfigRefresh: vi.fn(),
+        sessionId: 'session-1'
+      })
+    })
+
+    expect(document.querySelector('form[data-clarify-stepper]')).toBeNull()
+  })
+
+  it('shows only q2 when restore has already settled q1', () => {
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    const product = { choices: ['4SS', '8SS'], question: 'Choose a product' }
+    const period = { choices: ['2026-Q3', '2026-Q4'], question: 'Choose a period' }
+
+    setClarifyRequest({
+      questions: [{ ...period, multiSelect: false, qid: 'q2' }],
+      requestId: 'srq-3:q2',
+      sessionId: 'session-1'
+    })
+
+    renderClarify(
+      <>
+        <ClarifyTool {...props('srq-3:q1', [product])} />
+        <ClarifyTool {...props('srq-3:q2', [period])} />
+      </>
+    )
+
+    expect(screen.queryByText('Choose a product')).toBeNull()
+    expect(screen.getByText('Choose a period')).toBeTruthy()
+    expect(document.querySelector('form[data-clarify-stepper]')).toBeNull()
   })
 })

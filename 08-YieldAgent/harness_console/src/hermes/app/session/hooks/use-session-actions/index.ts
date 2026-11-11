@@ -35,7 +35,7 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { purgeInFlightTurnJournals, recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
-import { $clarifyRequests, clearClarifyRequest } from '@/store/clarify'
+import { type ClarifyRequest, clarifyRequestsForSession, clearClarifyRequest } from '@/store/clarify'
 import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { resetSessionBackground } from '@/store/composer-status'
@@ -332,6 +332,38 @@ function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId: strin
   }
 
   return changed ? next : messages
+}
+
+function withoutEarlyClarifyProjections(messages: ChatMessage[], requests: ClarifyRequest[]): ChatMessage[] {
+  return requests.reduce((current, request) => withoutEarlyClarifyProjection(current, request.requestId), messages)
+}
+
+function projectPendingClarifies(messages: ChatMessage[], requests: ClarifyRequest[]) {
+  if (requests.length === 0) {
+    return null
+  }
+
+  return requests.reduce(
+    (projection, request) =>
+      restorePendingClarifyToolCall(projection.messages, pendingClarifyToolPayload(request)),
+    { messages, streamId: '' }
+  )
+}
+
+function settleClearedClarifies(messages: ChatMessage[], requests: ClarifyRequest[], keepMessageRunning: boolean) {
+  if (requests.length === 0) {
+    return settlePendingClarifyToolCall(messages, {}, keepMessageRunning)
+  }
+
+  return requests.reduce(
+    (projection, request) =>
+      settlePendingClarifyToolCall(
+        projection.messages,
+        pendingClarifyToolPayload(request),
+        keepMessageRunning
+      ),
+    { messages, streamId: null as string | null }
+  )
 }
 
 /** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
@@ -1548,7 +1580,9 @@ export function useSessionActions({
             let activated: SessionResumeResult | null = null
             const activateStartedAt = Date.now() / 1000
             const activateBaselineState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId) ?? cachedViewState
-            const clarifyRequestIdAtActivateStart = $clarifyRequests.get()[cachedRuntimeId]?.requestId
+            const clarifyRequestIdsAtActivateStart = clarifyRequestsForSession(cachedRuntimeId).map(
+              request => request.requestId
+            )
             const connectionOpIdAtActivateStart = $connectionRequests.get()[cachedRuntimeId]?.opId
 
             try {
@@ -1595,10 +1629,10 @@ export function useSessionActions({
                 activated,
                 cachedRuntimeId,
                 activateStartedAt,
-                clarifyRequestIdAtActivateStart
+                clarifyRequestIdsAtActivateStart
               )
 
-              const pendingClarify = pendingClarifyState.request
+              const pendingClarifies = pendingClarifyState.requests
 
               const pendingConnection = restorePendingConnectionFromSnapshot(
                 activated,
@@ -1608,7 +1642,7 @@ export function useSessionActions({
               ).request
 
               const clarifyAuthoritativelyAbsent =
-                pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[cachedRuntimeId]
+                pendingClarifyState.authoritativeAbsent && clarifyRequestsForSession(cachedRuntimeId).length === 0
 
               const staleClarifyAtActivateStart = clarifyAuthoritativelyAbsent
                 ? Boolean(settlePendingClarifyToolCall(cachedViewState.messages, {}, false).streamId)
@@ -1642,7 +1676,7 @@ export function useSessionActions({
               )
 
               const running =
-                (pendingClarifyState.cleared || staleClarifyAtActivateStart) &&
+                (pendingClarifyState.cleared.length > 0 || staleClarifyAtActivateStart) &&
                 activated.running === false &&
                 !busyChangedWhileActivating
                   ? false
@@ -1665,11 +1699,10 @@ export function useSessionActions({
               // the question rides a new row the hold cannot swallow by grafting
               // it onto a cutoff assistant. Hydration strips that synthetic id
               // and re-derives one authoritative row.
-              const clarifyPayload = pendingClarify ? pendingClarifyToolPayload(pendingClarify) : null
-
-              const earlyClarifyProjection = clarifyPayload
-                ? restorePendingClarifyToolCall(suppressUnprovenWarmTranscript ? [] : activatedMessages, clarifyPayload)
-                : null
+              const earlyClarifyProjection = projectPendingClarifies(
+                suppressUnprovenWarmTranscript ? [] : activatedMessages,
+                pendingClarifies
+              )
 
               const projectedTail = earlyClarifyProjection?.messages.at(-1)
 
@@ -1684,13 +1717,13 @@ export function useSessionActions({
                   ...state,
                   ...(runtimeInfo ?? {}),
                   busy: running,
-                  awaitingResponse: running && !pendingClarify,
+                  awaitingResponse: running && pendingClarifies.length === 0,
                   // Resumed onto an already-running turn — that IS backend
                   // proof the turn is live (no message.start will replay).
                   turnLive: state.turnLive || running,
                   needsInput:
                     pendingApproval ||
-                    Boolean(pendingClarify) ||
+                    pendingClarifies.length > 0 ||
                     Boolean(pendingConnection) ||
                     (clarifyAuthoritativelyAbsent ? false : state.needsInput),
                   // Adopting someone else's turn: we'll stream its reply
@@ -1710,7 +1743,7 @@ export function useSessionActions({
 
               busyRef.current = running
               setBusy(running)
-              setAwaitingResponse(running && !pendingClarify)
+              setAwaitingResponse(running && pendingClarifies.length === 0)
               syncSessionStateToView(cachedRuntimeId, activatedLivenessState)
 
               // session.activate is the ordering barrier for reconnect recovery:
@@ -1811,8 +1844,8 @@ export function useSessionActions({
                   const latestCachedMessages = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages
 
                   const cachedWithoutEarlyClarify =
-                    latestCachedMessages && pendingClarify
-                      ? withoutEarlyClarifyProjection(latestCachedMessages, pendingClarify.requestId)
+                    latestCachedMessages && pendingClarifies.length > 0
+                      ? withoutEarlyClarifyProjections(latestCachedMessages, pendingClarifies)
                       : latestCachedMessages
 
                   const currentLiveTurn = reconcilePersistedLiveTurn(
@@ -1837,8 +1870,8 @@ export function useSessionActions({
               // the hold could not hide the question. Drop it before overlaying
               // concurrent edits; the projection below re-derives one row.
               const currentForOverlay =
-                currentMessages && pendingClarify
-                  ? withoutEarlyClarifyProjection(currentMessages, pendingClarify.requestId)
+                currentMessages && pendingClarifies.length > 0
+                  ? withoutEarlyClarifyProjections(currentMessages, pendingClarifies)
                   : currentMessages
 
               // The occurrence-aware path already read the latest cache. An
@@ -1851,16 +1884,10 @@ export function useSessionActions({
                 )
               }
 
-              const pendingClarifyProjection = pendingClarify
-                ? restorePendingClarifyToolCall(activatedMessages, pendingClarifyToolPayload(pendingClarify))
-                : null
+              const pendingClarifyProjection = projectPendingClarifies(activatedMessages, pendingClarifies)
 
               const clearedClarifyProjection = clarifyAuthoritativelyAbsent
-                ? settlePendingClarifyToolCall(
-                    activatedMessages,
-                    pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : {},
-                    running
-                  )
+                ? settleClearedClarifies(activatedMessages, pendingClarifyState.cleared, running)
                 : null
 
               const pendingConnectionProjection = projectPendingConnection(
@@ -1931,9 +1958,11 @@ export function useSessionActions({
                 storedSessionId,
                 stripPendingClarifyProjectionForCache(
                   activatedMessages,
-                  pendingClarify?.requestId ??
-                    pendingClarifyState.cleared?.requestId ??
-                    $clarifyRequests.get()[cachedRuntimeId]?.requestId
+                  [
+                    ...pendingClarifies,
+                    ...pendingClarifyState.cleared,
+                    ...clarifyRequestsForSession(cachedRuntimeId)
+                  ].map(request => request.requestId)
                 ),
                 sessionRestScope
               )
@@ -2307,7 +2336,7 @@ export function useSessionActions({
         clearStoredTranscriptReadOnly(storedSessionId)
         const pendingApproval = restorePendingApproval(resumed, resumed.session_id)
         const pendingClarifyState = restorePendingClarifyFromSnapshot(resumed, resumed.session_id, resumeStartedAt)
-        const pendingClarify = pendingClarifyState.request
+        const pendingClarifies = pendingClarifyState.requests
 
         const pendingConnection = restorePendingConnectionFromSnapshot(
           resumed,
@@ -2316,7 +2345,7 @@ export function useSessionActions({
         ).request
 
         const clarifyAuthoritativelyAbsent =
-          pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[resumed.session_id]
+          pendingClarifyState.authoritativeAbsent && clarifyRequestsForSession(resumed.session_id).length === 0
 
         const runtimeInfo = applyRuntimeInfo(resumed.info, { owner: sessionOwner })
 
@@ -2330,16 +2359,10 @@ export function useSessionActions({
             ? resumed.turn_started_at * 1000
             : null
 
-        const pendingClarifyProjection = pendingClarify
-          ? restorePendingClarifyToolCall(messagesForView, pendingClarifyToolPayload(pendingClarify))
-          : null
+        const pendingClarifyProjection = projectPendingClarifies(messagesForView, pendingClarifies)
 
         const clearedClarifyProjection = clarifyAuthoritativelyAbsent
-          ? settlePendingClarifyToolCall(
-              messagesForView,
-              pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : {},
-              resumedRunning
-            )
+          ? settleClearedClarifies(messagesForView, pendingClarifyState.cleared, resumedRunning)
           : null
 
         const pendingConnectionProjection = projectPendingConnection(
@@ -2378,7 +2401,7 @@ export function useSessionActions({
             turnLive: state.turnLive || resumedRunning,
             needsInput:
               pendingApproval ||
-              Boolean(pendingClarify) ||
+              pendingClarifies.length > 0 ||
               Boolean(pendingConnection) ||
               (clarifyAuthoritativelyAbsent ? false : state.needsInput),
             adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
@@ -2415,9 +2438,11 @@ export function useSessionActions({
           storedSessionId,
           stripPendingClarifyProjectionForCache(
             messagesForView,
-            pendingClarify?.requestId ??
-              pendingClarifyState.cleared?.requestId ??
-              $clarifyRequests.get()[resumed.session_id]?.requestId
+            [
+              ...pendingClarifies,
+              ...pendingClarifyState.cleared,
+              ...clarifyRequestsForSession(resumed.session_id)
+            ].map(request => request.requestId)
           ),
           sessionRestScope
         )

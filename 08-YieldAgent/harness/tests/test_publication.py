@@ -39,12 +39,37 @@ def test_settle_matrix_is_pure(flags, verdicts, match, expected):
     assert (result, reports, digests) == inputs
     if expected == 'completed':
         assert decision['status'] == 'completed' and decision['answer_text'] == text
+    elif expected == 'verification_fail' and match and not flags:
+        assert decision['status'] == 'partial' and decision['stop_reason'] == expected
+        assert decision['answer_text'].startswith(text + '\n\n---\n⚠️')
+        assert '- 근거 부족' in decision['answer_text']
     else:
         status = 'failed' if flags.get('failed') or flags.get('error') else 'partial'
         assert decision['status'] == status and decision['stop_reason'] == expected
         assert text not in str(decision)
         assert decision['answer_text'].startswith('최종 검증을 통과하지 못해 답변을 확정하지 못했습니다.')
         if expected == 'verification_fail': assert '- 근거 부족' in decision['answer_text']
+
+
+def test_gate_partial_requires_original_digest_and_exact_rendering():
+    from harness.gateway.publication import candidate_digest, settle
+    from harness.native_verification import verification_failure_answer
+    report = {'verdict': 'fail', 'issues': ['근거 부족'], 'result_ids': []}
+    candidate = '최신 답변'
+    rendered = verification_failure_answer(candidate, report)
+    digest = candidate_digest(candidate)['candidate_sha256']
+    result = {'completed': False, 'partial': True, 'turn_exit_reason': 'verification_fail',
+        'verification_candidate': candidate, 'final_response': rendered}
+    decision = settle(result, [report], [digest])
+    assert decision == {'status': 'partial', 'stop_reason': 'verification_fail',
+        'answer_text': rendered}
+    for changed in (
+            {**result, 'verification_candidate': 'other'},
+            {**result, 'final_response': rendered + '\n- injected'},
+            {**result, 'interrupted': True}):
+        decision = settle(changed, [report], [digest])
+        assert decision['answer_text'].startswith('최종 검증을 통과하지 못해')
+        assert candidate not in decision['answer_text']
 
 
 def test_pass_requires_host_candidate_record():

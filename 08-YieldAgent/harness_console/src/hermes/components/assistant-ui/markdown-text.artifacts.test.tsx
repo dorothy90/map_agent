@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { act, cleanup, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { artifactsForSession, clearArtifactRegistry } from '@/store/artifacts'
 import { $previewTabs } from '@/store/preview'
@@ -33,6 +33,7 @@ describe('MarkdownTextContent artifacts', () => {
     $selectedStoredSessionId.set(null)
     window.localStorage.clear()
     clearArtifactRegistry()
+    vi.stubGlobal('fetch', vi.fn())
   })
 
   afterEach(() => {
@@ -41,6 +42,7 @@ describe('MarkdownTextContent artifacts', () => {
     $selectedStoredSessionId.set(null)
     clearArtifactRegistry()
     window.localStorage.clear()
+    vi.unstubAllGlobals()
   })
 
   it('renders a substantial html fence as an artifact card and registers it', async () => {
@@ -71,5 +73,62 @@ describe('MarkdownTextContent artifacts', () => {
     await screen.findByText('Pomodoro Timer')
 
     expect(artifactsForSession('session-artifacts')).toHaveLength(0)
+  })
+
+  it('keeps the fallback link and frames confirmed HTML artifacts', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(null, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
+    )
+    const href = '/harness/artifacts/opaque-id?session_id=session-artifacts'
+
+    const { container } = render(
+      <MarkdownTextContent isRunning={false} text={`[HTML report](${href})`} />
+    )
+
+    const link = await screen.findByRole('link', { name: 'HTML report' })
+    const frame = await screen.findByTitle('HTML report')
+    expect(link.getAttribute('href')).toBe(href)
+    expect(frame.getAttribute('src')).toBe(href)
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
+    expect(frame.className).toContain('h-[calc(100%-2rem)]')
+    expect(frame.parentElement?.className).toContain('h-[720px]')
+    expect(frame.parentElement?.className).toContain('max-h-[85vh]')
+    expect(screen.getByRole('link', { name: 'Open in new window' }).getAttribute('href')).toBe(href)
+    expect(frame.closest('p')).not.toBeNull()
+    expect(container.querySelector('p > div')).toBeNull()
+  })
+
+  it('leaves non-HTML artifacts as links', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(null, { headers: { 'Content-Type': 'application/pdf' } })
+    )
+    const href = '/harness/artifacts/document?session_id=session-artifacts'
+
+    render(<MarkdownTextContent isRunning={false} text={`[Document](${href})`} />)
+
+    expect(await screen.findByRole('link', { name: 'Document' })).toBeTruthy()
+    expect(screen.queryByTitle('Document')).toBeNull()
+  })
+
+  it('ignores a stale HTML probe after the artifact URL changes', async () => {
+    let resolveFirst!: (response: Response) => void
+    const first = new Promise<Response>((resolve) => {
+      resolveFirst = resolve
+    })
+    vi.mocked(fetch)
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce(new Response(null, { headers: { 'Content-Type': 'text/csv' } }))
+    const oldHref = '/harness/artifacts/old?session_id=session-artifacts'
+    const newHref = '/harness/artifacts/new?session_id=session-artifacts'
+    const view = render(<MarkdownTextContent isRunning={false} text={`[Report](${oldHref})`} />)
+
+    view.rerender(<MarkdownTextContent isRunning={false} text={`[Report](${newHref})`} />)
+    await act(async () => {
+      resolveFirst(new Response(null, { headers: { 'Content-Type': 'text/html' } }))
+      await first
+    })
+
+    expect((await screen.findByRole('link', { name: 'Report' })).getAttribute('href')).toBe(newHref)
+    expect(screen.queryByTitle('Report')).toBeNull()
   })
 })

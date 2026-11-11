@@ -31,7 +31,10 @@ def test_context_preserves_previous_result_summary_and_artifact_references():
     result = metadata["result_index"][0]
     assert result["summary"] == obs.summary
     assert result["total_rows"] == 14
-    assert result["artifact_refs"] == obs.artifact_refs
+    assert result["artifact_refs"] == [{"artifact_id": "a", "title": "표",
+        "result_id": "r", "mime": "application/octet-stream",
+        "href": "/harness/artifacts/a?session_id=s",
+        "markdown": "[표](/harness/artifacts/a?session_id=s)"}]
     assert result["data_origin"] == "fixture"
 
 

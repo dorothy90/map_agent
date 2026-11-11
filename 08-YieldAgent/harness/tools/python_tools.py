@@ -2,6 +2,7 @@ from pydantic import Field
 from ..runtime.container import ContainerRuntime
 from ..runtime.process import ProcessRuntime
 from ..types import Contract, ResultPage, ResultTable
+from ..native_verification import normalize_wafer_map_tables
 from .registry import ToolResult, ToolSpec
 
 
@@ -35,11 +36,13 @@ async def run_python(args, ctx):
     datasets = {}
     origins = []
     limitations = []
+    has_wafer_map_source = False
     for result_id in args.input_result_ids:
         obs = await ctx.store.observation(ctx.run["principal_id"], ctx.run["session_id"], result_id)
         if obs.status not in ("success", "partial", "empty"):
             raise ValueError("Cannot analyze an error result")
         origins.append(obs.provenance.get("data_origin"))
+        has_wafer_map_source |= obs.tool_name == 'load_wafer_maps'
         datasets[result_id] = {}
         for table in obs.tables:
             rows = await ctx.store.rows(
@@ -57,6 +60,15 @@ async def run_python(args, ctx):
         runtime = (ContainerRuntime(ctx.settings.python_image) if ctx.settings.python_runtime == "docker"
             else ProcessRuntime(ctx.settings.python_executable))
     result = await runtime.execute(args.code, datasets)
+    renamed = {}
+    if has_wafer_map_source:
+        raw_tables = result['tables']
+        names = [table['table_id'] for table in raw_tables]
+        if len(names) == len(set(names)):
+            _, renamed = normalize_wafer_map_tables({table['table_id']: table['rows'] for table in raw_tables})
+        result['tables'] = [{**table,
+            'table_id': renamed.get(table['table_id'], table['table_id']),
+            'title': renamed.get(table['table_id'], table['title'])} for table in raw_tables]
     artifacts = [{"title": f"분석 차트 {i+1}", "mime": "text/html", "data": html}
         for i, html in enumerate(result["plots"])]
     complete = result["status"] == "success" and not limitations
@@ -67,7 +79,11 @@ async def run_python(args, ctx):
         tables = [ResultTable(table_id="output", title="Python output", rows=[{
             "stdout": result["stdout"], "stderr": result["stderr"], "error": result.get("error")}],
             complete=complete, missing_reason=reason)]
-    return ToolResult(tables=tables, summary=result["stdout"][:2000] or str(result.get("error") or "Python 분석 실행"),
+    summary = result["stdout"][:2000] or str(result.get("error") or "Python 분석 실행")
+    if renamed:
+        summary += '\n근거 표 이름 자동 보정: ' + ', '.join(f'{old} → {new}' for old, new in renamed.items())
+    return ToolResult(tables=tables, summary=summary,
+        scope={"python_workspace": result["workspace"]} if "workspace" in result else {},
         status=("partial" if limitations else "success") if result["status"] == "success" else "error", artifacts=artifacts,
         source_result_ids=args.input_result_ids, data_origin="fixture" if "fixture" in origins else
             "unknown" if any(origin != "live" for origin in origins) else "live")

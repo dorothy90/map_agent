@@ -485,8 +485,10 @@ function findPendingClarifyLocation(
         continue
       }
 
-      const exactId = Boolean(stableId && part.toolCallId === stableId)
-      const contextual = hasToolMatchOverlap(matchValues, toolPartMatchValues(part))
+      const exactId = Boolean(stableId && (part.toolCallId === stableId || part.requestBackedId === stableId))
+      const contextual =
+        (!part.requestBackedId || part.requestBackedId === stableId) &&
+        hasToolMatchOverlap(matchValues, toolPartMatchValues(part))
 
       if (exactId || contextual) {
         return { messageIndex, partIndex }
@@ -505,9 +507,14 @@ function findPendingClarifyLocation(
     }
   }
 
-  // Older/sparse projections can lose the identifying args. One session can
-  // only block on one clarify at a time, so a sole open clarify is still the
-  // authoritative row even without a usable correlation value.
+  // Canonical clarify prompt ids are authoritative. A native batch delivers
+  // multiple unrelated prompt ids in one session; adopting the sole provider
+  // row here would overwrite q1 with q2. Sparse non-clarify projections retain
+  // the legacy sole-pending fallback.
+  if (stableId && toolNames.has('clarify')) {
+    return null
+  }
+
   return pendingCount === 1 ? solePending : null
 }
 
@@ -568,7 +575,11 @@ export function settlePendingClarifyToolCall(
  * cache. A synthetic request-id part is dropped; a provider-authored call stays
  * visible but loses its local `pending` bit until an authoritative resume
  * snapshot re-arms it. */
-export function stripPendingClarifyProjectionForCache(messages: ChatMessage[], requestId?: string): ChatMessage[] {
+export function stripPendingClarifyProjectionForCache(
+  messages: ChatMessage[],
+  requestIds?: string | string[]
+): ChatMessage[] {
+  const ids = new Set(Array.isArray(requestIds) ? requestIds : requestIds ? [requestIds] : [])
   let changed = false
   const next: ChatMessage[] = []
 
@@ -586,11 +597,11 @@ export function stripPendingClarifyProjectionForCache(messages: ChatMessage[], r
     const parts = message.parts.filter(
       part =>
         !(
-          requestId &&
+          ids.size > 0 &&
           part.type === 'tool-call' &&
           QUESTION_CARD_TOOLS.has(part.toolName) &&
           part.result === undefined &&
-          part.toolCallId === requestId
+          Boolean(part.toolCallId && ids.has(part.toolCallId))
         )
     )
 
@@ -633,6 +644,7 @@ export function restorePendingBlockingToolCall(
   clarifyPayload: GatewayEventPayload & { name: string },
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
+  const requestBackedId = toolId(clarifyPayload)
   const location = findPendingClarifyLocation(messages, clarifyPayload, new Set([clarifyPayload.name]))
 
   if (location) {
@@ -655,7 +667,8 @@ export function restorePendingBlockingToolCall(
     parts[location.partIndex] = {
       ...unsealed,
       args: args as never,
-      argsText: JSON.stringify(args)
+      argsText: JSON.stringify(args),
+      requestBackedId: requestBackedId || part.requestBackedId
     } as ChatMessagePart
 
     const next = [...messages]
@@ -664,7 +677,10 @@ export function restorePendingBlockingToolCall(
     return { messages: next, streamId: message.id }
   }
 
-  const parts = upsertToolPart([], clarifyPayload, 'running', occurredAt)
+  const parts = upsertToolPart([], clarifyPayload, 'running', occurredAt).map(part => ({
+    ...part,
+    requestBackedId: requestBackedId || undefined
+  })) as ChatMessagePart[]
   const tailIndex = messages.findLastIndex(message => !message.hidden)
   const tail = messages[tailIndex]
 

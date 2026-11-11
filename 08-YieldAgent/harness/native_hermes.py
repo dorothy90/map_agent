@@ -282,7 +282,10 @@ class NativeBridge:
         self.allowed = {name for name, spec in registry.tools.items() if spec.effect in ('read', 'artifact')}
         settings = getattr(context, 'settings', None)
         requested = getattr(settings, 'native_allowed_tools', None)
-        if requested is not None:
+        if requested is None:
+            self.allowed &= {'query_db', 'list_tables', 'read_result',
+                'render_yield_table', 'load_wafer_maps', 'run_python'}
+        else:
             unknown = set(requested) - set(registry.tools)
             if unknown:
                 raise ValueError('native_allowed_tools contains unknown tools: '
@@ -330,6 +333,63 @@ def result_status(result):
     return 'completed'
 
 
+def _verification_evidence(observations):
+    """Return bounded evidence previews and all known result IDs."""
+    from .types import ToolObservation
+
+    def shorten(value, limit):
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+        return text if len(text) <= limit else text[:limit - 1] + '…'
+
+    def compact_cell(value):
+        if value is None or isinstance(value, (bool, int, float)):
+            return value if len(json.dumps(value, ensure_ascii=False)) <= 160 else shorten(value, 160)
+        return shorten(value, 160)
+
+    evidence, known = [], set()
+    for raw in observations:
+        obs = ToolObservation.model_validate(raw)
+        known.add(obs.result_id)
+        known.update(obs.source_result_ids)
+        table_columns = {column for table in obs.tables for column in table.columns}
+        columns = table_columns or set(obs.columns)
+        rows = []
+        if obs.status != 'error':
+            sources = ((table.table_id, table.preview_rows) for table in obs.tables)
+            if not obs.tables:
+                sources = ((None, obs.preview_rows),)
+            for table_id, preview_rows in sources:
+                for row in preview_rows:
+                    sample = {key: compact_cell(value) for key, value in row.items()}
+                    if table_id is not None:
+                        sample = {'table_id': table_id, **sample}
+                    rows.append(sample)
+                    if len(rows) == 5:
+                        break
+                if len(rows) == 5:
+                    break
+        evidence.append({'result_id': obs.result_id, 'tool_name': obs.tool_name,
+            'status': obs.status, 'summary': shorten(obs.summary, 240),
+            'args_summary': shorten(obs.validated_arguments, 400),
+            'total_rows': sum(table.total_rows for table in obs.tables) if obs.tables else obs.total_rows,
+            'column_count': len(columns), 'preview_rows': rows})
+
+    def size():
+        return len(json.dumps(evidence, ensure_ascii=False))
+
+    for item in reversed(evidence):
+        while size() > 20_000 and item['preview_rows']:
+            item['preview_rows'].pop()
+    for item in reversed(evidence):
+        for field in ('args_summary', 'summary'):
+            if size() <= 20_000:
+                break
+            item.pop(field, None)
+    while evidence and size() > 20_000:
+        evidence.pop()
+    return evidence, sorted(known)
+
+
 def native_prompts_enabled(settings):
     return bool(settings.native_prompts or settings.no_yield_tools)
 
@@ -355,12 +415,18 @@ def prepare_profile(principal_id, isolation=None):
     content['delegation']['orchestrator_enabled'] = False
     title_generation['model_upgrade_enabled'] = False
     if isolation is not None:
-        terminal = {
-            'backend': 'ssh', 'cwd': isolation['workdir'],
-            'ssh_host': isolation['ssh_host'], 'ssh_user': isolation['ssh_user'],
-            'ssh_port': isolation['ssh_port'], 'ssh_key': str(isolation['ssh_key']),
-            'env_passthrough': [], 'persistent_shell': False,
-        }
+        if isolation.get('backend') == 'seatbelt':
+            terminal = {
+                'backend': 'local', 'cwd': isolation['workdir'],
+                'env_passthrough': [], 'persistent_shell': False,
+            }
+        else:
+            terminal = {
+                'backend': 'ssh', 'cwd': isolation['workdir'],
+                'ssh_host': isolation['ssh_host'], 'ssh_user': isolation['ssh_user'],
+                'ssh_port': isolation['ssh_port'], 'ssh_key': str(isolation['ssh_key']),
+                'env_passthrough': [], 'persistent_shell': False,
+            }
         changed = changed or content.get('terminal') != terminal
         content['terminal'] = terminal
         content.setdefault('tools', {}).setdefault('tool_search', {})
@@ -465,8 +531,8 @@ async def run_native(context, registry, *, history=None):
         'request_context': request_context,
         'tools': bridge.schemas(), 'history': history or [], 'upstream_commit': UPSTREAM_COMMIT,
         'no_yield_tools': settings.no_yield_tools}
-    if settings.native_allowed_tools is not None:
-        startup['allowed_tools'] = sorted(bridge.allowed)
+    # An omitted allowlist enables Hermes-native executors outside our adapter.
+    startup['allowed_tools'] = sorted(bridge.allowed)
     if isolation is not None:
         startup['isolation'] = isolation
     if tools_log := os.environ.get('HARNESS_LOG_TOOLS_PAYLOAD'):
@@ -478,6 +544,8 @@ async def run_native(context, registry, *, history=None):
         + json.dumps(request_context, ensure_ascii=False))
     tasks = set()
     reviews = {}
+    wafer_map_contract_reviews = {}
+    artifact_reviews = {}
     verification_observations = []
     reports, verified_candidates = [], []
     last_usage = None
@@ -537,6 +605,28 @@ async def run_native(context, registry, *, history=None):
                 tasks.add(task)
             elif kind == 'verification_start':
                 review_id = message['review_id']
+                from .native_verification import inspect_wafer_map_contracts
+                review_observations = bridge.observations
+                artifact_bundle = {}
+                selected = None
+                from .artifact_delivery import ARTIFACT_DELIVERY, artifact_links
+                if run.get('artifact_delivery') == ARTIFACT_DELIVERY:
+                    from .native_verification import inspect_answer_artifacts
+                    artifact_review = await inspect_answer_artifacts(context.store,
+                        run['principal_id'], run['session_id'], message['candidate'])
+                    artifact_reviews[review_id] = artifact_review
+                    selected = artifact_review['selected_result_ids']
+                    review_observations = list({item['result_id']: item for item in
+                        [*bridge.observations, *artifact_review['observations']]}.values())
+                    artifact_bundle = {'artifact_reference_review': {
+                        key: value for key, value in artifact_review.items() if key != 'observations'},
+                        'artifact_catalog': [dict(ref, status=item['status'])
+                            for item in review_observations
+                            for ref in artifact_links(run['session_id'], item['result_id'], item.get('artifact_refs', []))]}
+                wafer_map_contract_review = await inspect_wafer_map_contracts(
+                    context.store, run['principal_id'], run['session_id'], review_observations,
+                    selected_result_ids=selected)
+                wafer_map_contract_reviews[review_id] = wafer_map_contract_review
                 reviews[review_id] = {'attempt': message['attempt'],
                     **publication.candidate_digest(message['candidate'])}
                 context_preview = json.dumps(reviews[review_id], ensure_ascii=False, separators=(',', ':'))
@@ -545,22 +635,20 @@ async def run_native(context, registry, *, history=None):
                 await context.store.event(run['run_id'], 'tool_started', {'name': 'verify_answer',
                     'invocation_id': review_id, 'state': 'running', 'elapsed_seconds': 0,
                     'tool_id': review_id, 'args': reviews[review_id], 'context': context_preview}, epoch=run['epoch'])
-                evidence = []
-                known = set()
-                for raw in bridge.observations:
-                    from .types import ToolObservation
-                    obs = ToolObservation.model_validate(raw)
-                    evidence.append({**obs.model_view(), 'validated_arguments': obs.validated_arguments})
-                    known.add(obs.result_id)
-                    known.update(obs.source_result_ids)
+                evidence, known = _verification_evidence(review_observations)
                 await send(ipc.reply(message['call_id'], {'request': startup['query'],
                     'request_context': request_context,
                     'current_time': datetime.now(timezone.utc).isoformat(), 'prior_dialogue': history or [],
-                    'candidate': message['candidate'], 'evidence': evidence, 'known_result_ids': sorted(known)}))
+                    'candidate': message['candidate'], 'evidence': evidence, 'known_result_ids': known,
+                    'wafer_map_contract_review': wafer_map_contract_review, **artifact_bundle}))
             elif kind == 'verification_finished':
                 review_id = message['review_id']
                 started_review = reviews.pop(review_id)
-                report = message['report']
+                from .native_verification import enforce_wafer_map_contract_review
+                report = enforce_wafer_map_contract_review(
+                    message['report'], wafer_map_contract_reviews.pop(review_id))
+                if review_id in artifact_reviews:
+                    report = enforce_wafer_map_contract_review(report, artifact_reviews.pop(review_id))
                 reports.append(report)
                 verified_candidates.append(started_review['candidate_sha256'])
                 status = 'success' if report['verdict'] == 'pass' else 'partial'
@@ -569,12 +657,13 @@ async def run_native(context, registry, *, history=None):
                     {'run_id': run['run_id'], 'invocation_id': review_id, 'tool_name': 'verify_answer',
                      'validated_arguments': started_review,
                      'status': status, 'summary': summary + (' · ' + '; '.join(report['issues']) if report['issues'] else ''),
-                     'source_result_ids': report['result_ids'], 'scope': {'verdict': report['verdict']},
+                     'source_result_ids': report['result_ids'], 'scope': {'verdict': report['verdict'],
+                         'verifier_exit': report.get('verifier_exit', {})},
                      'provenance': {'elapsed_seconds': message['elapsed'], 'data_origin': 'live'},
                      'error': None if status == 'success' else {'message': '; '.join(report['issues'])}}, [], [])
                 await bridge.executor.publish(observation, run)
                 verification_observations.append(observation.model_dump(mode='json'))
-                await send(ipc.reply(message['call_id'], {'saved': True}))
+                await send(ipc.reply(message['call_id'], {'saved': True, 'report': report}))
             elif message['type'] == 'commentary':
                 payload = publication.commentary_event(settings, message['content'])
                 if payload is not None:

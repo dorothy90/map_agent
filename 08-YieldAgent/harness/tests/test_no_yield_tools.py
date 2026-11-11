@@ -37,7 +37,7 @@ def test_no_yield_tools_keeps_python_tools_and_default_hermes_toolsets(monkeypat
     monkeypatch.setenv("HARNESS_WAFER_SET_TOOLS", "1")
     registry = domain_registry()
     assert model_tool_names() == [
-        "read_result", "run_python", "query_db", "list_tables",
+        "read_result", "run_python", "query_db", "list_tables", "load_wafer_maps", "render_yield_table",
     ]
     assert registry.tools["read_result"].handler.__module__ == "harness.tools.python_tools"
     assert registry.tools["run_python"].handler.__module__ == "harness.tools.python_tools"
@@ -81,15 +81,20 @@ def test_no_yield_engine_toolsets_resolve_requested_tools(monkeypatch):
     finally:
         sys.path.remove(str(engine))
 
-    names = {name for toolset in worker.enabled_toolsets({"no_yield_tools": True})
-             for name in resolve_toolset(toolset)} | set(model_tool_names())
-
-    assert names == {
-        "skill_manage", "skill_view", "skills_list", "memory", "delegate_task",
-        "execute_code", "patch", "read_file", "search_files", "write_file",
-        "process_manage", "terminal", "todo_list", "session_search", "vision_analyze",
-        "clarify", "read_result", "run_python", "query_db", "list_tables",
-    }
+    from harness.native_hermes import NativeBridge
+    from harness.tools.registry import domain_registry
+    bridge = NativeBridge(domain_registry(), None)
+    startup = {'no_yield_tools': True, 'allowed_tools': sorted(bridge.allowed),
+               'tools': bridge.schemas()}
+    registered = []
+    worker.register_backend_tools(startup, SimpleNamespace(register=lambda **kw: registered.append(kw)),
+                                  lambda name: lambda *a: None)
+    names = {name for toolset in worker.enabled_toolsets(startup)
+             for name in resolve_toolset(toolset)} | {entry['name'] for entry in registered}
+    assert names == {'clarify', 'read_result', 'run_python', 'query_db', 'list_tables',
+                     'load_wafer_maps', 'render_yield_table'}
+    assert not names.intersection({'execute_code', 'terminal', 'read_file', 'search_files',
+                                   'write_file', 'patch', 'delegate_task'})
 
 
 def test_no_yield_engine_provider_comes_from_runtime_url():
@@ -252,3 +257,50 @@ def test_host_model_tools_payload_log_records_bound_names(tmp_path):
     assert json.loads(output.read_text()) == {
         "api_request_id": "run:reasoning:1", "tools": ["finish", "web_search"]
     }
+
+
+def test_restricted_startup_drops_unsafe_resumed_tool_pins(tmp_path):
+    script = '''
+import json, sys
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0, str(Path.cwd() / 'harness'))
+import native_worker
+from tools.registry import registry
+from tools import mcp_tool_agent
+from harness.native_hermes import NativeBridge
+from harness.tools.registry import ToolRegistry, ToolSpec
+from harness.types import Contract
+backend = ToolRegistry()
+backend.add(ToolSpec('read_result', 'read evidence', Contract, lambda *a: None))
+bridge = NativeBridge(backend, None)
+startup = {'session_id': 'synthetic', 'no_yield_tools': True,
+           'allowed_tools': sorted(bridge.allowed), 'tools': bridge.schemas()}
+native_worker.register_backend_tools(startup, registry, lambda name: lambda *a: None)
+unsafe = ['execute_code', 'terminal', 'read_file', 'search_files', 'write_file', 'patch', 'delegate_task']
+def tool(name):
+    return {'type': 'function', 'function': {'name': name, 'description': name,
+            'parameters': {'type': 'object', 'properties': {}}}}
+# Ensure the regression tests filtering, not merely absent registry entries.
+for name in unsafe:
+    registry.register(name=name, toolset='delegation' if name == 'delegate_task' else 'code_execution',
+                      schema=tool(name)['function'], handler=lambda *a: None, description=name)
+pin = {'version': mcp_tool_agent.tool_pin_version(),
+       'tools': [tool(name) for name in unsafe] + startup['tools'],
+       'delegation_backend': 'legacy'}
+class DB:
+    def get_session(self, sid): return {'tool_names': json.dumps(pin)}
+    def update_session_tool_names(self, sid, updated): pin.update(updated)
+native_worker.refresh_backend_tool_pin(DB(), startup)
+agent = SimpleNamespace(tools=startup['tools'], valid_tool_names={'read_result'},
+                        enabled_toolsets=native_worker.enabled_toolsets(startup))
+mcp_tool_agent.persist_agent_tool_names = lambda agent: None
+mcp_tool_agent.restore_agent_tool_prefix(agent, pin)
+assert agent.valid_tool_names == {'read_result'}, agent.valid_tool_names
+assert [t['function']['name'] for t in agent.tools] == ['read_result']
+assert not getattr(agent, '_delegation_backend', None)
+'''
+    result = subprocess.run([sys.executable, '-c', script], cwd=Path(__file__).parents[2],
+                            env={**os.environ, 'HERMES_HOME': str(tmp_path), 'PYTHON_DOTENV_DISABLED': '1'},
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr

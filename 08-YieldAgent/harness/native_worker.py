@@ -95,6 +95,29 @@ def register_backend_tools(startup, registry, handler):
             schema=schema, handler=handler(schema['name']), description=schema['description'])
 
 
+def refresh_backend_tool_pin(db, startup):
+    session = db.get_session(startup['session_id'])
+    if not session or not session.get('tool_names'):
+        return False
+    try:
+        pin = json.loads(session['tool_names'])
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(pin, dict) or pin.get('version') is None or not isinstance(pin.get('tools'), list):
+        return False
+    if any(not isinstance(tool, dict) or not isinstance(tool.get('function'), dict)
+           or not isinstance(tool['function'].get('name'), str) for tool in pin['tools']):
+        return False
+    allowed = startup.get('allowed_tools')
+    current = {tool['function']['name']: tool for tool in startup['tools']
+               if allowed is None or tool['function']['name'] in allowed}
+    refreshed = [current.get(tool['function']['name'], tool) for tool in pin['tools']]
+    if refreshed == pin['tools']:
+        return False
+    db.update_session_tool_names(startup['session_id'], {**pin, 'tools': refreshed})
+    return True
+
+
 def engine_provider(base_url):
     from agent.model_metadata import _infer_provider_from_url
     return _infer_provider_from_url(base_url) or 'custom'
@@ -141,8 +164,13 @@ def constrain_session_search(search_module):
 
 
 def configure_agent_environment(isolation):
-    if not isinstance(isolation, dict) or isolation.get('ssh_user') != 'yieldrun':
+    if not isinstance(isolation, dict):
+        raise RuntimeError('verified isolation configuration is required')
+    backend = isolation.get('backend', 'ssh')
+    if backend == 'ssh' and isolation.get('ssh_user') != 'yieldrun':
         raise RuntimeError('verified yieldrun isolation configuration is required')
+    if backend not in {'ssh', 'seatbelt'}:
+        raise RuntimeError('verified isolation configuration is required')
     workdir = Path(isolation['workdir'])
     for name in list(os.environ):
         upper = name.upper()
@@ -153,26 +181,35 @@ def configure_agent_environment(isolation):
             os.environ.pop(name, None)
     venv = Path(isolation['analysis_venv'])
     os.environ.update({
-        'TERMINAL_ENV': 'ssh', 'TERMINAL_CWD': str(workdir),
-        'TERMINAL_SSH_HOST': isolation['ssh_host'], 'TERMINAL_SSH_USER': isolation['ssh_user'],
-        'TERMINAL_SSH_PORT': str(isolation['ssh_port']), 'TERMINAL_SSH_KEY': isolation['ssh_key'],
+        'TERMINAL_ENV': 'local' if backend == 'seatbelt' else 'ssh', 'TERMINAL_CWD': str(workdir),
         'VIRTUAL_ENV': str(venv), 'PATH': str(venv / 'bin') + os.pathsep + os.defpath,
         'HERMES_WRITE_SAFE_ROOT': str(workdir),
     })
+    if backend == 'ssh':
+        os.environ.update({
+            'TERMINAL_SSH_HOST': isolation['ssh_host'], 'TERMINAL_SSH_USER': isolation['ssh_user'],
+            'TERMINAL_SSH_PORT': str(isolation['ssh_port']), 'TERMINAL_SSH_KEY': isolation['ssh_key'],
+        })
+    else:
+        os.environ['TERMINAL_LOCAL_PERSISTENT'] = 'false'
     # The adapter validates the fixed target and disables profile synchronization.
     engine_dir = str(Path(__file__).resolve().with_name('engine'))
     if engine_dir not in sys.path:
         sys.path.insert(0, engine_dir)
-    from harness.isolation.backend import IsolatedSSHBackend
-    from harness.config import IsolationSettings
-    config = IsolationSettings.model_validate({key: isolation[key] for key in (
-        'ssh_host', 'ssh_user', 'ssh_port', 'ssh_key', 'known_hosts', 'home', 'work_root',
-        'analysis_venv', 'launcher', 'sandbox')})
+    from harness.isolation.backend import isolation_backend
+    from harness.config import IsolationSettings, SeatbeltIsolationSettings
+    if backend == 'seatbelt':
+        config = SeatbeltIsolationSettings.model_validate({key: isolation[key] for key in (
+            'backend', 'home', 'work_root', 'analysis_venv', 'launcher', 'sandbox')})
+    else:
+        config = IsolationSettings.model_validate({key: isolation[key] for key in (
+            'ssh_host', 'ssh_user', 'ssh_port', 'ssh_key', 'known_hosts', 'home', 'work_root',
+            'analysis_venv', 'launcher', 'sandbox')})
     run_id = isolation.get('run_id')
     principal_id = isolation.get('principal_id')
     if not run_id or not principal_id:
         raise RuntimeError('exact authenticated isolation scope is required')
-    IsolatedSSHBackend(config, run_id, principal_id).install_engine_adapter()
+    isolation_backend(config, run_id, principal_id).install_engine_adapter()
     return workdir
 
 
@@ -183,9 +220,16 @@ def verify_isolated_engine(startup):
     from tools import terminal_tool_backends
     config = _get_env_config()
     isolation = startup['isolation']
-    if (config.get('env_type') != 'ssh' or config.get('cwd') != isolation['workdir']
-            or not getattr(terminal_tool_backends._SSHEnvironment, '_yield_isolated', False)):
-        raise RuntimeError('Hermes isolated SSH backend was replaced or misconfigured')
+    backend = isolation.get('backend', 'ssh')
+    verified = (
+        config.get('cwd') == isolation['workdir']
+        and ((backend == 'seatbelt' and config.get('env_type') == 'local'
+              and getattr(terminal_tool_backends._LocalEnvironment, '_yield_seatbelt_isolated', False))
+             or (backend == 'ssh' and config.get('env_type') == 'ssh'
+                 and getattr(terminal_tool_backends._SSHEnvironment, '_yield_isolated', False)))
+    )
+    if not verified:
+        raise RuntimeError('Hermes isolated backend was replaced or misconfigured')
 
 
 def install_tools_payload_logger(path):
@@ -333,6 +377,7 @@ def main():
         db = acquire(Path(os.environ['HERMES_HOME']) / 'state.db')
         if db.get_session(startup['session_id']):
             db.reopen_session(startup['session_id'])
+        refresh_backend_tool_pin(db, startup)
         agent = AIAgent(model=startup['model'], base_url=startup['base_url'], api_key=startup['api_key'],
             provider=provider,
             enabled_toolsets=enabled_toolsets(startup),
@@ -352,16 +397,22 @@ def main():
         def review(candidate):
             nonlocal review_id, review_attempt
             remaining = startup['max_iterations'] - usage()['models']
-            if remaining < 1 or time.monotonic() >= deadline or usage()['tokens'] >= startup['token_limit']:
-                return unknown('검증에 필요한 실행 예산이 남아 있지 않습니다.')
+            budget_unavailable = (remaining < 1 or time.monotonic() >= deadline
+                or usage()['tokens'] >= startup['token_limit'])
             review_attempt += 1
             review_id = 'verify-' + uuid.uuid4().hex
             review_known_ids.clear()
             started = time.monotonic()
+            entry = None
+            verifier_exit = None
             try:
                 bundle = rpc('verification_start', review_id=review_id, candidate=candidate.get('final_response', ''), attempt=review_attempt)
-                if bundle.get('error'):
+                if budget_unavailable:
+                    report = unknown('검증에 필요한 실행 예산이 남아 있지 않습니다.')
+                    verifier_exit = {'status': 'not_started', 'exit_reason': 'budget_unavailable'}
+                elif bundle.get('error'):
                     report = unknown('저장된 검증 근거를 불러오지 못했습니다.')
+                    verifier_exit = {'status': 'not_started', 'exit_reason': 'evidence_unavailable'}
                 else:
                     goal = startup['verification_instructions'] + '\n\n출력 JSON schema:\n' + json.dumps(REVIEW_SCHEMA) + '\n\n검토 자료(JSON):\n' + json.dumps(bundle, ensure_ascii=False)
                     child = _build_child_preserving_parent_tools(task_index=review_attempt, goal=goal,
@@ -372,7 +423,6 @@ def main():
                     child.step_callback = step
                     child._delegate_output_schema = REVIEW_SCHEMA
                     controller.add(child)
-                    entry = None
                     try:
                         entry = _run_single_child(review_attempt, goal, child=child, parent_agent=agent)
                     finally:
@@ -383,13 +433,21 @@ def main():
                     report = checked_report(entry, set(bundle['known_result_ids']) | review_known_ids)
             except Exception:
                 report = unknown('검증 에이전트 실행 중 오류가 발생했습니다.')
+                if entry is None:
+                    verifier_exit = {'status': 'error', 'exit_reason': 'exception'}
             finally:
                 current_id, review_id = review_id, None
             if budget.exhausted_reason:
                 report = unknown('공유 실행 예산에서 추가 모델 호출이 차단되었습니다: ' + budget.exhausted_reason)
-            rpc('verification_finished', review_id=current_id, report=report, elapsed=time.monotonic() - started)
+            report['verifier_exit'] = ({key: entry[key]
+                for key in ('status', 'exit_reason', 'truncated')
+                if isinstance(entry, dict) and key in entry} if isinstance(entry, dict)
+                else verifier_exit or {'status': 'error', 'exit_reason': 'exception'})
+            if budget.exhausted_reason:
+                report['verifier_exit']['budget_reason'] = budget.exhausted_reason
+            settled = rpc('verification_finished', review_id=current_id, report=report, elapsed=time.monotonic() - started)
             step(0, None)
-            return report
+            return settled.get('report') or unknown('호스트의 최종 검증 판정을 받지 못했습니다.')
         gate = NativeVerificationGate(review, lambda: emit({'type': 'commentary',
             'content': '검증에서 확인한 문제를 보완하고 결과를 다시 확인하겠습니다.'}))
         restore_gate = gate.install(agent)

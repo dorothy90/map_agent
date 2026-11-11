@@ -393,7 +393,7 @@ def update_yield_metadata(conn, plan: SeedPlan) -> None:
         if changes.inserts:
             cur.executemany(
                 "INSERT INTO DF_ALL_PARA_PRB "
-                "(LOT_CD,PROC_GBN_CD,YIELD_TABLE,PARAM_NM,PARAM_SEQNO) VALUES (:1,:2,:3,:4,:5)",
+                "(LOT_CD,PROC_GBN_CD,YIELD_TABLE,PARAM_NM,PARAM_SEQNO,PARAM_KIND_CD) VALUES (:1,:2,:3,:4,:5,'B')",
                 changes.inserts,
             )
         if changes.deletes:

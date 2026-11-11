@@ -45,7 +45,7 @@ def test_native_publication_boundary(monkeypatch, tmp_path, verdicts, flags, fin
     monkeypatch.setattr(native, 'ROOT', tmp_path)
     candidates = ['REJECTED_PRIVATE_DRAFT', 'FINAL_PRIVATE_답변']
     final_text = candidates[1] if final == 'second' else 'MISMATCH_PRIVATE_DRAFT'
-    events, updates, saved = [], [], []
+    events, updates, saved, replies = [], [], [], []
     evidence = ToolObservation(principal_id='p', session_id='s', run_id='r',
         invocation_id='read', result_id='evidence', tool_name='read', status='success',
         summary='조회 완료', preview_rows=[{'value': 'TABLE_CELL'}], total_rows=1,
@@ -83,15 +83,24 @@ def test_native_publication_boundary(monkeypatch, tmp_path, verdicts, flags, fin
              'review_id': f'v{index}', 'elapsed': .1,
              'report': {'verdict': verdict, 'issues': [] if verdict == 'pass' else ['근거 부족'], 'result_ids': []}},
         ])
+    worker_result = {'completed': True, 'final_response': final_text,
+        'verification': [{'verdict': 'pass', 'issues': [], 'result_ids': []}], **flags}
+    if verdicts == ['fail', 'fail'] and not flags and final == 'second':
+        from harness.native_stop_gate import NativeVerificationGate
+        worker_reports = iter({'verdict': verdict, 'issues': [] if verdict == 'pass' else ['근거 부족'],
+            'result_ids': []} for verdict in verdicts)
+        gate = NativeVerificationGate(lambda candidate: next(worker_reports))
+        for index in range(len(verdicts)):
+            gate.evaluate(candidates[0] if len(verdicts) > 1 and index == 0 else candidates[1])
+        worker_result = gate.finish({'completed': True, 'final_response': final_text})
     # A worker-supplied pass alone must never authorize publication.
-    lines.append({'type': 'result', 'result': {'completed': True, 'final_response': final_text,
-        'verification': [{'verdict': 'pass', 'issues': [], 'result_ids': []}], **flags}})
+    lines.append({'type': 'result', 'result': worker_result})
     messages = iter(lines)
     async def readline():
         message = next(messages, None)
         return (json.dumps(message) + '\n').encode() if message else b''
     process = SimpleNamespace(returncode=0, stdout=SimpleNamespace(readline=readline),
-        stdin=SimpleNamespace(write=lambda data: None, drain=noop))
+        stdin=SimpleNamespace(write=lambda data: replies.append(json.loads(data)), drain=noop))
     async def spawn(*a, **kw): return process
     monkeypatch.setattr(native.asyncio, 'create_subprocess_exec', spawn)
     run = dict(principal_id='p', session_id='s', run_id='r', epoch=1, query='q')
@@ -118,11 +127,18 @@ def test_native_publication_boundary(monkeypatch, tmp_path, verdicts, flags, fin
             assert result['answer_text'] == candidates[1]
         else:
             assert result['stop_reason'] == ('verification_' + reason if reason in ('fail', 'unknown') else reason)
-            assert result['answer_text'].startswith('최종 검증을 통과하지 못해 답변을 확정하지 못했습니다.')
-            for candidate in [*candidates, final_text]: assert candidate not in result['answer']
+            if reason == 'fail' and final == 'second' and not flags:
+                assert result['answer_text'].startswith(candidates[1] + '\n\n---\n⚠️')
+                assert '- 근거 부족' in result['answer_text']
+            else:
+                assert result['answer_text'].startswith('최종 검증을 통과하지 못해 답변을 확정하지 못했습니다.')
+                for candidate in [*candidates, final_text]: assert candidate not in result['answer']
         assert candidates[0] not in json.dumps(result, ensure_ascii=False)
         assert table not in result['answer_text'] and result['answer'] == result['answer_text']
         assert len(saved) == len(verdicts)
+        finished_replies = [message['result'] for message in replies
+            if str(message.get('call_id', '')).startswith('call-f')]
+        assert [reply['report']['verdict'] for reply in finished_replies] == verdicts
         for index, observation in enumerate(saved):
             candidate = candidates[0] if len(verdicts) > 1 and index == 0 else candidates[1]
             assert observation['validated_arguments'] == {'attempt': index + 1,

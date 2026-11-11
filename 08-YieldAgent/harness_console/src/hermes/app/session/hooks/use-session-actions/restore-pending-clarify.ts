@@ -1,11 +1,11 @@
 import { type GatewayEventPayload, QUESTION_CARD_TOOLS } from '@/lib/chat-messages'
-import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import { type ClarifyRequest, clarifyRequestsForSession, clearClarifyRequest } from '@/store/clarify'
 import type { SessionResumeResult } from '@/types/hermes'
 
 export interface PendingClarifyResumeState {
   authoritativeAbsent: boolean
-  cleared: ClarifyRequest | null
-  request: ClarifyRequest | null
+  cleared: ClarifyRequest[]
+  requests: ClarifyRequest[]
 }
 
 /**
@@ -24,32 +24,34 @@ export function restorePendingClarifyFromSnapshot(
   response: Pick<SessionResumeResult, 'open_requests'>,
   sessionId: string,
   resumeStartedAt: number,
-  requestIdAtStart?: string
+  requestIdsAtStart: string[] = []
 ): PendingClarifyResumeState {
-  const pending = (response.open_requests ?? []).find(entry => QUESTION_CARD_TOOLS.has(entry.method))
+  const pending = (response.open_requests ?? []).filter(entry => QUESTION_CARD_TOOLS.has(entry.method))
+  const pendingIds = new Set(pending.map(entry => entry.id))
+  const startIds = new Set(requestIdsAtStart)
+  const current = clarifyRequestsForSession(sessionId)
+  const cleared: ClarifyRequest[] = []
 
-  if (!pending) {
-    const current = $clarifyRequests.get()[sessionId]
-
-    const existedAtStart = Boolean(current && requestIdAtStart && current.requestId === requestIdAtStart)
-    const definitelyOlder = Boolean(current?.receivedAt !== undefined && current.receivedAt < resumeStartedAt)
-    const legacyWithoutTime = Boolean(current && current.receivedAt === undefined && !requestIdAtStart)
-
-    if (current && (existedAtStart || definitelyOlder || legacyWithoutTime)) {
-      clearClarifyRequest(current.requestId, sessionId)
-
-      return { authoritativeAbsent: true, cleared: current, request: null }
+  for (const request of current) {
+    if (pendingIds.has(request.requestId)) {
+      continue
     }
 
-    return { authoritativeAbsent: true, cleared: null, request: null }
+    const existedAtStart = startIds.has(request.requestId)
+    const definitelyOlder = request.receivedAt !== undefined && request.receivedAt < resumeStartedAt
+    const legacyWithoutTime = request.receivedAt === undefined && requestIdsAtStart.length === 0
+
+    if (existedAtStart || definitelyOlder || legacyWithoutTime) {
+      clearClarifyRequest(request.requestId, sessionId)
+      cleared.push(request)
+    }
   }
 
-  // The request handler parked it under this session when the channel
-  // re-delivered `open_requests`; a card the handler declined (empty
-  // question) is simply not there.
-  const parked = $clarifyRequests.get()[sessionId]
-
-  return { authoritativeAbsent: false, cleared: null, request: parked?.requestId === pending.id ? parked : null }
+  return {
+    authoritativeAbsent: pending.length === 0,
+    cleared,
+    requests: clarifyRequestsForSession(sessionId).filter(request => pendingIds.has(request.requestId))
+  }
 }
 
 export function pendingClarifyToolPayload(request: ClarifyRequest): GatewayEventPayload {

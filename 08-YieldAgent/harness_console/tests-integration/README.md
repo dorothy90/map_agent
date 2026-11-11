@@ -150,7 +150,9 @@ stdout의 준비 JSON 한 줄에서 `port`를 확인해 Vite의 `HARNESS_GATEWAY
 복합 요청 확인 시 `PR9_ALLOW_TOOLS=query_yield,query_wads`처럼 쉼표로 구분한
 도구 이름을 지정할 수 있다. 기본값은 빈 문자열이며, 앞뒤 공백과 빈 항목은
 제거하고 중복 이름은 첫 등장 순서로 한 번만 유지한다. registry의
-`read_only is True`이고 `effect == 'read'`인 도구만 원래 핸들러를 유지한다.
+`read_only is True`이고 `effect == 'read'`인 도구와 입력 rows만 HTML로 만드는
+`render_yield_table`만 원래 핸들러를 유지한다. 표 아티팩트 검증에는
+`PR9_ALLOW_TOOLS=render_yield_table`을 사용한다.
 알 수 없는 이름이나 조건에 맞지 않는 도구(`run_python`, `export_report` 포함)는
 `make_real_app()`에서 요청 처리 전에 `ValueError`로 실패한다. 나머지 도구는
 기존처럼 차단하고 `blocked`에 기록한다.
