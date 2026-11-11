@@ -70,12 +70,12 @@ def test_success_replay_repairs_artifact_event_without_duplication():
             await store.setup()
             run = await store.start_run("p", "s", "r", "q")
             run = await store.acquire(run["run_id"], "a")
-            await store.claim_invocation(run["run_id"], "call", "export_report", {}, run["epoch"])
-            obs = await store.put_result("p", "s", {"run_id": run["run_id"], "invocation_id": "call", "tool_name": "export_report"}, [], [{"title": "test", "mime": "text/plain", "data": "saved"}])
+            await store.claim_invocation(run["run_id"], "call", "render_yield_table", {}, run["epoch"])
+            obs = await store.put_result("p", "s", {"run_id": run["run_id"], "invocation_id": "call", "tool_name": "render_yield_table"}, [], [{"title": "test", "mime": "text/plain", "data": "saved"}])
             await store.finish_invocation(run["run_id"], "call", obs, run["epoch"])
             executor = ToolExecutor(domain_registry(), ExecutionContext(store, Settings(), run))
             for _ in range(2):
-                await executor.execute({"name": "export_report", "id": "call", "args": {}})
+                await executor.execute({"name": "render_yield_table", "id": "call", "args": {}})
             events = (await store.get_run("p", run["run_id"]))["events"]
             assert sum(e["type"] == "artifact" for e in events) == 1
             assert sum(e["type"] == "tool_finished" for e in events) == 1
@@ -107,10 +107,10 @@ def test_root_and_children_share_two_domain_slots():
             run = await store.start_run("p", "s", "r", "q")
             run = await store.acquire(run["run_id"], "a")
             registry = domain_registry()
-            registry.tools["query_lot_history"].handler = work
+            registry.tools["list_tables"].handler = work
             context = ExecutionContext(store, Settings(), run)
             await asyncio.gather(*(ToolExecutor(registry, replace(context, depth=1, namespace=f"child_{i}_")).execute(
-                {"name": "query_lot_history", "id": "read", "args": {"lot_ids": [str(i)]}}) for i in range(4)))
+                {"name": "list_tables", "id": "read", "args": {"table": str(i)}}) for i in range(4)))
             assert peak == 2
         finally:
             await store.client.drop_database(store.db.name)

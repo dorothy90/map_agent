@@ -9,7 +9,7 @@ from harness.executor import ExecutionContext
 from harness.store import BudgetExceeded
 
 
-def test_default_active_budget_is_five_minutes(monkeypatch):
+def test_default_active_budget_is_five_minutes(monkeypatch, isolated_settings_env):
     monkeypatch.delenv('HARNESS_ACTIVE_SECONDS', raising=False)
     assert Settings().active_seconds == 300
     assert Settings.from_env().active_seconds == 300

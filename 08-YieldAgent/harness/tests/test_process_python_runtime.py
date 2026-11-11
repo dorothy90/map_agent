@@ -49,7 +49,7 @@ def test_process_cancellation():
     asyncio.run(scenario())
 
 
-def test_runtime_configuration(monkeypatch):
+def test_runtime_configuration(monkeypatch, isolated_settings_env):
     from harness.config import Settings
     assert Settings().python_runtime == 'process'
     monkeypatch.setenv('HARNESS_PYTHON_EXECUTABLE', '/app/.venv/bin/python')

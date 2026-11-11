@@ -17,12 +17,12 @@ def test_names_are_trimmed_and_deduplicated_without_changing_handlers():
     registry = domain_registry()
     handlers = {name: spec.handler for name, spec in registry.tools.items()}
     assert resolve_allowed_tools(
-        registry, ' query_lot_history, query_wads,query_lot_history, ,read_result '
-    ) == ['query_lot_history', 'query_wads', 'read_result']
+        registry, ' list_tables, read_result,list_tables, ,read_result '
+    ) == ['list_tables', 'read_result']
     assert all(spec.handler is handlers[name] for name, spec in registry.tools.items())
 
 
-@pytest.mark.parametrize('raw', ['unknown_tool', 'query_lot_history,unknown_tool',
+@pytest.mark.parametrize('raw', ['unknown_tool', 'list_tables,unknown_tool', 'query_lot_history', 'query_wads',
                                 'run_python', 'export_report', 'query_db', 'terminal'])
 def test_unknown_or_unsafe_tools_are_rejected(raw):
     with pytest.raises(ValueError):
@@ -45,15 +45,13 @@ def test_all_domain_tools_follow_both_safety_conditions():
 ])
 def test_each_safety_condition_is_required(read_only, effect):
     registry = domain_registry()
-    spec = registry.tools['query_lot_history']
+    spec = registry.tools['list_tables']
     spec.read_only, spec.effect = read_only, effect
     with pytest.raises(ValueError):
-        resolve_allowed_tools(registry, 'query_lot_history')
+        resolve_allowed_tools(registry, 'list_tables')
 
 
-def test_list_tables_is_a_strict_read_only_exception(monkeypatch):
-    monkeypatch.setenv('HARNESS_NO_YIELD_TOOLS', '1')
-
+def test_list_tables_is_strictly_read_only():
     assert resolve_allowed_tools(domain_registry(), 'list_tables') == ['list_tables']
 
 

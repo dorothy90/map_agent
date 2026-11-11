@@ -2,8 +2,6 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-import pytest
-
 
 def test_python_empty_table_keeps_schema_through_worker(tmp_path, monkeypatch):
     from harness.runtime import worker
@@ -36,28 +34,3 @@ def test_python_empty_table_keeps_schema_through_worker(tmp_path, monkeypatch):
     assert result.status == 'success', result.summary
     assert result.tables[0].columns == ['value']
     assert result.tables[0].rows == []
-
-
-@pytest.mark.parametrize('offset,limit,partial', [(0, 3, True), (3, 100, True), (20, 100, True), (0, 100, False)])
-@pytest.mark.parametrize('kind', ['artifact', 'history'])
-def test_document_pages_expose_source_completeness(monkeypatch, kind, offset, limit, partial):
-    from harness.tools import document_tools as mod
-    class Store:
-        async def artifact(self, *args):
-            return {'mime': 'text/plain', 'result_id': 'source'}, b'0123456789'
-    ctx = SimpleNamespace(store=Store(), run={'principal_id': 'owner', 'session_id': 'session'})
-    if kind == 'artifact':
-        result = asyncio.run(mod.read_artifact_text(mod.ArtifactTextInput(
-            artifact_id='stored', offset=offset, limit=limit), ctx))
-    else:
-        import fail_history_tools
-        monkeypatch.setattr(fail_history_tools, '_fetch_results_by_doc_ids',
-            lambda *args, **kwargs: [{'doc_id': 'doc', 'content': '0123456789'}])
-        async def direct(fn, *args, **kwargs):
-            return fn(*args, **kwargs)
-        monkeypatch.setattr(mod, 'run_blocking', direct)
-        result = asyncio.run(mod.get_history_document(mod.HistoryDocumentInput(
-            doc_id='doc', offset=offset, limit=limit), ctx))
-    assert (result.status == 'partial') is partial
-    assert result.scope['complete'] is not partial
-    assert bool(result.scope['missing_reason']) is partial

@@ -76,7 +76,7 @@ def test_build_identity_excludes_env_secrets(monkeypatch, tmp_path):
     assert "SECRET" not in json.dumps(first)
 
 
-def test_eval_reports_final_state_when_worker_exits_without_finishing(monkeypatch, tmp_path):
+def test_eval_reports_final_state_when_worker_exits_without_finishing(monkeypatch, tmp_path, isolated_settings_env):
     from harness.config import Settings
     from harness.control import RunController
     from harness.evals.run_live import evaluate
@@ -103,7 +103,7 @@ def test_eval_reports_final_state_when_worker_exits_without_finishing(monkeypatc
     asyncio.run(scenario())
 
 
-def test_release_and_live_reports_fingerprint_same_provider_settings(monkeypatch, tmp_path):
+def test_release_and_live_reports_fingerprint_same_provider_settings(monkeypatch, tmp_path, isolated_settings_env):
     import pytest
     from types import SimpleNamespace
     from harness.config import Settings

@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from harness.config import Settings
 from harness.executor import ExecutionContext
-from harness.router import compatibility_chat
+from harness.router import compatibility_chat, router
 from harness.store import HarnessStore
 from models import ChatRequest
 
@@ -66,14 +66,13 @@ def test_phase_status_arrives_while_model_is_still_running(purpose):
     asyncio.run(scenario())
 
 
-def test_commentary_sse_replay_and_completed_history():
-    from agent_server import get_session_history
+def test_commentary_sse_replay_and_completed_run():
 
     async def scenario():
         async with execution(AIMessage(content="")) as (store, run, model, ctx):
             app = FastAPI()
             app.state.harness = SimpleNamespace(store=store, settings=ctx.settings)
-            app.add_api_route("/session/{session_id}/history", get_session_history, methods=["GET"])
+            app.include_router(router)
 
             @app.post("/chat/stream")
             async def chat(body: ChatRequest, request: Request):
@@ -84,9 +83,8 @@ def test_commentary_sse_replay_and_completed_history():
             await store.event(run["run_id"], "tool_started", {"name": "query_db"})
             await store.event(run["run_id"], "progress", {"name": "review", "message": "답변을 검증하고 있습니다."})
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-                # Active history is restored by SSE only, avoiding duplicate commentary.
-                active = (await client.get("/session/session/history")).json()
-                assert len(active["turns"]) == 1
+                active = (await client.get(f"/runs/{run['run_id']}")).json()
+                assert active["status"] == "running"
                 await store.finish(run["run_id"], run["epoch"], "completed", "최종 답변", "verified")
                 body = {"session_id": "session", "run_id": run["run_id"], "query": "", "after_sequence": 0}
                 first = await client.post("/chat/stream", json=body)
@@ -97,8 +95,8 @@ def test_commentary_sse_replay_and_completed_history():
                 assert messages[0]["event_id"] in replay.text
                 assert [e["type"] for e in events][-2:] == ["message", "stream_end"]
                 assert "PRIVATE" not in first.text
-                history = (await client.get("/session/session/history")).json()["turns"]
-                assert [(t["role"], t.get("phase"), t["content"]) for t in history] == [
-                    ("user", None, "자료 확인"), ("assistant", "commentary", "자료를 확인하겠습니다."),
-                    ("assistant", None, "최종 답변")]
+                completed = (await client.get(f"/runs/{run['run_id']}")).json()
+                assert completed['status'] == 'completed'
+                assert completed['answer'] == '최종 답변'
+
     asyncio.run(scenario())

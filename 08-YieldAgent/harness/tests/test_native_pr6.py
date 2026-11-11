@@ -34,7 +34,7 @@ def test_server_request_envelope():
     assert ipc.valid(ipc.call('tool_call', 'call-two', name='read', args={}))
 
 
-def test_prompt_flag_defaults_and_environment(monkeypatch):
+def test_prompt_flag_defaults_and_environment(monkeypatch, isolated_settings_env):
     assert Settings().native_prompts is False
     monkeypatch.setenv('HARNESS_NATIVE_PROMPTS', 'true')
     assert Settings.from_env().native_prompts is True
@@ -80,21 +80,21 @@ def test_bridge_capabilities_and_default_no_approval():
     from pydantic import BaseModel
     class Args(BaseModel): pass
     registry = ToolRegistry()
-    for name, effect in [('read', 'read'), ('synthetic', 'artifact'), ('write', 'persistent_write')]:
+    for name, effect in [('read_result', 'read'), ('render_yield_table', 'artifact'), ('write', 'persistent_write')]:
         registry.add(ToolSpec(name, 'Synthetic operation', Args, None, effect=effect))
     bridge = NativeBridge(registry, SimpleNamespace())
     assert bridge.approval_tools == frozenset()
-    assert bridge.allowed == {'read', 'synthetic'}
+    assert bridge.allowed == {'read_result', 'render_yield_table'}
     class Observation:
         def model_dump(self, **kw): return {}
         def model_view(self): return {'status': 'success'}
     async def execute(call): return Observation()
     bridge.executor = SimpleNamespace(execute=execute)
     async def scenario():
-        assert await bridge.invoke({'name': 'read'}) == {'status': 'success'}
+        assert await bridge.invoke({'name': 'read_result'}) == {'status': 'success'}
         bridge.approval_tools = frozenset({'write'})
         with pytest.raises(PermissionError): await bridge.invoke({'name': 'write'})
-        with pytest.raises(PermissionError): await bridge.invoke({'name': 'synthetic'}, review_id='v')
+        with pytest.raises(PermissionError): await bridge.invoke({'name': 'render_yield_table'}, review_id='v')
     asyncio.run(scenario())
 
 

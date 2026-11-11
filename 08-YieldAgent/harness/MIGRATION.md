@@ -1,5 +1,7 @@
 # 사내 백엔드로 이식하기
 
+> Historical migration reference, archived 2026-11-12. Legacy server/tool examples below no longer describe the current tree. Use [README.md](README.md) for the native execution and isolation contract.
+
 사내 main에 별도 수정과 신규 에이전트가 추가되어 있고 화면까지 함께 이식하는 경우에는 **[Luna용 사내 최신 main 이식 안내](INTERNAL_PORTING_LUNA.md)**를 우선한다. 해당 안내는 이 문서의 과거 기준 커밋·단계 중단 지시를 대체하며, 사내 최신 코드 보존과 단계별 검증 절차를 제공한다.
 
 Python 3.11을 유지하며 Hermes를 별도로 설치하지 않는다. `harness/engine/`에 원본 엔진과 내부 의존 모듈을 포함했다. 기존 백엔드가 같은 Python 실행 파일로 내부 작업 프로세스를 시작하므로 서버를 하나 더 운영할 필요가 없다.

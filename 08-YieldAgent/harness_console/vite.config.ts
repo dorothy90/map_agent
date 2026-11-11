@@ -27,7 +27,7 @@ export default defineConfig({
       '/harness/artifacts': { target: gatewayTarget, changeOrigin: true },
       '/api/ws': { target: gatewayTarget, ws: true, changeOrigin: true },
       '/gateway-m1': { target: gatewayTarget, ws: true, changeOrigin: true },
-      ...Object.fromEntries(['/runs', '/harness', '/sessions', '/session', '/health'].map(path => [path, {
+      ...Object.fromEntries(['/harness', '/health'].map(path => [path, {
       target: 'http://127.0.0.1:8001', changeOrigin: true, timeout: 0, proxyTimeout: 0,
       configure(proxy) { proxy.on('proxyRes', response => { if (response.headers['content-type']?.includes('text/event-stream')) { response.headers['cache-control'] = 'no-cache, no-transform'; response.headers['x-accel-buffering'] = 'no'; } }); },
     } satisfies import('vite').ProxyOptions])),

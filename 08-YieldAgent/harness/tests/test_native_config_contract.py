@@ -75,7 +75,7 @@ def test_native_settings_and_profile_skill_snapshot(monkeypatch, tmp_path, profi
     assert not Path(startup['skills_path']).exists()
 
 
-def test_timezone_env_alias(monkeypatch):
+def test_timezone_env_alias(monkeypatch, isolated_settings_env):
     monkeypatch.setenv('HERMES_TIMEZONE', 'Europe/London')
     monkeypatch.delenv('HARNESS_TIMEZONE', raising=False)
     assert Settings.from_env().timezone == 'Europe/London'

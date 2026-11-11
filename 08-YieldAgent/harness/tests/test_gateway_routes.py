@@ -1,8 +1,7 @@
-"""In-process ASGI only: never import agent_server or start its lifespan."""
+"""In-process ASGI gateway contract checks."""
 import ast
 import builtins
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -235,37 +234,3 @@ def test_ws_invalid_input_does_not_dispatch_and_connection_survives():
                 assert ws.receive_json()['error']['code'] == -32600
             ws.send_json({'jsonrpc': '2.0', 'id': None, 'method': 'unknown'})
             assert ws.receive_json() == rpc_rejection(MANIFEST, 'unknown', None)
-
-
-@pytest.mark.parametrize('enabled', [False, True])
-def test_agent_server_actual_mount_block_without_import_side_effects(monkeypatch, enabled):
-    source = (ROOT / 'agent_server.py').read_text()
-    tree = ast.parse(source)
-    blocks = [node for node in tree.body if isinstance(node, ast.If)
-              and 'GATEWAY_M1_ENABLED' in ast.unparse(node.test)]
-    assert len(blocks) == 1
-    health = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'health')
-    app = FastAPI()
-    # Execute the real health function/decorator and real opt-in block only.
-    exec(compile(ast.Module(body=[health], type_ignores=[]), 'agent_server.py', 'exec'), {'app': app})
-    existing_routes = tuple(app.routes)
-    imports = []
-    original_import = builtins.__import__
-
-    def watched_import(name, *args, **kwargs):
-        if name.startswith('harness.gateway'):
-            imports.append(name)
-        return original_import(name, *args, **kwargs)
-
-    if enabled:
-        monkeypatch.setenv('GATEWAY_M1_ENABLED', 'true')
-    else:
-        monkeypatch.delenv('GATEWAY_M1_ENABLED', raising=False)
-    monkeypatch.setattr(builtins, '__import__', watched_import)
-    exec(compile(ast.Module(body=blocks, type_ignores=[]), 'agent_server.py', 'exec'), {'app': app, 'os': os})
-    assert tuple(app.routes[:len(existing_routes)]) == existing_routes
-    assert bool(imports) is enabled
-    with TestClient(app) as client:
-        assert client.get('/health').status_code == 200
-        assert client.get('/gateway-m1/api/media').status_code == (401 if enabled else 404)
-        assert client.get('/api/media').status_code == 404

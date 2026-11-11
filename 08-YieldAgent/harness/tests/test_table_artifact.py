@@ -9,19 +9,13 @@ from bson import ObjectId
 from pydantic import ValidationError
 
 
-def test_render_yield_table_is_registered_in_both_tool_configurations(monkeypatch):
+def test_render_yield_table_is_registered():
     from harness.tools.registry import domain_registry
 
-    for disabled in (False, True):
-        if disabled:
-            monkeypatch.setenv("HARNESS_NO_YIELD_TOOLS", "1")
-        else:
-            monkeypatch.delenv("HARNESS_NO_YIELD_TOOLS", raising=False)
-        registry = domain_registry()
-        spec = registry.tools["render_yield_table"]
-        assert spec.eager is True
-        assert spec.effect == "artifact"
-        assert spec.read_only is True
+    spec = domain_registry().tools["render_yield_table"]
+    assert spec.eager is True
+    assert spec.effect == "artifact"
+    assert spec.read_only is True
 
 
 def test_render_yield_table_saves_html_and_returns_artifact_ref():

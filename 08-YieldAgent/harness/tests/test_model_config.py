@@ -1,4 +1,4 @@
-def test_explicit_model_is_preserved(monkeypatch):
+def test_explicit_model_is_preserved(monkeypatch, isolated_settings_env):
     from common import get_llm
 
     monkeypatch.setenv("HARNESS_API_KEY", "fixture-key")
@@ -14,7 +14,7 @@ def test_missing_key_fails_without_provider_fallback(monkeypatch):
         build_model(Settings(api_key=""))
 
 
-def test_groq_uses_lowercase_user_key_and_never_openrouter_key(monkeypatch):
+def test_groq_uses_lowercase_user_key_and_never_openrouter_key(monkeypatch, isolated_settings_env):
     from harness.config import Settings
     monkeypatch.delenv("HARNESS_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
@@ -28,7 +28,7 @@ def test_groq_uses_lowercase_user_key_and_never_openrouter_key(monkeypatch):
     assert not Settings.from_env().api_key.get_secret_value()
 
 
-def test_legacy_factory_uses_same_provider_settings(monkeypatch):
+def test_legacy_factory_uses_same_provider_settings(monkeypatch, isolated_settings_env):
     from common import get_llm
     monkeypatch.delenv("HARNESS_API_KEY", raising=False)
     monkeypatch.setenv("GROQ_API_KEY", "fixture-groq")
@@ -40,7 +40,7 @@ def test_legacy_factory_uses_same_provider_settings(monkeypatch):
     assert model.openai_api_key.get_secret_value() == "fixture-groq"
 
 
-def test_configured_output_budget_and_effort_reach_compatible_client(monkeypatch):
+def test_configured_output_budget_and_effort_reach_compatible_client(monkeypatch, isolated_settings_env):
     from harness.config import Settings
     from harness.model import build_model
     monkeypatch.setenv("HARNESS_API_KEY", "fixture-key")
@@ -51,7 +51,7 @@ def test_configured_output_budget_and_effort_reach_compatible_client(monkeypatch
     assert model.reasoning_effort == "none"
 
 
-def test_openrouter_uses_its_own_key_and_larger_output_budget(monkeypatch):
+def test_openrouter_uses_its_own_key_and_larger_output_budget(monkeypatch, isolated_settings_env):
     from harness.config import Settings
     from harness.model import build_model
     from common import get_llm
@@ -72,7 +72,7 @@ def test_openrouter_uses_its_own_key_and_larger_output_budget(monkeypatch):
     assert not Settings.from_env().api_key.get_secret_value()
 
 
-def test_sampling_setting_reaches_harness_and_legacy_without_overriding_explicit_value(monkeypatch):
+def test_sampling_setting_reaches_harness_and_legacy_without_overriding_explicit_value(monkeypatch, isolated_settings_env):
     from harness.config import Settings
     from harness.model import build_model
     from common import get_llm
@@ -84,7 +84,7 @@ def test_sampling_setting_reaches_harness_and_legacy_without_overriding_explicit
 
 
 
-def test_only_native_engine_is_configurable(monkeypatch):
+def test_only_native_engine_is_configurable(monkeypatch, isolated_settings_env):
     import pytest
     from harness.config import Settings
 

@@ -183,20 +183,6 @@ async def artifact(artifact_id: str, session_id: str, request: Request):
         raise HTTPException(404, "Artifact not found") from None
 
 
-async def uses_harness(request, session_id):
-    service = controller(request)
-    key = {"principal_id": principal(request), "session_id": session_id}
-    session = await service.store.db.harness_sessions.find_one(key)
-    if session and session.get("runtime"):
-        return session["runtime"] in {"harness/v1", "harness/v2"}
-    legacy = await service.store.db.chat_turns.find_one({"session_id": session_id})
-    runtime = "harness/v2" if service.settings.enabled and not legacy else "legacy"
-    await service.store.db.harness_sessions.update_one(key, {"$setOnInsert": key}, upsert=True)
-    await service.store.db.harness_sessions.update_one({**key, "runtime": {"$exists": False}}, {"$set": {"runtime": runtime}})
-    pinned = await service.store.db.harness_sessions.find_one(key)
-    return pinned["runtime"] in {"harness/v1", "harness/v2"}
-
-
 async def compatibility_chat(body, request):
     service = controller(request)
     after = body.after_sequence

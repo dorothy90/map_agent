@@ -2,12 +2,12 @@ import argparse
 import asyncio
 import json
 import os
+import uuid
 from dotenv import load_dotenv
 
 from harness.config import Settings
 from harness.model import build_model
 from harness.store import HarnessStore
-from harness.runtime.container import ContainerRuntime
 from harness.runtime.process import ProcessRuntime
 
 
@@ -41,13 +41,13 @@ async def check():
     except Exception as exc:
         results["oracle"] = {"ok": False, "error_type": type(exc).__name__}
     try:
-        runtime = (ContainerRuntime(settings.python_image) if settings.python_runtime == "docker"
-            else ProcessRuntime(settings.python_executable))
+        runtime = ProcessRuntime(isolation=settings.isolation,
+            run_id="preflight-" + uuid.uuid4().hex, principal_id=settings.principal)
         result = await runtime.execute("emit_table(pd.DataFrame([{'value': 1}]))", {})
-        results["python"] = {"ok": result["status"] == "success", "runtime": settings.python_runtime,
+        results["python"] = {"ok": result["status"] == "success", "runtime": "isolated",
             "error": result.get("error")}
     except Exception as exc:
-        results["python"] = {"ok": False, "runtime": settings.python_runtime, "error_type": type(exc).__name__}
+        results["python"] = {"ok": False, "runtime": "isolated", "error_type": type(exc).__name__}
     try:
         def search():
             from fail_history_tools import _get_opensearch_client, _OPENSEARCH_INDEX
@@ -56,9 +56,6 @@ async def check():
         results['search'] = {'ok': bool(await asyncio.to_thread(search))}
     except Exception as exc:
         results['search'] = {'ok': False, 'error_type': type(exc).__name__}
-    from harness.tools.analysis_tools import mining_availability
-    mining = mining_availability()
-    results['mining'] = {'ok': mining['available'], 'optional': True, 'reason': mining.get('reason', '')}
     return results
 
 

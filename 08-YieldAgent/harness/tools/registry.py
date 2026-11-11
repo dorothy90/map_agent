@@ -85,34 +85,13 @@ class ToolRegistry:
 
 
 def domain_registry():
-    import os
-    registry = ToolRegistry()
-    if os.environ.get('HARNESS_NO_YIELD_TOOLS') == '1':
-        from .python_tools import register as python
-        from .query_db import register as query_db
-        from .list_tables import register as list_tables
-        from .load_wafer_maps import register as load_wafer_maps
-        from .table_artifact import register as table_artifact
-        python(registry)
-        query_db(registry)
-        list_tables(registry)
-        load_wafer_maps(registry)
-        table_artifact(registry)
-        return registry
-    from .yield_tools import register as yields
-    from .wads_tools import register as wads
-    from .lot_tools import register as lots
     from .python_tools import register as python
-    from .analysis_tools import register as analysis
-    from .artifact_tools import register as artifacts
-    from .map_tools import register as maps
-    from .document_tools import register as documents
-    from .defect_tools import register as defects
+    from .query_db import register as query_db
+    from .list_tables import register as list_tables
     from .load_wafer_maps import register as load_wafer_maps
     from .table_artifact import register as table_artifact
-    for register in (yields, wads, lots, python, analysis, artifacts, maps, documents, defects, load_wafer_maps, table_artifact):
+
+    registry = ToolRegistry()
+    for register in (python, query_db, list_tables, load_wafer_maps, table_artifact):
         register(registry)
-    if os.environ.get('HARNESS_WAFER_SET_TOOLS') == '1':
-        from .wafer_set_register import register as wafer_set
-        wafer_set(registry)
     return registry

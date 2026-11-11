@@ -18,7 +18,6 @@ from requests.exceptions import ConnectionError as RequestsConnectionError, Time
 from pydantic import ValidationError
 from langchain_core.messages import convert_to_openai_messages
 from .config import Settings
-from .primary_result import PrimaryResult, classify_primary
 from .store import Conflict, BudgetExceeded
 from .types import now
 
@@ -320,9 +319,6 @@ class ToolExecutor:
                 scope=result.scope, source_result_ids=result.source_result_ids,
                 page=result.page.model_dump() if result.page else None)
             observation["provenance"]["data_origin"] = result.data_origin
-            if spec.group == "wafer_set" and observation["status"] in {"success", "partial", "empty"}:
-                if classify_primary(result) is PrimaryResult.ZERO:
-                    observation["provenance"].update(tool_group="wafer_set", empty_result=True)
         except (Conflict, asyncio.CancelledError):
             raise
         except Exception as exc:

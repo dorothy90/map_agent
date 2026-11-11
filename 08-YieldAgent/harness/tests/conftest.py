@@ -16,3 +16,10 @@ def native_result(monkeypatch):
 
     monkeypatch.setattr("harness.native_hermes.run_native", run_native)
     return run_native
+
+
+@pytest.fixture
+def isolated_settings_env(monkeypatch, tmp_path):
+    from harness.tests.test_isolation_config import isolation_env
+
+    return isolation_env(monkeypatch, tmp_path)

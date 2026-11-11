@@ -68,7 +68,7 @@ def test_call_roundtrip():
     assert message['type'] == 'call' and message['method'] == 'tool_call'
 
 
-def test_parallel_and_commentary_settings(monkeypatch):
+def test_parallel_and_commentary_settings(monkeypatch, isolated_settings_env):
     from harness.config import Settings
     from pydantic import ValidationError
     assert Settings().parallel_tool_limit == 8

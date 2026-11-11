@@ -1,15 +1,14 @@
 # 하네스 평가
 
-프로젝트 루트에서 실행한다. `harness/tests`는 기존 서버가 없으면 자동 skip하는 테스트 모음과 분리되어 있다.
+프로젝트 루트에서 실행한다. `harness/tests`는 Hermes/native 실행 계약을 검증한다.
 
 ```bash
 PYTHONPATH=08-YieldAgent .venv/bin/python -m pytest 08-YieldAgent/harness/tests -q
 PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.preflight --require-live
-PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.local_tools
 PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.mcp_smoke --require-live
 ```
 
-테스트 모음은 실제 Mongo와 Docker를 사용하지만 모델 응답과 장애는 제어된 대체 공급자로 검증한다. `local_tools`와 `mcp_smoke`는 실제 Oracle·검색·Python·산출물을 확인하며 외부 모델 호출을 하지 않는다. `run_synthetic`는 실제 모델을 호출하지만 모든 생산 데이터 도구를 가상 자료로 교체하므로 실제 DB 통합 평가가 아니다.
+테스트 모음은 실제 Mongo와 Docker를 사용하지만 모델 응답과 장애는 제어된 대체 공급자로 검증한다. `mcp_smoke`는 여섯 도구의 노출, 실제 Oracle 테이블 목록과 저장 결과의 재열람·소유권을 확인하며 외부 모델 호출을 하지 않는다. `run_synthetic`는 실제 모델을 호출하지만 모든 생산 데이터 도구를 가상 자료로 교체하므로 실제 DB 통합 평가가 아니다.
 
 실제 데이터의 외부 모델 전송을 승인한 운영자가 사용하는 명령:
 
@@ -24,14 +23,6 @@ PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.run_live \
 실행 태스크가 종료됐는데 상태가 계속 created/running/cancelling이면 정리를 먼저 마치고 최종 상태와 `evaluation_error=nonterminal_worker_exit`를 보고서에 남긴다. 입력 대기 상태는 정상적인 중단 지점으로 구분한다. 모델 출력 길이·temperature·추론 옵션도 보고서에 기록한다.
 
 현재 기본 평가 공급자는 OpenRouter다. 실제 자료는 `HARNESS_BASE_URL`로 지정한 목적지에 대한 전송 승인 범위에서 사용한다. `run_synthetic`는 실제 생산 자료를 전달하지 않는 대안이다.
-
-WADS 요청 의미 해석과 기존 원본 보고서 열람을 분리해 확인하는 가상 평가:
-
-```bash
-PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.wads_synthetic
-```
-
-`wads_synthetic`는 가상 보고서 4건/웨이퍼 조인 7행으로 실제 모델·격리 Python·원본 HTML 반환의 2턴 흐름을 실행한다. 8월 통계 다음의 원본 열람에서 `get_wads_report`가 호출돼야 하며 수율 조회나 신규 PPT 생성으로 대체하면 실패한다. 기록의 completed 상태 외에도 원본과 최종 수치 및 기간을 독립적으로 검토한다.
 
 2026-09-12의 단순화 전후 비교, 제품·날짜 변형, 실제 DB 연결·모델·브라우저 확인은 [검증 보고서](../../../outputs/harness-simplification-validation.md)에 기록했다. 실제 DB 연결 시험에서 발견한 테스트 보고서의 HTML 본문 날짜와 메타데이터 불일치도 함께 기록했다.
 

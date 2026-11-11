@@ -18,8 +18,8 @@ def isolation_env(monkeypatch, tmp_path):
     work_root.mkdir(parents=True)
     analysis_venv.mkdir()
     launcher.write_text("launcher")
+    monkeypatch.delenv("HARNESS_ISOLATION_BACKEND", raising=False)
     values = {
-        "HARNESS_NO_YIELD_TOOLS": "1",
         "HARNESS_ISOLATION_SSH_HOST": "127.0.0.1",
         "HARNESS_ISOLATION_SSH_USER": "yieldrun",
         "HARNESS_ISOLATION_SSH_PORT": "22",
@@ -36,7 +36,7 @@ def isolation_env(monkeypatch, tmp_path):
     return values
 
 
-def test_isolation_settings_parse_when_no_yield_tools_is_enabled(monkeypatch, tmp_path):
+def test_isolation_settings_are_always_loaded(monkeypatch, tmp_path):
     isolation_env(monkeypatch, tmp_path)
 
     settings = Settings.from_env()
@@ -48,13 +48,17 @@ def test_isolation_settings_parse_when_no_yield_tools_is_enabled(monkeypatch, tm
     assert settings.isolation.sandbox == "auto"
 
 
-def test_flag_off_does_not_require_isolation_configuration(monkeypatch):
-    monkeypatch.delenv("HARNESS_NO_YIELD_TOOLS", raising=False)
+def test_environment_settings_require_isolation_configuration(monkeypatch):
+    for name in list(os.environ):
+        if name.startswith("HARNESS_ISOLATION_"):
+            monkeypatch.delenv(name)
+    with pytest.raises(ValueError, match="missing isolation configuration"):
+        Settings.from_env()
 
-    settings = Settings.from_env()
 
-    assert settings.no_yield_tools is False
-    assert settings.isolation is None
+def test_explicit_native_settings_require_isolation():
+    with pytest.raises(ValueError, match="native execution requires isolation configuration"):
+        Settings(no_yield_tools=True)
 
 
 @pytest.mark.parametrize(

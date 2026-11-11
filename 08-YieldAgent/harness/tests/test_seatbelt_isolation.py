@@ -27,7 +27,6 @@ def seatbelt_paths(tmp_path: Path) -> dict[str, str]:
 
 def test_seatbelt_requires_explicit_backend_and_keeps_ssh_default(monkeypatch, tmp_path):
     paths = seatbelt_paths(tmp_path)
-    monkeypatch.setenv("HARNESS_NO_YIELD_TOOLS", "1")
     monkeypatch.setenv("HARNESS_ISOLATION_BACKEND", "seatbelt")
     monkeypatch.setenv("HARNESS_ISOLATION_SANDBOX", "required")
     for key, value in paths.items():
@@ -35,6 +34,8 @@ def test_seatbelt_requires_explicit_backend_and_keeps_ssh_default(monkeypatch, t
 
     settings = Settings.from_env()
 
+    assert settings.no_yield_tools is True
+    assert settings.isolation.sandbox == "required"
     assert isinstance(settings.isolation, SeatbeltIsolationSettings)
     assert settings.isolation.backend == "seatbelt"
 

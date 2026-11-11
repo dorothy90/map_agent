@@ -137,7 +137,7 @@ class Settings(BaseModel):
     @model_validator(mode="after")
     def require_isolation(self):
         if self.no_yield_tools and self.isolation is None:
-            raise ValueError("HARNESS_NO_YIELD_TOOLS requires isolation configuration")
+            raise ValueError("native execution requires isolation configuration")
         return self
 
     @classmethod
@@ -152,32 +152,30 @@ class Settings(BaseModel):
             key = os.getenv("GROQ_API_KEY") or os.getenv("groq_api_key", "")
         elif not key and host == "openrouter.ai":
             key = os.getenv("OPENROUTER_API_KEY", "")
-        no_yield_tools = os.getenv("HARNESS_NO_YIELD_TOOLS") == "1"
         isolation = None
-        if no_yield_tools:
-            backend = os.getenv("HARNESS_ISOLATION_BACKEND", "ssh")
-            if backend == "seatbelt":
-                names = {
-                    "home": "HARNESS_ISOLATION_HOME",
-                    "work_root": "HARNESS_ISOLATION_WORK_ROOT",
-                    "analysis_venv": "HARNESS_ISOLATION_ANALYSIS_VENV",
-                    "launcher": "HARNESS_ISOLATION_LAUNCHER",
-                    "sandbox": "HARNESS_ISOLATION_SANDBOX",
-                }
-                missing = [env_name for field, env_name in names.items()
-                           if field != "sandbox" and not os.getenv(env_name)]
-                if missing:
-                    raise ValueError("missing isolation configuration: " + ", ".join(missing))
-                isolation = SeatbeltIsolationSettings(
-                    home=os.environ[names["home"]], work_root=os.environ[names["work_root"]],
-                    analysis_venv=os.environ[names["analysis_venv"]],
-                    launcher=os.environ[names["launcher"]],
-                    sandbox=os.getenv(names["sandbox"], "required"),
-                    retain_python_files=os.getenv("HARNESS_RETAIN_PYTHON_FILES") == "1",
-                )
-            elif backend != "ssh":
-                raise ValueError("HARNESS_ISOLATION_BACKEND must be ssh or seatbelt")
-        if no_yield_tools and isolation is None:
+        backend = os.getenv("HARNESS_ISOLATION_BACKEND", "ssh")
+        if backend == "seatbelt":
+            names = {
+                "home": "HARNESS_ISOLATION_HOME",
+                "work_root": "HARNESS_ISOLATION_WORK_ROOT",
+                "analysis_venv": "HARNESS_ISOLATION_ANALYSIS_VENV",
+                "launcher": "HARNESS_ISOLATION_LAUNCHER",
+                "sandbox": "HARNESS_ISOLATION_SANDBOX",
+            }
+            missing = [env_name for field, env_name in names.items()
+                       if field != "sandbox" and not os.getenv(env_name)]
+            if missing:
+                raise ValueError("missing isolation configuration: " + ", ".join(missing))
+            isolation = SeatbeltIsolationSettings(
+                home=os.environ[names["home"]], work_root=os.environ[names["work_root"]],
+                analysis_venv=os.environ[names["analysis_venv"]],
+                launcher=os.environ[names["launcher"]],
+                sandbox=os.getenv(names["sandbox"], "required"),
+                retain_python_files=os.getenv("HARNESS_RETAIN_PYTHON_FILES") == "1",
+            )
+        elif backend != "ssh":
+            raise ValueError("HARNESS_ISOLATION_BACKEND must be ssh or seatbelt")
+        if isolation is None:
             names = {
                 "ssh_host": "HARNESS_ISOLATION_SSH_HOST",
                 "ssh_user": "HARNESS_ISOLATION_SSH_USER",
@@ -214,7 +212,7 @@ class Settings(BaseModel):
             python_runtime=os.getenv("HARNESS_PYTHON_RUNTIME", "process"),
             python_executable=os.getenv("HARNESS_PYTHON_EXECUTABLE") or None,
             python_image=os.getenv("HARNESS_PYTHON_IMAGE", "yield-harness-python:2"),
-            no_yield_tools=no_yield_tools,
+            no_yield_tools=True,
             isolation=isolation,
             tool_limit=int(os.getenv("HARNESS_TOOL_LIMIT", "24")),
             parallel_tool_limit=int(os.getenv("HARNESS_PARALLEL_TOOLS", "8")),

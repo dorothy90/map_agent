@@ -25,16 +25,9 @@ def model_tool_names():
     return [tool["function"]["name"] for tool in domain_registry().model_tools()]
 
 
-def test_no_yield_tools_keeps_python_tools_and_default_hermes_toolsets(monkeypatch):
+def test_registry_keeps_only_native_tools_and_worker_contract():
     from harness.tools.registry import domain_registry
 
-    monkeypatch.delenv("HARNESS_NO_YIELD_TOOLS", raising=False)
-    monkeypatch.delenv("HARNESS_WAFER_SET_TOOLS", raising=False)
-    before = model_tool_names()
-    assert before
-
-    monkeypatch.setenv("HARNESS_NO_YIELD_TOOLS", "1")
-    monkeypatch.setenv("HARNESS_WAFER_SET_TOOLS", "1")
     registry = domain_registry()
     assert model_tool_names() == [
         "read_result", "run_python", "query_db", "list_tables", "load_wafer_maps", "render_yield_table",
@@ -60,9 +53,6 @@ def test_no_yield_tools_keeps_python_tools_and_default_hermes_toolsets(monkeypat
     ]
     assert worker.native_prompts_enabled({"no_yield_tools": True}) is True
 
-    monkeypatch.delenv("HARNESS_NO_YIELD_TOOLS")
-    monkeypatch.delenv("HARNESS_WAFER_SET_TOOLS")
-    assert model_tool_names() == before
 
 
 def test_default_hermes_toolsets_are_unchanged():
@@ -73,7 +63,6 @@ def test_default_hermes_toolsets_are_unchanged():
 
 def test_no_yield_engine_toolsets_resolve_requested_tools(monkeypatch):
     worker = worker_module()
-    monkeypatch.setenv("HARNESS_NO_YIELD_TOOLS", "1")
     engine = Path(__file__).parents[1] / "engine"
     sys.path.insert(0, str(engine))
     try:

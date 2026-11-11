@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from typing import Any, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -138,12 +137,6 @@ class ToolObservation(Contract):
                 payload["error"] = {k: str(v)[:1200] if isinstance(v, str) else v for k, v in self.error.items()}
         payload["artifact_count"] = len(self.artifact_refs)
         payload["artifact_refs"] = artifact_links(self.session_id, self.result_id, self.artifact_refs)
-        if (os.environ.get("HARNESS_WAFER_SET_TOOLS") == "1"
-                and self.status in {"success", "partial", "empty"}
-                and self.provenance.get("tool_group") == "wafer_set"
-                and self.provenance.get("empty_result") is True):
-            payload["empty_result"] = True
-            payload["empty_result_message"] = EMPTY_RESULT_SUMMARY
         if self.page:
             self.page.project(payload)
         return payload

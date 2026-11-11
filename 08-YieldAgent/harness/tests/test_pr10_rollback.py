@@ -3,9 +3,7 @@
 Author validation: py_compile only. HARNESS_MONGO_URI enables a UUID temporary
 DB; unavailable Mongo skips before setup, and every connected DB is dropped.
 """
-import ast
 import asyncio
-import builtins
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
@@ -19,61 +17,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def mounted_app():
-    """Execute only the actual legacy mount, health and gateway opt-in block."""
-    from harness.router import router
-    tree = ast.parse((ROOT / 'agent_server.py').read_text())
-    selected = [node for node in tree.body if
-                (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
-                 and ast.unparse(node.value.func) == 'app.include_router'
-                 and node.value.args and ast.unparse(node.value.args[0]) == 'harness_router')
-                or (isinstance(node, ast.If) and 'GATEWAY_M1_ENABLED' in ast.unparse(node.test))
-                or (isinstance(node, ast.FunctionDef) and node.name == 'health')]
-    assert len(selected) == 3
-    app = FastAPI()
-    exec(compile(ast.Module(body=selected, type_ignores=[]), 'agent_server.py', 'exec'),
-         {'app': app, 'harness_router': router, 'os': os})
-    return app
-
-
-def route_set(routes):
-    return {(method, route.path) for route in routes for method in getattr(route, 'methods', ())}
-
-
-@pytest.mark.parametrize('disabled', [None, 'false'])
-def test_actual_mount_preserves_complete_legacy_route_snapshot(monkeypatch, disabled):
-    from harness.router import router
-    original_import = builtins.__import__
-    imports = []
-
-    def watched(name, *args, **kwargs):
-        if name.startswith('harness.gateway'):
-            imports.append(name)
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, '__import__', watched)
-    if disabled is None:
-        monkeypatch.delenv('GATEWAY_M1_ENABLED', raising=False)
-    else:
-        monkeypatch.setenv('GATEWAY_M1_ENABLED', disabled)
-    off = mounted_app()
-    assert imports == []
-    with TestClient(off) as client:
-        assert client.get('/health').status_code == 200
-        for path in ('/gateway-m1/api/health', '/gateway-m1/api/sessions',
-                     '/gateway-m1/api/ws', '/api/ws', '/api/sessions'):
-            assert client.get(path).status_code == 404
-    monkeypatch.setenv('GATEWAY_M1_ENABLED', 'true')
-    on = mounted_app()
-    assert imports == ['harness.gateway.routes']
-    expected = route_set(router.routes)
-    assert expected
-    # Compare all method/path pairs, not a handpicked route count.
-    off_snapshot = route_set(r for r in off.routes if r.endpoint in {x.endpoint for x in router.routes})
-    on_snapshot = route_set(r for r in on.routes if r.endpoint in {x.endpoint for x in router.routes})
-    assert off_snapshot == on_snapshot == expected
 
 
 @pytest.mark.parametrize('flag', [None, 'false', 'true'])
@@ -95,7 +38,7 @@ assert any(r.path == '/runs' for r in app.routes)
 
 
 @pytest.mark.skipif(not os.getenv('HARNESS_MONGO_URI'), reason='HARNESS_MONGO_URI not configured')
-def test_gateway_and_legacy_history_survive_flag_off_restart(monkeypatch):
+def test_gateway_history_is_readable_through_retained_router():
     import httpx
     from pymongo.errors import ConnectionFailure
     from harness.control import RunController
@@ -172,9 +115,10 @@ def test_gateway_and_legacy_history_survive_flag_off_restart(monkeypatch):
                 '$set': {'gateway_unknown_resolution': run['epoch']}})
             before = await store.get_run('alice', run_id)
 
-            # New app/controller over the same DB characterizes a flag-OFF restart.
-            monkeypatch.setenv('GATEWAY_M1_ENABLED', 'false')
-            app = mounted_app()
+            # A fresh host exposes the retained run/history API over the same DB.
+            from harness.router import router
+            app = FastAPI()
+            app.include_router(router)
             app.state.harness = OfflineController(store, controller.settings)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
                 response = await client.get('/runs/' + run_id)

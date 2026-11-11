@@ -1,6 +1,6 @@
 # yieldrun 격리 설치
 
-`HARNESS_NO_YIELD_TOOLS=1`일 때 terminal, execute_code, file, run_python은 localhost SSH의 전용 계정 `yieldrun`으로만 실행됩니다. SSH 또는 launcher 검증이 실패하면 도구가 거부되며 local 실행으로 돌아가지 않습니다.
+`Settings.from_env()`는 항상 격리 설정을 요구합니다. `run_python`은 설정된 격리 backend에서 실행되며, 기본 SSH backend는 localhost의 전용 계정 `yieldrun`을 사용합니다. macOS에서는 `HARNESS_ISOLATION_BACKEND=seatbelt`와 `HARNESS_ISOLATION_SANDBOX=required`를 지정하고 HOME, WORK_ROOT, ANALYSIS_VENV, LAUNCHER 경로를 설정할 수 있습니다. SSH 또는 launcher 검증이 실패하면 도구가 거부되며 local 실행으로 돌아가지 않습니다.
 
 ## 설치
 
@@ -10,7 +10,6 @@
 4. harness에 다음 값을 설정합니다.
 
 ```text
-HARNESS_NO_YIELD_TOOLS=1
 HARNESS_ISOLATION_SSH_HOST=127.0.0.1
 HARNESS_ISOLATION_SSH_USER=yieldrun
 HARNESS_ISOLATION_SSH_PORT=22
