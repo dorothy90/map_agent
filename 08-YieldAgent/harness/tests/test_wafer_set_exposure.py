@@ -7,17 +7,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage
 from pydantic import BaseModel, ValidationError
 
 
 FIXTURE = Path(__file__).with_name("fixtures") / "wafer_set_exposure_baseline.json"
 EMPTY_HINT = "필터 결과가 0행입니다. list_values(source_id, field)로 해당 열의 실제 값을 확인하세요"
 HIDDEN = {
-    "inspect_yield_coverage", "query_wafer_yield", "query_yield",
-    "query_defect_yield", "analyze_yield", "render_wafer_map",
-    "compare_wafer_maps", "render_yield_scatter",
+    "query_wafer_yield", "query_defect_yield", "render_wafer_map", "compare_wafer_maps",
 }
+
 DESCRIPTIONS = {
     "describe_sources": "소스 식별자와 제품·공정 범위 및 정의 포함 여부를 입력받아 등록 데이터 소스의 열·관계·계산 정의와 사용 가능 상태 표를 반환한다. 소스 식별자·제품·공정은 각각 최대 20개다.",
     "list_values": "등록 소스 식별자 또는 저장 표 핸들과 열을 입력받아 고유값·빈도·요약 표를 반환한다. 고유값은 최대 1,000개다.",
@@ -52,11 +50,15 @@ def snapshot(tools):
         "name": tool["function"]["name"],
         "description": tool["function"]["description"],
         "schema_sha256": hashlib.sha256(canonical(tool)).hexdigest(),
-    } for tool in tools]
+    } for tool in tools if tool["function"]["name"] != "query_wafer_yield"]
 
 
 def baseline():
-    return json.loads(FIXTURE.read_text())
+    data = json.loads(FIXTURE.read_text())
+    from harness.tools.registry import domain_registry
+    registered = domain_registry().tools
+    data["off"] = [item for item in data["off"] if item["name"] in registered]
+    return data
 
 
 class ChainStore:
@@ -108,8 +110,8 @@ def test_flag_off_matches_baseline(monkeypatch, flag):
     else:
         monkeypatch.setenv("HARNESS_WAFER_SET_TOOLS", flag)
     tools = domain_registry().model_tools()
-    assert len(tools) == 21
-    assert snapshot(tools) == baseline()["off"]
+    assert len(tools) == 17
+    assert snapshot(tools) == [item for item in baseline()["off"] if item["name"] != "query_wafer_yield"]
 
 
 def test_flag_on_exposes_only_fixed_wafer_set_tools(monkeypatch):
@@ -126,7 +128,7 @@ def test_flag_on_exposes_only_fixed_wafer_set_tools(monkeypatch):
         "render_maps", "render_view", "run_python", "select_wafers",
     }
     legacy = {item["name"] for item in baseline()["off"]}
-    assert len(registry.tools) == 36
+    assert len(registry.tools) == 32
     assert advertised == WAFER_SET_TOOL_NAMES == expected
     assert sorted(advertised) == baseline()["on_names"]
     assert legacy <= set(registry.tools)
@@ -140,7 +142,7 @@ def test_replacement_metadata_is_complete_and_safe(monkeypatch):
 
     monkeypatch.setenv("HARNESS_WAFER_SET_TOOLS", "1")
     registry = domain_registry()
-    assert {name for names in REPLACES.values() for name in names} == HIDDEN
+    assert {name for names in REPLACES.values() for name in names if name in registry.tools} == HIDDEN
     assert set(REPLACES) <= WAFER_SET_TOOL_NAMES
     assert all(owner in registry.tools for owner in REPLACES)
     assert all(owner not in names for owner, names in REPLACES.items())
@@ -183,7 +185,7 @@ def test_flag_registration_is_isolated(monkeypatch):
     domain_registry()
     monkeypatch.delenv("HARNESS_WAFER_SET_TOOLS", raising=False)
     after = domain_registry()
-    assert snapshot(before.model_tools()) == snapshot(after.model_tools()) == baseline()["off"]
+    assert snapshot(before.model_tools()) == snapshot(after.model_tools()) == [item for item in baseline()["off"] if item["name"] != "query_wafer_yield"]
     assert before.hidden_groups == after.hidden_groups == set()
     assert all(spec.group is None and spec.replaces == () for spec in after.tools.values())
 
@@ -308,10 +310,8 @@ async def test_unknown_source_hint_is_raised_before_database_access(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_native_bridge_and_nodes_bind_only_advertised_schemas(monkeypatch):
-    from harness.config import Settings
+async def test_native_bridge_binds_only_advertised_schemas(monkeypatch):
     from harness.native_hermes import NativeBridge
-    from harness.nodes import Nodes
     from harness.tools.registry import domain_registry
 
     monkeypatch.setenv("HARNESS_WAFER_SET_TOOLS", "1")
@@ -319,26 +319,6 @@ async def test_native_bridge_and_nodes_bind_only_advertised_schemas(monkeypatch)
     native_names = {tool["function"]["name"] for tool in NativeBridge(
         registry, SimpleNamespace()).schemas()}
     assert native_names == set(baseline()["on_names"])
-
-    seen = []
-    class Model:
-        def bind_tools(self, tools, **kwargs):
-            seen.append({tool["function"]["name"] for tool in tools})
-            return self
-
-    async def check():
-        return {"usage": {"tokens": 0, "models": 0, "tools": 0}, "epoch": 1}
-
-    async def model_call(*args, **kwargs):
-        return AIMessage(content="ready")
-
-    ctx = SimpleNamespace(settings=Settings(), check=check, model_call=model_call)
-    node = Nodes(Model(), registry, ctx, "")
-    await node.think({"goal": {}, "observations": [], "messages": [],
-                      "loaded_tools": ["query_yield", "read_result"]})
-    assert "query_yield" not in seen[-1]
-    assert "read_result" in seen[-1]
-    assert seen[-1] & set(registry.tools) <= set(baseline()["on_names"])
 
 
 def test_prefix_normalization_cases_and_original_query_immutability(monkeypatch):

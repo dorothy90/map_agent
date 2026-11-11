@@ -35,7 +35,6 @@ def test_yield_report_recipe_is_native_only_and_keeps_contract():
     from harness.tools.table_artifact import register
 
     directory = Path(__file__).parents[1] / "instructions"
-    analysis = (directory / "analysis.md").read_text(encoding="utf-8")
     native = (directory / "native.md").read_text(encoding="utf-8")
     notes = (directory / "domain-notes.md").read_text(encoding="utf-8")
     registry = ToolRegistry()
@@ -58,7 +57,6 @@ def test_yield_report_recipe_is_native_only_and_keeps_contract():
         assert "report mode" not in recipe
         assert "mode=" not in recipe
         assert "delta_row" not in recipe
-    assert "사용자가 수율 리포트를 요청하면" not in analysis
     assert "수율 리포트는" not in notes
     assert load_native_instructions().count("PARAM_NM을 필터링하지 않고 모든 PARAM_NM을") == 1
 

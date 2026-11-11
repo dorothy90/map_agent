@@ -2,20 +2,18 @@ import asyncio
 import uuid
 
 
-def test_run_api_returns_terminal_events_and_enforces_ownership():
+def test_run_api_returns_terminal_events_and_enforces_ownership(native_result):
     import httpx
     from fastapi import FastAPI
-    from langgraph.checkpoint.memory import InMemorySaver
     from harness.config import Settings
     from harness.control import RunController
     from harness.router import router
     from harness.store import HarnessStore
-    from harness.testing import ScriptedModel
 
     async def scenario():
         store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
         app = FastAPI()
-        app.state.harness = RunController(store, Settings(), InMemorySaver(), model_factory=lambda: ScriptedModel([{"finish": {"answer": "안녕하세요"}}]))
+        app.state.harness = RunController(store, Settings())
         app.include_router(router)
         try:
             await store.setup()

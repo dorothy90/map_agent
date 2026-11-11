@@ -134,8 +134,8 @@ PR9_REAL_MODEL=1 PR9_PORT=0 PR9_VITE_ORIGIN=http://127.0.0.1:5176 ../.venv/bin/p
 ```
 
 stdout의 준비 JSON 한 줄에서 `port`를 확인해 Vite의 `HARNESS_GATEWAY_TARGET`을
-`http://127.0.0.1:<port>`로 지정한다. UI는 `?ui=hermes&user=alice` 또는
-`?ui=hermes&user=bob`으로 연다. fake resolver는 개발 전용이다.
+`http://127.0.0.1:<port>`로 지정한다. UI는 `?user=alice` 또는
+`?user=bob`으로 연다. fake resolver는 개발 전용이다.
 `GET http://127.0.0.1:<port>/__dev/state`는 user 없이 loopback에서만
 `launches`, `blocked`, `allowed`, `workers`를 제공한다. `allowed`는 명시적으로 허용한
 도구 이름 목록이며 기본값은 `[]`이다. worker PID는 stderr에 `worker <pid>`로 기록한다.
@@ -147,7 +147,7 @@ stdout의 준비 JSON 한 줄에서 `port`를 확인해 Vite의 `HARNESS_GATEWAY
 실제 스트리밍·도구 진행·중지를 확인한다.
 
 기본적으로 외부 DB/Oracle 접속 도구는 차단하며 `read_result`만 허용한다.
-복합 요청 확인 시 `PR9_ALLOW_TOOLS=query_yield,query_wads`처럼 쉼표로 구분한
+복합 요청 확인 시 `PR9_ALLOW_TOOLS=query_lot_history,query_wads`처럼 쉼표로 구분한
 도구 이름을 지정할 수 있다. 기본값은 빈 문자열이며, 앞뒤 공백과 빈 항목은
 제거하고 중복 이름은 첫 등장 순서로 한 번만 유지한다. registry의
 `read_only is True`이고 `effect == 'read'`인 도구와 입력 rows만 HTML로 만드는

@@ -33,67 +33,24 @@ def test_wafer_tool_preserves_empty_period_and_measurement_policy(monkeypatch):
     from harness.tools import yield_tools as y
     assert hasattr(y, '_query_wafer_yield'), 'wafer tool is missing'
     monkeypatch.setattr(yield_db, '_get_period_date_ranges', lambda *a: [{'label': 'one', 'start': '20260101', 'end': '20260102'}, {'label': 'empty', 'start': '20260102', 'end': '20260103'}])
-    def fetch(*a):
-        return [{'lot_id': 'L', 'wf_id': 1, 'end_tm': '2026-01-01', 'value': .1}, {'lot_id': 'L', 'wf_id': 1, 'end_tm': '2026-01-01 12:00:00', 'value': .9}] if a[1] == '20260101' else []
-    monkeypatch.setattr(yield_db, '_fetch_wafer_values', fetch)
-    args = y.WaferYieldInput(lotcd='P', ref_date='2026-01-02', metric='parameter', parameter='VTH', measurement_policy='latest_per_wafer')
+    def fetch(*a, **kwargs):
+        return [{'lot_id': 'L', 'wf_id': 1, 'end_tm': '2026-01-01', 'map_val_json': {'MAP': ['0,0,B']}}, {'lot_id': 'L', 'wf_id': 1, 'end_tm': '2026-01-01 12:00:00', 'map_val_json': {'MAP': ['0,0,?']}}] if a[1] == '20260101' else []
+    import sys
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, 'map_agent', SimpleNamespace(_query_wafer_data_by_date=fetch))
+    args = y.WaferYieldInput(lotcd='P', ref_date='2026-01-02', metric='pass_rate', measurement_policy='latest_per_wafer')
     result = y._query_wafer_yield(args)
     rows = result.tables[0].rows
-    assert rows[0]['value'] == .9
+    assert rows[0]['value'] == 100
     assert rows[1]['value'] is None
     assert result.tables[0].complete
     assert result.scope['measurement_policy'] == 'latest_per_wafer'
 
 
-def test_anomaly_adapter_reports_actual_relative_change_without_fake_threshold(monkeypatch):
-    from harness.tools import yield_tools as y
-    assert hasattr(y, '_analyze_yield'), 'anomaly tool is missing'
-    monkeypatch.setattr(yield_db, '_fetch_periods', lambda *a, **k: [{'week': 'a', 'VTH': 10, 'wfCount': 3}, {'week': 'b', 'VTH': 9, 'wfCount': 4}])
-    result = y._analyze_yield(y.YieldInput(lotcd='P', ref_date='2026-01-02'))
-    assert result.tables[1].rows[0]['change_pct'] == -10
-    assert result.scope['threshold'] is None
-    assert result.scope['comparison'] == 'last_two_requested_periods'
 
-
-def test_scatter_is_incomplete_and_propagates_db_errors(monkeypatch):
-    from harness.tools.yield_tools import YieldInput, _render_yield_scatter
-    monkeypatch.setattr(yield_db, '_fetch_wafer_scatter', lambda *a, **kw: [{'ts': '2026-01-01', 'param': 'VTH', 'value': .9, 'period': 'a', 'lotid': 'L', 'wfid': '1'}])
-    result = _render_yield_scatter(YieldInput(lotcd='P', ref_date='2026-01-02'))
-    assert result.status == 'partial'
-    assert result.tables[0].complete is False
-    assert result.artifacts[0]['mime'] == 'text/html'
-    def fail(): raise ConnectionError('offline')
-    monkeypatch.undo()
-    monkeypatch.setattr(yield_db, '_get_oracle_connection', fail)
-    with pytest.raises(ConnectionError):
-        yield_db._fetch_wafer_scatter('P', date(2026, 1, 2), 'weekly', 4, 'pt1h', strict=True)
-
-
-def test_analysis_distinguishes_unavailable_comparison_from_unchanged(monkeypatch):
-    from harness.tools import yield_tools as y
-    args = y.YieldInput(lotcd='P', ref_date='2026-01-02')
-    monkeypatch.setattr(yield_db, '_fetch_periods', lambda *a, **k: [{'VTH': 10}, {'VTH': None}])
-    assert y._analyze_yield(args).scope['analysis_status'] == 'partial'
-    monkeypatch.setattr(yield_db, '_fetch_periods', lambda *a, **k: [{'VTH': 10}, {'VTH': 10}])
-    assert y._analyze_yield(args).scope['analysis_status'] == 'no_findings'
-    monkeypatch.setattr(yield_db, '_fetch_periods', lambda *a, **k: [{'VTH': 10}, {'VTH': 9}])
-    assert y._analyze_yield(args).scope['analysis_status'] == 'findings'
-
-
-def test_analysis_preserves_all_changed_metrics_for_downstream_selection(monkeypatch):
-    from harness.tools import yield_tools as y
-    params = ['IOFF', 'IGATE', 'IDDQ', 'TPD', 'BVDS']
-    monkeypatch.setattr(yield_db, '_fetch_periods', lambda *a, **k: [
-        {p: 10 for p in params}, {p: 11 + i for i, p in enumerate(params)}])
-    result = y._analyze_yield(y.YieldInput(lotcd='P', ref_date='2026-01-02'))
-    assert {r['param'] for r in result.tables[1].rows} == set(params)
-
-
-def test_yield_scope_exposes_actual_calendar_ranges(monkeypatch):
-    import asyncio
-    from harness.tools import yield_tools as y
-    async def fetch(*args): return [{'lotcount': 1}], '<html></html>'
-    monkeypatch.setattr(y, 'run_blocking', fetch)
-    result = asyncio.run(y.query_yield(y.YieldInput(lotcd='P', ref_date='2026-10-05'), None))
-    assert result.scope['period_ranges'][-1] == {'label': '2026-W41', 'start': '20261005', 'end': '20261012'}
-    assert result.scope['interval'] == '[start, end)'
+def test_wafer_tool_rejects_retired_parameter_metric():
+    from harness.tools.yield_tools import WaferYieldInput
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        WaferYieldInput(lotcd='P', ref_date='2026-01-02', metric='parameter',
+            parameter='VTH', measurement_policy='latest_per_wafer')

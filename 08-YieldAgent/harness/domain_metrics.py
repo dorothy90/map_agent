@@ -9,9 +9,6 @@ def metric_metadata(metric):
         'pass_rate': {'unit': 'percent', 'numerator': '?-bin die observations',
                       'denominator': 'all MAP entries in the selected measurement', 'direction': 'higher_is_better',
                       'source': 'LANGGRAPH_DATA.MAP_VAL_JSON'},
-        'parameter': {'unit': 'source_value_unit_unspecified', 'numerator': 'VALUE',
-                      'denominator': None, 'direction': 'parameter_specific',
-                      'source': 'DF_DIE_TO_WF_YLD.VALUE'},
         'gms': {'unit': 'percent', 'direction': 'source_metric_specific',
                 'source': 'DF_GMS_YIELD_WEEKLY', 'denominator': 'source aggregate; not reconstructed'},
     }

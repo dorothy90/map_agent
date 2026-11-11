@@ -29,7 +29,7 @@ from harness.store import HarnessStore
 
 class OfflineController(RunController):
     def __init__(self, store):
-        super().__init__(store, SimpleNamespace(engine='hermes'), None)
+        super().__init__(store, SimpleNamespace(engine='hermes'))
         self.launches = []
 
     async def launch(self, run_id):

@@ -1,7 +1,7 @@
 def test_domain_registry_exposes_all_existing_capabilities():
     from harness.tools.registry import domain_registry
     tools = domain_registry().tools
-    assert {"query_yield", "query_wads", "get_wads_report", "query_lot_history", "render_wafer_map", "search_fail_history", "query_relation", "query_good_bad_groups", "analyze_mining", "export_report", "read_result", "run_python"}.issubset(tools)
+    assert {"query_wafer_yield", "query_wads", "get_wads_report", "query_lot_history", "render_wafer_map", "search_fail_history", "query_relation", "query_good_bad_groups", "analyze_mining", "export_report", "read_result", "run_python"}.issubset(tools)
 
 
 def test_mining_requires_live_api_instead_of_dummy(monkeypatch):

@@ -26,7 +26,8 @@
     {
       "id": "yield",
       "tools": [
-        "query_yield"
+        "query_db",
+        "render_yield_table"
       ],
       "required_services": [
         "oracle"
@@ -75,14 +76,10 @@
     {
       "id": "wafer_metrics",
       "functions": [
-        "yield_db._fetch_wafer_values",
         "map_agent._query_wafer_data_by_date"
       ],
       "tools": [
-        "inspect_yield_coverage",
-        "query_wafer_yield",
-        "analyze_yield",
-        "render_yield_scatter"
+        "query_wafer_yield"
       ],
       "required_services": [
         "oracle"

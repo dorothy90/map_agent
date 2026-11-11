@@ -143,7 +143,7 @@ def test_native_publication_boundary(monkeypatch, tmp_path, verdicts, flags, fin
             candidate = candidates[0] if len(verdicts) > 1 and index == 0 else candidates[1]
             assert observation['validated_arguments'] == {'attempt': index + 1,
                 'candidate_sha256': hashlib.sha256(candidate.encode('utf-8')).hexdigest(), 'candidate_chars': len(candidate)}
-        controller = RunController(store, context.settings, None)
+        controller = RunController(store, context.settings)
         await controller._save_context(run, result)
         await HarnessStore.finish(store, 'r', 1, result['status'], result['answer'], result['stop_reason'])
         finished = [e for e in events if e['type'] == 'run_finished']

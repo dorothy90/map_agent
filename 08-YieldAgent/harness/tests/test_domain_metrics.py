@@ -8,13 +8,12 @@ def metrics():
     return domain_metrics
 
 
-def test_bin_pass_and_parameter_are_different_metrics():
+def test_bin_pass_metric_preserves_percent_and_empty_values():
     m = metrics()
     r = m.wafer_pass_metric({'MAP': ['0,0,?', '0,1,B', '1,0,?']})
     assert r['value'] == pytest.approx(200 / 3)
     assert r['die_count'] == 3
     assert m.metric_metadata('pass_rate')['unit'] == 'percent'
-    assert m.metric_metadata('parameter')['unit'] == 'source_value_unit_unspecified'
     assert m.wafer_pass_metric({'MAP': []})['value'] is None
 
 

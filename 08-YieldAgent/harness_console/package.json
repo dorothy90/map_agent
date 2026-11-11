@@ -7,10 +7,6 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --import tsx --test src/core.test.ts",
-    "test:artifacts": "npm run build && node e2e/artifacts.mjs",
-    "verify:reopen": "node e2e/reopen-real.mjs",
-    "screenshot": "node e2e/screenshot.mjs",
     "test:protocol": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:integration:real": "vitest run --config vitest.real-model.config.ts"

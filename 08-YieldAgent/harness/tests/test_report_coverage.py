@@ -7,7 +7,7 @@ from harness.types import ToolObservation, TableRef
 from harness.tools import artifact_tools
 
 
-def observation(result_id, tool='query_yield', scope=None, status='success', artifacts=None):
+def observation(result_id, tool='query_db', scope=None, status='success', artifacts=None):
     return ToolObservation(principal_id='p', session_id='s', run_id='run', invocation_id=result_id,
         result_id=result_id, tool_name=tool, summary=result_id, scope=scope or {}, status=status,
         tables=[TableRef(table_id='data', title=result_id, columns=['product', 'value'],
@@ -18,7 +18,7 @@ def observation(result_id, tool='query_yield', scope=None, status='success', art
 def test_ordered_sections_preserve_every_source_and_analysis_status():
     from harness.report import build_report_sections
     observations = [observation('A'), observation('calc', 'run_python', {'analysis_status':'findings'}),
-        observation('B'), observation('none', 'analyze_yield', {'analysis_status':'no_findings'}),
+        observation('B'), observation('none', 'run_python', {'analysis_status':'no_findings'}),
         observation('partial', status='partial')]
     tables = {o.result_id: {'data': [{'product': o.result_id, 'value': 91}]} for o in observations}
     sections = build_report_sections(observations, tables, {})

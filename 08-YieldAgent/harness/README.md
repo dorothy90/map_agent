@@ -1,5 +1,7 @@
 # 목표 기반 Yield Harness
 
+Hermes/native가 하네스의 유일한 실행 경로다. `native_hermes.py`는 `native.md`, `domain-notes.md`, `verifier.md`를 사용한다.
+
 보안망 이식은 [2026-10-31 현재 상태 이식 안내](INTERNAL_MIGRATION_2026_10_31.md)에서 시작한다. 참조 커밋 고정, 오프라인 의존성, 사내 연결 작업과 검증 범위를 함께 확인한다.
 
 사용자 목표 → 필요한 도구 선택 → 실행 결과 관찰 → 추가 조사 → 근거 검증을 반복한다. 기존 웹 앱의 `/chat/stream`과 로컬 MCP에서 같은 도메인 도구를 사용한다.
@@ -42,7 +44,7 @@ GLM 가상 데이터 시험에서 temperature=0의 반복 코드 생성이 관�
 
 로컬 웹 앱에서 하네스를 사용할 때에는 프로젝트 루트 `.env`에 `HARNESS_ENABLED=true`를 명시한다. 실행 명령에만 붙인 일회성 설정은 다음 재시작에서 사라질 수 있다. 전환 검증은 `/runs` 직접 호출뿐 아니라 웹의 새 대화 → `/chat/stream` 경로로도 수행한다. 설정 변경 전에 `legacy`로 생성된 대화는 새 대화를 열어야 하네스를 사용한다.
 
-대화별 runtime은 저장된다. 기존 대화에 다른 엔진의 체크포인트를 넣지 않는다. 플래그를 `false`로 되돌리면 새 대화만 기존 엔진을 사용하고, 실행 중이거나 입력을 기다리는 하네스 작업은 같은 엔진에서 재개·중지할 수 있다.
+대화별 runtime은 저장된다. 기존 대화에 다른 엔진의 체크포인트를 넣지 않는다. 플래그를 `false`로 되돌리면 새 대화만 기존 엔진을 사용하고, 하네스의 Hermes 작업은 재개·중지할 수 있다. 다른 하네스 엔진으로 저장된 작업은 실행하지 않고 명시적으로 실패 처리한다.
 
 현재 기본 principal은 서버가 지정하는 `local`이다. 기존 로컬 단일 사용자 운영을 지원한다. 다중 사용자 서버는 인증 미들웨어에서 검증한 `request.state.principal_id`를 제공해야 한다. 요청 본문의 사용자 ID를 데이터 접근 권한으로 사용하지 않는다.
 
@@ -54,23 +56,11 @@ GLM 가상 데이터 시험에서 temperature=0의 반복 코드 생성이 관�
 - `POST /runs/{run_id}/input`: `kind=input|steer`, `request_id`, `goal_revision`, `value`; 질문 답변에는 `interrupt_id`도 필요하다.
 - `/harness/results/{result_id}`와 `/harness/artifacts/{artifact_id}`: 같은 principal과 대화의 원본·산출물만 읽는다.
 
-모델은 `load_tools`로 목록에서 필요한 상세 스키마 최대 4개를 선택한다. 이 선택은 모델이 수행하며 자연어 키워드 라우팅 규칙을 사용하지 않는다. 도구 결과에는 전체 행 수, 범위, 출처, 원본 ID, 성공·부분·빈 결과·오류 구분이 있다. 작은 preview와 별개로 원본 전체를 GridFS에 먼저 저장한다. `read_result`는 원본 페이지를, `run_python`은 지정한 결과의 전체 데이터를 읽는다.
+`native_worker.py`의 Hermes 에이전트가 도구를 선택하고 `native_hermes.py`가 도구 실행, 저장 결과, 대화 이력과 취소를 연결한다. 기본 도구 범위는 `query_db`, `list_tables`, `read_result`, `render_yield_table`, `load_wafer_maps`, `run_python`이다. `HARNESS_NO_YIELD_TOOLS`와 `HARNESS_NATIVE_PROMPTS`의 worker 설정 의미는 유지한다.
 
-모델 입력은 결과 목록과 현재 선택한 근거를 한 번씩 조립한다. 이전 대화의 결과는 짧은 참조로 전달하고, 모델의 `select_results`가 현재 읽을 결과를 교체한다. 새로 조회한 결과는 선택에 추가되며, 불필요해진 결과를 선택에서 빼도 원본은 삭제하지 않는다. 같은 소유권·출처의 동일 문서 ID와 내용만 중복 제거한다. 숫자 행이나 내용이 바뀐 문서는 합치지 않는다. 표는 예산 안에서 완전한 행을 유지하고 생략 여부와 원본 읽기 방법을 표시한다.
+도구 결과에는 전체 행 수, 범위, 출처, 원본 ID, 성공·부분·빈 결과·오류 구분이 있다. 작은 preview와 별개로 원본 전체를 저장한다. `read_result`는 원본 페이지를, `run_python`은 지정한 결과의 전체 데이터를 읽는다. 독립 검증은 저장된 근거를 읽고 답변의 완료 여부를 검토한다.
 
-도구 스키마를 포함한 전체 입력이 context 한도에 가까워지면 이전 대화를 요약한다. 원문을 소유권이 적용된 archive에 저장하고 실제로 더 작은 요약이 나온 경우에만 작업 대화를 교체한다. 요약과 archive ID는 다음 실행에도 유지된다. Hermes native mode의 이전 대화 검색은 전용 profile의 `state.db`를 사용하는 engine `session_search`가 담당한다. 요약 실패 시 기존 대화를 유지하고 사용한 토큰은 예산에 반영한다.
-
-`update_worklog`는 선택적인 조사 메모이며 새 메모로 교체할 수 있다. 사용자 원문과 정정을 덮어쓰지 않는다. 모델은 도구 호출 또는 일반 텍스트 답변을 선택한다. 데이터 답변의 `finish`는 `answer`, `result_ids`, 선택적인 `scope`·`limitations`만 제출하며 수치별 claims/coverage 양식을 요구하지 않는다.
-
-엔진이 같은 사용자·세션의 저장된 결과와 입력 출처를 읽어 존재·상태·범위를 검사하고, 저장된 표와 원본 링크를 직접 표시한다. 별도 모델 검토는 실제 사용자 대화와 해당 출처에 비추어 내용·완료 여부를 판단한다. 이전 결과를 재사용하는 일반 텍스트 답변은 검토에서 필요한 기존 결과 ID를 선택한다. 이 ID도 같은 출처 검사를 받는다. 검토는 진실의 보증이 아니며 잘못된 해석을 놓칠 수 있으므로 실제 평가에서 수치를 별도로 대조한다.
-
-새 실행의 내용 검토는 finish/continue/ask_user를 반환한다. 보완할 작업과 예산이 있으면 조사로 돌아가며, 예산 경계에서는 확보한 근거로 최종 정리한다. 과거 verdict의 읽기 호환도 유지한다. 다시 실패하거나 모델 호출이 끊겨도 범위·출처 검사를 통과한 자료는 표와 링크로 제공하고 미완료로 표시한다. 이때 검증하지 못한 본문이나 Python stdout 요약을 답변으로 대신 사용하지 않는다. 계산 입력에 부분 자료가 있으면 그 범위와 한계도 표시한다. 다음 대화에는 원문·최종 설명·선택한 결과 ID를 보존하며, 원본 전체와 긴 오류는 저장소에서 필요할 때 읽는다.
-
-실행 한도는 기본 도구 24회, 모델 40회, 누적 120,000토큰, 최종 답변·검토를 포함한 활성 실행 300초다. 최종 답변과 검증용 예산을 남긴다. 읽기 조사에는 root와 child를 합쳐 동시에 2개 도메인 호출만 허용한다. 자식 조사는 최대 2개, 깊이 1이며 허용된 읽기 도구와 결과만 전달한다.
-
-최종 답변과 검증에 필요한 입력·출력 비용을 현재 근거 크기로 계산해 조사·요약·재시도 전에 예약한다. 실제 검증 입력도 예약한 크기에 맞춘다. 메시지와 도구 스키마의 직렬화 크기를 공급자가 반환한 입력 토큰으로 보정하고, 토큰과 호출 횟수를 함께 승인한다. 출력 한도는 실제 모델 요청에 적용한다. `model_usage` 이벤트에는 단계, 추정 입력, 출력 한도, 예약량, 실제 입력·출력과 청구량을 남긴다. 입력 추정은 공급자의 정확한 토크나이저가 아니므로 완전한 상한 보증은 아니다.
-
-Mongo lease와 epoch가 실행 소유권을 정한다. 체크포인트도 epoch마다 분리하며, 복구할 때 완료된 중간 쓰기를 먼저 복사한 후 체크포인트를 공개한다. 이전 서버의 늦은 저장이 새 서버의 상태를 덮지 않는다. 완료된 도구는 저장된 결과를 재사용한다. 결과가 불명확한 쓰기 작업은 자동 재실행하지 않는다.
+Mongo lease와 epoch가 실행 소유권을 정한다. 이전 서버의 늦은 저장이 새 서버의 상태를 덮지 않도록 실행·종료·결과 저장을 제한한다. Hermes 실행의 대화와 사용량은 저장소에 보존한다.
 
 실행권 갱신이 실패하면 진행 중인 작업을 중지하고 `lease_renewal_failed`로 기록한다. 같은 epoch의 실행권이 만료되면 `lease_expired`로 종료하며, 이미 다른 실행자가 인계받았다면 이전 실행자가 종료 상태를 덮지 않는다. 종료 상태를 저장하는 동안 heartbeat를 중지해 반복 취소가 저장을 끊지 않게 한다.
 
@@ -82,7 +72,7 @@ Mongo lease와 epoch가 실행 소유권을 정한다. 체크포인트도 epoch�
 PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.mcp_server
 ```
 
-MCP 호스트에는 이 명령과 작업 디렉터리를 등록한다. 공통 registry에 등록된 도구와 산출물 resource를 제공한다. 연결별 세션이 기본이며, 같은 세션을 지정하려면 `HARNESS_MCP_SESSION_ID`를 사용한다. `finish`, `ask_user`, `load_tools`, `select_results`, `delegate_readonly`는 호스트의 추론 루프를 다시 호출하지 않도록 MCP 도구에 포함하지 않는다.
+MCP 호스트에는 이 명령과 작업 디렉터리를 등록한다. 공통 registry에 등록된 도구와 산출물 resource를 제공한다. 연결별 세션이 기본이며, 같은 세션을 지정하려면 `HARNESS_MCP_SESSION_ID`를 사용한다.
 
 ## 도메인 범위와 현재 제한
 
@@ -94,37 +84,22 @@ MCP 호스트에는 이 명령과 작업 디렉터리를 등록한다. 공통 re
 
 ## v2 실행과 안전한 전환
 
-신규 실행은 `harness/v2`, 표 계약은 `harness-observation/v2`이다. 스킬 목록·내용·해시는 실행 생성 때 고정하며 모델이 읽은 지침과 `auto_load: true`로 선언된 기본 지침을 맥락에 넣는다. 기본 지침은 첫 판단 전에 로딩하고, 읽은 지침은 답변 검토 단계에도 동일하게 전달한다. 자동 로딩은 질문 문구 매칭을 사용하지 않으며 실행 생성 시 고정한 스킬 스냅샷을 따른다. v1 완료 기록과 단일 표 결과는 읽기 어댑터로 유지한다. 활성 v1 체크포인트는 v2 그래프에 넣지 않는다. 배포 전에 구버전 실행을 종료 상태로 drain하고, 입력 대기는 구버전에서 재개하거나 명시적으로 취소한다. legacy 대화는 계속 legacy 엔진을 사용한다.
+신규 실행은 `harness/v2`, 표 계약은 `harness-observation/v2`이다. 완료된 과거 기록과 단일 표 결과는 읽기 어댑터로 유지한다. 다른 하네스 엔진의 저장된 실행은 Hermes로 바꾸지 않으며 실행 시 명시적으로 거부한다. 별도 supervisor 앱으로 지정된 대화의 선택 규칙은 유지한다.
 
-여러 표는 `tables[result_id][table_id]`로 계산한다. 단일 표에는 기존 `datasets[result_id]`도 제공한다. 문서 페이지와 표의 일부 자료는 전체성 플래그와 원본 계보가 후속 계산까지 전달된다. 스킬 기반 하위 조사는 같은 엔진을 사용하지만 부모 대화 전체를 복제하지 않는다. 읽기와 격리 Python 계산만 허용하고 영구 쓰기·재위임은 막는다. 부모의 마무리 예산은 하위 조사에 사용할 수 없다.
-
-`model_usage.input_sections`는 입력 항목별 **추정량**이고 공급자 입력/출력 사용량은 별도로 기록된다. 모델 지연으로 조사 예약 경계에 도달하면 추가 조사 대신 최종 답변 경로로 전환한다. 전체 deadline을 넘겨 실행 시간을 늘리지 않는다. 429, 공급자 오류, 시간 제한과 토큰 제한은 서로 다른 종료 사유다.
+여러 표는 `tables[result_id][table_id]`로 계산한다. 단일 표에는 기존 `datasets[result_id]`도 제공한다. 문서 페이지와 표의 일부 자료는 전체성 플래그와 원본 계보가 후속 계산까지 전달된다.
 
 고정 MCP 세션은 살아 있는 소유자가 있으면 충돌을 반환한다. lease가 만료된 연결은 epoch 경계에서 종료하고 저장 결과를 유지한 새 연결을 만든다. 연결의 유휴 시간은 조사 시간에 합산하지 않는다.
 
 롤백은 v2 결과 읽기 어댑터가 있는 호환 빌드로만 한다. 새 실행 진입을 막고 활성 작업을 정리한 뒤 전환한다. v2 자료를 읽지 못하는 예전 빌드로의 즉시 롤백은 지원하지 않는다.
 
 
-### Hermes core adaptation (2026-10-05)
-
-Historical reference commit (2026-10-05): `NousResearch/hermes-agent@e473f5a9c976a0b5bc292aa415dae28c638a47c3`. The current bundle is pinned to `5894e750c3dba980d43b25aa29e3958149ba2c61` (2026-10 sync; `engine/UPSTREAM.json`). This backend adapts the core loop; it does not embed the complete Hermes CLI/gateway/memory-learning runtime. See `docs/superpowers/plans/2026-10-05-hermes-core-alignment.md` for the source-by-source comparison.
-
-`ToolSpec(eager=True)` exposes a core tool immediately. Specialist tools use `load_tools`; its `mode=replace` replaces only the explicitly loaded set and cannot hide core tools. Eager and loaded schemas are omitted from the deferred catalog to avoid duplication.
-
-The investigation reserves `min(active_seconds * 0.2, 2 * call_timeout)` seconds for answer/review rather than reserving two full 90-second calls from the outset. This preserves the hard total budget. Explicit `read_result` rows receive preview space before older incidental evidence; stored full results remain available when the requested page exceeds the context budget.
-
-`query_yield` and `analyze_yield` expose actual calendar period ranges. Weekly/monthly periods include the entire reference period; callers must not describe those as an exact trailing-day interval. `analyze_yield` returns every nonzero comparable change for downstream population selection, not only the display-oriented top three.
-
-The context includes an observational notice after three consecutive equivalent visible tool results (ignoring generated result IDs). It does not block execution, does not infer equality of unseen rows, and is not the full upstream loop controller. The final three live evaluation runs remain partial; see the alignment record before claiming operational parity.
-
-
 ### Bundled Hermes engine (2026-10-06)
 
-New runs default to `HARNESS_ENGINE=hermes`; existing runs keep their engine. `HARNESS_ENGINE=langgraph` retains the custom loop described above. The engine source is included in `harness/engine/`, currently pinned to upstream `5894e750c3dba980d43b25aa29e3958149ba2c61` (2026-10 sync; `engine/UPSTREAM.json`). It runs with the backend's Python 3.11 interpreter. No Hermes package, external checkout, Python 3.14, or separate server is required. A child process isolates upstream module names from the backend; the backend owns its lifetime.
+Only `HARNESS_ENGINE=hermes` is accepted. Historical run documents retain their engine metadata, but non-Hermes runs cannot be launched, recovered, or steered. The engine source is included in `harness/engine/`, currently pinned to upstream `5894e750c3dba980d43b25aa29e3958149ba2c61` (2026-10 sync; `engine/UPSTREAM.json`). It runs with the backend's Python 3.11 interpreter. No Hermes package, external checkout, Python 3.14, or separate server is required. A child process isolates upstream module names from the backend; the backend owns its lifetime.
 
 Install the ordinary libraries declared in the repository `requirements.txt`/`pyproject.toml` through your approved package process. `scripts/setup_hermes.sh` now only verifies imports; it does not install anything. Do not install from `engine/pyproject.toml`: that is retained upstream metadata, not this backend's dependency specification.
 
-`native_worker.py` invokes the bundled `AIAgent`; `native_hermes.py` connects backend tools, result storage, history and cancellation. Enabled tools are existing read/artifact tools plus upstream skills/memory/delegation. The request worker declares a stateless channel so delegated results return before final verification; environment probing stays disabled. Independent verification only exposes stored evidence reads. Upstream package activation, update handoff, lazy installation and external plugin discovery are disabled. The loop, tool discovery, retries, compression and skill/memory implementations remain upstream code. `engine/UPSTREAM.json` records original hashes; `engine/PATCHES.diff` records local adaptations and the MIT license is retained.
+`native_worker.py` invokes the bundled `AIAgent`; `native_hermes.py` connects backend tools, result storage, history and cancellation. Enabled tools are existing read/artifact tools plus upstream skills/memory/subagents. The request worker declares a stateless channel so delegated results return before final verification; environment probing stays disabled. Independent verification only exposes stored evidence reads. Upstream package activation, update handoff, lazy installation and external plugin discovery are disabled. The loop, tool discovery, retries, compression and skill/memory implementations remain upstream code. `engine/UPSTREAM.json` records original hashes; `engine/PATCHES.diff` records local adaptations and the MIT license is retained.
 
 For integration into a diverged internal main branch, including existing/new agents and the chat UI, follow [the Luna porting guide](INTERNAL_PORTING_LUNA.md).
 

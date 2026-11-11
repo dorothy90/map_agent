@@ -11,11 +11,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from harness.config import Settings
 from harness.executor import ExecutionContext
-from harness.nodes import Nodes
 from harness.router import compatibility_chat
 from harness.store import HarnessStore
-from harness.testing import initial_state
-from harness.tools.registry import ToolRegistry
 from models import ChatRequest
 
 
@@ -48,45 +45,6 @@ async def execution(message):
     finally:
         await store.client.drop_database(store.db.name)
         store.client.close()
-
-
-def test_public_commentary_precedes_tool_execution_and_excludes_reasoning():
-    async def scenario():
-        response = AIMessage(content=[{"type": "reasoning", "reasoning": "PRIVATE"},
-            {"type": "text", "text": "조회 범위를 확인하겠습니다."}],
-            additional_kwargs={"reasoning_content": "PRIVATE"},
-            tool_calls=[{"id": "load-1", "name": "load_tools", "args": {"names": []}}])
-        async with execution(response) as (store, run, model, ctx):
-            node = Nodes(model, ToolRegistry(), ctx, "")
-            state = initial_state(run, "자료 확인")
-            update = await node.think(state)
-            saved = await store.get_run("local", run["run_id"])
-            commentary = [e for e in saved["events"] if e["type"] == "commentary"]
-            assert len(commentary) == 1
-            assert commentary[0]["payload"] == {"content": "조회 범위를 확인하겠습니다."}
-            assert "PRIVATE" not in json.dumps(commentary)
-            assert update["pending"] == response.tool_calls
-            assert await store.calls.count_documents({"run_id": run["run_id"]}) == 0
-            assert model.calls == 1
-            # Replaying an already-returned tool-call message keeps one commentary.
-            await node.think(state)
-            saved = await store.get_run("local", run["run_id"])
-            assert len([e for e in saved["events"] if e["type"] == "commentary"]) == 1
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("tool,content", [
-    (None, "unverified final"), ("finish", "unverified final"),
-    ("ask_user", "question"), ("load_tools", [{"type": "reasoning", "reasoning": "PRIVATE"}]),
-])
-def test_final_question_and_reasoning_are_not_commentary(tool, content):
-    async def scenario():
-        calls = [{"id": "c", "name": tool, "args": {}}] if tool else []
-        async with execution(AIMessage(content=content, tool_calls=calls)) as (store, run, model, ctx):
-            await Nodes(model, ToolRegistry(), ctx, "").think(initial_state(run, "자료 확인"))
-            saved = await store.get_run("local", run["run_id"])
-            assert not [e for e in saved["events"] if e["type"] == "commentary"]
-    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("purpose", ["reasoning", "answer", "review", "compaction"])
@@ -123,7 +81,7 @@ def test_commentary_sse_replay_and_completed_history():
 
             await store.event(run["run_id"], "progress", {"worklog": {"hypotheses": ["PRIVATE"]}})
             await store.event(run["run_id"], "commentary", {"content": "자료를 확인하겠습니다."})
-            await store.event(run["run_id"], "tool_started", {"name": "query_yield"})
+            await store.event(run["run_id"], "tool_started", {"name": "query_db"})
             await store.event(run["run_id"], "progress", {"name": "review", "message": "답변을 검증하고 있습니다."})
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 # Active history is restored by SSE only, avoiding duplicate commentary.

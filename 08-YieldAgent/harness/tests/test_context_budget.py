@@ -1,31 +1,8 @@
-import asyncio
 import json
-from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from harness.config import Settings
 from harness.types import ToolObservation
-
-
-def test_completion_reserves_leave_room_for_another_investigation_step():
-    from harness.nodes import Nodes
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-    from harness.types import TableRef
-
-    rows = [{'wafer': str(i), 'measurement': 'detail ' * 25} for i in range(100)]
-    sources = [result(str(i), run_id='run', preview_rows=rows, total_rows=100,
-        tables=[TableRef(table_id='data', title='Data', columns=['wafer', 'measurement'],
-            total_rows=100, preview_rows=rows, complete=True, data_ref=str(i))]) for i in range(4)]
-    node = Nodes(ScriptedModel([]), ToolRegistry(), SimpleNamespace(settings=Settings()), '')
-    state = {'run_id': 'run', 'goal': {}, 'observations': sources,
-        'messages': [HumanMessage(content='조회 결과로 순위와 맵을 완성해줘')]}
-    context, reserve, _, output, review_output, _ = node.completion_plan(state, 60000)
-    # Leave a 25k-token investigation call admissible after 60k already used.
-    assert 60000 + 25000 + reserve <= Settings().token_limit
-    assert output <= 4096 and review_output <= 2048
-    assert sources[0]['tables'][0]['preview_rows'] == rows
 
 
 def result(result_id="r", **updates):
@@ -90,33 +67,6 @@ def test_small_aggregate_table_is_not_cut_at_an_arbitrary_ten_rows():
     assert not view["truncated"]
 
 
-def test_model_can_select_working_evidence_without_deleting_other_results():
-    from harness.nodes import Nodes
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-    from harness.context import build_context
-
-    async def scenario():
-        first = result("first", run_id="run", preview_rows=[{"content": "USE_THIS"}])
-        second = result("second", run_id="run", preview_rows=[{"content": "NOT_NEEDED_NOW"}])
-        async def observation(principal, session, result_id):
-            assert (principal, session) == ("p", "s")
-            if result_id != "first":
-                raise PermissionError("Result unavailable")
-            return ToolObservation.model_validate(first)
-        node = Nodes(ScriptedModel([]), ToolRegistry(), SimpleNamespace(settings=Settings(),
-            store=SimpleNamespace(observation=observation)), "")
-        state = {"run_id": "run", "principal_id": "p", "session_id": "s", "goal": {}, "messages": [],
-            "observations": [first, second], "pending": [{"id": "select", "name": "select_results", "args": {"result_ids": ["first"]}}]}
-        update = await node.execute(state)
-        assert update["active_result_ids"] == ["first"]
-        context = build_context({**state, **update}, "")
-        assert "USE_THIS" in str(context) and "NOT_NEEDED_NOW" not in str(context)
-        assert len(update["observations"]) == 2
-        assert second["preview_rows"][0]["content"] == "NOT_NEEDED_NOW"
-    asyncio.run(scenario())
-
-
 def test_final_context_has_one_evidence_set_and_preserves_latest_request():
     from harness.context import build_context
     state = {"run_id": "current", "goal": {"original_request": "first"},
@@ -139,83 +89,6 @@ def test_saved_compaction_is_restored_without_replaying_covered_turns():
     assert "latest answer" in str(history)
     assert restore_memory([newest, older])["summary"] == "PERSISTED_SUMMARY"
     assert focus == ["r"] and observations[0]["result_id"] == "r"
-
-
-def test_failed_compaction_does_not_discard_history_or_current_question():
-    from harness.nodes import Nodes
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-
-    async def scenario():
-        calls = []
-        async def check():
-            return {"usage": {"tokens": 0, "models": 0, "tools": 0}}
-        async def event(*args, **kwargs):
-            pass
-        async def model_call(model, messages, **kwargs):
-            calls.append(kwargs)
-            if kwargs.get("purpose") == "compaction":
-                raise ValueError("summary failed")
-            return AIMessage(content="available answer")
-        ctx = SimpleNamespace(settings=Settings(context_tokens=4096), check=check,
-            model_call=model_call, store=SimpleNamespace(event=event))
-        nodes = Nodes(ScriptedModel([]), ToolRegistry(), ctx, "")
-        history = [*(HumanMessage(content="old dialogue " * 600) for _ in range(8)), HumanMessage(content="KEEP CURRENT")]
-        state = {"run_id": "run", "goal": {}, "messages": history, "observations": []}
-        updates = await nodes.think(state)
-        assert any(call.get("purpose") == "compaction" for call in calls)
-        assert not updates.get("summary")
-        assert updates.get("messages", [])[:len(history)] == history
-        assert "KEEP CURRENT" in str(updates)
-    asyncio.run(scenario())
-
-
-def test_completion_reserves_both_inputs_and_actual_output_caps():
-    from harness.nodes import Nodes
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-    ctx = SimpleNamespace(settings=Settings())
-    nodes = Nodes(ScriptedModel([]), ToolRegistry(), ctx, "instructions")
-    state = {"run_id": "current", "goal": {"original_request": "explain"},
-        "messages": [HumanMessage(content="explain")], "observations": [result(run_id="current")]}
-    final_context, total, review_reserve, output, review_output, evidence_tokens = nodes.completion_plan(state, 120000)
-    assert total == nodes.input_tokens(nodes.finalizer, final_context) + output + review_reserve
-    review = nodes.review_context(state, {"answer": "explained"}, state["observations"], evidence_tokens)
-    assert review_reserve >= nodes.input_tokens(nodes.verifier, review) + review_output
-    assert output <= Settings().max_output_tokens and review_output <= Settings().max_output_tokens
-    larger = {**state, "observations": [result(run_id="current", preview_rows=[{"n": n, "value": "detail" * 100} for n in range(8)], total_rows=8)]}
-    assert nodes.completion_plan(larger, 120000)[1] > total
-
-
-def test_new_tool_schema_pressure_triggers_compaction_of_small_history():
-    from harness.nodes import Nodes
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-    from harness.context import build_context
-
-    async def scenario():
-        archives, calls = [], []
-        async def insert_one(value):
-            archives.append(value)
-        async def event(*args, **kwargs):
-            pass
-        async def check():
-            return {"usage": {"tokens": 0, "models": 0, "tools": 0}}
-        async def model_call(model, messages, **kwargs):
-            calls.append(kwargs)
-            return AIMessage(content="Goal and source r retained.")
-        ctx = SimpleNamespace(settings=Settings(context_tokens=4096), check=check, model_call=model_call,
-            store=SimpleNamespace(event=event, db=SimpleNamespace(harness_context_archives=SimpleNamespace(insert_one=insert_one))))
-        node = Nodes(ScriptedModel([]), ToolRegistry(), ctx, "")
-        state = {"run_id": "run", "principal_id": "p", "session_id": "s", "goal": {},
-            "messages": [HumanMessage(content="older instruction " * 100), AIMessage(content="old answer " * 100), HumanMessage(content="CURRENT")], "observations": []}
-        bound = SimpleNamespace(kwargs={"tools": [{"description": "schema " * 3000}]})
-        update = await node.compact(state, bound, build_context(state, ""), await check(), 10000)
-        assert calls[0]["purpose"] == "compaction"
-        assert update["summary"] and "CURRENT" in str(update["messages"])
-        assert archives[0]["principal_id"] == "p" and archives[0]["session_id"] == "s"
-        assert update["context_archives"] == [archives[0]["_id"]]
-    asyncio.run(scenario())
 
 
 def test_compaction_preserves_current_question_and_complete_tool_pairs():
@@ -241,105 +114,6 @@ def test_memory_never_restores_unanswered_native_calls_after_a_stop():
     replies = {m.tool_call_id for m in history if m.type == "tool"}
     assert calls == replies
     assert "not-run" in str(memory)
-
-
-def test_failed_summary_usage_is_refreshed_before_choosing_next_stage():
-    from harness.nodes import Nodes
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-
-    async def scenario():
-        used, stages = 7, []
-        async def check():
-            return {"usage": {"tokens": 1000, "models": used, "tools": 0}}
-        async def event(*args, **kwargs):
-            pass
-        async def model_call(model, messages, **kwargs):
-            nonlocal used
-            stages.append(kwargs["purpose"])
-            used += 1
-            if kwargs["purpose"] == "compaction":
-                return AIMessage(content="")
-            return AIMessage(content="", tool_calls=[{"id": "f", "name": "finish", "args": {"answer": "finished"}}])
-        node = Nodes(ScriptedModel([]), ToolRegistry(), SimpleNamespace(settings=Settings(model_limit=10, context_tokens=4096),
-            check=check, model_call=model_call, store=SimpleNamespace(event=event)), "")
-        state = {"run_id": "r", "goal": {}, "messages": [HumanMessage(content="older " * 1500), HumanMessage(content="current")]}
-        await node.think(state)
-        assert stages == ["compaction", "answer"]
-    asyncio.run(scenario())
-
-
-def test_review_reserve_accounts_for_historical_lineage_descriptors():
-    from harness.nodes import Nodes
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-    nodes = Nodes(ScriptedModel([]), ToolRegistry(), SimpleNamespace(settings=Settings()), "")
-    parent = result("parent", scope={"provenance_description": "x" * 30000})
-    current = result("current", run_id="run", source_result_ids=["parent"])
-    state = {"run_id": "run", "goal": {}, "messages": [HumanMessage(content="current")], "observations": [parent, current]}
-    _, _, reserve, _, cap, evidence_tokens = nodes.completion_plan(state, 120000)
-    actual = nodes.review_context(state, {"answer": "finished", "result_ids": ["current"]}, [current, parent], evidence_tokens)
-    assert reserve >= nodes.input_tokens(nodes.verifier, actual) + cap
-
-
-def test_terminal_checkpoint_recovery_persists_working_memory():
-    import uuid
-    from langgraph.checkpoint.memory import InMemorySaver
-    from harness.store import HarnessStore
-    from harness.control import RunController
-    from harness.executor import ExecutionContext
-    from harness.graph import build_harness
-    from harness.checkpoints import epoch_config
-    from harness.testing import ScriptedModel, initial_state
-    from harness.tools.registry import ToolRegistry
-
-    async def scenario():
-        store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
-        saver = InMemorySaver()
-        controller = RunController(store, Settings(), saver, model_factory=lambda: ScriptedModel([]), registry_factory=ToolRegistry)
-        try:
-            await store.setup()
-            run = await store.start_run("p", "s", "r", "request")
-            run = await store.acquire(run["run_id"], "old-worker")
-            graph = build_harness(model=ScriptedModel([{"finish": {"answer": "delivered"}}]), registry=ToolRegistry(),
-                store=store, checkpointer=saver, control=ExecutionContext(store, Settings(), run), instructions="")
-            state = {**initial_state(run, "request"), "summary": "durable compacted facts", "context_archives": ["archive"]}
-            final = await graph.ainvoke(state, await epoch_config(saver, run["run_id"], run["epoch"]))
-            assert final["status"] == "completed"
-            # Simulate death after graph checkpoint but before controller save.
-            await store.runs.update_one({"_id": run["run_id"]}, {"$set": {"lease_until": 0}})
-            await controller.recover()
-            await controller.tasks[run["run_id"]]
-            restored = await store.get_run("p", run["run_id"])
-            assert restored["status"] == "completed"
-            assert restored["context_memory"]["summary"] == "durable compacted facts"
-            assert restored["context_memory"]["context_archives"] == ["archive"]
-            assert restored["answer_text"] == "delivered"
-        finally:
-            await controller.close()
-            await store.client.drop_database(store.db.name)
-            store.client.close()
-    asyncio.run(scenario())
-
-
-def test_actual_review_input_fits_reservation_despite_different_evidence_order():
-    from harness.nodes import Nodes
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-    node = Nodes(ScriptedModel([]), ToolRegistry(), SimpleNamespace(settings=Settings()), "")
-    korean = [result(f"ko{i}", preview_rows=[{"text": "가" * 3000}] * 2, total_rows=2) for i in range(3)]
-    ascii_rows = [result(f"en{i}", preview_rows=[{"text": "a" * 3000}] * 2, total_rows=2) for i in range(3)]
-    state = {"run_id": "run", "goal": {}, "messages": [], "observations": [*korean, *ascii_rows]}
-    _, _, reserve, _, output, evidence_tokens = node.completion_plan(state, 120000)
-    # Balanced source shares remove the previous order-only overflow. A sizeable
-    # candidate still exercises the actual review-input boundary with UTF-8 data.
-    candidate = {"answer": "확인한 자료와 한계를 설명합니다. " * 300, "result_ids": [r["result_id"] for r in korean]}
-    unbounded = node.review_context(state, candidate, korean, evidence_tokens)
-    assert node.input_tokens(node.verifier, unbounded) + output > reserve
-    bounded = node.bounded_review_context({**state, "evidence_tokens": evidence_tokens}, candidate, korean, reserve - output)
-    assert node.input_tokens(node.verifier, bounded) + output <= reserve
-    assert any(o["truncated"] for o in json.loads(bounded[-1].content)["observations"])
-    assert korean[0]["preview_rows"][0]["text"] == "가" * 3000
 
 
 def test_projection_shares_budget_between_sources_then_tables_without_hiding_yield():
@@ -396,18 +170,6 @@ def test_final_context_keeps_latest_public_action_context_and_marks_old_summary(
     assert metadata['summary_scope'] == 'older_compacted_messages; current results and latest user instructions take precedence'
     assert str(context).count('UNIQUE_DOCUMENT_BODY') == 1
     assert not any(getattr(message, 'tool_calls', []) or message.type == 'tool' for message in context)
-
-
-def test_review_receives_loaded_skill_contracts():
-    from harness.nodes import Nodes
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-    node = Nodes(ScriptedModel([]), ToolRegistry(), SimpleNamespace(settings=Settings()), '')
-    skill = {'name': 'analysis', 'content': 'Preserve the requested population and metric.'}
-    state = {'goal': {}, 'loaded_skills': {'analysis': skill}}
-    messages = node.review_context(state, {'answer': 'done'}, [], 2000)
-    assert any(m.type == 'system' and json.loads(m.content) == skill
-        for m in messages if m.additional_kwargs.get('input_section') == 'skills')
 
 
 def test_explicit_read_result_is_visible_before_older_preview_rows():

@@ -29,15 +29,13 @@ def test_cancelling_cannot_be_overwritten_by_completed():
     asyncio.run(scenario())
 
 
-def test_recovery_ignores_mcp_and_recovers_durable_steer_once():
-    from langgraph.checkpoint.memory import InMemorySaver
+def test_recovery_ignores_mcp_and_recovers_durable_steer_once(native_result):
     from harness.store import HarnessStore
     from harness.config import Settings
     from harness.control import RunController
-    from harness.testing import ScriptedModel
     async def scenario():
         store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
-        service = RunController(store, Settings(), InMemorySaver(), model_factory=lambda: ScriptedModel([{"finish": {"answer": "수정 반영"}}]))
+        service = RunController(store, Settings())
         try:
             await store.setup()
             mcp = await store.start_run("p", "mcp", "r", "MCP", execution_kind="mcp")
@@ -115,45 +113,6 @@ def test_root_and_children_share_two_domain_slots():
                 {"name": "query_lot_history", "id": "read", "args": {"lot_ids": [str(i)]}}) for i in range(4)))
             assert peak == 2
         finally:
-            await store.client.drop_database(store.db.name)
-            store.client.close()
-    asyncio.run(scenario())
-
-
-def test_reconnected_stream_does_not_replay_answered_question():
-    import httpx
-    from fastapi import FastAPI, Request
-    from langgraph.checkpoint.memory import InMemorySaver
-    from harness.config import Settings
-    from harness.control import RunController
-    from harness.router import compatibility_chat
-    from harness.store import HarnessStore
-    from harness.testing import ScriptedModel
-    from models import ChatRequest
-    async def scenario():
-        store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
-        model = ScriptedModel([{"tool": "ask_user", "arguments": {"message": "제품 정보", "fields": [{"slot": "lotcd"}]}}, {"finish": {"answer": "답변 완료"}}])
-        service = RunController(store, Settings(), InMemorySaver(), model_factory=lambda: model)
-        app = FastAPI()
-        app.state.harness = service
-        @app.post("/chat/stream")
-        async def chat(body: ChatRequest, request: Request):
-            return await compatibility_chat(body, request)
-        try:
-            await store.setup()
-            run = await service.start("local", "s", "r", "분석")
-            await service.tasks[run["run_id"]]
-            paused = await store.get_run("local", run["run_id"])
-            await service.submit_input("local", run["run_id"], {"kind": "input", "request_id": "answer", "goal_revision": 1, "interrupt_id": paused["question"]["interrupt_id"], "value": {"lotcd": "B"}})
-            await service.tasks[run["run_id"]]
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-                response = await client.post("/chat/stream", json={"session_id": "s", "run_id": run["run_id"], "query": "", "after_sequence": 0})
-                assert response.status_code == 200
-                assert '"type": "interrupt"' not in response.text
-                assert '"type": "stream_end"' in response.text
-            assert (await store.get_run("local", run["run_id"]))["user_inputs"][0]["value"] == {"lotcd": "B"}
-        finally:
-            await service.close()
             await store.client.drop_database(store.db.name)
             store.client.close()
     asyncio.run(scenario())

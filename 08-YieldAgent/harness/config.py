@@ -103,7 +103,7 @@ class SeatbeltIsolationSettings(BaseModel):
 
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    engine: Literal["hermes", "langgraph"] = "langgraph"
+    engine: Literal["hermes"] = "hermes"
     model: str = "z-ai/glm-5.3-flash"
     base_url: str = "https://openrouter.ai/api/v1"
     api_key: SecretStr = SecretStr("")
@@ -142,6 +142,9 @@ class Settings(BaseModel):
 
     @classmethod
     def from_env(cls):
+        engine = os.getenv("HARNESS_ENGINE", "hermes")
+        if engine != "hermes":
+            raise ValueError("HARNESS_ENGINE must be hermes; other execution engines have been retired")
         base_url = os.getenv("HARNESS_BASE_URL", cls.model_fields["base_url"].default)
         host = urlparse(base_url).hostname
         key = os.getenv("HARNESS_API_KEY", "")
@@ -200,7 +203,7 @@ class Settings(BaseModel):
                 sandbox=os.getenv(names["sandbox"], "auto"),
                 retain_python_files=os.getenv("HARNESS_RETAIN_PYTHON_FILES") == "1")
         return cls(
-            engine=os.getenv("HARNESS_ENGINE", "hermes"),
+            engine=engine,
             model=os.getenv("HARNESS_MODEL", cls.model_fields["model"].default),
             base_url=base_url,
             api_key=key,

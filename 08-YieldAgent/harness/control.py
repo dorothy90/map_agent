@@ -3,19 +3,12 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-import json
 import logging
 
-from langchain_core.messages import HumanMessage
-from langgraph.types import Command
 from langsmith import tracing_context
 
 from .executor import ExecutionContext
-from .checkpoints import epoch_config
-from .graph import build_harness
-from .instructions import load_instructions
-from .model import build_model
-from .store import Conflict, LeaseLost, BudgetExceeded
+from .store import Conflict, LeaseLost
 from .tools.registry import domain_registry
 
 
@@ -23,9 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class RunController:
-    def __init__(self, store, settings, checkpointer, *, model_factory=None, registry_factory=domain_registry):
-        self.store, self.settings, self.checkpointer = store, settings, checkpointer
-        self.model_factory = model_factory or (lambda: build_model(settings))
+    def __init__(self, store, settings, *, registry_factory=domain_registry):
+        self.store, self.settings = store, settings
         self.registry_factory = registry_factory
         self.tasks = {}
         self.owner = str(uuid.uuid4())
@@ -46,6 +38,11 @@ class RunController:
         existing = await self.store.runs.find_one({"_id": run_id})
         if existing and existing.get("active") and existing.get("runtime_version") != "harness/v2":
             raise Conflict("Active runtime version is incompatible; resume with its original version or cancel first")
+        if existing and existing.get("engine") != "hermes":
+            await self._reject_engine(existing)
+            if not existing.get("active"):
+                raise Conflict("Unsupported stored run engine; only hermes can execute")
+            return
         run = await self.store.acquire(run_id, self.owner)
         if run:
             # Harness audit data stays in its owned Mongo store.
@@ -54,6 +51,26 @@ class RunController:
             for key in list(self.tasks):
                 if len(self.tasks) > 100 and self.tasks[key].done():
                     self.tasks.pop(key)
+
+    async def _reject_engine(self, run):
+        message = "Unsupported stored run engine: " + repr(run.get("engine")) + "; only hermes can execute"
+        if run.get("active"):
+            await self.store.runs.update_one(
+                {"_id": run["run_id"], "epoch": run["epoch"], "active": True,
+                 "status": "waiting_user", "lease_until": {"$lt": time.time()}},
+                {"$set": {"status": "created"}})
+            owned = await self.store.acquire(run["run_id"], self.owner)
+            if owned:
+                await self.store.finish(owned["run_id"], owned["epoch"], "failed", message, "unsupported_engine")
+                await self.store.runs.update_one(
+                    {"_id": owned["run_id"], "epoch": owned["epoch"], "active": False},
+                    {"$unset": {"steer_pending": ""}})
+            else:
+                raise Conflict(message)
+        elif run.get("steer_pending"):
+            await self.store.runs.update_one(
+                {"_id": run["run_id"], "epoch": run["epoch"], "active": False},
+                {"$unset": {"steer_pending": ""}})
 
     async def _heartbeat(self, run):
         previous = time.monotonic()
@@ -97,72 +114,18 @@ class RunController:
         try:
             context = ExecutionContext(self.store, self.settings, run)
             registry = self.registry_factory()
-            if run.get("engine", "langgraph") == "hermes":
-                from .native_hermes import run_native
-                previous = await self.store.runs.find({"principal_id": run["principal_id"],
-                    "session_id": run["session_id"], "active": False}).sort("created_at", -1).limit(10).to_list(length=10)
-                from .native_hermes import native_history
-                await self.store.event(run["run_id"], "run_started", {"query": run["query"],
-                    "goal_revision": run["goal_revision"], "engine": "hermes"})
-                result = await run_native(context, registry,
-                    history=native_history(previous))
-                await context.check()
-                stop_heartbeat()
-                await self._save_context(run, result)
-                await self.store.finish(run["run_id"], run["epoch"], result["status"], result["answer"], result["stop_reason"])
-                return
-            from .delegation import register_delegation
-            register_delegation(registry, self.model_factory, self.checkpointer)
-            graph = build_harness(model=self.model_factory(), registry=registry, store=self.store,
-                checkpointer=self.checkpointer, control=context, instructions=load_instructions())
-            config = await epoch_config(self.checkpointer, run["run_id"], run["epoch"])
+            from .native_hermes import run_native
+            previous = await self.store.runs.find({"principal_id": run["principal_id"],
+                "session_id": run["session_id"], "active": False}).sort("created_at", -1).limit(10).to_list(length=10)
+            from .native_hermes import native_history
+            await self.store.event(run["run_id"], "run_started", {"query": run["query"],
+                "goal_revision": run["goal_revision"], "engine": "hermes"})
+            result = await run_native(context, registry,
+                history=native_history(previous))
             await context.check()
-            snapshot = await graph.aget_state(config)
-            if run.get("resume_input") is not None:
-                stream_input = Command(resume=run["resume_input"])
-            elif snapshot.values and snapshot.next:
-                stream_input = None
-            elif snapshot.values and not snapshot.next:
-                result = snapshot.values
-                stop_heartbeat()
-                await self._save_context(run, result)
-                await self.store.finish(run["run_id"], run["epoch"], result.get("status", "partial"), result.get("answer", ""), result.get("stop_reason", "recovered"))
-                return
-            else:
-                previous = await self.store.runs.find({"principal_id": run["principal_id"], "session_id": run["session_id"], "active": False}).sort("created_at", -1).limit(10).to_list(length=10)
-                from .context import session_context, restore_memory
-                history, observations, focus = session_context(previous)
-                memory = restore_memory(previous)
-                from .memory import load_profile
-                profile = await load_profile(context)
-                stream_input = {"run_id": run["run_id"], "principal_id": run["principal_id"], "session_id": run["session_id"],
-                    "goal": {"original_request": run.get("goal_request", run["query"]), "revision": run["goal_revision"], "acceptance_items": [], "constraints": {}},
-                    "messages": [*history, HumanMessage(content=run["query"])], "observations": observations, "focus_result_ids": focus,
-                    "active_result_ids": [],
-                    "user_profile": profile, "summary": memory.get("summary", ""), "context_archives": memory.get("context_archives", []),
-                    "pending": [], "candidate": {}, "question": {}, "status": "running"}
-            await self.store.event(run["run_id"], "run_started", {"query": run["query"], "goal_revision": run["goal_revision"]})
-            result = await graph.ainvoke(stream_input, config)
-            if result.get("status") == "completed" and not result.get("__interrupt__"):
-                from .memory import update_memory
-                try:
-                    await asyncio.wait_for(update_memory(context, self.model_factory(), result),
-                        timeout=max(0, context.remaining_seconds() - 1))
-                except LeaseLost:
-                    raise
-                except Exception as exc:
-                    logger.info('Optional memory update skipped: %s', type(exc).__name__)
             stop_heartbeat()
-            current = await self.store.get_run(run["principal_id"], run["run_id"])
-            if current["status"] == "cancelling":
-                await self.store.finish(run["run_id"], run["epoch"], "cancelled", "작업을 중지했습니다.", "user_cancelled")
-            elif result.get("__interrupt__"):
-                question = result["question"]
-                await self.store.runs.update_one({"_id": run["run_id"], "epoch": run["epoch"]}, {"$set": {"question": question, "observations": result.get("observations", [])}, "$unset": {"resume_input": ""}})
-                await self.store.finish(run["run_id"], run["epoch"], "waiting_user", question["message"], "input_required", detail=question)
-            else:
-                await self._save_context(run, result)
-                await self.store.finish(run["run_id"], run["epoch"], result.get("status", "partial"), result.get("answer", ""), result.get("stop_reason", "unknown"))
+            await self._save_context(run, result)
+            await self.store.finish(run["run_id"], run["epoch"], result["status"], result["answer"], result["stop_reason"])
         except LeaseLost:
             stop_heartbeat()
             # finish is epoch-fenced: an old worker cannot finish its successor.
@@ -217,6 +180,9 @@ class RunController:
 
     async def submit_input(self, principal_id, run_id, payload):
         run = await self.store.get_run(principal_id, run_id)
+        if run.get("engine") != "hermes":
+            await self._reject_engine(run)
+            raise Conflict("Unsupported stored run engine; only hermes can execute")
         if payload["kind"] == "steer":
             async with self.store.session_lock(principal_id, run["session_id"]):
                 existing = await self.store.runs.find_one({"principal_id": principal_id, "session_id": run["session_id"], "request_id": payload["request_id"], "parent_run_id": run_id})
@@ -259,8 +225,11 @@ class RunController:
         return await self.store.get_run(principal_id, run_id)
 
     async def _apply_steer(self, run, payload):
+        if run.get("engine") != "hermes":
+            await self._reject_engine(run)
+            raise Conflict("Unsupported stored run engine; only hermes can execute")
         await self.cancel(run["principal_id"], run["run_id"])
-        next_run = await self.store.start_run(run["principal_id"], run["session_id"], payload["request_id"], str(payload["value"]), ready=False, engine=run.get("engine", "langgraph"))
+        next_run = await self.store.start_run(run["principal_id"], run["session_id"], payload["request_id"], str(payload["value"]), ready=False, engine="hermes")
         await self.store.runs.update_one({"_id": next_run["run_id"]}, {"$set": {"parent_run_id": run["run_id"], "goal_revision": run["goal_revision"] + 1,
             "goal_request": run.get("goal_request", run["query"]) + "\n사용자의 최신 수정: " + str(payload["value"]), "ready": True}})
         await self.store.runs.update_one({"_id": run["run_id"]}, {"$unset": {"steer_pending": ""}})
@@ -268,6 +237,13 @@ class RunController:
         return await self.store.get_run(run["principal_id"], next_run["run_id"])
 
     async def recover(self):
+        async for run in self.store.runs.find({"execution_kind": "harness", "runtime_version": "harness/v2",
+                "engine": {"$ne": "hermes"}, "active": True,
+                "status": {"$in": ["created", "running", "waiting_user"]}, "lease_until": {"$lt": time.time()}}):
+            try:
+                await self._reject_engine(run)
+            except Conflict:
+                continue
         async for run in self.store.runs.find({"execution_kind": "harness", "runtime_version": "harness/v2", "steer_pending": {"$exists": True}}):
             try:
                 async with self.store.session_lock(run["principal_id"], run["session_id"]):

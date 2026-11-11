@@ -1,13 +1,6 @@
-import asyncio
 import json
-from types import SimpleNamespace
 
-from langchain_core.messages import AIMessage, HumanMessage
 
-from harness.config import Settings
-from harness.nodes import Nodes
-from harness.testing import ScriptedModel
-from harness.tools.registry import ToolRegistry
 from harness.types import FinalCandidate, ToolObservation
 
 
@@ -25,42 +18,6 @@ def test_finish_references_results_without_repeating_cell_values():
     assert "claims" not in schema["properties"]
     assert "coverage" not in schema["properties"]
     assert candidate.result_ids == ["stats"]
-
-
-def test_work_notes_replace_previous_interpretation_without_mutating_user_goal():
-    async def scenario():
-        async def event(*args, **kwargs):
-            pass
-        context = SimpleNamespace(settings=Settings(), store=SimpleNamespace(event=event))
-        node = Nodes(ScriptedModel([]), ToolRegistry(), context, "")
-        goal = {"original_request": "기존 보고서 조회", "revision": 2, "constraints": {"product": "DEMO"}}
-        result = await node.execute({"run_id": "run", "goal": goal, "messages": [],
-            "worklog": {"acceptance_items": [{"id": "old", "description": "새 보고서 작성"}]},
-            "pending": [{"name": "update_worklog", "id": "plan", "args": {
-                "acceptance_items": [{"id": "new", "description": "기존 보고서 조회"}]}}]})
-        assert "goal" not in result
-        assert result["worklog"]["acceptance_items"] == [{"id": "new", "description": "기존 보고서 조회"}]
-        assert goal["constraints"] == {"product": "DEMO"}
-    asyncio.run(scenario())
-
-
-def test_main_model_can_answer_without_a_tool_call():
-    async def scenario():
-        choices = []
-        class Model(ScriptedModel):
-            def bind_tools(self, tools, **kwargs):
-                choices.append(kwargs.get("tool_choice", "auto"))
-                return super().bind_tools(tools, **kwargs)
-        async def check():
-            return {"usage": {"tokens": 0, "models": 0, "tools": 0}}
-        async def model_call(*args, **kwargs):
-            return AIMessage(content="안녕하세요.")
-        node = Nodes(Model([]), ToolRegistry(), SimpleNamespace(settings=Settings(), check=check, model_call=model_call), "")
-        result = await node.think({"goal": {"original_request": "안녕"}, "messages": [HumanMessage(content="안녕")]})
-        assert choices[-1] == "auto"
-        assert result["candidate"]["answer"] == "안녕하세요."
-        assert not result.get("pending")
-    asyncio.run(scenario())
 
 
 def test_result_reference_validation_rejects_missing_errors_and_wrong_scope():

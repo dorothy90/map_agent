@@ -1,25 +1,4 @@
-import asyncio
 import json
-from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
-
-
-def test_compaction_keeps_native_tool_pairs_and_result_references():
-    from harness.testing import run_scripted
-    from harness.context import message_groups
-    messages = []
-    for i in range(30):
-        messages.extend([HumanMessage(content="질문 " + str(i)),
-            AIMessage(content="", tool_calls=[{"id": str(i), "name": "read_result", "args": {"result_id": str(i)}}]),
-            ToolMessage(content=json.dumps({"result_id": str(i), "rows": "자료" * 200}), tool_call_id=str(i))])
-    assert all(group[0].type == "ai" for group in message_groups(messages) if any(m.type == "tool" for m in group))
-    report = asyncio.run(run_scripted(query="안내", messages=messages, settings={"context_tokens": 4096},
-        script=[{"finish": {"answer": "안내"}}], tool_results={}))
-    assert report["summary"]
-    assert len(report["messages"]) < len(messages)
-    for group in message_groups(report["messages"]):
-        tools = [m for m in group if m.type == "tool"]
-        if tools:
-            assert {m.tool_call_id for m in tools} == {c["id"] for c in group[0].tool_calls}
 
 
 def test_context_preserves_previous_result_summary_and_artifact_references():
@@ -36,55 +15,3 @@ def test_context_preserves_previous_result_summary_and_artifact_references():
         "href": "/harness/artifacts/a?session_id=s",
         "markdown": "[표](/harness/artifacts/a?session_id=s)"}]
     assert result["data_origin"] == "fixture"
-
-
-def test_near_budget_finishes_instead_of_spending_remaining_tokens_on_compaction():
-    from types import SimpleNamespace
-    from harness.config import Settings
-    from harness.nodes import Nodes
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-
-    async def scenario():
-        calls = []
-        async def check():
-            return {"usage": {"tokens": 87000, "models": 8, "tools": 3}}
-        async def model_call(model, messages, *, final=False, **kwargs):
-            calls.append(final)
-            if not final:
-                raise AssertionError("No exploration budget for compaction")
-            return AIMessage(content="", tool_calls=[{"name": "finish", "args": {"answer": "안내"}, "id": "finish"}])
-        context = SimpleNamespace(settings=Settings(), check=check, model_call=model_call)
-        nodes = Nodes(ScriptedModel([]), ToolRegistry(), context, "")
-        history = [*(HumanMessage(content="이전 대화 " * 1000) for _ in range(10)), HumanMessage(content="현재 질문")]
-        result = await nodes.think({"goal": {}, "messages": history, "observations": []})
-        assert calls == [True]
-        assert result["pending"][0]["name"] == "finish"
-    asyncio.run(scenario())
-
-
-def test_finish_argument_feedback_survives_finalizer_context_rebuild():
-    from types import SimpleNamespace
-    from harness.config import Settings
-    from harness.nodes import Nodes
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-
-    async def scenario():
-        captured = []
-        async def check():
-            return {"usage": {"tokens": 95000, "models": 8, "tools": 24}}
-        async def model_call(model, messages, *, final=False, **kwargs):
-            captured.append((final, messages))
-            return AIMessage(content="", tool_calls=[{"name": "finish", "args": {"answer": "안내"}, "id": "fixed"}])
-        nodes = Nodes(ScriptedModel([]), ToolRegistry(), SimpleNamespace(settings=Settings(), check=check, model_call=model_call), "")
-        state = {"goal": {}, "messages": [HumanMessage(content="자료를 골라줘"), AIMessage(content="두 번째 자료는 DEMO 8월입니다."), HumanMessage(content="두 번째 것으로")], "observations": [], "pending": [{"id": "bad", "name": "finish", "args": {
-            "answer": ""}}]}
-        state.update(await nodes.execute(state))
-        await nodes.think(state)
-        assert captured[0][0] is True
-        metadata = json.loads(next(m.content for m in captured[0][1]
-            if m.additional_kwargs.get('input_section') == 'context'))
-        assert metadata["validation_issues"][0]["code"] == "missing_answer"
-        assert any(m.type == "ai" and "DEMO 8월" in m.content for m in captured[0][1])
-    asyncio.run(scenario())

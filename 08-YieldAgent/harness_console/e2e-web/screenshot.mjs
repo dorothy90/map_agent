@@ -11,7 +11,7 @@ const browser=await chromium.launch({
 try {
  const page=await browser.newPage({viewport:{width:1440,height:1000},reducedMotion:'reduce'});
  const errors=[];page.on('pageerror',e => errors.push(e.message));
- await page.goto(`${process.env.PR9_WEB_URL || 'http://127.0.0.1:5175'}/?ui=hermes&user=alice`);
+ await page.goto(`${process.env.PR9_WEB_URL || 'http://127.0.0.1:5175'}/?user=alice`);
  await page.getByRole('button',{name:'일반 대화',exact:true}).waitFor();
  await page.screenshot({path:`${out}/01-sessions.png`,fullPage:true});
  await page.getByRole('button',{name:'표와 검증 결과',exact:true}).click();

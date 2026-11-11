@@ -61,7 +61,7 @@ def test_verifier_backend_capability_is_read_result_only(monkeypatch):
     from harness.tools.registry import ToolRegistry, ToolSpec
     from harness.types import Contract, ToolObservation
     registry = ToolRegistry()
-    for name, effect in [('read_result','read'), ('query_yield','read'), ('run_python','artifact')]:
+    for name, effect in [('read_result','read'), ('query_db','read'), ('run_python','artifact')]:
         registry.add(ToolSpec(name, name, Contract, lambda *a: None, effect=effect))
     contexts = []
     class Executor:
@@ -73,7 +73,7 @@ def test_verifier_backend_capability_is_read_result_only(monkeypatch):
     monkeypatch.setattr(native, 'ToolExecutor', Executor)
     context = ExecutionContext(None, Settings(), {'principal_id':'p','session_id':'s','run_id':'r'})
     bridge = native.NativeBridge(registry, context)
-    for name in ('query_yield', 'run_python', 'memory', 'delegate_task'):
+    for name in ('query_db', 'run_python', 'memory', 'delegate_task'):
         with pytest.raises(PermissionError):
             asyncio.run(bridge.invoke({'id':'i','name':name,'args':{}}, review_id='review'))
     asyncio.run(bridge.invoke({'id':'i','name':'read_result','args':{}}, review_id='review'))

@@ -103,13 +103,12 @@ def test_table_selection_and_artifact_order_match_stream_and_history():
 
 def test_accepted_input_and_waiting_cancel_are_durable_over_http():
     import json
-    from langgraph.checkpoint.memory import InMemorySaver
     from harness.control import RunController
     from agent_server import get_session_history
 
     async def scenario():
         store = HarnessStore(database='harness_test_' + uuid.uuid4().hex)
-        service = RunController(store, Settings(enabled=True), InMemorySaver())
+        service = RunController(store, Settings(enabled=True))
         # Keep this persistence/transport test independent of a model provider.
         async def no_launch(run_id):
             return None

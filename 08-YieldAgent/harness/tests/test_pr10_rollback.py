@@ -125,7 +125,7 @@ def test_gateway_and_legacy_history_survive_flag_off_restart(monkeypatch):
         async def lifespan(app):
             writer = HarnessStore(uri=os.environ['HARNESS_MONGO_URI'], database=database)
             try:
-                controller = OfflineController(writer, SimpleNamespace(engine='hermes', principal='alice'), None)
+                controller = OfflineController(writer, SimpleNamespace(engine='hermes', principal='alice'))
                 services = GatewayServices(writer, controller)
                 scope = await services.open(Principal('alice'))
                 await scope.sessions.create_session('gateway', 'gui')
@@ -157,7 +157,7 @@ def test_gateway_and_legacy_history_survive_flag_off_restart(monkeypatch):
                 pytest.skip('Mongo unavailable; no server is started by this test')
             connected = True
             await store.setup()
-            controller = OfflineController(store, SimpleNamespace(engine='hermes', principal='alice'), None)
+            controller = OfflineController(store, SimpleNamespace(engine='hermes', principal='alice'))
             services = GatewayServices(store, controller)
             scope = await services.open(Principal('alice'))
             receipt = await asyncio.to_thread(gateway_submission, store.db.name)
@@ -175,7 +175,7 @@ def test_gateway_and_legacy_history_survive_flag_off_restart(monkeypatch):
             # New app/controller over the same DB characterizes a flag-OFF restart.
             monkeypatch.setenv('GATEWAY_M1_ENABLED', 'false')
             app = mounted_app()
-            app.state.harness = OfflineController(store, controller.settings, None)
+            app.state.harness = OfflineController(store, controller.settings)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
                 response = await client.get('/runs/' + run_id)
                 public_keys = {'run_id', 'session_id', 'query', 'status', 'answer', 'stop_reason',

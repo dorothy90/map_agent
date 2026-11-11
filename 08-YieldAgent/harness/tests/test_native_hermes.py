@@ -140,7 +140,7 @@ def test_executor_completion_uses_history_tool_call_id_and_hermes_payload():
             events.append((kind, payload))
 
     observation = ToolObservation(principal_id='p', session_id='s', run_id='r',
-        invocation_id='call-1', result_id='stored-result', tool_name='query_yield',
+        invocation_id='call-1', result_id='stored-result', tool_name='query_db',
         validated_arguments={'lot': 'L-1'}, status='error', summary='query failed',
         provenance={'elapsed_seconds': 1.25}, error={'code': 'QueryError'})
     executor = ToolExecutor(ToolRegistry(), SimpleNamespace(store=Store()))
@@ -148,12 +148,12 @@ def test_executor_completion_uses_history_tool_call_id_and_hermes_payload():
     asyncio.run(executor.publish(observation, {'run_id': 'r', 'epoch': 1}))
 
     assert events == [('tool_finished', {
-        'name': 'query_yield', 'status': 'error', 'state': 'error',
+        'name': 'query_db', 'status': 'error', 'state': 'error',
         'invocation_id': 'call-1', 'parent_invocation_id': None,
         'elapsed_seconds': 1.25, 'result_id': 'stored-result',
         'summary': 'query failed', 'tool_id': 'call-1',
         'args': {'lot': 'L-1'}, 'result': {
-            'result_id': 'stored-result', 'tool_name': 'query_yield',
+            'result_id': 'stored-result', 'tool_name': 'query_db',
             'status': 'error', 'summary': 'query failed', 'error': {'code': 'QueryError'}},
         'duration_s': 1.25})]
 
@@ -167,7 +167,7 @@ def test_executor_auth_failure_completes_started_hermes_card():
     async def fail(_args, _context):
         raise Unauthorized('private provider response')
     registry = ToolRegistry()
-    registry.add(ToolSpec('query_yield', 'query', Contract, fail))
+    registry.add(ToolSpec('query_db', 'query', Contract, fail))
     events = []
     run = {'_id': 'r', 'run_id': 'r', 'epoch': 1, 'principal_id': 'p', 'session_id': 's',
         'status': 'running', 'active': True, 'usage': {}}
@@ -185,12 +185,12 @@ def test_executor_auth_failure_completes_started_hermes_card():
     executor = ToolExecutor(registry, ExecutionContext(Store(), Settings(), run))
 
     with pytest.raises(ToolAuthenticationError):
-        asyncio.run(executor.execute({'id': 'history-call', 'name': 'query_yield', 'args': {}}))
+        asyncio.run(executor.execute({'id': 'history-call', 'name': 'query_db', 'args': {}}))
 
     assert [kind for kind, _ in events] == ['tool_started', 'tool_finished']
     assert [payload['tool_id'] for _, payload in events] == ['history-call', 'history-call']
     assert events[-1][1]['result'] == {
-        'tool_name': 'query_yield', 'status': 'error',
+        'tool_name': 'query_db', 'status': 'error',
         'summary': 'Tool authentication failed',
         'error': {'code': 'authentication_error', 'status_code': 401}}
 
@@ -232,7 +232,6 @@ def test_recovered_native_run_cannot_exceed_consumed_budget(monkeypatch, kind):
 
 def test_native_controller_pins_engine_and_restores_history(monkeypatch):
     import uuid
-    from langgraph.checkpoint.memory import InMemorySaver
     from harness.config import Settings
     from harness.control import RunController
     from harness.store import HarnessStore
@@ -240,7 +239,7 @@ def test_native_controller_pins_engine_and_restores_history(monkeypatch):
 
     async def scenario():
         store = HarnessStore(database='harness_test_' + uuid.uuid4().hex)
-        controller = RunController(store, Settings(engine='hermes'), InMemorySaver())
+        controller = RunController(store, Settings(engine='hermes'))
         calls = []
         async def synthetic(context, registry, *, history):
             calls.append(history)

@@ -45,19 +45,19 @@ def test_projection_maps_internal_tool_events_to_hermes_lifecycle_payloads():
     run = {'run_id': 'r', 'status': 'running', 'active': True}
     args = {'lot': 'L-1'}
     start = project_run_event(run, {'type': 'tool_started', 'payload': {
-        'name': 'query_yield', 'invocation_id': 'call-1', 'args': args,
+        'name': 'query_db', 'invocation_id': 'call-1', 'args': args,
         'context': '{"lot":"L-1"}', 'state': 'running', 'elapsed_seconds': 0}})
     assert start == {'type': 'tool.start', 'payload': {
-        'tool_id': 'call-1', 'name': 'query_yield', 'args': args,
+        'tool_id': 'call-1', 'name': 'query_db', 'args': args,
         'context': '{"lot":"L-1"}'}}
 
     result = {'status': 'error', 'summary': 'query failed', 'error': {'code': 'QueryError'}}
     complete = project_run_event(run, {'type': 'tool_finished', 'payload': {
-        'name': 'query_yield', 'invocation_id': 'call-1', 'args': args,
+        'name': 'query_db', 'invocation_id': 'call-1', 'args': args,
         'result': result, 'summary': 'query failed', 'status': 'error',
         'elapsed_seconds': 1.25, 'result_id': 'stored-result'}})
     assert complete == {'type': 'tool.complete', 'payload': {
-        'tool_id': 'call-1', 'name': 'query_yield', 'args': args,
+        'tool_id': 'call-1', 'name': 'query_db', 'args': args,
         'result': result, 'summary': 'query failed', 'duration_s': 1.25}}
 
 
@@ -65,12 +65,12 @@ def test_projection_preserves_canonical_tool_payloads_and_progress_message():
     from harness.gateway.events import project_run_event
 
     run = {'run_id': 'r', 'status': 'running', 'active': True}
-    complete_payload = {'tool_id': 'call-1', 'name': 'query_yield',
+    complete_payload = {'tool_id': 'call-1', 'name': 'query_db',
         'args': {'lot': 'L-1'}, 'result': {'status': 'success'},
         'summary': 'done', 'duration_s': .5}
     assert project_run_event(run, {'type': 'tool.complete', 'payload': complete_payload}) == {
         'type': 'tool.complete', 'payload': complete_payload}
-    progress_payload = {'tool_id': 'call-1', 'name': 'query_yield',
+    progress_payload = {'tool_id': 'call-1', 'name': 'query_db',
         'progress': 2.0, 'total': 4.0, 'percent': 50, 'message': '2/4 lots'}
     assert project_run_event(run, {'type': 'tool.progress', 'payload': progress_payload}) == {
         'type': 'tool.progress', 'payload': progress_payload}
@@ -286,7 +286,7 @@ async def fixture():
             run = await self.store.acquire(run_id, self.owner)
             if run:
                 self.launches.append(run_id)
-    controller = OfflineController(store, SimpleNamespace(engine='hermes'), None)
+    controller = OfflineController(store, SimpleNamespace(engine='hermes'))
     controller.launches = []
     await store.setup()
     await PendingControls(store, 'a').setup()
@@ -539,9 +539,9 @@ def test_run_generation_survives_frozen_ring_and_both_since_paths():
                            'clarify.request', 'run_finished')
         for kind in kinds:
             payload = {'execution_generation': generation} if kind.endswith('.request') else {
-                'tool_started': {'name': 'query_yield', 'invocation_id': 'call-1',
+                'tool_started': {'name': 'query_db', 'invocation_id': 'call-1',
                     'args': {'lot': 'L-1'}, 'context': '{"lot":"L-1"}'},
-                'tool_finished': {'name': 'query_yield', 'invocation_id': 'call-1',
+                'tool_finished': {'name': 'query_db', 'invocation_id': 'call-1',
                     'args': {'lot': 'L-1'}, 'result': {'status': 'success'},
                     'summary': 'done', 'elapsed_seconds': .5},
             }.get(kind, {})

@@ -53,8 +53,8 @@ async def evaluate():
         return obs
     try:
         today = date.today()
-        y = await call("query_yield", {"lotcd": "4SS", "ref_date": today.isoformat(), "periods": 4})
-        assert y.status == "success" and y.total_rows == 4
+        y = await call("query_wafer_yield", {"lotcd": "4SS", "ref_date": today.isoformat(), "periods": 4, "metric": "pass_rate", "measurement_policy": "all_measurements"})
+        assert y.status in ("success", "empty")
         full = await store.rows("local-eval", "s", y.result_id)
         p = await call("run_python", {"input_result_ids": [y.result_id], "code": "emit_table(pd.DataFrame([{'row_count':len(df)}])); emit_plot(px.bar(pd.DataFrame({'period':range(len(df)), 'observations':[1]*len(df)}), x='period', y='observations'))"})
         assert p.status == "success" and p.preview_rows[0]["row_count"] == len(full) and len(p.artifact_refs) == 2

@@ -1,4 +1,3 @@
-from pathlib import Path
 
 import pytest
 
@@ -37,24 +36,6 @@ def test_loaded_skill_body_occurs_once_in_context():
     assert str([m.content for m in messages]).count('UNIQUE BODY') == 1
     assert any('UNIQUE BODY' in m.content for m in messages if m.type == 'system')
     assert all('UNIQUE BODY' not in m.content for m in messages if m.type == 'tool')
-
-
-def test_unknown_skill_reference_returns_recoverable_tool_feedback():
-    import asyncio, json
-    from types import SimpleNamespace
-    from harness.nodes import Nodes
-    from harness.config import Settings
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import ToolRegistry
-    async def scenario():
-        node=Nodes(ScriptedModel([]),ToolRegistry(),SimpleNamespace(settings=Settings()),'')
-        result=await node.execute({'messages':[], 'pending':[{'name':'read_skill','id':'read',
-            'args':{'name':'wads-investigation','resource':'nonexistent.md'}}]})
-        assert result.get('status') not in ('partial','failed')
-        feedback=json.loads(result['messages'][-1].content)
-        assert feedback['status']=='invalid_arguments'
-        assert 'SKILL.md' in feedback['message']
-    asyncio.run(scenario())
 
 
 def test_declared_auto_load_is_pinned_and_other_skills_remain_lazy(tmp_path):

@@ -197,7 +197,7 @@ def test_rest_and_ws_preserve_the_same_native_tool_projection():
             {'role': 'user', 'content': 'Question'},
             {'role': 'assistant', 'tool_calls': [
                 {'id': 'call', 'function': {
-                    'name': 'query_yield', 'arguments': '{"lot":"L-1"}'}},
+                    'name': 'query_db', 'arguments': '{"lot":"L-1"}'}},
                 {'id': 'non-finite', 'function': {
                     'name': 'broken_tool', 'arguments': {'value': float('nan')}}}]},
             {'role': 'tool', 'tool_call_id': 'call', 'content': 'PRIVATE RESULT BODY'},
@@ -213,7 +213,7 @@ def test_rest_and_ws_preserve_the_same_native_tool_projection():
 
     assert rest == [
         {'role': 'user', 'content': 'Question'},
-        {'role': 'tool', 'name': 'query_yield', 'context': '{"lot":"L-1"}',
+        {'role': 'tool', 'name': 'query_db', 'context': '{"lot":"L-1"}',
             'tool_call_id': 'call', 'args': {'lot': 'L-1'}},
         {'role': 'tool', 'name': 'broken_tool', 'context': '',
             'tool_call_id': 'non-finite', 'args': {}},

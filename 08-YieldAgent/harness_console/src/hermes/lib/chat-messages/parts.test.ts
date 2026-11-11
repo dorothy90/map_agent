@@ -67,7 +67,7 @@ describe('stored gateway tool rows', () => {
       { role: 'user', content: 'Question' },
       {
         role: 'tool',
-        name: 'query_yield',
+        name: 'list_tables',
         context: '{"lot":"L-1"}',
         tool_call_id: 'call-1',
         args: { lot: 'L-1' }
@@ -80,7 +80,7 @@ describe('stored gateway tool rows', () => {
     expect(tool).toMatchObject({
       type: 'tool-call',
       toolCallId: 'call-1',
-      toolName: 'query_yield',
+      toolName: 'list_tables',
       unpairedStoredToolResult: true,
       args: { lot: 'L-1', context: '{"lot":"L-1"}' },
       result: { context: '{"lot":"L-1"}' },

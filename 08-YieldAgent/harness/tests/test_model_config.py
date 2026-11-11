@@ -82,3 +82,15 @@ def test_sampling_setting_reaches_harness_and_legacy_without_overriding_explicit
     assert get_llm().temperature == 1.0
     assert get_llm(temperature=0).temperature == 0
 
+
+
+def test_only_native_engine_is_configurable(monkeypatch):
+    import pytest
+    from harness.config import Settings
+
+    assert Settings().engine == "hermes"
+    monkeypatch.setenv("HARNESS_ENGINE", "hermes")
+    assert Settings.from_env().engine == "hermes"
+    monkeypatch.setenv("HARNESS_ENGINE", "langgraph")
+    with pytest.raises(ValueError, match="HARNESS_ENGINE.*hermes"):
+        Settings.from_env()

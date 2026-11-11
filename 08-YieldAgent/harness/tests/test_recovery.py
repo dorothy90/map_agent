@@ -5,17 +5,15 @@ import pytest
 
 
 @pytest.mark.parametrize("new_owner", [False, True])
-def test_expired_worker_finishes_only_its_own_epoch(monkeypatch, new_owner):
-    from langgraph.checkpoint.memory import InMemorySaver
+def test_expired_worker_finishes_only_its_own_epoch(native_result, monkeypatch, new_owner):
     from harness.config import Settings
     from harness.control import RunController
     from harness.executor import ExecutionContext
     from harness.store import HarnessStore
-    from harness.testing import ScriptedModel
 
     async def scenario():
         store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
-        service = RunController(store, Settings(), InMemorySaver(), model_factory=lambda: ScriptedModel([]))
+        service = RunController(store, Settings())
         original_check = ExecutionContext.check
 
         async def expire(context):
@@ -48,11 +46,9 @@ def test_expired_worker_finishes_only_its_own_epoch(monkeypatch, new_owner):
 
 
 def test_heartbeat_failure_stops_work_and_records_the_failure(monkeypatch):
-    from langgraph.checkpoint.memory import InMemorySaver
     from harness.config import Settings
     from harness.control import RunController
     from harness.store import HarnessStore
-    from harness.testing import ScriptedModel
     from harness.tools.registry import domain_registry
 
     async def scenario():
@@ -60,7 +56,7 @@ def test_heartbeat_failure_stops_work_and_records_the_failure(monkeypatch):
         entered, cancelled = asyncio.Event(), asyncio.Event()
         registry = domain_registry()
 
-        async def slow(args, ctx):
+        async def slow(ctx, registry, *, history):
             entered.set()
             try:
                 await asyncio.sleep(30)
@@ -71,9 +67,8 @@ def test_heartbeat_failure_stops_work_and_records_the_failure(monkeypatch):
             raise ConnectionError("fixture renewal failure")
 
         monkeypatch.setattr(store, "renew", fail_renew)
-        registry.tools["query_lot_history"].handler = slow
-        service = RunController(store, Settings(), InMemorySaver(), registry_factory=lambda: registry,
-            model_factory=lambda: ScriptedModel([{"tool": "query_lot_history", "arguments": {"lot_ids": ["fixture"]}}]))
+        monkeypatch.setattr("harness.native_hermes.run_native", slow)
+        service = RunController(store, Settings(), registry_factory=lambda: registry)
         try:
             await store.setup()
             run = await service.start("p", "s", "r", "fixture")
@@ -97,18 +92,16 @@ def test_heartbeat_failure_stops_work_and_records_the_failure(monkeypatch):
     ("lease", "partial", "exception"), ("cancel", "cancelled", "exception"), ("error", "failed", "exception"),
     ("cancel", "cancelled", "real"), ("lease", "partial", "real"),
 ])
-def test_heartbeat_failure_during_finish_cannot_interrupt_terminal_save(monkeypatch, failure, expected_status, heartbeat_mode):
-    from langgraph.checkpoint.memory import InMemorySaver
+def test_heartbeat_failure_during_finish_cannot_interrupt_terminal_save(native_result, monkeypatch, failure, expected_status, heartbeat_mode):
     from harness.config import Settings
     from harness.control import RunController
     from harness.executor import ExecutionContext
     from harness.store import HarnessStore, LeaseLost
-    from harness.testing import ScriptedModel
 
     async def scenario():
         store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
         settings = Settings(active_seconds=5 if heartbeat_mode == "real" and failure == "lease" else 600)
-        service = RunController(store, settings, InMemorySaver(), model_factory=lambda: ScriptedModel([]))
+        service = RunController(store, settings)
         finishing = asyncio.Event()
         original_finish = store.finish
 
@@ -148,28 +141,25 @@ def test_heartbeat_failure_during_finish_cannot_interrupt_terminal_save(monkeypa
     asyncio.run(scenario())
 
 
-def test_cancel_rejects_late_result_and_emits_one_terminal_event():
-    from langgraph.checkpoint.memory import InMemorySaver
+def test_cancel_rejects_late_result_and_emits_one_terminal_event(monkeypatch):
     from harness.config import Settings
     from harness.control import RunController
     from harness.store import HarnessStore
-    from harness.testing import ScriptedModel
-    from harness.tools.registry import domain_registry, ToolResult
+    from harness.tools.registry import domain_registry
 
     async def scenario():
         store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
         entered, cancelled = asyncio.Event(), asyncio.Event()
         registry = domain_registry()
-        async def slow(args, ctx):
+        async def slow(ctx, registry, *, history):
             entered.set()
             try:
                 await asyncio.sleep(30)
             finally:
                 cancelled.set()
-            return ToolResult(rows=[{"secret": "late"}])
-        registry.tools["query_lot_history"].handler = slow
-        service = RunController(store, Settings(), InMemorySaver(), registry_factory=lambda: registry,
-            model_factory=lambda: ScriptedModel([{"tool": "query_lot_history", "arguments": {"lot_ids": ["test"]}}]))
+            return {"status": "completed", "answer": "late", "stop_reason": "completed"}
+        monkeypatch.setattr("harness.native_hermes.run_native", slow)
+        service = RunController(store, Settings(), registry_factory=lambda: registry)
         try:
             await store.setup()
             run = await service.start("p", "s", "r", "조회")
@@ -215,39 +205,6 @@ def test_lease_recovery_replays_success_and_retries_only_unknown_reads():
     asyncio.run(scenario())
 
 
-def test_real_mongo_checkpoint_resumes_question_after_controller_restart():
-    from harness.config import Settings
-    from harness.control import RunController
-    from harness.store import HarnessStore
-    from harness.testing import ScriptedModel
-    from langgraph.checkpoint.mongodb import MongoDBSaver
-    async def scenario():
-        store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
-        await store.setup()
-        try:
-            with MongoDBSaver.from_conn_string("mongodb://localhost:27017", db_name=store.db.name) as saver:
-                first = RunController(store, Settings(), saver, model_factory=lambda: ScriptedModel([
-                    {"tool": "ask_user", "arguments": {"message": "필요 정보", "fields": [{"slot": "lotcd"}]}}]))
-                run = await first.start("p", "s", "r", "분석")
-                await first.tasks[run["run_id"]]
-                paused = await store.get_run("p", run["run_id"])
-                assert paused["status"] == "waiting_user"
-                await first.close()
-                second = RunController(store, Settings(), saver, model_factory=lambda: ScriptedModel([{"finish": {"answer": "입력 확인"}}]))
-                try:
-                    payload = {"kind": "input", "request_id": "input1", "goal_revision": 1, "interrupt_id": paused["question"]["interrupt_id"], "value": {"lotcd": "4SS"}}
-                    await second.submit_input("p", run["run_id"], payload)
-                    await second.tasks[run["run_id"]]
-                    final = await second.submit_input("p", run["run_id"], payload)
-                    assert final["status"] == "completed"
-                    assert sum(e["type"] == "input_required" for e in final["events"]) == 1
-                    assert sum(e["type"] == "run_finished" for e in final["events"]) == 1
-                finally:
-                    await second.close()
-        finally:
-            await store.client.drop_database(store.db.name)
-            store.client.close()
-    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize('child', [False, True])

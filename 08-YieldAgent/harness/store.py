@@ -214,7 +214,7 @@ class HarnessStore:
         blob = await self.blobs.open_download_stream(ObjectId(artifact_id))
         return {"result_id": record["observation"]["result_id"], **ref}, await blob.read()
 
-    async def start_run(self, principal_id, session_id, request_id, query, *, execution_kind="harness", ready=True, engine="langgraph"):
+    async def start_run(self, principal_id, session_id, request_id, query, *, execution_kind="harness", ready=True, engine="hermes"):
         key = {"principal_id": principal_id, "session_id": session_id, "request_id": request_id}
         old = await self.runs.find_one(key)
         if old:

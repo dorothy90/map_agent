@@ -232,13 +232,13 @@ def test_tools_payload_log_records_actual_request_names(monkeypatch, tmp_path):
     worker = worker_module()
     worker.install_tools_payload_logger(output)
     request_module._fire_pre_api_request_hook(None, {"tools": [
-        {"type": "function", "function": {"name": "query_yield"}},
+        {"type": "function", "function": {"name": "query_db"}},
         {"type": "function", "name": "web_search"},
     ]}, api_request_id="request-1")
     request_module._fire_pre_api_request_hook(None, {}, api_request_id="request-2")
 
     assert [json.loads(line) for line in output.read_text().splitlines()] == [
-        {"api_request_id": "request-1", "tools": ["query_yield", "web_search"]},
+        {"api_request_id": "request-1", "tools": ["query_db", "web_search"]},
         {"api_request_id": "request-2", "tools": []},
     ]
     assert len(calls) == 2

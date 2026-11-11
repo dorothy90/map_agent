@@ -28,11 +28,10 @@ PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.run_live \
 WADS 요청 의미 해석과 기존 원본 보고서 열람을 분리해 확인하는 가상 평가:
 
 ```bash
-PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.wads_intent --output outputs/harness-wads-intent.json
 PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.wads_synthetic
 ```
 
-`wads_intent`는 가상 이전 대화 이후의 첫 도메인 행동에서 멈춘다. 실제 DB 도구를 실행하지 않으며 WADS 도구와 DEMO 제품을 선택해야 통과한다. 도구 선택만 확인하므로 통계·답변 완성 여부는 검증하지 않는다. `wads_synthetic`는 가상 보고서 4건/웨이퍼 조인 7행으로 실제 모델·격리 Python·원본 HTML 반환의 2턴 흐름을 실행한다. 8월 통계 다음의 원본 열람에서 `get_wads_report`가 호출돼야 하며 수율 조회나 신규 PPT 생성으로 대체하면 실패한다. 기록의 completed 상태 외에도 원본과 최종 수치 및 기간을 독립적으로 검토한다.
+`wads_synthetic`는 가상 보고서 4건/웨이퍼 조인 7행으로 실제 모델·격리 Python·원본 HTML 반환의 2턴 흐름을 실행한다. 8월 통계 다음의 원본 열람에서 `get_wads_report`가 호출돼야 하며 수율 조회나 신규 PPT 생성으로 대체하면 실패한다. 기록의 completed 상태 외에도 원본과 최종 수치 및 기간을 독립적으로 검토한다.
 
 2026-09-12의 단순화 전후 비교, 제품·날짜 변형, 실제 DB 연결·모델·브라우저 확인은 [검증 보고서](../../../outputs/harness-simplification-validation.md)에 기록했다. 실제 DB 연결 시험에서 발견한 테스트 보고서의 HTML 본문 날짜와 메타데이터 불일치도 함께 기록했다.
 

@@ -47,5 +47,5 @@ if __name__ == "__main__":
     calls = [{c["tool_name"] for c in case["calls"]} for case in report["cases"]]
     ok = all(c["status"] == "completed" for c in report["cases"])
     ok = ok and bool(calls[0] & {"query_wads", "get_wads_report"}) and "get_wads_report" in calls[1]
-    ok = ok and not any(names & {"query_yield", "export_report"} for names in calls)
+    ok = ok and not any(names & {"query_db", "export_report"} for names in calls)
     raise SystemExit(0 if ok else 1)
