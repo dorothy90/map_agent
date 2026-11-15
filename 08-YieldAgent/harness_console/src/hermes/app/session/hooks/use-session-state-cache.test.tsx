@@ -9,6 +9,8 @@ import { purgeInFlightTurnJournals, resetInFlightTurnJournalStateForTests } from
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionStoredIdRotation,
+  $currentUsage,
+  setCurrentUsage,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -42,7 +44,7 @@ import {
   setZoneParkedTiles
 } from '@/store/session-states'
 
-import { useSessionActions } from './use-session-actions'
+import { applyStoredUsage, useSessionActions } from './use-session-actions'
 import { cachedSessionRow } from './use-session-actions/utils'
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -1391,4 +1393,31 @@ describe('useSessionStateCache — parked tiles release their warm transcript (#
     expect(cache.sessionStateByRuntimeIdRef.current.has(runtime)).toBe(true)
     expect($sessionStates.get()[runtime]?.messages.length).toBe(2)
   })
+})
+
+
+it('restores cached usage on foreground sync after a fresh draft reset', () => {
+  let cache!: Cache
+  setActiveSessionId('runtime-usage')
+  render(<Harness activeSessionId="runtime-usage" selectedStoredSessionId="stored-usage" onReady={value => (cache = value)} />)
+  const usage = { input: 171086, output: 9457, total: 180543, calls: 6 }
+  act(() => {
+    const state = cache.ensureSessionState('runtime-usage', 'stored-usage')
+    setCurrentUsage({ input: 0, output: 0, total: 0, calls: 0 })
+    cache.syncSessionStateToView('runtime-usage', { ...state, usage })
+  })
+  expect($currentUsage.get()).toEqual(usage)
+  act(() => cache.syncSessionStateToView('runtime-usage', cache.ensureSessionState('runtime-usage')))
+  expect($currentUsage.get()).toEqual(usage)
+  cleanup()
+})
+
+
+it('does not erase runtime tokens for a list row without token counts', () => {
+  const usage = { input: 171086, output: 9457, total: 180543, calls: 6 }
+  setCurrentUsage(usage)
+  applyStoredUsage({})
+  expect($currentUsage.get()).toEqual(usage)
+  applyStoredUsage({ input_tokens: null, output_tokens: null })
+  expect($currentUsage.get()).toEqual(usage)
 })

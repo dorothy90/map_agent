@@ -69,3 +69,17 @@ def test_report_headers_keep_group_identity_with_neutral_tone():
     html = _rendered_report()
     assert "delta-week" in html and "td-week" in html
     assert "delta-neg" in html and "delta-pos" in html
+
+
+def test_report_scrolls_inside_container_not_document():
+    root = _rule(REPORT_STYLE, "html, body")
+    assert "width: 100%" in root
+    assert "overflow-x: hidden" in root
+    container = _rule(REPORT_STYLE, ".table-container")
+    assert "width: 100%" in container
+    assert "width: max-content" not in container
+    assert "overflow-x: auto" in container
+    assert "width: max-content" in _rule(REPORT_STYLE, "table")
+    html = _rendered_report()
+    assert "document.body.getBoundingClientRect().height" in html
+    assert "ResizeObserver" in html

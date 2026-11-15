@@ -68,10 +68,15 @@ describe('YieldTableArtifactFrame', () => {
   })
 })
 
-it('places the web heading and original link immediately before the scrollable iframe container', () => {
+it('places the web heading and original link immediately before the iframe container', () => {
  const {getByRole,getByTitle}=render(<WebPresentationProvider><YieldTableArtifactFrame src="/artifact/table" title="실제 리포트 제목"><a href="/artifact/table">duplicate</a></YieldTableArtifactFrame></WebPresentationProvider>)
  const heading=getByRole('heading',{name:'실제 리포트 제목'})
  expect(heading.parentElement?.contains(getByRole('link',{name:'원본 열기'}))).toBe(true)
  expect(heading.parentElement?.nextElementSibling?.contains(getByTitle('실제 리포트 제목'))).toBe(true)
  expect(getByTitle('실제 리포트 제목').getAttribute('sandbox')).toBe('allow-scripts')
+ const link=getByRole('link',{name:'원본 열기'})
+ expect(link.getAttribute('href')).toBe('/artifact/table')
+ expect(link.getAttribute('target')).toBe('_blank')
+ post(getByTitle('실제 리포트 제목') as HTMLIFrameElement, {type:'yield-table-height',height:250})
+ expect((getByTitle('실제 리포트 제목') as HTMLIFrameElement).style.height).toBe('250px')
 })

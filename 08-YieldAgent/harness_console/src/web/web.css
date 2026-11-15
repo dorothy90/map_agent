@@ -131,8 +131,8 @@
 .hermes-web .web-report-heading [role="heading"] { font-size:16px; font-weight:650; color:#1a1c1f; }
 .hermes-web .web-report-link { flex-shrink:0; font-size:11px; color:#6f6f6f; text-decoration:underline; }
 .hermes-web .web-report-subtitle { display:block; margin:0 0 12px; font-size:12px; color:#6f6f6f; }
-.hermes-web .web-report-scroll { display:block; width:100%; overflow-x:auto; border:1px solid #e6e6e6; border-radius:12px; }
-.hermes-web .yield-table-artifact-frame { display:block; width:100%; min-width:1400px; border:0; background:#ffffff; }
+.hermes-web .web-report-scroll { display:block; width:100%; overflow-x:hidden; border:1px solid #e6e6e6; border-radius:12px; }
+.hermes-web .yield-table-artifact-frame { display:block; width:100%; min-width:0; border:0; background:#ffffff; }
 .hermes-web .web-empty-state { position:absolute; inset:0; z-index:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; text-align:center; overflow:auto; }
 .hermes-web .web-empty-mark { display:grid; place-items:center; width:42px; height:42px; border:1px solid #e6e6e6; border-radius:14px; font-size:24px; font-weight:650; }
 .hermes-web .web-empty-state h2 { margin:18px 0 22px; font-size:20px; font-weight:600; }

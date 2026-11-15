@@ -38,3 +38,12 @@ it('keeps composer input borderless and session titles phrase-wrapped', () => {
  expect(label.getPropertyValue('-webkit-line-clamp')).toBe('2')
  expect(getComputedStyle(document.querySelector('[contenteditable]')!).outline).toBe('none')
 })
+
+
+it('fits the iframe to chat and leaves horizontal scrolling inside the document', () => {
+ const style=document.createElement('style');style.textContent=css;document.head.append(style)
+ document.body.innerHTML='<main class="hermes-web"><span class="web-report-scroll"><iframe class="yield-table-artifact-frame"></iframe></span></main>'
+ expect(getComputedStyle(document.querySelector('iframe')!).width).toBe('100%')
+ expect(getComputedStyle(document.querySelector('iframe')!).minWidth).not.toBe('1400px')
+ expect(getComputedStyle(document.querySelector('.web-report-scroll')!).overflowX).toBe('hidden')
+})

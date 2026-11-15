@@ -33,6 +33,7 @@ class ReportRow:
 
 REPORT_STYLE = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; overflow-x: hidden; }
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   margin: 0;
@@ -40,7 +41,6 @@ body {
   background: #ffffff;
   color: rgba(0, 0, 0, 0.85);
   overflow-y: auto !important;
-  overflow-x: auto !important;
 }
 .table-container {
   border-radius: 8px;
@@ -48,7 +48,7 @@ body {
   border: 1px solid #f0f0f0;
   background: #ffffff;
   display: block;
-  width: max-content;
+  width: 100%;
   min-width: 0;
   max-width: 100%;
 }
