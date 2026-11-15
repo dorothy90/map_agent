@@ -99,21 +99,21 @@ th.th-section {
   color: rgba(0, 0, 0, 0.85);
 }
 th.th-section-pt1h {
-  border-top: 3px solid #1890ff;
-  background: #e6f7ff !important;
-  color: #0050b3 !important;
+  border-top: 2px solid #8a9aab;
+  background: #f3f5f7 !important;
+  color: #3d4a57 !important;
 }
 th.th-section-pt1c {
-  border-top: 3px solid #722ed1;
+  border-top: 2px solid #9a8eaa;
   border-left: 2px solid #bfbfbf !important;
-  background: #f9f0ff !important;
-  color: #391085 !important;
+  background: #f5f3f7 !important;
+  color: #4a4454 !important;
 }
 th.th-section-gms  {
-  border-top: 3px solid #52c41a;
+  border-top: 2px solid #8a9a8a;
   border-left: 2px solid #bfbfbf !important;
-  background: #f6ffed !important;
-  color: #237804 !important;
+  background: #f3f5f3 !important;
+  color: #3f4a3f !important;
 }
 th.th-param {
   width: 36px;
@@ -171,11 +171,40 @@ td.td-week {
   color: rgba(0, 0, 0, 0.65);
   background: #fafafa !important;
 }
-tr td:not(.td-week) { background: #ffffff; }
+tr td:not(.td-week):not(.td-lot):not(.td-wf) { background: #ffffff; }
 
-tr:hover td:not(.td-week) {
+tr:hover td:not(.td-week):not(.td-lot):not(.td-wf) {
   background: #fafafa !important;
 }
+
+/* Freeze WEEK/GROUP, LOT, and WF while the parameter columns scroll. */
+th.th-week, td.td-week {
+  position: sticky;
+  left: 0;
+  width: 70px;
+  min-width: 70px;
+  z-index: 3;
+  background: #fafafa !important;
+}
+th.th-lot, td.td-lot {
+  position: sticky;
+  left: 70px;
+  width: 36px;
+  min-width: 36px;
+  z-index: 3;
+  background: #fafafa !important;
+}
+th.th-wf, td.td-wf {
+  position: sticky;
+  left: 106px;
+  width: 36px;
+  min-width: 36px;
+  z-index: 3;
+  background: #fafafa !important;
+  box-shadow: 2px 0 4px rgba(0, 0, 0, 0.06);
+}
+th.th-week, th.th-lot, th.th-wf { z-index: 5; }
+tr.delta td.td-week, tr.delta td.td-lot, tr.delta td.td-wf { z-index: 3; }
 
 td.degraded {
   background: #fff1f0 !important;
@@ -209,11 +238,20 @@ td.delta-pos { background: #f6ffed !important; color: #389e0d !important; font-w
 """
 
 
-def _attrs(cell: ReportCell) -> str:
-    attrs = f' class="{cell.css_class}"' if cell.css_class else ""
+def _attrs(cell: ReportCell, extra_class: str = "") -> str:
+    classes = []
+    for item in (cell.css_class, extra_class):
+        for part in item.split():
+            if part and part not in classes:
+                classes.append(part)
+    attrs = f' class="{" ".join(classes)}"' if classes else ""
     if cell.title is not None:
         attrs += f' title="{cell.title}"'
     return attrs
+
+
+_STICKY_HEADER = ("th-lot", "th-wf")
+_STICKY_BODY = ("td-week", "td-lot", "td-wf")
 
 
 def render_report_html(
@@ -233,8 +271,9 @@ def render_report_html(
 <thead>"""
 
     html += f'\n<tr><th class="th-week" rowspan="2">{period_label}</th>'
-    for label in metadata_columns:
-        html += f'<th class="th-meta" rowspan="2">{label}</th>'
+    for index, label in enumerate(metadata_columns):
+        sticky = f" {_STICKY_HEADER[index]}" if index < len(_STICKY_HEADER) else ""
+        html += f'<th class="th-meta{sticky}" rowspan="2">{label}</th>'
     for group in groups:
         style = f' style="{group.style}"' if group.style else ""
         html += (
@@ -258,16 +297,18 @@ def render_report_html(
 
     for row in rows:
         html += "<tr>"
-        for cell in row.metadata:
-            html += f"<td{_attrs(cell)}>{cell.text}</td>"
+        for index, cell in enumerate(row.metadata):
+            extra = _STICKY_BODY[index] if index < len(_STICKY_BODY) else ""
+            html += f"<td{_attrs(cell, extra)}>{cell.text}</td>"
         for cell in row.values:
             html += f"<td{_attrs(cell)}>{cell.text}</td>"
         html += "</tr>\n"
 
     if delta_row is not None:
         html += '<tr class="delta">'
-        for cell in delta_row:
-            html += f"<td{_attrs(cell)}>{cell.text}</td>"
+        for index, cell in enumerate(delta_row):
+            extra = _STICKY_BODY[index] if index < len(_STICKY_BODY) else ""
+            html += f"<td{_attrs(cell, extra)}>{cell.text}</td>"
         html += "</tr>\n"
 
     html += """</tbody></table>

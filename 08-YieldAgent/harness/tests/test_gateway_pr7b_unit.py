@@ -550,6 +550,44 @@ def test_history_uses_same_verified_artifact_text_as_live_completion():
         assert '분석 코드' not in history_text
 
 
+def test_history_and_info_restore_completed_run_usage_and_duration():
+    services = MemoryServices()
+    with client_for(services, 'authority') as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        answer = 'verified answer'
+        services.runs.append({
+            'principal_id': 'alice', 'session_id': sid, 'run_id': 'run-usage',
+            'created_at': 1, 'query': 'summarize yield', 'active': False,
+            'status': 'completed', 'answer_text': answer,
+            'native_usage': {'input_tokens': 98714, 'output_tokens': 6599,
+                             'total_tokens': 105313, 'api_calls': 6},
+            'usage': {'active_seconds': 46.057},
+            'observations': [
+                {'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'},
+                 'validated_arguments': candidate_digest(answer)},
+            ],
+        })
+        resumed = call(ws, 'session.resume', {'session_id': sid})['result']
+        assistant = resumed['messages'][-1]
+        assert assistant['text'] == answer
+        assert assistant['usage'] == {'input': 98714, 'output': 6599, 'total': 105313, 'calls': 6}
+        assert assistant['duration_s'] == 46
+        assert resumed['info']['usage'] == assistant['usage']
+        info = call(ws, 'session.info', {'session_id': sid})['result']
+        assert info['usage'] == assistant['usage']
+
+
+def test_session_info_omits_usage_when_counters_are_incomplete():
+    services = MemoryServices()
+    with client_for(services, 'authority') as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        services.runs.append({'principal_id': 'alice', 'session_id': sid, 'query': 'hello',
+            'active': False, 'status': 'completed'})
+        response = call(ws, 'session.info', {'session_id': sid})
+        assert 'result' in response
+        assert 'usage' not in response['result']
+
+
 def test_history_keeps_native_tools_when_final_answer_is_unverified():
     services = MemoryServices()
     with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:

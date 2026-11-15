@@ -756,6 +756,10 @@ export interface SessionMessage {
   row_id?: number
   id?: number
   text?: unknown
+  /** Whole-turn seconds from a completed run, when the history backend supplies it. */
+  duration_s?: number
+  /** Observed token counters for this completed assistant turn, when supplied. */
+  usage?: Partial<UsageStats>
   timestamp?: number
   tool_call_id?: null | string
   tool_calls?: unknown

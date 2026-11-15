@@ -493,5 +493,6 @@
   "src/hermes/themes/user-themes.test.ts",
   "src/platform/pr9-entrypoints.test.tsx",
   "src/platform/pr9-render-boundaries.test.tsx",
-  "src/platform/pr9-ui-boundaries.test.tsx"
+  "src/platform/pr9-ui-boundaries.test.tsx",
+  "src/hermes/lib/chat-messages/hydration-duration.test.ts"
 ]
