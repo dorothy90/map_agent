@@ -79,10 +79,10 @@ th {
 }
 th.th-week {
   background: #fafafa !important;
-  min-width: 70px;
   text-align: center;
   color: rgba(0, 0, 0, 0.85);
   font-size: 11px;
+  white-space: nowrap;
 }
 th.th-meta {
   background: #fafafa !important;
@@ -177,28 +177,37 @@ tr:hover td:not(.td-week):not(.td-lot):not(.td-wf) {
   background: #fafafa !important;
 }
 
-/* Freeze WEEK/GROUP, LOT, and WF while the parameter columns scroll. */
+/* Freeze WEEK/GROUP, LOT, and WF while the parameter columns scroll.
+   Column widths follow content (e.g. 2026-49, 2026-11, 2026-11-15);
+   JS copies the measured widths into --sticky-*-width for left offsets. */
+.table-container {
+  --sticky-week-width: 96px;
+  --sticky-lot-width: 36px;
+}
 th.th-week, td.td-week {
   position: sticky;
   left: 0;
-  width: 70px;
-  min-width: 70px;
+  width: max-content;
+  min-width: max-content;
+  white-space: nowrap;
   z-index: 3;
   background: #fafafa !important;
 }
 th.th-lot, td.td-lot {
   position: sticky;
-  left: 70px;
-  width: 36px;
-  min-width: 36px;
+  left: var(--sticky-week-width);
+  width: max-content;
+  min-width: max-content;
+  white-space: nowrap;
   z-index: 3;
   background: #fafafa !important;
 }
 th.th-wf, td.td-wf {
   position: sticky;
-  left: 106px;
-  width: 36px;
-  min-width: 36px;
+  left: calc(var(--sticky-week-width) + var(--sticky-lot-width));
+  width: max-content;
+  min-width: max-content;
+  white-space: nowrap;
   z-index: 3;
   background: #fafafa !important;
   box-shadow: 2px 0 4px rgba(0, 0, 0, 0.06);
@@ -318,12 +327,27 @@ function sendHeight() {
   var height = Math.ceil(document.body.getBoundingClientRect().height);
   window.parent.postMessage({ type: 'yield-table-height', height: height }, '*');
 }
-window.addEventListener('load', function() {
+function syncStickyOffsets() {
+  var container = document.querySelector('.table-container');
+  var week = document.querySelector('th.th-week, td.td-week');
+  var lot = document.querySelector('th.th-lot, td.td-lot');
+  if (container && week) {
+    container.style.setProperty('--sticky-week-width', Math.ceil(week.getBoundingClientRect().width) + 'px');
+  }
+  if (container && lot) {
+    container.style.setProperty('--sticky-lot-width', Math.ceil(lot.getBoundingClientRect().width) + 'px');
+  }
   sendHeight();
-});
-window.addEventListener('resize', sendHeight);
+}
+window.addEventListener('load', syncStickyOffsets);
+window.addEventListener('resize', syncStickyOffsets);
 if (window.ResizeObserver) {
-  new ResizeObserver(sendHeight).observe(document.body);
+  new ResizeObserver(syncStickyOffsets).observe(document.body);
+  var table = document.querySelector('table');
+  if (table) new ResizeObserver(syncStickyOffsets).observe(table);
+}
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(syncStickyOffsets);
 }
 </script>
 </body></html>"""
