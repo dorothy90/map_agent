@@ -50,14 +50,14 @@ def test_invalid_period(period):
     {'comparison': {'current': '2026-46', 'baseline': '2026-45'}},
 ])
 def test_period_forbids_pass_in_sources(extra):
-    with pytest.raises(ValidationError, match='period.*forbids'):
+    with pytest.raises(ValidationError, match='Extra inputs|period.*forbids'):
         YieldTableInput(title='weekly', lot_cd='4SS', period=PERIOD, **extra)
 
 
 @pytest.mark.parametrize('lot', [None, '', ' '])
 def test_period_requires_product_code(lot):
     with pytest.raises(ValidationError, match='lot_cd'):
-        YieldTableInput(title='weekly', lot_cd=lot, product_label='4SS', period=PERIOD)
+        YieldTableInput(title='weekly', lot_cd=lot, period=PERIOD)
 
 
 @pytest.fixture
@@ -69,6 +69,8 @@ def weekly_db(monkeypatch):
             self.calls.append((sql, binds))
             if 'MAX(' in sql:
                 self.rows = [(self.base,)]
+            elif '/* report_lot_' in sql:
+                self.rows = []
             elif 'AVG(' in sql:
                 self.rows = self.yields
             elif 'COUNT(' in sql:
@@ -113,7 +115,7 @@ def test_period_distinct_counts_evidence_and_sql(weekly_db):
     assert result.source_result_ids == []
     assert [t.table_id for t in result.tables] == [
         'report_totals', 'weekly_counts', 'yield_long', 'gms_weekly',
-        'displayed_yield_table', 'column_metadata']
+        'displayed_yield_table', 'column_metadata', 'lot_population']
     total = result.tables[0].rows[0]
     assert total['period_lot_count'] == 40
     assert total['period_wafer_count'] == 900
@@ -127,13 +129,13 @@ def test_period_distinct_counts_evidence_and_sql(weekly_db):
     assert 'Δ = latest week − previous week' in result.summary
     assert connection.opened == 1 and connection.closed and cursor.closed
     sqls = [sql for sql, _ in cursor.calls]
-    assert len(sqls) == 5
+    assert len(sqls) == 10
     assert all('DF_DIE_TO_WF_YLD' not in sql for sql in sqls)
-    data_sql = next(sql for sql in sqls if 'AVG(' in sql)
+    data_sql = next(sql for sql in sqls if 'AVG(' in sql and '/* report_lot_' not in sql)
     assert 'DF_WF_ALL_PRB_V2' in data_sql and 'DF_ALL_PARA_PRB' in data_sql
     assert "TRIM(m.YIELD_TABLE)='o'" in data_sql
     assert "m.PROC_GBN_CD||' TEST'" in data_sql and 'm.LOT_CD' in data_sql
-    count_queries = [(s, b) for s, b in cursor.calls if 'COUNT(' in s]
+    count_queries = [(s, b) for s, b in cursor.calls if 'COUNT(' in s and '/* report_lot_' not in s]
     assert len(count_queries) == 2
     for sql, binds in count_queries:
         assert 'COUNT(DISTINCT LOT_ID)' in sql and 'COUNT(DISTINCT GORUPKEY)' in sql
@@ -198,7 +200,7 @@ def test_empty_product_still_returns_all_evidence_tables(weekly_db):
     cursor.metadata, cursor.yields, cursor.counts, cursor.gms, cursor.totals = [], [], [], [], (0, 0)
     result = run_report()
     assert result.status == 'empty'
-    assert len(result.tables) == 6
+    assert len(result.tables) == 7
     assert result.tables[-1].rows == []
     assert result.scope['row_count'] == 4
     assert result.artifacts

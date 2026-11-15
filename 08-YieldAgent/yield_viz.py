@@ -513,6 +513,7 @@ def _build_html_table(
     comparison: tuple[int, int] | None = None,
     parameter_columns: dict[str, list[str]] | None = None,
     displayed_rows: list[dict] | None = None,
+    unavailable_delta_keys: frozenset[str] = frozenset(),
 ) -> str:
     """n기간치 데이터를 동적 HTML 테이블로 변환 (pt1h + pt1c + gms 3섹션)"""
     cols = (
@@ -775,6 +776,8 @@ def _build_html_table(
                 separator = "td-pt1c-sep" if pt1c_cols and key == f"pt1c_{pt1c_cols[0]}" else ""
                 if key == f"gms_{gms_cols[0]}":
                     separator = "td-gms-sep"
+                if key in unavailable_delta_keys:
+                    text = "-"
                 delta_row.append(ReportCell(text, separator))
 
     if displayed_rows is not None:

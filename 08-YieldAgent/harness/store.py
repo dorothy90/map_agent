@@ -319,7 +319,8 @@ class HarnessStore:
         query = {"_id": run_id, "status": "running", "active": True}
         # PB:663: control.cancel sets cancelling BEFORE native cleanup. Only
         # pending teardown may still publish; execution/epoch fencing is unchanged.
-        if epoch is not None and kind in ('clarify.settled', 'approval.settled', 'approval.cancelled'):
+        if epoch is not None and (kind in ('clarify.settled', 'approval.settled', 'approval.cancelled')
+                or (kind == 'tool_finished' and payload.get('name') == 'clarify')):
             query['status'] = {'$in': ['running', 'cancelling']}
         if event_key:
             query["events.event_key"] = {"$ne": event_key}

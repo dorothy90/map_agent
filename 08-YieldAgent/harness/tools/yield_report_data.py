@@ -2,7 +2,7 @@
 import re
 from calendar import monthrange
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Annotated, Literal
 
@@ -183,6 +183,9 @@ class PeriodReportData:
     period_lot_count: int
     period_wafer_count: int
     gms: dict[str, list[dict]]
+    lot_population: list[dict] = field(default_factory=list)
+    lot_parameter_stats: list[dict] = field(default_factory=list)
+    lot_wafer_members: list[dict] = field(default_factory=list)
 
 
 def _bucket_sql(grain, prefix=''):
@@ -217,6 +220,9 @@ def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
             "SELECT COUNT(DISTINCT LOT_ID), COUNT(DISTINCT GORUPKEY) "
             "FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' AND " + total_filter, binds)
         lot_count, wafer_count = cursor.fetchall()[0]
+        # Capture complete additive statistics and distinct identities while the
+        # existing report connection is open. No later group query is necessary.
+        population, stats, members = _capture_lots(cursor, total_filter, binds)
         yield_long, all_counts, all_gms = [], {}, {}
         for grain, (key, unit) in GRAINS.items():
             if key not in window:
@@ -226,6 +232,11 @@ def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
             grain_binds = {'lot': lot_cd, 'win_start': window['start'], 'win_end': window['end'],
                            **{f'b{i}': value for i, value in enumerate(buckets)}}
             bucket_sql = _bucket_sql(grain)
+            _, bucket_stats, bucket_members = _capture_lots(
+                cursor, f"{date_filter} AND {bucket_sql} IN ({placeholders})",
+                grain_binds, grain=grain)
+            stats.extend(bucket_stats)
+            members.extend(bucket_members)
             # A single source alias leaves YEAR/MONTH/DAY unambiguous in this predicate.
             cursor.execute(
                 f"SELECT {_bucket_sql(grain, 'y.')}, y.PROCESS, y.PARAM_NM, AVG(y.VALUE) "
@@ -259,4 +270,65 @@ def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
                                       wafer_count=counts.get(b, (None, None))[1],
                                       has_yield_data=b in yield_buckets, has_gms=b in gms_buckets) for b in buckets]
             all_gms[grain] = gms
-    return PeriodReportData(lot_cd, window, metadata, yield_long, all_counts, lot_count, wafer_count, all_gms)
+    return PeriodReportData(lot_cd, window, metadata, yield_long, all_counts, lot_count, wafer_count, all_gms, population, stats, members)
+
+
+def _capture_lots(cursor, predicate, binds, *, grain='all'):
+    bucket = "''" if grain == 'all' else _bucket_sql(grain)
+    population = []
+    if grain == 'all':
+        cursor.execute(
+            "/* report_lot_population */ SELECT LOT_ID, COUNT(DISTINCT GORUPKEY), "
+            "AVG(CASE WHEN PARAM_NM='PT1H' THEN VALUE END), "
+            "COUNT(CASE WHEN PARAM_NM='PT1H' THEN VALUE END) "
+            "FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' AND "
+            + predicate + " GROUP BY LOT_ID ORDER BY LOT_ID", binds)
+        population = [dict(lot_id=row[0], wafer_count=int(row[1]),
+                           pt1h_mean=float(row[2]) if row[2] is not None else None,
+                           pt1h_value_count=int(row[3])) for row in cursor.fetchall() if row[0] is not None]
+    cursor.execute(
+        f"/* report_lot_stats */ SELECT {bucket}, y.LOT_ID, y.PROCESS, y.PARAM_NM, SUM(y.VALUE), COUNT(y.VALUE) "
+        "FROM DF_WF_ALL_PRB_V2 y WHERE y.LOT_CD=:lot "
+        "AND y.PROCESS IN ('PT1H TEST','PT1C TEST') AND " + predicate +
+        " AND ((y.PROCESS='PT1H TEST' AND y.PARAM_NM='PT1H') OR EXISTS "
+        "(SELECT 1 FROM DF_ALL_PARA_PRB m WHERE m.LOT_CD=y.LOT_CD "
+        "AND m.PROC_GBN_CD||' TEST'=y.PROCESS AND m.PARAM_NM=y.PARAM_NM "
+        "AND TRIM(m.YIELD_TABLE)='o')) "
+        + ("GROUP BY " if grain == 'all' else f"GROUP BY {bucket}, ")
+        + "y.LOT_ID, y.PROCESS, y.PARAM_NM", binds)
+    stats = [dict(grain=grain, bucket=row[0] or '', lot_id=row[1], process=row[2],
+                  param=row[3], value_sum=float(row[4]) if row[4] is not None else 0.0,
+                  value_count=int(row[5])) for row in cursor.fetchall()]
+    cursor.execute(
+        f"/* report_lot_members */ SELECT DISTINCT {bucket}, LOT_ID, GORUPKEY "
+        "FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' AND "
+        + predicate, binds)
+    members = [dict(grain=grain, bucket=row[0] or '', lot_id=row[1], gorupkey=row[2])
+               for row in cursor.fetchall()]
+    return population, stats, members
+
+
+def aggregate_groups(data, membership, group_ids, *, grain='all', bucket=''):
+    """Aggregate solely from captured sufficient statistics and wafer identities."""
+    rows, counts = [], []
+    displayed = {(str(row[0]) + ' TEST', row[1]) for row in data.metadata
+                 if str(row[4]).strip() == 'o'}
+    for group in group_ids:
+        lots = {row['lot_id'] for row in membership if row['group_id'] == group}
+        selected = [row for row in data.lot_parameter_stats
+                    if row['grain'] == grain and row['bucket'] == bucket and row['lot_id'] in lots
+                    and (row['process'], row['param']) in displayed]
+        identities = [row for row in data.lot_wafer_members
+                      if row['grain'] == grain and row['bucket'] == bucket and row['lot_id'] in lots]
+        totals = {}
+        for row in selected:
+            key = (row['process'], row['param'])
+            value_sum, count = totals.get(key, (0, 0))
+            totals[key] = (value_sum + (row['value_sum'] or 0), count + row['value_count'])
+        for (process, param), (value_sum, count) in sorted(totals.items()):
+            rows.append(dict(period=group, process=process, param=param, value=value_sum / count if count else None))
+        counts.append(dict(period=group,
+                           lot_count=len({r['lot_id'] for r in identities if r['lot_id'] is not None}),
+                           wf_count=len({r['gorupkey'] for r in identities if r['gorupkey'] is not None}),
+                           has_yield_data=bool(totals)))
+    return dict(rows=rows, counts=counts)

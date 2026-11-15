@@ -1,29 +1,26 @@
-import asyncio
 import importlib
-import threading
 
 import pytest
+from pydantic import ValidationError
 
 from harness.tools import table_artifact as report
+from harness.tests.test_report_only_contract import fake_period_report
 
 
 def test_metadata_columns_values_and_evidence(monkeypatch):
-    main_thread = threading.get_ident()
     def metadata(lot):
         assert lot == '4SS'
-        assert threading.get_ident() != main_thread
         return [('PT1H', 'VTH(V)', 1, 'P', 'o'), ('PT1H', 'DDA(d)', 2, 'P', 'o'), ('PT1H', 'Missing', 3, 'P', 'o'), ('PT1C', 'PT1C', 26, 'P', 'o')]
     monkeypatch.setattr(report, '_fetch_parameter_metadata', metadata, raising=False)
     periods = ['selected', 'rest']
-    args = report.YieldTableInput(title='report', product_label=' 4SS ',
+    args = report._ReportInput(title='report', product_label=' 4SS ',
         rows=[{'period': p, 'process': 'PT1H TEST', 'param': param, 'value': value}
               for p, param, value in [(periods[0], 'VTH(V)', .7469), (periods[1], 'VTH(V)', .7569),
                                       (periods[0], 'DDA(d)', .0107), (periods[0], 'DDA(D)', .99),
                                       (periods[0], 'EXCLUDED', .99)]],
         periods=[{'period': p, 'lot_count': 2, 'wf_count': 3, 'gms': {'cum0': 86.51}} for p in periods],
-        comparison={'current': periods[1], 'baseline': periods[0]},
-        parameter_formats=[{'process': 'pt1h', 'param': 'VTH(V)', 'kind': 'number', 'decimals': 5}])
-    result = asyncio.run(report.render_yield_table(args, None))
+        comparison={'current': periods[1], 'baseline': periods[0]})
+    result = report._render_report(args, '4SS', metadata('4SS'), [])
     assert result.status is None
     assert result.scope['parameter_count'] == 4
     assert result.scope['displayed_columns'] == ['lot', 'wf', 'PT1H TEST/VTH(V)', 'PT1H TEST/DDA(d)',
@@ -76,7 +73,7 @@ def test_metadata_columns_values_and_evidence(monkeypatch):
 @pytest.mark.parametrize('metadata', [[], [('PT1H', 'excluded', 1, 'P', 'x')]])
 def test_empty_metadata_fails_closed(monkeypatch, metadata):
     monkeypatch.setattr(report, '_fetch_parameter_metadata', lambda lot: metadata, raising=False)
-    result = asyncio.run(report.render_yield_table(report.YieldTableInput(title='report'), None))
+    result = report._render_report(report._ReportInput(title='report'), '4SS', metadata, [])
     assert result.status == 'error'
     assert "no YIELD_TABLE='o' parameters" in result.summary
     assert not result.artifacts and not result.tables
@@ -143,11 +140,11 @@ def test_product_metadata_order_and_x_exclusion_with_fake_connection(monkeypatch
         def cursor(self): return Cursor()
         def close(self): pass
     monkeypatch.setattr(query, '_connection', Connection)
-    args = report.YieldTableInput(title='report', lot_cd=lot, product_label='Display label', rows=[
+    args = report._ReportInput(title='report', product_label='Display label', rows=[
         {'period': 'selected', 'process': proc, 'param': param, 'value': .5}
         for product, proc, flag, param, seq in metadata if product == lot
     ])
-    result = asyncio.run(report.render_yield_table(args, None))
+    result = report._render_report(args, lot, report._fetch_parameter_metadata(lot), [])
     assert result.scope['displayed_columns'][2:-5] == expected
     assert result.scope['parameter_count'] == len(expected)
     assert 'EXCLUDED' not in result.artifacts[0]['data']
@@ -160,3 +157,33 @@ def test_product_metadata_order_and_x_exclusion_with_fake_connection(monkeypatch
     assert sum(row['displayed'] for row in metadata_table.rows) == len(expected)
     assert all(row['displayed'] == (row['YIELD_TABLE'].strip() == 'o') for row in metadata_table.rows)
     assert result.scope['selection_counts'] == {'o': len(expected), 'x': 1}
+
+
+def test_title_only_public_report_fails_closed_before_data_access(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("Invalid public scope must not access metadata or DB")
+
+    query = importlib.import_module('harness.tools.query_db')
+    monkeypatch.setattr(query, '_connection', forbidden)
+    monkeypatch.setattr(report, 'fetch_period_report', forbidden)
+    monkeypatch.setattr(report, '_fetch_parameter_metadata', forbidden)
+    with pytest.raises(ValidationError, match='lot_cd.*period.*report_scope_id'):
+        report.YieldTableInput(title='report')
+
+
+def test_public_period_data_fetch_runs_off_event_loop(fake_period_report, monkeypatch):
+    import asyncio
+    import threading
+
+    main_thread = threading.get_ident()
+    fake_fetch = report.fetch_period_report
+
+    def fetch(lot_cd, period):
+        assert threading.get_ident() != main_thread
+        return fake_fetch(lot_cd, period)
+
+    monkeypatch.setattr(report, 'fetch_period_report', fetch)
+    result = asyncio.run(report.render_yield_table(report.YieldTableInput(
+        lot_cd='4SS', period={'kind': 'weeks', 'weeks': ['2026-45']},
+    ), None))
+    assert result.status == 'success'

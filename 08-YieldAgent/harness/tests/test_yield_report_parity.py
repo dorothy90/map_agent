@@ -1,5 +1,4 @@
 from harness.tests.report_table_fakes import fake_report_metadata, report_data, report_rows, report_html, COLUMNS
-import asyncio
 import hashlib
 import importlib
 import re
@@ -111,7 +110,7 @@ def test_report_builder_uses_original_units_one_decimal_and_integer_counts():
 
 
 def _long_report_args(module):
-    return module.YieldTableInput(
+    return module._ReportInput(
         title="4SA group report", period_label="WEEK",
         comparison={"current": "2026-W44", "baseline": "2026-W43"},
         product_label="4SA",
@@ -203,7 +202,7 @@ def test_report_matches_builder_with_metadata_columns_and_formats():
                     "param": param, "value": row[key],
                 })
 
-    args = module.YieldTableInput(
+    args = module._ReportInput(
         title="report", product_label="4SA", period_label="WEEK",
         comparison={"current": "2026-W44", "baseline": "2026-W43"},
         rows=long_rows, periods=periods,
@@ -229,7 +228,7 @@ def test_report_rejects_duplicate_group_keys(field):
     payload[field] = payload[field] * 2
 
     with pytest.raises(ValidationError, match="duplicate"):
-        module.YieldTableInput(**payload)
+        module._ReportInput(**payload)
 
 
 @pytest.mark.parametrize(
@@ -246,14 +245,14 @@ def test_report_rejects_custom_presentation(extra):
     payload = {"title": "report", "rows": [], **extra}
 
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        module.YieldTableInput(**payload)
+        module._ReportInput(**payload)
 
 
 def test_report_escapes_by_rejecting_unstructured_values():
     module = importlib.import_module("harness.tools.table_artifact")
 
     with pytest.raises(ValidationError):
-        module.YieldTableInput(
+        module._ReportInput(
             title="report",
             rows=[{
                 "period": "2026-W44", "process": "pt1h", "param": "VTH",
@@ -261,7 +260,7 @@ def test_report_escapes_by_rejecting_unstructured_values():
             }],
         )
 
-    args = module.YieldTableInput(
+    args = module._ReportInput(
         title="<script>title</script>",
         product_label="<img src=x onerror=alert(1)>", rows=[],
     )
@@ -269,14 +268,11 @@ def test_report_escapes_by_rejecting_unstructured_values():
     assert "<img src=x onerror=alert(1)>" not in report_html(args)
 
 
-def test_registered_report_counts_rendered_periods_and_columns():
+def test_private_report_counts_rendered_periods_and_columns():
     module = importlib.import_module("harness.tools.table_artifact")
-    from harness.tools.registry import domain_registry
 
     args = _long_report_args(module)
-    result = asyncio.run(domain_registry().invoke(
-        "render_yield_table", args.model_dump(mode="json", exclude_unset=True), None,
-    ))
+    result = module._render_report(args, "4SA", module._fetch_parameter_metadata("4SA"), [])
     rendered = report_data(args)
 
     assert "TRIM(YIELD_TABLE)='o' shown" in result.summary

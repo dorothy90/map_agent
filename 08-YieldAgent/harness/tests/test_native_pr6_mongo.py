@@ -101,13 +101,18 @@ def test_host_ipc_clarify_reconnect_isolation_privacy(monkeypatch, tmp_path):
                 assert worker.replies[0]['result'] == {'answers': {'q': 'PRIVATE_ANSWER'}, 'outcome': 'submitted'}
                 assert worker.startup['native_prompts'] is True
                 names = [e['type'] for e in await events(context)]
-                assert names == ['clarify.request', 'yield.input_required', 'clarify.settled']
+                assert names == ['clarify.request', 'yield.input_required', 'tool_finished', 'clarify.settled']
                 payload = (await events(context))[1]['payload']
                 assert payload['interrupt_id'] == payload['request_id'] == prompts[0]['prompt_id']
                 assert payload['generation'] == 3 and payload['goal_revision'] == 7
                 assert payload['fields'] == [] and payload['response_method'] == 'clarify.respond'
                 assert 'pending_input' not in await row(context)
-                assert 'PRIVATE_ANSWER' not in json.dumps(await row(context), default=str)
+                assert 'PRIVATE_ANSWER' not in json.dumps((await row(context)).get('native_messages'))
+                completed = [e['payload'] for e in await events(context) if e['type'] == 'tool_finished']
+                assert len(completed) == 1
+                assert completed[0]['tool_id'] == prompts[0]['prompt_id']
+                assert completed[0]['result']['outcome'] == 'submitted'
+                assert completed[0]['result']['responses'][0]['user_response'] == 'PRIVATE_ANSWER'
                 assert 'PRIVATE_ANSWER' not in json.dumps(await reconnected.list_audit())
                 assert await context.store.db.pending_prompts.count_documents({'status': 'pending'}) == 0
             finally:
@@ -123,11 +128,20 @@ def test_host_short_timeout(monkeypatch, tmp_path):
             worker = FakeWorker()
             native = bind_worker(monkeypatch, tmp_path, worker)
             await asyncio.wait_for(native.run_native(context, ToolRegistry()), 5)
-            assert worker.replies[0]['result'] == {'answers': {}, 'outcome': 'timed_out'}
+            assert worker.replies[0]['result'] == {
+                'answers': {}, 'outcome': 'timed_out',
+                'notice': '사용자가 답하지 않았습니다. 백분위수나 고정 임계값을 포함한 기준을 지어내지 말고, 사용자 기준이 여전히 필요하다고 알린 뒤 해당 턴을 종료하세요.',
+            }
             pending = await context.store.db.pending_prompts.find_one({})
             assert pending['timeout_s'] == pytest.approx(.02)
             assert pending['status'] == 'timed_out'
-            assert [e['type'] for e in await events(context)] == ['clarify.request', 'yield.input_required', 'clarify.settled']
+            assert pending['result'] == {'answers': {}, 'outcome': 'timed_out'}
+            completed = [e['payload'] for e in await events(context) if e['type'] == 'tool_finished']
+            assert len(completed) == 1
+            assert completed[0]['result']['outcome'] == 'timed_out'
+            assert completed[0]['result']['notice'] == worker.replies[0]['result']['notice']
+            assert completed[0]['result']['responses'][0]['status'] == 'unanswered'
+            assert [e['type'] for e in await events(context)] == ['clarify.request', 'yield.input_required', 'tool_finished', 'clarify.settled']
     asyncio.run(scenario())
 
 
@@ -152,6 +166,9 @@ def test_host_teardown_cancels_pending(monkeypatch, tmp_path, cause):
                 assert pending['status'] == 'cancelled'
                 assert 'pending_input' not in await row(context)
                 assert [e['type'] for e in await events(context)].count('clarify.settled') == 1
+                completed = [e['payload'] for e in await events(context) if e['type'] == 'tool_finished']
+                assert len(completed) == 1
+                assert completed[0]['result']['outcome'] == 'cancelled'
                 assert worker.replies[0]['result'] == {'answers': {}, 'outcome': 'cancelled'}
             finally:
                 task.cancel()
@@ -316,7 +333,11 @@ def test_concurrent_questions_partial_response_and_cleanup():
                 await eventual(lambda: row(context), lambda r: len(r.get('pending_input', {})) == 1)
                 await other.respond('s', 3, cards[1]['prompt_id'], {'answer': ''}, 'clarify')
                 assert await asyncio.wait_for(task, 2) == {'answers': {'one': 'PRIVATE_LOCKED', 'two': None}, 'outcome': 'submitted'}
-                assert 'PRIVATE_LOCKED' not in json.dumps(await row(context), default=str)
+                assert 'PRIVATE_LOCKED' not in json.dumps((await row(context)).get('native_messages'))
+                completed = [e['payload'] for e in await events(context) if e['type'] == 'tool_finished']
+                assert {e['tool_id'] for e in completed} == {c['prompt_id'] for c in cards}
+                assert len(completed) == 2
+                assert [e['result']['responses'][0]['status'] for e in completed] == ['answered', 'skipped']
                 assert [e['type'] for e in await events(context)].count('clarify.settled') == 2
             finally:
                 task.cancel()

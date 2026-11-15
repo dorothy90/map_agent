@@ -7,7 +7,7 @@ import hashlib
 import json
 import uuid
 
-from .events import verified_answer_with_artifacts
+from .events import observed_run_usage, verified_answer_with_artifacts
 from .execution import RpcError, string
 
 
@@ -106,6 +106,21 @@ class SessionRPC:
             previous_native = None
             for run in runs:
                 messages.append({'role': 'user', 'text': run['query']})
+                # Clarify is intentionally absent from native_messages. Its durable
+                # completion is the transcript evidence, scoped to this run/turn and
+                # placed before later host tools so reopen matches the live card order.
+                clarify_ids = set()
+                for event in run.get('events', []):
+                    payload = event.get('payload', {})
+                    if event.get('type') != 'tool_finished' or payload.get('name') != 'clarify':
+                        continue
+                    tool_id = payload.get('tool_id') or payload.get('invocation_id')
+                    if not tool_id or tool_id in clarify_ids or 'result' not in payload:
+                        continue
+                    clarify_ids.add(tool_id)
+                    messages.append({'role': 'tool', 'name': 'clarify', 'tool_call_id': tool_id,
+                                     'args': payload.get('args', {}),
+                                     'content': json.dumps(payload['result'], ensure_ascii=False)})
                 native = run.get('native_messages')
                 if isinstance(native, list):
                     if previous_native is not None and native[:len(previous_native)] == previous_native:
@@ -297,9 +312,7 @@ class SessionRPC:
         # H/methods_session.py:1448; contracts/common.py:28-57. The host saves
         # actual native counters in control.py:193-200, not reserved budgets.
         lineage = await self.db.get_compression_lineage(sid) or [sid]
-        counters = {'input': 'input_tokens', 'output': 'output_tokens',
-                    'total': 'total_tokens', 'calls': 'api_calls'}
-        totals = dict.fromkeys(counters, 0)
+        totals = dict.fromkeys(('input', 'output', 'total', 'calls'), 0)
         for ancestor in lineage:
             runs = await self.execution.store.runs.find({
                 'principal_id': self.execution.principal_id, 'session_id': ancestor
@@ -307,12 +320,11 @@ class SessionRPC:
             if not runs and await self.db.get_messages(ancestor, include_compacted=True):
                 raise NotConnected()  # imported history has no host usage evidence
             for run in runs:
-                usage = run.get('native_usage') or {}
-                if run.get('active') or any(type(usage.get(k)) is not int or usage[k] < 0
-                                            for k in counters.values()):
+                usage = observed_run_usage(run)
+                if usage is None:
                     raise NotConnected()
-                for field, key in counters.items():
-                    totals[field] += usage[key]
+                for field, value in usage.items():
+                    totals[field] += value
         return totals
 
     async def create(self, params):

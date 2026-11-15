@@ -242,8 +242,13 @@ def test_authority_pending_resume_and_generation_fenced_responses():
                 assert result(ws, kind + '.respond', params, rid=index)['status'] == 'resolved'
             replayed = result(ws, 'session.events.since', {'session_id': sid,
                 'replay_epoch': snap['replay_epoch']}, rid=20)
-            assert 'PRIVATE-ANSWER' not in json.dumps(replayed)
-            assert {'clarify.request', 'approval.request', 'clarify.settled', 'approval.settled'} <= {e['type'] for e in replayed['events']}
+            completed = [e['payload'] for e in replayed['events'] if e['type'] == 'tool.complete']
+            assert len(completed) == 1
+            assert completed[0]['name'] == 'clarify'
+            assert completed[0]['result']['responses'][0]['user_response'] == 'PRIVATE-ANSWER'
+            settled = [e for e in replayed['events'] if e['type'] != 'tool.complete']
+            assert 'PRIVATE-ANSWER' not in json.dumps(settled)
+            assert {'clarify.request', 'approval.request', 'clarify.settled', 'approval.settled', 'tool.complete'} <= {e['type'] for e in replayed['events']}
 
 
 def test_legacy_wire_response_cross_connection_and_disconnect_cleanup():

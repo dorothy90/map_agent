@@ -1,15 +1,15 @@
 import asyncio
 import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, StringConstraints, model_validator
 
 from ..types import Contract, ResultTable
 from .registry import ToolResult, ToolSpec
 from .yield_report_data import (
     ReportPeriod, PeriodReportData, GRAINS, fetch_parameter_metadata as _fetch_parameter_metadata,
-    fetch_period_report,
+    fetch_period_report, aggregate_groups,
 )
 from yield_viz import GMS_COLUMNS, _build_html_table
 
@@ -42,162 +42,110 @@ class ReportComparison(Contract):
     baseline: str = Field(min_length=1)
 
 
-class ReportParameterFormat(Contract):
-    process: str
-    param: str
-    kind: Literal["number", "ratio", "percent"] = "number"
-    decimals: int = Field(default=2, ge=0, le=8)
-
-
-class YieldLongColumns(Contract):
-    period: str = "period"
-    process: str = "process"
-    param: str = "param"
-    value: str = "value"
-
-
-class YieldCountsColumns(Contract):
-    period: str = "period"
-    lot: str = "lot_count"
-    wf: str = "wf_count"
-
-
-class YieldGmsColumns(Contract):
-    period: str = "period"
-    cum0: str = "cum0"
-    cum2: str = "cum2"
-    fab: str = "fab"
-    prb: str = "prb"
-    pnt: str = "pnt"
-
-
-class YieldTableInput(Contract):
-    title: str = Field(min_length=1, max_length=200)
-    product_label: str | None = Field(
-        default=None,
-        description="Optional product/lot label passed to the legacy yield report builder.",
-    )
-    lot_cd: str | None = Field(default=None, description="Product code required for period queries; group metadata defaults to stripped product_label.")
-    rows: list[YieldReportRow] = Field(
-        default_factory=list,
-        description=(
-            "Inline report LONG rows shaped as "
-            "{period, process, param, value}; long_result_id is the saved-result alternative."
-        )
-    )
-    periods: list[YieldReportPeriod] = Field(
-        default_factory=list,
-        description=(
-            "Optional report metadata shaped as "
-            "{period, label, lot_count, wf_count, gms:{cum0,cum2,fab,prb,pnt}}. When omitted, group names and order come from first appearance in LONG rows, then counts/GMS. When supplied, it declares all groups in display order; LONG rows use matching period IDs. label optionally overrides the displayed group name."
-        ),
-    )
-    period: ReportPeriod | None = Field(
-        default=None, description="Period query: recent with exactly one count (weeks/months/days), optional grains; DB latest measurement anchors the window. Or explicit weeks/months/days lists. Requires lot_cd; forbids group rows/result IDs.",
-    )
-    period_label: str | None = Field(default=None, min_length=1)
-    comparison: ReportComparison | None = Field(
-        default=None, description="Report delta is current minus baseline using period IDs. Group reports show no delta unless this is supplied.",
-    )
-    parameter_formats: list[ReportParameterFormat] = Field(
-        default_factory=list,
-        description="Accepted for compatibility; ignored in period and group reports. Metadata parameter values always use x100, one decimal, no percent sign.",
-    )
-    long_result_id: str | None = Field(
-        default=None,
-        description="Saved query_db result containing report LONG rows.",
-    )
-    long_columns: YieldLongColumns = Field(default_factory=YieldLongColumns)
-    counts_result_id: str | None = Field(
-        default=None,
-        description="Saved query_db result containing period, LOT count, and WF count rows.",
-    )
-    counts_columns: YieldCountsColumns = Field(default_factory=YieldCountsColumns)
-    gms_result_id: str | None = Field(
-        default=None,
-        description="Saved query_db result containing period and GMS value rows.",
-    )
-    gms_columns: YieldGmsColumns = Field(default_factory=YieldGmsColumns)
+class _ReportInput(Contract):
+    """Private presentation structure; never exposed as a tool schema."""
+    title: str = "Yield report"
+    product_label: str | None = None
+    group_gms_unavailable: bool = False
+    rows: list[YieldReportRow] = Field(default_factory=list)
+    periods: list[YieldReportPeriod] = Field(default_factory=list)
+    period_label: str | None = None
+    comparison: ReportComparison | None = None
 
     @model_validator(mode="after")
-    def validate_presentation(self):
-        if self.period is not None:
-            forbidden = self.model_fields_set & {
-                "rows", "periods", "long_result_id", "counts_result_id", "gms_result_id",
-                "long_columns", "counts_columns", "gms_columns", "comparison",
-            }
-            if forbidden:
-                raise ValueError(f"period forbids group inputs: {', '.join(sorted(forbidden))}")
-            if not self.lot_cd or not self.lot_cd.strip():
-                raise ValueError("period requires lot_cd (product code)")
-            self.lot_cd = self.lot_cd.strip()
-            return self
-        for columns_field, result_id_field in (
-            ("long_columns", "long_result_id"),
-            ("counts_columns", "counts_result_id"),
-            ("gms_columns", "gms_result_id"),
-        ):
-            if (
-                columns_field in self.model_fields_set
-                and getattr(self, result_id_field) is None
-            ):
-                raise ValueError(f"{columns_field} requires {result_id_field}")
-
-        if self.rows and self.long_result_id:
-            raise ValueError("provide rows or long_result_id, not both")
+    def validate_rows(self):
         declared = {_period_key(self, p.period) for p in self.periods}
         if len(declared) != len(self.periods):
             raise ValueError("duplicate normalized report period")
-        parsed_rows = self.rows
-        if self.comparison:
-            current = _period_key(self, self.comparison.current)
-            baseline = _period_key(self, self.comparison.baseline)
-            if current == baseline:
-                raise ValueError("comparison current and baseline must differ")
-            known = declared | {_period_key(self, row.period) for row in parsed_rows}
-            if not any((self.long_result_id, self.counts_result_id, self.gms_result_id)) and not {current, baseline} <= known:
-                raise ValueError("comparison refers to an unknown period")
-        formats = set()
-        for fmt in self.parameter_formats:
-            key = (_normalize_process(fmt.process), fmt.param)
-            if key in formats:
-                raise ValueError("duplicate parameter format")
-            formats.add(key)
-        seen_rows: set[tuple[str, str, str]] = set()
-        for row in parsed_rows:
-            if row.value is not None and not math.isfinite(row.value):
-                raise ValueError("report values must be finite")
-            key = (
-                _period_key(self, row.period),
-                _normalize_process(row.process),
-                row.param,
-            )
-            if self.periods:
-                if key[0] not in declared:
-                    raise ValueError(f"undeclared group ID: {key[0]}")
-            if key in seen_rows:
-                raise ValueError("duplicate normalized report row")
-            seen_rows.add(key)
-
-        if not self.long_result_id:
-            present = {(process, param) for _, process, param in seen_rows}
-            if formats - present:
-                raise ValueError(f"parameter format refers to missing parameter: {sorted(formats - present)[0]}")
         labels = [(p.label or p.period).strip() for p in self.periods]
         if not all(labels) or len(set(labels)) != len(labels):
             raise ValueError("group labels must be unique")
-        seen_periods: set[str] = set()
+        seen = set()
+        for row in self.rows:
+            key = (_period_key(self, row.period), _normalize_process(row.process), row.param)
+            if row.value is not None and not math.isfinite(row.value):
+                raise ValueError("report values must be finite")
+            if key in seen:
+                raise ValueError("duplicate normalized report row")
+            if declared and key[0] not in declared:
+                raise ValueError(f"undeclared group ID: {key[0]}")
+            seen.add(key)
         for period in self.periods:
-            key = _period_key(self, period.period)
-            if any(value is not None and not math.isfinite(value) for value in period.gms.model_dump().values()):
+            if any(v is not None and not math.isfinite(v) for v in period.gms.model_dump().values()):
                 raise ValueError("GMS values must be finite")
-            if key in seen_periods:
-                raise ValueError("duplicate normalized report period")
-            seen_periods.add(key)
+        if self.comparison:
+            current, baseline = self.comparison.current, self.comparison.baseline
+            if current == baseline:
+                raise ValueError("comparison current and baseline must differ")
+            if not {current, baseline} <= (declared | {r.period for r in self.rows}):
+                raise ValueError("comparison refers to an unknown group")
         return self
 
 
-def _period_key(args: YieldTableInput, value: str) -> str:
+Identifier = Annotated[str, StringConstraints(strict=True, min_length=1)]
+
+
+class TableMembership(Contract):
+    kind: Literal["table"]
+    result_id: Identifier
+    table_id: Identifier | None = None
+
+
+class InlineGroup(Contract):
+    group_id: Identifier
+    lot_ids: list[Identifier]
+
+
+class InlineMembership(Contract):
+    kind: Literal["inline"]
+    groups: list[InlineGroup] = Field(min_length=1)
+
+
+class GroupLabel(Contract):
+    id: Identifier
+    label: Identifier | None = None
+
+
+class ReportGrouping(Contract):
+    membership: Annotated[TableMembership | InlineMembership, Field(discriminator="kind")]
+    groups: list[GroupLabel] | None = Field(default=None, min_length=1)
+    coverage: Literal["disjoint_subsets", "partition"] = "disjoint_subsets"
+    definition: str | None = None
+
+
+class YieldTableInput(Contract):
+    """A scope plus optional lot membership; report values are always tool-owned."""
+    lot_cd: Identifier | None = None
+    period: ReportPeriod | None = None
+    report_scope_id: Identifier | None = None
+    title: str = Field(default="수율 리포트", min_length=1, max_length=200)
+    layout: Literal["period", "group", "group_period"] | None = None
+    grouping: ReportGrouping | None = None
+    comparison: ReportComparison | None = None
+
+    @model_validator(mode="after")
+    def validate_scope(self):
+        if self.report_scope_id is not None:
+            if self.lot_cd is not None or self.period is not None:
+                raise ValueError("Choose exactly one scope: lot_cd+period OR report_scope_id")
+            if not self.report_scope_id.startswith("yield-report:"):
+                raise ValueError("report_scope_id must be a yield-report: reference returned by this tool")
+        elif self.lot_cd is None or not self.lot_cd.strip() or self.period is None:
+            raise ValueError("Provide lot_cd+period OR report_scope_id; title alone is not a scope")
+        if self.lot_cd:
+            self.lot_cd = self.lot_cd.strip()
+        if self.layout is None:
+            self.layout = "group" if self.grouping else "period"
+        if self.grouping is None and (self.layout != "period" or self.comparison is not None):
+            raise ValueError("period layout forbids group comparison; group/group_period requires grouping")
+        if self.grouping is not None and self.layout == "period":
+            raise ValueError("grouping requires layout group or group_period")
+        if self.comparison and self.comparison.current == self.comparison.baseline:
+            raise ValueError("comparison current and baseline must differ")
+        return self
+
+
+def _period_key(args: _ReportInput, value: str) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise ValueError("group ID must be a nonempty string without surrounding whitespace")
     return value
@@ -216,14 +164,14 @@ def _normalize_process(process: str) -> Literal["pt1h", "pt1c"]:
     return aliases[normalized]
 
 
-def _group_periods(args: YieldTableInput) -> list[YieldReportPeriod]:
+def _group_periods(args: _ReportInput) -> list[YieldReportPeriod]:
     return args.periods or [
         YieldReportPeriod(period=period)
         for period in dict.fromkeys(row.period for row in args.rows)
     ]
 
 
-def _pivot_report_rows(args: YieldTableInput, parameter_columns: dict[str, list[str]]) -> list[dict]:
+def _pivot_report_rows(args: _ReportInput, parameter_columns: dict[str, list[str]]) -> list[dict]:
     ordered = [p.period for p in _group_periods(args)]
     parameter_keys = [*parameter_columns["pt1h"],
                       *(f"pt1c_{p}" for p in parameter_columns["pt1c"])]
@@ -259,7 +207,7 @@ class _ReportRenderData:
     parameter_columns: dict[str, list[str]]
 
 
-def _report_render_data(args: YieldTableInput, parameter_columns: dict[str, list[str]]) -> _ReportRenderData:
+def _report_render_data(args: _ReportInput, parameter_columns: dict[str, list[str]]) -> _ReportRenderData:
     parameter_keys = [*parameter_columns["pt1h"],
                       *(f"pt1c_{p}" for p in parameter_columns["pt1c"])]
     return _ReportRenderData(
@@ -271,7 +219,7 @@ def _report_render_data(args: YieldTableInput, parameter_columns: dict[str, list
     )
 
 
-def _html(args: YieldTableInput, report_data: _ReportRenderData,
+def _html(args: _ReportInput, report_data: _ReportRenderData,
           displayed_rows: list[dict] | None = None, *, unit="weekly") -> str:
     ids = [p.period for p in _group_periods(args)]
     comparison = None
@@ -287,155 +235,176 @@ def _html(args: YieldTableInput, report_data: _ReportRenderData,
         parameter_formats=formats, comparison=comparison,
         period_label=args.period_label or "GROUP",
         displayed_rows=displayed_rows,
+        unavailable_delta_keys=frozenset(f"gms_{p}" for p in GMS_COLUMNS) if args.group_gms_unavailable else frozenset(),
     )
 
 
-async def _saved_rows(result_id: str, columns: dict[str, str], ctx) -> list[dict]:
-    try:
-        page = await ctx.store.read_result(
-            ctx.run["principal_id"],
-            ctx.run["session_id"],
-            result_id,
-            offset=0,
-            limit=1000,
-            columns=list(columns.values()),
-        )
-    except PermissionError:
-        raise PermissionError(f"Result unavailable: {result_id}") from None
-    except ValueError as exc:
-        if str(exc) != "Unknown column":
-            raise
-        available_page = await ctx.store.read_result(
-            ctx.run["principal_id"],
-            ctx.run["session_id"],
-            result_id,
-            offset=0,
-            limit=1,
-        )
-        available = available_page["columns"]
-        missing_key, missing_column = next(
-            (key, column)
-            for key, column in columns.items()
-            if column not in available
-        )
-        available_text = ", ".join(available) if available else "(none)"
-        raise ValueError(
-            f"result {result_id} mapping key '{missing_key}' refers to unknown "
-            f"column '{missing_column}'; available columns: {available_text}"
-        ) from None
-    if page.get("complete") is False or page.get("truncated") or page.get("total_rows", len(page["rows"])) > len(page["rows"]):
-        raise ValueError(f"result {result_id} is incomplete or exceeds 1000 rows; aggregate it before rendering")
-    return [
-        {target: row.get(source) for target, source in columns.items()}
-        for row in page["rows"]
-    ]
-
-
-async def _resolve_report_results(args: YieldTableInput, ctx) -> YieldTableInput:
-    rows = list(args.rows)
-    periods = {
-        _period_key(args, period.period): period.model_dump()
-        for period in args.periods
-    }
-
-    if args.long_result_id:
-        rows = [YieldReportRow.model_validate(row) for row in await _saved_rows(
-            args.long_result_id, args.long_columns.model_dump(), ctx,
-        )]
-    if not args.periods:
-        for row in rows:
-            periods.setdefault(row.period, {"period": row.period, "gms": {}})
-    if args.counts_result_id:
-        seen_counts = set()
-        for source in await _saved_rows(
-            args.counts_result_id, args.counts_columns.model_dump(), ctx,
-        ):
-            key = _period_key(args, source["period"])
-            period = periods.setdefault(key, {"period": source["period"], "gms": {}})
-            if key in seen_counts:
-                raise ValueError(f"duplicate counts period: {key}")
-            seen_counts.add(key)
-            if args.periods and key not in {p.period for p in args.periods}:
-                raise ValueError(f"undeclared group ID: {key}")
-            for field, value in (("lot_count", source["lot"]), ("wf_count", source["wf"])):
-                if period.get(field) is not None and period[field] != value:
-                    raise ValueError(f"conflicting {field} for period: {key}")
-            period["lot_count"] = source["lot"]
-            period["wf_count"] = source["wf"]
-    if args.gms_result_id:
-        seen_gms = set()
-        gms_mapping = args.gms_columns.model_dump()
-        explicitly_mapped = args.gms_columns.model_fields_set
-        if len(explicitly_mapped) < len(gms_mapping):
-            schema = await ctx.store.read_result(
-                ctx.run["principal_id"], ctx.run["session_id"],
-                args.gms_result_id, offset=0, limit=1,
-            )
-            available = schema["columns"]
-            for field in gms_mapping:
-                if field in explicitly_mapped:
-                    continue
-                standard = "PERIOD_DATE" if field == "period" else f"{field.upper()}_YIELD"
-                if standard in available:
-                    gms_mapping[field] = standard
-            gms_mapping = {
-                key: value for key, value in gms_mapping.items()
-                if key == "period" or key in explicitly_mapped or value in available
-            }
-        for source in await _saved_rows(
-            args.gms_result_id, gms_mapping, ctx,
-        ):
-            key = _period_key(args, source["period"])
-            period = periods.setdefault(key, {"period": source["period"], "gms": {}})
-            if key in seen_gms:
-                raise ValueError(f"duplicate GMS period: {key}")
-            seen_gms.add(key)
-            if args.periods and key not in {p.period for p in args.periods}:
-                raise ValueError(f"undeclared group ID: {key}")
-            for name, value in source.items():
-                if name != "period" and period.get("gms", {}).get(name) is not None and period["gms"][name] != value:
-                    raise ValueError(f"conflicting GMS {name} for period: {key}")
-            period["gms"] = {
-                name: source.get(name)
-                for name in ("cum0", "cum2", "fab", "prb", "pnt")
-            }
-
-    return YieldTableInput.model_validate({
-        **args.model_dump(exclude={
-            "long_columns", "counts_columns", "gms_columns",
-        }),
-        "rows": rows,
-        "periods": list(periods.values()),
-        "long_result_id": None,
-        "counts_result_id": None,
-        "gms_result_id": None,
-    })
-
-
 async def render_yield_table(args: YieldTableInput, ctx) -> ToolResult:
-    if args.period is not None:
+    from .report_policy import ReportContractError
+    from .yield_report_scope import load_scope, save_scope, attach_population
+
+    if args.report_scope_id:
+        data, original_period, scope_id = await load_scope(args.report_scope_id, ctx)
+    else:
         try:
             data = await asyncio.to_thread(fetch_period_report, args.lot_cd, args.period)
         except ValueError as exc:
-            return ToolResult(status="error", summary=str(exc))
-        return _render_period_report(args, data)
-    source_result_ids = [
-        result_id for result_id in (
-            args.long_result_id, args.counts_result_id, args.gms_result_id,
-        ) if result_id
-    ]
-    if source_result_ids:
+            raise ReportContractError("REPORT_SCOPE_UNAVAILABLE", str(exc)) from exc
+        original_period = args.period.model_dump(exclude_none=True)
+        scope_id = None
+    source_ids = []
+    if args.grouping:
+        membership, groups, origin, uncovered = await _membership(args, data, ctx)
+        result = _render_groups(args, data, membership, groups)
+        result.scope.update(membership=origin, coverage=args.grouping.coverage,
+                            definition=args.grouping.definition, uncovered_lot_count=uncovered)
+        result.tables.append(ResultTable(table_id="group_membership", title="Accepted lot membership",
+                                        rows=membership, columns=["group_id", "lot_id"], complete=True))
+        if origin.get("result_id"):
+            source_ids.append(origin["result_id"])
+    else:
+        # Reused scopes keep their original declarative period; never resolve recent again.
+        period_args = args.model_copy(update={"period": original_period})
+        result = _render_period_report(period_args, data)
+    if scope_id is None:
+        scope_id = await save_scope(data, original_period, ctx)
+    result.scope.update(report_scope_id=scope_id, layout=args.layout,
+                        window=data.window, period=original_period,
+                        query_consistency="Single connection, statement-level reads; no cross-statement snapshot guarantee",
+                        scope_reusable=ctx is not None)
+    if ctx is not None:
+        source_ids.insert(0, scope_id.removeprefix("yield-report:"))
+    result.source_result_ids = list(dict.fromkeys(source_ids))
+    attach_population(result, data, scope_id)
+    return result
+
+
+async def _membership(args, data, ctx):
+    from .report_policy import ReportContractError
+    grouping = args.grouping
+    source = grouping.membership
+    if isinstance(source, TableMembership):
+        if ctx is None:
+            raise ReportContractError("MEMBERSHIP_UNAVAILABLE", "Saved membership requires a result store")
         try:
-            args = await _resolve_report_results(args, ctx)
-        except PermissionError as exc:
-            return ToolResult(
-                summary=str(exc),
-                status="error",
-                source_result_ids=source_result_ids,
-            )
-    lot_cd = (args.lot_cd if args.lot_cd is not None else args.product_label or "").strip()
-    metadata = await asyncio.to_thread(_fetch_parameter_metadata, lot_cd)
-    return _render_report(args, lot_cd, metadata, source_result_ids)
+            obs = await ctx.store.observation(ctx.run["principal_id"], ctx.run["session_id"], source.result_id)
+        except (PermissionError, KeyError) as exc:
+            raise ReportContractError("MEMBERSHIP_UNAVAILABLE", "Membership result unavailable") from exc
+        choices = [t.table_id for t in obs.tables]
+        table_id = source.table_id
+        if table_id is None:
+            if len(choices) != 1:
+                raise ReportContractError("MEMBERSHIP_TABLE_REQUIRED", {
+                    "message": "Provide table_id; available tables: " + ", ".join(choices), "table_ids": choices})
+            table_id = choices[0]
+        table = next((t for t in obs.tables if t.table_id == table_id), None)
+        if table is None:
+            raise ReportContractError("MEMBERSHIP_TABLE_REQUIRED", {
+                "message": "Unknown table_id; available tables: " + ", ".join(choices), "table_ids": choices})
+        if obs.status not in ("success", "partial", "empty") or not table.complete:
+            raise ReportContractError("INCOMPLETE_MEMBERSHIP", "Membership table must be complete")
+        if not {"group_id", "lot_id"} <= set(table.columns):
+            raise ReportContractError("MEMBERSHIP_COLUMNS", "Membership table requires group_id, lot_id columns")
+        try:
+            raw = await ctx.store.rows(ctx.run["principal_id"], ctx.run["session_id"], source.result_id, table_id=table_id)
+        except (PermissionError, KeyError, ValueError) as exc:
+            raise ReportContractError("MEMBERSHIP_UNAVAILABLE", "Cannot read complete membership table") from exc
+        if len(raw) != table.total_rows:
+            raise ReportContractError("INCOMPLETE_MEMBERSHIP", "Complete membership row count does not match stored table")
+        rows = [{"group_id": r.get("group_id"), "lot_id": r.get("lot_id")} for r in raw]
+        inferred = list(dict.fromkeys(r["group_id"] for r in rows if isinstance(r["group_id"], str)))
+        origin = {"kind": "table", "result_id": source.result_id, "table_id": table_id}
+    else:
+        inferred = [g.group_id for g in source.groups]
+        if len(inferred) != len(set(inferred)):
+            raise ReportContractError("DUPLICATE_GROUP", "duplicate inline group_id")
+        rows = [{"group_id": g.group_id, "lot_id": lot} for g in source.groups for lot in g.lot_ids]
+        origin = {"kind": "inline", "evidence_table_id": "group_membership"}
+    for row in rows:
+        if any(not isinstance(value, str) or not value.strip() or value != value.strip()
+               for value in (row["group_id"], row["lot_id"])):
+            raise ReportContractError("INVALID_MEMBERSHIP", "group_id and lot_id must be nonempty, unpadded strings")
+    groups = grouping.groups or [GroupLabel(id=identity) for identity in inferred]
+    ids = [g.id for g in groups]
+    labels = [(g.label or g.id).strip() for g in groups]
+    if not ids:
+        raise ReportContractError("GROUPS_REQUIRED", "Empty membership requires declared groups")
+    if len(ids) != len(set(ids)) or any(not i.strip() or i != i.strip() for i in ids):
+        raise ReportContractError("INVALID_GROUP_ID", "group IDs must be unique, nonempty and unpadded")
+    if set(inferred) - set(ids):
+        raise ReportContractError("UNDECLARED_GROUP", "Membership contains undeclared group IDs")
+    if len(labels) != len(set(labels)) or not all(labels):
+        raise ReportContractError("INVALID_GROUP_LABEL", "group labels must be unique and nonempty")
+    if args.comparison and not {args.comparison.current, args.comparison.baseline} <= set(ids):
+        raise ReportContractError("UNKNOWN_COMPARISON", "comparison refers to unknown group IDs")
+    population = {r["lot_id"] for r in data.lot_population}
+    assigned = {}
+    for row in rows:
+        group, lot = row["group_id"], row["lot_id"]
+        if any(not isinstance(v, str) or not v.strip() or v != v.strip() for v in (group, lot)):
+            raise ReportContractError("INVALID_MEMBERSHIP", "group_id and lot_id must be nonempty, unpadded strings")
+        if group not in ids:
+            raise ReportContractError("UNDECLARED_GROUP", f"undeclared group_id: {group}")
+        if lot not in population:
+            raise ReportContractError("UNKNOWN_LOT", f"unknown lot_id in official population: {lot}")
+        if lot in assigned:
+            reason = "duplicate" if assigned[lot] == group else "overlap"
+            raise ReportContractError("INVALID_MEMBERSHIP", f"{reason} membership for lot_id: {lot}")
+        assigned[lot] = group
+    uncovered = len(population - assigned.keys())
+    if grouping.coverage == "partition" and uncovered:
+        raise ReportContractError("INCOMPLETE_PARTITION", f"partition leaves {uncovered} lots uncovered")
+    return rows, groups, origin, uncovered
+
+
+def _render_groups(args, data, membership, groups):
+    rendered, counts, values, cells = [], [], [], []
+    slices = [("all", "")]
+    if args.layout == "group_period":
+        slices = [(grain, bucket) for grain, (key, _) in GRAINS.items()
+                  for bucket in data.window.get(key, [])]
+    for grain, bucket in slices:
+        aggregated = aggregate_groups(data, membership, [g.id for g in groups], grain=grain, bucket=bucket)
+        by_group = {r["period"]: r for r in aggregated["counts"]}
+        presentation = _ReportInput(title=args.title, product_label=data.lot_cd, group_gms_unavailable=True,
+            period_label="GROUP" if grain == "all" else f"{grain.upper()} {bucket} / GROUP",
+            rows=aggregated["rows"],
+            periods=[YieldReportPeriod(period=g.id, label=g.label,
+                lot_count=by_group[g.id]["lot_count"], wf_count=by_group[g.id]["wf_count"]) for g in groups],
+            comparison=args.comparison)
+        part = _render_report(presentation, data.lot_cd, data.metadata, [], allow_empty_metadata=True)
+        rendered.append(part)
+        counts.extend({"grain": grain, "bucket": bucket, **r} for r in aggregated["counts"])
+        values.extend({"grain": grain, "bucket": bucket, **r} for r in aggregated["rows"])
+        cells.extend({"grain": grain, "bucket": bucket, **r} for r in part.tables[0].rows)
+    result = rendered[0]
+    html = result.artifacts[0]["data"]
+    for other in rendered[1:]:
+        body = other.artifacts[0]["data"].split("<body>", 1)[1].rsplit("</body>", 1)[0]
+        html = html.replace("</body>", body + "</body>")
+    result.artifacts[0]["data"] = html
+    metadata_table = result.tables[-1]
+    result.tables = [
+        ResultTable(table_id="group_counts", title="Official group counts", rows=counts,
+                    columns=["grain", "bucket", "period", "lot_count", "wf_count", "has_yield_data"], complete=True),
+        ResultTable(table_id="group_yield_long", title="Official group parameter averages", rows=values,
+                    columns=["grain", "bucket", "period", "process", "param", "value"], complete=True),
+        ResultTable(table_id="displayed_yield_table", title=args.title, rows=cells,
+                    columns=["grain", "bucket", "row", "column", "raw", "shown"], complete=True),
+        metadata_table,
+    ]
+    missing = [{"grain": r["grain"], "bucket": r["bucket"], "group_id": r["period"]}
+               for r in counts if not r["has_yield_data"]]
+    result.scope.update(row_count=len(counts), groups=[g.model_dump() for g in groups],
+        missing_group_buckets=missing, default_table_id="group_counts",
+        gms_unavailable={"reason": "not_available_at_lot_group_granularity"},
+        aggregation="Source-row AVG(VALUE); not an average of lot means",
+        comparison=args.comparison.model_dump() if args.comparison else None)
+    result.status = "empty" if not any(r["lot_count"] for r in counts) else "partial" if missing else "success"
+    result.summary = (f"LOT_CD={data.lot_cd} {data.window['start']}~{data.window['end']}: "
+                      f"{len(groups)} groups; counts in group_counts; {result.scope['selection_rule']}; "
+                      "group GMS unavailable; selection meaning requires verification")
+    return result
 
 
 def _render_report(args, lot_cd, metadata, source_result_ids, *, delta_definition=None, allow_empty_metadata=False, unit="weekly"):
@@ -515,8 +484,8 @@ def _render_period_report(args: YieldTableInput, data: PeriodReportData) -> Tool
             continue
         buckets, counts = data.window[key], data.counts[grain]
         gms = {row[grain]: row for row in data.gms[grain]}
-        render_args = YieldTableInput(
-            title=args.title, product_label=args.product_label or data.lot_cd,
+        render_args = _ReportInput(
+            title=args.title, product_label=data.lot_cd,
             period_label={"month": "MONTH", "week": "WEEK", "day": "DATE"}[grain],
             rows=[YieldReportRow(period=row["bucket"], process=row["process"],
                                  param=row["param"], value=row["value"])
@@ -568,7 +537,7 @@ def _render_period_report(args: YieldTableInput, data: PeriodReportData) -> Tool
         "기간 수는 report_totals, 버킷 수는 grain counts 표만 인용; 더하지 않는다"
     )
     result.scope.update({
-        "period": args.period.model_dump(exclude_none=True), "window": data.window,
+        "period": args.period if isinstance(args.period, dict) else args.period.model_dump(exclude_none=True), "window": data.window,
         "sql_filters": sql_filters, "missing_buckets": missing, "missing_gms": missing_gms,
         "row_count": sum(len(rows) for rows in data.counts.values()),
         "delta_definitions": deltas,
@@ -594,34 +563,19 @@ def _render_period_report(args: YieldTableInput, data: PeriodReportData) -> Tool
 def register(registry):
     registry.add(ToolSpec(
         "render_yield_table",
-        "기존 pt1h·pt1c·gms 수율 리포트 전용 렌더러다. 행은 월/주차/날짜/그룹이고 열은 파라미터다. 기존 디자인의 리포트를 요청하면 이 렌더러로 시각 결과를 "
-        '생성한다. '
-        '주차별·월별·일별 또는 결합 수율 리포트는 render_yield_table에 lot_cd와 period를 전달한다. '
-        'period는 recent(weeks/months/days 중 정확히 하나의 count, 선택적 grains) 또는 weeks/months/days(명시적 버킷 목록)다. '
-        '최근 3개월 월별/주별 결합은 {kind:"recent",months:3,grains:["month","week"]}다. '
-        '최근 N주/월/일은 도구가 해당 LOT_CD의 PT1H TEST 최신 DB 측정일(YEAR/MONTH/DAY)을 기준으로 확정한다. '
-        '기준 측정일의 버킷을 포함하고 오래된 버킷부터 표시한다. '
-        '모델은 today-28 days나 오늘의 주차 등 달력 기간을 계산하지 않으며 base_date를 전달하지 않는다. '
-        'lot/wafer 수는 기간 전체 distinct는 report_totals, 버킷별은 monthly_counts/weekly_counts/daily_counts에서만 인용한다. '
-        '버킷별 수를 더해 기간 합계로 쓰거나 all-time counts를 쓰지 않는다. '
-        '최근 N… 조건의 그룹 보고서도 먼저 이 도구의 window(start/end와 버킷 목록)를 얻고 후속 query_db/그룹 집계에 같은 날짜와 버킷을 사용한다. '
-        '그룹 보고서의 달력 기간도 임의로 만들지 않는다. '
-        '제품이나 기간이 없으면 clarify로 먼저 묻는다. '
-        "Python은 조회 결과의 정리·그룹 집계·계산에 사용할 수 있다. 그룹 보고서는 LONG rows의 period에 임의 그룹 이름을 바로 넣는다. "
-        "별도 periods는 선택 사항이고, 생략하면 LONG rows, counts, GMS의 첫 등장 순서로 표시한다. "
-        "periods를 주면 모든 그룹의 ID와 표시 순서를 선언하며 label로 표시 이름을 바꿀 수 있다. "
-        "comparison={current,baseline}을 지정할 때만 그룹 Δ를 표시한다. parameter_formats는 호환용으로 받지만 무시한다. "
-        "그룹 멤버십과 날짜 범위는 원본 조회로 확인하고 라벨로 추측하지 않는다. 그룹은 inline rows/periods 또는 "
-        "query_db의 long_result_id, counts_result_id, gms_result_id와 필요시 각 columns 매핑을 전달한다. "
-        "gms_columns의 명시적 매핑을 우선하며, 미지정 필드는 결과에 존재하는 PERIOD_DATE 및 "
-        "CUM0_YIELD, CUM2_YIELD, FAB_YIELD, PRB_YIELD, PNT_YIELD로 자동 매핑한다. "
-        "기간·그룹 모두 렌더러가 lot_cd(그룹에서 생략 시 product_label)의 DF_ALL_PARA_PRB YIELD_TABLE='o'를 조회하여 "
-        "PT1H 다음 PT1C, 각각 PARAM_SEQNO 순서의 정확한 PARAM_NM 열을 표시한다. 파라미터 값은 x100 소수 1자리, % 없이 표시하고 "
-        "GMS는 원값 소수 1자리, lot/wafer 수는 정수다. 답변은 전체 파라미터가 아니라 YIELD_TABLE='o' 파라미터라고 설명한다. "
-        "사용자가 표·아티팩트·리포트 형태를 요청한 경우에만 호출하고 일반 수율 조회에는 호출하지 않는다.",
-        YieldTableInput,
-        render_yield_table,
-        read_only=True,
-        effect="artifact",
-        eager=True,
+        "표·리포트를 요청한 경우 사용하는 표준 수율 리포트다. lot_cd+period 또는 이전 report_scope_id 중 하나를 전달한다. "
+        "period는 recent(weeks/months/days 중 하나의 count, 선택적 grains) 또는 명시적 weeks/months/days 목록이다. "
+        "최근 기간은 PT1H TEST 최신 DB 측정일 기준이며 오늘 날짜를 계산하지 않는다. ISO 주차와 빈 버킷을 보존한다. "
+        "결과 lot_population의 전체 lot_id, wafer_count, pt1h_mean, pt1h_value_count로 Python에서 그룹을 선택한다. "
+        "grouping.membership은 {kind:'table',result_id,table_id}로 group_id,lot_id 표를 참조한다. "
+        "단일 표이면 table_id 생략 가능, 여러 표이면 반드시 지정한다. 소수 lot은 {kind:'inline',groups:[{group_id,lot_ids}]}도 가능하다. "
+        "grouping.groups=[{id,label}] 생략 시 멤버십 순서를 사용한다. coverage 기본 disjoint_subsets는 단일 부분집합도 허용하며 "
+        "partition은 전체 lot의 정확한 분할이다. definition은 선택 기준 설명이며 도구는 해석하지 않는다. "
+        "layout은 period/group/group_period이며 group_period는 같은 그룹의 버킷별 추이다. "
+        "comparison={current,baseline}은 그룹 간 Δ이며 group_period에서는 같은 버킷 안에서 비교한다. "
+        "도구가 distinct LOT_ID/GORUPKEY, source-row AVG(VALUE), DF_ALL_PARA_PRB YIELD_TABLE='o' 열, "
+        "PT1H 다음 PT1C PARAM_SEQNO 순서와 ×100 소수 1자리(% 없음)를 계산한다. 수율 셀이나 열 매핑을 만들지 않는다. "
+        "기간 합계는 report_totals이며 버킷 수를 더하지 않는다. 그룹 GMS는 적용 불가로 '-'이다. "
+        "반환 report_scope_id는 저장된 범위/집계/모집단을 재사용하며 recent를 다시 계산하지 않는다.",
+        YieldTableInput, render_yield_table, read_only=True, effect="artifact", eager=True,
     ))

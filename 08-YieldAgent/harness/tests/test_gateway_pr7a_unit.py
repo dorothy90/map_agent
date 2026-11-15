@@ -460,8 +460,13 @@ def test_pending_adapter_wires_duplicates_and_answer_redaction():
         params = {'session_id': 's', 'execution_generation': 1, 'prompt_id': 'approve', 'choice': 'once'}
         assert (await a.rpc('approval.respond', 's', params))['result']['status'] == 'resolved'
         epoch = (await a.events.watermark('s'))['replay_epoch']
-        assert 'PRIVATE' not in str(await a.events.since('s', epoch))
-        assert 'PRIVATE' not in str(store.runs.rows[0]['events'])
+        replayed = (await a.events.since('s', epoch))['events']
+        completed = [e['payload'] for e in replayed if e['type'] == 'tool.complete']
+        assert {e['tool_id'] for e in completed} == {'question:q1', 'question:q2', 'single'}
+        assert all(len(e['result']['responses']) == 1 for e in completed)
+        assert 'PRIVATE2' in str(completed)
+        assert 'PRIVATE' not in str(await a.pending.list_audit())
+        assert 'PRIVATE' not in str(store.runs.rows[0].get('native_messages'))
     asyncio.run(scenario())
 
 
@@ -677,6 +682,64 @@ def test_projection_requires_matching_last_verification_and_terminal_run():
     assert project_run_event(run, {'type': 'run_finished', 'payload': {}}) == {
         'type': 'message.complete', 'payload': {'text': expected}}
     assert '분석 코드' not in expected
+
+
+def test_finished_projection_reports_observed_native_usage():
+    from harness.gateway.events import project_run_event
+    from harness.gateway.publication import candidate_digest
+
+    run = {'status': 'completed', 'active': False, 'answer_text': 'FINAL', 'observations': [{
+        'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'},
+        'validated_arguments': candidate_digest('FINAL')}],
+        'native_usage': {'api_calls': 8, 'input_tokens': 109417,
+                         'output_tokens': 2115, 'total_tokens': 111532}}
+    event = {'type': 'run_finished', 'payload': {'usage': {'input': 999}}}
+    assert project_run_event(run, event) == {'type': 'message.complete', 'payload': {
+        'text': 'FINAL', 'usage': {'input': 109417, 'output': 2115, 'total': 111532, 'calls': 8}}}
+    assert project_run_event({**run, 'active': True}, event)['type'] == 'run_finished'
+    assert project_run_event({**run, 'answer_text': 'UNVERIFIED'}, event)['type'] == 'run_finished'
+
+    observed = run['native_usage']
+    for key in observed:
+        for invalid in (None, -1, True, '1', 1.5):
+            run['native_usage'] = {**observed, key: invalid}
+            assert project_run_event(run, event)['payload'] == {'text': 'FINAL'}
+        run['native_usage'] = {k: v for k, v in observed.items() if k != key}
+        assert project_run_event(run, event)['payload'] == {'text': 'FINAL'}
+    for missing in (None, {}):
+        run['native_usage'] = missing
+        assert project_run_event(run, event)['payload'] == {'text': 'FINAL'}
+    del run['native_usage']
+    assert project_run_event(run, event)['payload'] == {'text': 'FINAL'}
+    run['native_usage'] = dict.fromkeys(observed, 0)
+    assert project_run_event(run, event)['payload']['usage'] == {
+        'input': 0, 'output': 0, 'total': 0, 'calls': 0}
+
+
+def test_finished_native_usage_survives_session_event_replay():
+    from harness.gateway.publication import candidate_digest
+
+    async def scenario():
+        store, _, a, _ = await fixture()
+        receipt = await a.submit('s', {'session_id': 's', 'submission_id': 'usage', 'text': 'hello'})
+        run = next(r for r in store.runs.rows if r['run_id'] == receipt['run_id'])
+        await store.event(run['run_id'], 'run_finished', {})
+        run.update(status='completed', active=False, answer_text='FINAL', observations=[{
+            'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'},
+            'validated_arguments': candidate_digest('FINAL')}],
+            native_usage={'api_calls': 8, 'input_tokens': 109417,
+                          'output_tokens': 2115, 'total_tokens': 111532})
+        epoch = (await a.events.watermark('s'))['replay_epoch']
+        first = await a.events.since('s', epoch)
+        completed = next(e for e in first['events'] if e['type'] == 'message.complete')
+        assert completed['payload']['text'] == 'FINAL'
+        assert completed['payload']['usage'] == {
+            'input': 109417, 'output': 2115, 'total': 111532, 'calls': 8}
+        assert completed['payload']['run_id'] == run['run_id']
+        assert (await a.events.since('s', epoch))['events'] == first['events']
+        assert (await a.events.since_legacy('s'))['events'] == first['events']
+
+    asyncio.run(scenario())
 
 
 def test_legacy_replay_keeps_legacy_keys_and_restores_open_requests():
