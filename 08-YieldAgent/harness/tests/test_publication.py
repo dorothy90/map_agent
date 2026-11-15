@@ -21,6 +21,9 @@ def test_digest_and_commentary():
     ({}, ['fail', 'fail'], True, 'verification_fail'),
     ({'completed': False, 'partial': True}, ['fail', 'fail'], False, 'verification_fail'),
     ({}, ['unknown'], True, 'verification_unknown'),
+    ({}, ['unknown'], False, 'verification_unknown'),
+    *[({flag: True}, ['unknown'], True, 'verification_unknown')
+      for flag in ('failed', 'interrupted', 'cancelled')],
     ({}, ['pass'], False, 'verification_unknown'),
     ({}, ['fail'], False, 'verification_unknown'),
     ({}, [], True, 'verification_unknown'),
@@ -39,9 +42,9 @@ def test_settle_matrix_is_pure(flags, verdicts, match, expected):
     assert (result, reports, digests) == inputs
     if expected == 'completed':
         assert decision['status'] == 'completed' and decision['answer_text'] == text
-    elif expected == 'verification_fail' and match and not flags:
+    elif expected in ('verification_fail', 'verification_unknown') and match and not flags and verdicts:
         assert decision['status'] == 'partial' and decision['stop_reason'] == expected
-        assert decision['answer_text'].startswith(text + '\n\n---\n⚠️')
+        assert decision['answer_text'].startswith(text + '\n\n---\n')
         assert '- 근거 부족' in decision['answer_text']
     else:
         status = 'failed' if flags.get('failed') or flags.get('error') else 'partial'
@@ -51,20 +54,24 @@ def test_settle_matrix_is_pure(flags, verdicts, match, expected):
         if expected == 'verification_fail': assert '- 근거 부족' in decision['answer_text']
 
 
-def test_gate_partial_requires_original_digest_and_exact_rendering():
+@pytest.mark.parametrize('verdict', ['fail', 'unknown'])
+def test_gate_partial_requires_original_digest_and_exact_rendering(verdict):
     from harness.gateway.publication import candidate_digest, settle
     from harness.native_verification import verification_failure_answer
-    report = {'verdict': 'fail', 'issues': ['근거 부족'], 'result_ids': []}
+    report = {'verdict': verdict, 'issues': ['근거 부족'], 'result_ids': []}
     candidate = '최신 답변'
     rendered = verification_failure_answer(candidate, report)
     digest = candidate_digest(candidate)['candidate_sha256']
-    result = {'completed': False, 'partial': True, 'turn_exit_reason': 'verification_fail',
+    result = {'completed': False, 'partial': True, 'turn_exit_reason': 'verification_' + verdict,
         'verification_candidate': candidate, 'final_response': rendered}
     decision = settle(result, [report], [digest])
-    assert decision == {'status': 'partial', 'stop_reason': 'verification_fail',
+    assert decision == {'status': 'partial', 'stop_reason': 'verification_' + verdict,
         'answer_text': rendered}
+    for reports, digests in (([], []), ([report], []), ([report], [digest, digest])):
+        assert candidate not in settle(result, reports, digests)['answer_text']
     for changed in (
             {**result, 'verification_candidate': 'other'},
+            *[{**result, 'verification_candidate': value} for value in (None, '', '   ')],
             {**result, 'final_response': rendered + '\n- injected'},
             {**result, 'interrupted': True}):
         decision = settle(changed, [report], [digest])

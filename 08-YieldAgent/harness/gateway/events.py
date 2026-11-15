@@ -100,9 +100,19 @@ def verified_answer(run):
     return decision['answer_text'] if decision['status'] == 'completed' else None
 
 
+def published_answer(run):
+    """Publish only settled partial text or a verified completed answer."""
+    if run.get('active'):
+        return None
+    if run.get('status') == 'partial':
+        answer = run.get('answer_text')
+        return answer if isinstance(answer, str) and answer.strip() else None
+    return verified_answer(run)
+
+
 def verified_answer_with_artifacts(run):
     """Preserve each run's pinned delivery policy after answer verification."""
-    answer = verified_answer(run)
+    answer = published_answer(run)
     if answer is None:
         return None
     if run.get("artifact_delivery") == ARTIFACT_DELIVERY:
@@ -143,7 +153,7 @@ def project_run_event(run, event):
 
     No original equivalent → PB:503-505,639. Unknown events fail closed.
     Internal tool lifecycle names are translated to the Hermes wire contract;
-    run_finished becomes message.complete only for the PR-5 verified final answer.
+    run_finished becomes message.complete for verified completed or settled partial answers.
     Model-authored complete is withheld.
     """
     kind, payload = event['type'], event.get('payload') or {}

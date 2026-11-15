@@ -423,6 +423,8 @@ def verification_failure_answer(answer, report):
     issues = '\n'.join('- ' + issue for issue in report['issues'])
     if report['verdict'] == 'fail' and isinstance(answer, str) and answer.strip():
         return answer + '\n\n---\n⚠️ 자동 검증에서 확인되지 않은 사항:\n' + issues
+    if report['verdict'] == 'unknown' and isinstance(answer, str) and answer.strip():
+        return answer + '\n\n---\n' + FIXED_VERIFICATION_FAILURE + '\n\n' + issues
     return FIXED_VERIFICATION_FAILURE + '\n\n' + issues
 
 
@@ -492,6 +494,8 @@ def verify_and_repair(candidate, review, repair):
             candidate = repair(candidate, report)
             continue
         break
-    answer = verification_failure_answer(candidate.get('final_response'), report)
-    return {**candidate, 'completed': False, 'partial': True, 'final_response': answer,
+    original_answer = candidate.get('final_response')
+    answer = verification_failure_answer(original_answer, report)
+    candidate_fields = {'verification_candidate': original_answer} if isinstance(original_answer, str) else {}
+    return {**candidate, **candidate_fields, 'completed': False, 'partial': True, 'final_response': answer,
         'turn_exit_reason': 'verification_' + report['verdict'], 'verification': reports}

@@ -29,19 +29,19 @@ def settle(result, reports, verified_candidates):
     if complete and report and report['verdict'] == 'pass' and matches:
         return {'status': 'completed', 'stop_reason': result.get('turn_exit_reason') or 'hermes_returned',
             'answer_text': answer}
-    if complete and report and report['verdict'] == 'fail' and matches:
-        return {'status': 'partial', 'stop_reason': 'verification_fail',
+    if complete and report and report['verdict'] in ('fail', 'unknown') and matches:
+        return {'status': 'partial', 'stop_reason': 'verification_' + report['verdict'],
             'answer_text': verification_failure_answer(answer, report)}
     candidate = result.get('verification_candidate')
     gate_partial = (not stopped and result.get('completed') is False and result.get('partial') is True
-        and result.get('turn_exit_reason') == 'verification_fail'
-        and report and report['verdict'] == 'fail'
+        and report and report['verdict'] in ('fail', 'unknown')
+        and result.get('turn_exit_reason') == 'verification_' + report['verdict']
         and len(verified_candidates) == len(reports) and bool(verified_candidates)
         and isinstance(candidate, str) and candidate.strip()
         and verified_candidates[-1] == candidate_digest(candidate)['candidate_sha256']
         and answer == verification_failure_answer(candidate, report))
     if gate_partial:
-        return {'status': 'partial', 'stop_reason': 'verification_fail', 'answer_text': answer}
+        return {'status': 'partial', 'stop_reason': 'verification_' + report['verdict'], 'answer_text': answer}
     # Match result_status(): partial/interrupted take precedence over error,
     # but an explicit failure always remains failed.
     failed = result.get('failed') or (result.get('error')

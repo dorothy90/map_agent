@@ -116,3 +116,21 @@ def test_repair_feedback_explains_named_evidence_and_preserves_unknown():
     result = gate.finish({'completed': True, 'final_response': 'draft'})
     assert result['partial'] and not result['completed']
     assert '검증 예산 부족' in result['final_response']
+
+
+def test_unknown_review_preserves_only_matching_nonempty_answer():
+    from harness.native_verification import FIXED_VERIFICATION_FAILURE
+    gate = NativeVerificationGate(lambda candidate: {
+        'verdict': 'unknown', 'issues': ['format failure'], 'result_ids': []})
+    answer = '[weekly table](/harness/artifacts/table)'
+    gate.evaluate(answer)
+    result = gate.finish({'completed': True, 'final_response': answer})
+    assert result['partial'] and not result['completed']
+    assert result['verification_candidate'] == answer
+    assert result['turn_exit_reason'] == 'verification_unknown'
+    assert result['final_response'] == answer + '\n\n---\n' + FIXED_VERIFICATION_FAILURE + '\n\n- format failure'
+    for draft in ('PRIVATE_CANDIDATE', '', '   '):
+        result = gate.finish({'completed': True, 'final_response': draft})
+        assert 'verification_candidate' not in result
+        assert result['final_response'].startswith(FIXED_VERIFICATION_FAILURE)
+        assert 'PRIVATE_CANDIDATE' not in result['final_response']

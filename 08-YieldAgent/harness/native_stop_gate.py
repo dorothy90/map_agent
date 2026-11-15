@@ -75,14 +75,14 @@ class NativeVerificationGate:
                 and self.reviewed_answer == result.get('final_response', '')):
             return {**result, 'verification': self.reports}
         answer = result.get('final_response')
-        if (complete and self.reports and self.reports[-1]['verdict'] == 'fail'
+        if (complete and self.reports and self.reports[-1]['verdict'] in ('fail', 'unknown')
                 and self.reviewed_answer == answer
                 and isinstance(answer, str) and answer.strip()):
             report = self.reports[-1]
             return {**result, 'completed': False, 'partial': True,
                 'final_response': verification_failure_answer(answer, report),
                 'verification_candidate': answer,
-                'turn_exit_reason': 'verification_fail', 'verification': self.reports}
+                'turn_exit_reason': 'verification_' + report['verdict'], 'verification': self.reports}
         report = (self.reports[-1] if complete and self.reports
             and self.reviewed_answer == result.get('final_response', '') else
             {'verdict': 'unknown', 'issues': ['실행이 완료되지 않았거나 최종 답변이 검증한 답변과 다릅니다.'], 'result_ids': []})
