@@ -124,9 +124,21 @@ async def messages(rpc, sid, query, profile):
     if latest:
         selected.reverse()
     # REST uses content/id for text rows; compact tool rows keep their card fields.
-    projected = [dict(row) if row['role'] == 'tool' else
-                 {'role': row['role'], 'content': row['text'],
-                  **({'id': row['row_id']} if 'row_id' in row else {})} for row in selected]
+    # Assistant usage/duration must survive this projection so a cold reload
+    # can restore the composer token line and turn-duration badge.
+    def project_row(row):
+        if row['role'] == 'tool':
+            return dict(row)
+        projected = {'role': row['role'], 'content': row['text']}
+        if 'row_id' in row:
+            projected['id'] = row['row_id']
+        if row['role'] == 'assistant':
+            if 'usage' in row:
+                projected['usage'] = row['usage']
+            if 'duration_s' in row:
+                projected['duration_s'] = row['duration_s']
+        return projected
+    projected = [project_row(row) for row in selected]
     return {'session_id': sid, 'profile': profile, 'messages': projected,
             'pagination': {'limit': page_limit, 'offset': offset,
                 'order': order or ('latest' if limit is None else 'oldest'), 'returned': len(projected)}}

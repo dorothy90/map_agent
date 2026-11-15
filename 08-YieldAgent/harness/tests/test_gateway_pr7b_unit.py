@@ -575,6 +575,11 @@ def test_history_and_info_restore_completed_run_usage_and_duration():
         assert resumed['info']['usage'] == assistant['usage']
         info = call(ws, 'session.info', {'session_id': sid})['result']
         assert info['usage'] == assistant['usage']
+        rest = client.get('/gateway-m1/api/sessions/' + sid + '/messages?include_compacted=true').json()
+        rest_assistant = [row for row in rest['messages'] if row['role'] == 'assistant'][-1]
+        assert rest_assistant['content'] == answer
+        assert rest_assistant['usage'] == assistant['usage']
+        assert rest_assistant['duration_s'] == 46
 
 
 def test_session_info_omits_usage_when_counters_are_incomplete():
