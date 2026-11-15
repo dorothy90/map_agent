@@ -201,3 +201,33 @@ def test_native_group_reports_always_pass_comparison():
     assert "저수율 vs 나머지는 current에 저수율 그룹 ID, baseline에 나머지 그룹 ID를 전달한다." in native
     assert "Δ의 방향은 current-baseline이다." in native
     assert "그룹 ID를 명시할 때만 만든다" not in native
+
+
+def test_native_preserves_requested_group_count_and_complement():
+    native = (Path(__file__).parents[1] / "instructions" / "native.md").read_text(encoding="utf-8")
+    for sentence in (
+        "사용자가 N그룹(예: '2그룹')으로 나누라고 하면 정확히 N개 그룹을 만든다.",
+        "'저수율(자재)랑 나머지'는 저수율 그룹과 같은 리포트 범위의 나머지 모든 lot을 하나로 묶은 여집합 그룹, 정확히 2개다.",
+        "중수율/고수율, '평균 구간', 제3의 잔여 그룹을 임의로 추가하지 않는다.",
+        "사용자가 기준에 답한 뒤에도 요청이 2그룹이면 정확히 2개 그룹을 유지한다.",
+    ):
+        assert sentence in native
+
+
+def test_native_recent_period_preserves_user_units():
+    native = (Path(__file__).parents[1] / "instructions" / "native.md").read_text(encoding="utf-8")
+    for sentence in (
+        "'최근 N주'는 weeks:N, '최근 N개월/N달'은 months:N, '최근 N일'은 days:N으로 전달하며 단위를 환산하지 않는다.",
+        '최근 4주는 {kind:"recent",weeks:4}이며 days:28로, 최근 3개월은 months:3이며 days:90이나 weeks:12로 바꾸지 않는다.',
+        "'주별/월별/일별'은 표시 집계 단위 grains이며 기간 단위가 아니다.",
+        '최근 4주 주별은 {kind:"recent",weeks:4,grains:["week"]}다.',
+    ):
+        assert sentence in native
+
+
+def test_same_time_fabout_uses_measurement_window():
+    directory = Path(__file__).parents[1] / "instructions"
+    native = (directory / "native.md").read_text(encoding="utf-8")
+    notes = (directory / "domain-notes.md").read_text(encoding="utf-8")
+    assert "'동일시점 팹아웃' 요청은 실제 FABOUT 날짜가 아니라 동일한 PT 측정일(measurement-date) 범위로 조회한다." in native
+    assert "동일시점 팹아웃(사용자 확인, 2026-11-15): 동일한 PT 측정일 범위를 뜻하며 실제 FABOUT 날짜 범위와는 구분한다." in notes

@@ -18,10 +18,26 @@ BASE_DATE_SOURCE = f"MAX({MEASURE_DATE}) FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot
 
 class RecentPeriod(Contract):
     kind: Literal['recent']
-    weeks: int | None = Field(default=None, ge=1, le=26, strict=True)
-    months: int | None = Field(default=None, ge=1, le=24, strict=True)
-    days: int | None = Field(default=None, ge=1, le=92, strict=True)
-    grains: list[Grain] | None = Field(default=None, min_length=1, max_length=3)
+    weeks: int | None = Field(
+        default=None, ge=1, le=26, strict=True,
+        description='최근 N주 → weeks:N. PT1H TEST 최신 DB 측정일을 포함한 DB 주 단위다. '
+                    '최근 4주 → {kind:"recent",weeks:4}; days:28로 환산하지 않는다.',
+    )
+    months: int | None = Field(
+        default=None, ge=1, le=24, strict=True,
+        description='최근 N개월/N달 → months:N. PT1H TEST 최신 DB 측정일을 포함한 DB 월 단위다. '
+                    '최근 3개월 → months:3; days:90이나 weeks:12로 환산하지 않는다.',
+    )
+    days: int | None = Field(
+        default=None, ge=1, le=92, strict=True,
+        description='최근 N일 → days:N. PT1H TEST 최신 DB 측정일을 포함한 DB 일 단위다. '
+                    '사용자가 말한 최근 28일은 days:28로 허용하며 주·개월을 일로 환산하지 않는다.',
+    )
+    grains: list[Grain] | None = Field(
+        default=None, min_length=1, max_length=3,
+        description='주별/월별/일별 표시 집계 단위(week/month/day)이며 기간 단위가 아니다. '
+                    '최근 4주 주별 → {kind:"recent",weeks:4,grains:["week"]}.',
+    )
 
     @model_validator(mode='after')
     def one_window(self):
