@@ -388,7 +388,10 @@ def main():
             reasoning_config={'enabled': True, 'effort': startup['reasoning_effort']} if startup.get('reasoning_effort') else None,
             request_overrides={'temperature': startup['temperature']},
             quiet_mode=True, skip_context_files=False, load_soul_identity=False,
-            step_callback=step, interim_assistant_callback=lambda content: emit({'type': 'commentary', 'content': content}),
+            step_callback=step,
+            stream_delta_callback=lambda text: emit({'type': 'commentary', 'content': text, 'delta': True}),
+            interim_assistant_callback=lambda content, already_streamed=False: emit({
+                'type': 'commentary', 'content': content, 'already_streamed': bool(already_streamed)}),
             tool_start_callback=tool_start, tool_complete_callback=tool_complete)
         controller.add(agent)
         from tools.delegate_tool import _build_child_preserving_parent_tools, _run_single_child
