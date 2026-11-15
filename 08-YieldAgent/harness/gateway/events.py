@@ -245,6 +245,41 @@ class SessionEvents:
         result = await self.logs.replace_one({'_id': before['_id'], 'version': before['version']}, after)
         return bool(result.modified_count)
 
+    async def publish_live(self, session_id, typ, payload):
+        """Retain ephemeral answer text without writing it into run.events."""
+        if typ not in ('message.delta', 'message.interim'):
+            raise ValueError('invalid live event type')
+        while True:
+            before = await self._read(session_id)
+            after = deepcopy(before)
+            retain(after, {'type': typ, 'payload': payload, 'session_id': session_id})
+            if await self._commit(before, after):
+                break
+        await self._trim_global()
+
+    def _drop_streamed_text(self, log):
+        """Remove live stream entries after a verified complete, without renumbering.
+
+        Used only on a full replay (after_seq == 0) so incremental polls stay
+        gap-free if some deltas have not been consumed yet.
+        """
+        if not any(json.loads(bytes(item['frozen']).decode('utf-8', errors='surrogatepass'))['type'] == 'message.complete'
+                   for item in log['ring']):
+            return False
+        kept = []
+        changed = False
+        for item in log['ring']:
+            kind = json.loads(bytes(item['frozen']).decode('utf-8', errors='surrogatepass'))['type']
+            if kind in ('message.delta', 'message.interim'):
+                log['bytes'] -= item['size']
+                log['evicted_through'] = max(log['evicted_through'], item['seq'])
+                changed = True
+            else:
+                kept.append(item)
+        if changed:
+            log['ring'] = kept
+        return changed
+
     async def ingest(self, session_id):
         await self._owned(session_id)
         runs = self.store.runs.find(self._scope(session_id)).sort([('created_at', 1), ('_id', 1)])
@@ -311,6 +346,14 @@ class SessionEvents:
         if type(after_seq) is not int or after_seq < 0 or (epoch is not None and not isinstance(epoch, str)):
             raise ValueError('invalid_params')
         await self.ingest(session_id)
+        if after_seq == 0:
+            while True:
+                before = await self._read(session_id)
+                after = deepcopy(before)
+                if not self._drop_streamed_text(after):
+                    break
+                if await self._commit(before, after):
+                    break
         return replay(await self._read(session_id), epoch, after_seq)
 
     async def rebuild(self, session_id):

@@ -12,6 +12,7 @@ import {
   $activeSessionId,
   $messages,
   setActiveSessionStoredIdRotation,
+  setCurrentUsage,
   setCurrentFastMode,
   setCurrentModelTransient,
   setCurrentPersonality,
@@ -62,6 +63,10 @@ interface SessionStateCacheOptions {
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
+  if (state.usage && (state.usage.input > 0 || state.usage.output > 0)) {
+    setCurrentUsage(state.usage)
+  }
+
   // Transient: this runs on every session-state sync, including the periodic
   // session.info heartbeat, whose reported model/provider is the runtime's
   // resolved identity (e.g. the generic `custom` billing class), not a user

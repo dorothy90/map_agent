@@ -17,6 +17,8 @@ import {
   useState
 } from 'react'
 
+import { useWebPresentation } from '../../../../web/presentation'
+import { toolArgumentSummary } from '../../../../web/tool-summary'
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
@@ -63,6 +65,7 @@ import {
 
 import { isApprovalActivity, isCurrentTurnMessage } from './approval-activity'
 import {
+  parseMaybeObject,
   buildToolView,
   clampForDisplay,
   cleanVisibleText,
@@ -364,6 +367,8 @@ function ToolRunningMeta({ seconds, toolCallId = '' }: { seconds: number; toolCa
 }
 
 function ToolEntry({ part }: ToolEntryProps) {
+  const web = useWebPresentation()
+  const webArgs = parseMaybeObject(part.args)
   const { t } = useI18n()
   const copy = t.assistant.tool
   const statusCopy = t.statusStack
@@ -615,7 +620,11 @@ function ToolEntry({ part }: ToolEntryProps) {
       data-tool-row=""
       ref={enterRef}
     >
-      <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
+      {web && <button type="button" className="web-tool-row" aria-expanded={open} disabled={!hasExpandableContent} onClick={() => {
+        if (!open && runDisclosureId) setToolDisclosureOpen(runDisclosureId,true)
+        setToolDisclosureOpen(disclosureId,!open)
+      }}><span aria-hidden="true">{isPending ? '◌' : view.status==='error' ? '!' : result===undefined ? '–' : '✓'}</span><strong>{toolName}</strong><span className="web-tool-args" title={toolArgumentSummary(webArgs)}>{toolArgumentSummary(webArgs)}</span><span className="web-tool-state">{isPending ? '실행 중' : view.status==='error' ? '오류' : result===undefined ? '중지됨' : '완료'}{isPending ? ` · ${Math.floor(elapsed)}s` : view.durationLabel ? ` · ${view.durationLabel}` : ''}</span><span aria-hidden="true">{open ? '⌄' : '›'}</span></button>}
+      <div className={cn(web && 'web-tool-legacy-header', open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
           action={dismissAction}
           onToggle={
@@ -1093,6 +1102,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   startIndex
 }) => {
   const showToolActivity = useStore($showToolActivity)
+  const web = useWebPresentation()
 
   // Joined rather than returned as an array: assistant-ui compares selector
   // results with `Object.is` and re-runs them on every store update, so a
@@ -1110,7 +1120,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   // The run scaffold ("Explored N files") is part of the tool feed and follows
   // display.tool_progress. Children still mount so clarify, diffs, and failed
   // calls can render on their own.
-  if (!showToolActivity) {
+  if (web || !showToolActivity) {
     return children
   }
 

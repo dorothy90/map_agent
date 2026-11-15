@@ -254,11 +254,16 @@ const CREATE_GUARD_RELEASE_MS = 3_000
 
 // Reflect a stored row's persisted token counts into the live usage atom
 // (total is derived, so callers can't drift it out of sync with input/output).
-function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?: number | null }) {
-  const input = stored.input_tokens || 0
-  const output = stored.output_tokens || 0
+export function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?: number | null }) {
+  if (stored.input_tokens == null && stored.output_tokens == null) {
+    return
+  }
 
-  setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
+  setCurrentUsage(current => {
+    const input = stored.input_tokens ?? current.input
+    const output = stored.output_tokens ?? current.output
+    return { ...current, input, output, total: input + output }
+  })
 }
 
 function reconcileAuthoritativeChatMessages(

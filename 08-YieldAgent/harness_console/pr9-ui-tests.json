@@ -130,6 +130,7 @@
   "src/hermes/app/session/hooks/use-busy-input-mode.test.tsx",
   "src/hermes/app/session/hooks/use-cwd-actions.test.tsx",
   "src/hermes/app/session/hooks/use-hermes-config.test.ts",
+  "src/hermes/app/session/hooks/use-message-stream/complete-replaces-draft.test.tsx",
   "src/hermes/app/session/hooks/use-message-stream/completion-boundaries.test.tsx",
   "src/hermes/app/session/hooks/use-message-stream/duplicate-background-reply.test.tsx",
   "src/hermes/app/session/hooks/use-message-stream/gateway-event/deferred-pick.test.ts",
@@ -492,5 +493,6 @@
   "src/hermes/themes/user-themes.test.ts",
   "src/platform/pr9-entrypoints.test.tsx",
   "src/platform/pr9-render-boundaries.test.tsx",
-  "src/platform/pr9-ui-boundaries.test.tsx"
+  "src/platform/pr9-ui-boundaries.test.tsx",
+  "src/hermes/lib/chat-messages/hydration-duration.test.ts"
 ]

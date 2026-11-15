@@ -1,6 +1,6 @@
 {
   "upstream": "5894e750",
-  "source_sha256": "6d362634879b8a2fd9d218c317075ad2eeee3cd34f784df7607388979d5aef3d",
+  "source_sha256": "fb0f74c4d9b2c8c9ba41c544f67521a38fe085943cb1ee82d8677b8611de1497",
   "rpc": {
     "a2a.forward": {
       "classification": "unsupported",
@@ -2338,13 +2338,18 @@
       }
     },
     "session.archive": {
-      "classification": "stub",
-      "reason": "deferred_milestone",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
       "feature": "session.archive",
       "modes": {
         "legacy": {
           "classification": "stub",
           "reason": "deferred_milestone",
+          "feature": "session.archive"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
           "feature": "session.archive"
         }
       }
@@ -2487,13 +2492,18 @@
       }
     },
     "session.delete": {
-      "classification": "stub",
-      "reason": "deferred_milestone",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
       "feature": "session.delete",
       "modes": {
         "legacy": {
           "classification": "stub",
           "reason": "deferred_milestone",
+          "feature": "session.delete"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
           "feature": "session.delete"
         }
       }
@@ -2728,13 +2738,18 @@
       }
     },
     "session.set_hidden": {
-      "classification": "stub",
-      "reason": "deferred_milestone",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
       "feature": "session.set_hidden",
       "modes": {
         "legacy": {
           "classification": "stub",
           "reason": "deferred_milestone",
+          "feature": "session.set_hidden"
+        },
+        "authority": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
           "feature": "session.set_hidden"
         }
       }
@@ -2786,6 +2801,11 @@
       "feature": "session.title",
       "modes": {
         "legacy": {
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
+          "feature": "session.title"
+        },
+        "authority": {
           "classification": "implemented",
           "reason": "m1_implementation_target",
           "feature": "session.title"

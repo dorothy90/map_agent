@@ -17,6 +17,7 @@ from .executor import ToolExecutor
 from .instructions import load_native_instructions
 from .store import LeaseLost, BudgetExceeded
 from .gateway import publication
+from .gateway.events import SessionEvents
 from . import native_ipc as ipc
 from .gateway.pending_controls import PendingControls
 from .gateway.pending_wire import (effective_timeout, decline_server_request,
@@ -32,6 +33,59 @@ ROOT = Path(__file__).resolve().parents[2]
 UPSTREAM_COMMIT = '5894e750c3dba980d43b25aa29e3958149ba2c61'
 # Hermes gateway/restart.py:45: post-interrupt grace before process teardown.
 INTERRUPT_GRACE_SECONDS = 12
+
+
+def live_commentary(message):
+    if message.get('delta') is True:
+        return 'message.delta', {'text': message['content']}
+    if 'already_streamed' in message:
+        return 'message.interim', {'text': message['content'],
+                                   'already_streamed': bool(message['already_streamed'])}
+    return None
+
+
+async def coalesced_worker_messages(reader, remaining_seconds):
+    """Batch text for 90ms, including idle flushes, and preserve IPC boundaries."""
+    pending = None
+    chunks = []
+    deadline = None
+    loop = asyncio.get_running_loop()
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.create_task(reader.readline())
+            timeout = max(.1, remaining_seconds())
+            if chunks:
+                timeout = min(timeout, max(0, deadline - loop.time()))
+            done, _ = await asyncio.wait({pending}, timeout=timeout)
+            if not done:
+                if chunks:
+                    yield {'type': 'commentary', 'content': ''.join(chunks), 'delta': True}
+                    chunks = []
+                    continue
+                raise asyncio.TimeoutError
+            line = pending.result()
+            pending = None
+            message = ipc.decode(line) if line else None
+            if message and message['type'] == 'commentary' and message.get('delta') is True:
+                if not chunks:
+                    deadline = loop.time() + .09
+                chunks.append(message['content'])
+                if loop.time() < deadline:
+                    continue
+            elif line and message is None:
+                continue
+            if chunks:
+                yield {'type': 'commentary', 'content': ''.join(chunks), 'delta': True}
+                chunks = []
+            if not line:
+                break
+            if message and not (message['type'] == 'commentary' and message.get('delta') is True):
+                yield message
+    finally:
+        if pending is not None:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
 
 
 async def stop_worker(process, send, tasks, *, grace=INTERRUPT_GRACE_SECONDS, terminate_grace=3):
@@ -596,6 +650,8 @@ async def run_native(context, registry, *, history=None):
         await send(ipc.reply(message['call_id'], value))
     result = None
     prompts = None
+    live_events = SessionEvents(context.store, run['principal_id'])
+    messages = coalesced_worker_messages(process.stdout, context.remaining_seconds)
     async def server_request(message):
         try:
             value = await handle_server_request(prompts, message['request'], message['params'],
@@ -617,13 +673,7 @@ async def run_native(context, registry, *, history=None):
             await pending.setup()
             bridge.pending = prompts
         await send(startup)
-        while True:
-            line = await asyncio.wait_for(process.stdout.readline(), timeout=max(.1, context.remaining_seconds()))
-            if not line:
-                break
-            message = ipc.decode(line)
-            if message is None:
-                continue
+        async for message in messages:
             if message['type'] == 'step':
                 last_usage = message
             await context.check()
@@ -696,9 +746,13 @@ async def run_native(context, registry, *, history=None):
                 verification_observations.append(observation.model_dump(mode='json'))
                 await send(ipc.reply(message['call_id'], {'saved': True, 'report': report}))
             elif message['type'] == 'commentary':
-                payload = publication.commentary_event(settings, message['content'])
-                if payload is not None:
-                    await context.store.event(run['run_id'], 'commentary', payload, epoch=run['epoch'])
+                live = live_commentary(message)
+                if live is not None:
+                    await live_events.publish_live(run['session_id'], *live)
+                else:
+                    payload = publication.commentary_event(settings, message['content'])
+                    if payload is not None:
+                        await context.store.event(run['run_id'], 'commentary', payload, epoch=run['epoch'])
             elif message['type'] == 'step':
                 await context.store.runs.update_one({'_id': run['run_id'], 'epoch': run['epoch'], 'status': 'running'},
                     {'$set': {'usage.tokens': prior_usage.get('tokens', 0) + message['tokens'],
@@ -725,6 +779,8 @@ async def run_native(context, registry, *, history=None):
             'native_engine': {'name': 'NousResearch/hermes-agent', 'commit': UPSTREAM_COMMIT,
                 'verification': result.get('verification', [])}}
     finally:
+        await messages.aclose()
+
         async def drain_usage():
             nonlocal last_usage
             while line := await process.stdout.readline():

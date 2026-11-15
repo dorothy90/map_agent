@@ -23,6 +23,12 @@ describe('capability gate', () => {
     expect(capabilityError('prompt.receipt', 'legacy')).toMatchObject({ code: -32004 })
     expect(capabilityError('prompt.receipt', 'authority')).toBeNull()
   })
+  it('allows authority session title, delete, archive, and set_hidden', () => {
+    for (const name of ['session.title', 'session.delete', 'session.archive', 'session.set_hidden']) {
+      expect(capabilityError(name, 'authority')).toBeNull()
+    }
+    expect(capabilityError('session.delete', 'legacy')).toMatchObject({ code: -32004 })
+  })
   it('matches the backend JSON and its hash exactly', () => {
     const bytes = readFileSync(new URL('../../../harness/gateway/manifest.json', import.meta.url))
     const source = JSON.parse(bytes.toString())

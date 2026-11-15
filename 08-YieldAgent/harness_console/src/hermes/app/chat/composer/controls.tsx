@@ -1,3 +1,5 @@
+import { ArrowUp, Square as StopIcon } from 'lucide-react'
+import { useWebPresentation } from '../../../../web/presentation'
 import { useStore } from '@nanostores/react'
 
 import { Button } from '@/components/ui/button'
@@ -76,17 +78,24 @@ export function ComposerControls({
   onToggleAutoSpeak: () => void
 }) {
   const { t } = useI18n()
+  const web = useWebPresentation()
   const c = t.composer
   const hudMode = useStore($hudMode)
 
-  if (conversation.active) {
+  if (conversation.active && !web) {
     return <ConversationPill {...conversation} disabled={disabled} />
   }
 
-  const showVoicePrimary = !busy && !hasComposerPayload
+  const showVoicePrimary = !web && !busy && !hasComposerPayload
   // Steer is just send: a payload keeps the Send affordance mid-turn (it answers
   // a waiting card). Stop only when the composer is empty and a turn is running.
   const showStop = busy && !hasComposerPayload
+
+  if (web) {
+    return <button className="web-send-button" type="submit" aria-label={showStop ? '중지' : '보내기'} data-web-stop={showStop || undefined} disabled={disabled || !canSubmit} onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}>
+      {showStop ? <StopIcon size={14} aria-hidden="true"/> : <ArrowUp size={16} aria-hidden="true"/>}<span>{showStop ? '중지' : '보내기'}</span>
+    </button>
+  }
 
   const showQueueButton = queueButtonVisible(busy, busyAction, hasComposerPayload, cardWaiting)
 
@@ -166,6 +175,7 @@ export function ComposerControls({
           placement="control"
         >
           <Button
+            data-web-stop={web && showStop ? true : undefined}
             aria-label={showStop ? c.stop : sendLabel}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
@@ -173,7 +183,7 @@ export function ComposerControls({
             type="submit"
           >
             {showStop ? (
-              <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
+              <><span className="block size-2.5 rounded-[0.1875rem] bg-current" />{web && <span>중지</span>}</>
             ) : (
               <Codicon name="arrow-up" size="0.875rem" />
             )}

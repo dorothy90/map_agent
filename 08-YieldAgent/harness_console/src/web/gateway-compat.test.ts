@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs'
 import { afterEach, expect, it, vi } from 'vitest'
+import { JsonRpcGatewayClient } from '@hermes/shared'
 import { WebHostAdapter } from '../platform/web-host'
 import { FakeWebSocket } from '../platform/fake-websocket'
 import { withWebGatewayCompat } from './gateway-compat'
@@ -38,7 +40,7 @@ it('preserves an explicit tier override of fast mode', async () => {
  expect(request.mock.calls[0][1]).toBe(params)
 })
 
-it.each(['prompt.submit','session.resume','session.title'])('passes %s through with the same params, deadline, signal and promise', method => {
+it.each(['prompt.submit','session.resume'])('passes %s through with the same params, deadline, signal and promise', method => {
  const host=make(), pending=Promise.resolve({ok:true})
  const request=vi.spyOn(host.gateway,'request').mockReturnValue(pending)
  withWebGatewayCompat(host)
@@ -79,4 +81,37 @@ it('emits an authority create frame without regenerating the default tier', asyn
  await pending
  expect(socket.sent).toHaveLength(1)
  expect(frame.params).toEqual({source:'gui',profile:'default',request_id:'new-chat'})
+})
+
+it('dispatches title directly with the same params, deadline, signal and promise', () => {
+ const host=make(), pending=Promise.resolve({title:'Renamed'})
+ const canonical=vi.spyOn(host.gateway,'request')
+ const raw=vi.spyOn(JsonRpcGatewayClient.prototype,'request').mockReturnValue(pending)
+ withWebGatewayCompat(host)
+ const params=Object.freeze({session_id:'never-opened',title:'Renamed'}),signal=new AbortController().signal
+ expect(host.gateway.request('session.title',params,456,signal)).toBe(pending)
+ expect(raw).toHaveBeenCalledExactlyOnceWith('session.title',params,456,signal)
+ expect(raw.mock.instances[0]).toBe(host.gateway)
+ expect(canonical).not.toHaveBeenCalled()
+})
+
+it.each([{session_id:'never-opened',title:'Renamed'},{session_id:'never-opened'}])('sends plain title without resume or revision: %j', async params => {
+ const host=withWebGatewayCompat(make())
+ const connecting=host.connect();await flush()
+ const socket=FakeWebSocket.instances.at(-1)!
+ socket.open();await connecting
+ const outcome=host.gateway.request('session.title',params).then(value => ({value}),error => ({error}))
+ await flush()
+ const frame=socket.request('session.title')
+ if(frame)socket.serverFrame({jsonrpc:'2.0',id:frame.id,result:{title:'Renamed',pending:false}})
+ expect(await outcome).toEqual({value:{title:'Renamed',pending:false}})
+ expect(socket.sent.map(value => JSON.parse(value))).toEqual([{jsonrpc:'2.0',id:expect.any(Number),method:'session.title',params}])
+})
+
+it('keeps the rename field flexible and removes focus decoration', () => {
+ const css=readFileSync(new URL('./web.css',import.meta.url),'utf8')
+ const input=css.split('.hermes-web .web-session-content input {')[1].split('}')[0]
+ for(const rule of ['flex:1','min-width:0','outline:none','box-shadow:none','border:1px solid #e6e6e6','color:#1a1c1f','background:#ffffff'])expect(input).toContain(rule)
+ expect(css).toContain('.hermes-web .web-session-content { display:flex; width:100%;')
+ expect(css).toContain('input:focus-visible { outline:none; box-shadow:none; }')
 })

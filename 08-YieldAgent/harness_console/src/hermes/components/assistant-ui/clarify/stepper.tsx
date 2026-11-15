@@ -1,5 +1,7 @@
 'use client'
 
+import { useWebPresentation } from '../../../../web/presentation'
+
 import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useRef, useState } from 'react'
 
@@ -47,6 +49,7 @@ export function ClarifyToolStepper({
   onAnswered: () => void
   requests: ClarifyRequest[]
 }) {
+  const web=useWebPresentation()
   const { t } = useI18n()
   const copy = { ...t.assistant.clarify, confirmAndContinueLabel: '확인' }
   const pagination = {
@@ -199,9 +202,9 @@ export function ClarifyToolStepper({
       <ClarifyShell className="grid gap-3">
         <div className="flex items-center gap-2">
           <span className="shrink-0 text-[0.6875rem] font-medium leading-4 text-primary">
-            {step + 1}/{requests.length}
+            {web ? `질문 ${step + 1} / ${requests.length}` : `${step + 1}/${requests.length}`}
           </span>
-          <div
+          {!web && <div
             aria-label={`${step + 1}/${requests.length}`}
             aria-valuemax={requests.length}
             aria-valuemin={1}
@@ -214,9 +217,11 @@ export function ClarifyToolStepper({
               style={{ width: `${((step + 1) / requests.length) * 100}%` }}
             />
           </div>
-          <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
+          }
+          {web ? <span className="web-clarify-status">답변 대기</span> : <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />}
         </div>
 
+        {web && step>0 && <p className="web-prior-answer">{requests.slice(0,step).map(request => answerFor(request.questions[0],staged[request.requestId] ?? emptyStage)).filter(Boolean).join(' · ')}</p>}
         <QuestionBlock
           cursor={keys.cursorRow}
           disabled={submitting}

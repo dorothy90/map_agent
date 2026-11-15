@@ -109,6 +109,16 @@
       "result": "CanonicalSubmitResult"
     }
   },
+  "session.archive": {
+    "legacy": {
+      "params": "SessionArchiveParams",
+      "result": "SessionArchiveResult"
+    },
+    "authority": {
+      "params": "SessionArchiveParams",
+      "result": "SessionArchiveResult"
+    }
+  },
   "session.create": {
     "legacy": {
       "params": "SessionCreateParams",
@@ -117,6 +127,16 @@
     "authority": {
       "params": "CanonicalCreateParams",
       "result": "CanonicalSnapshot"
+    }
+  },
+  "session.delete": {
+    "legacy": {
+      "params": "SessionDeleteParams",
+      "result": "SessionDeleteResult"
+    },
+    "authority": {
+      "params": "SessionDeleteParams",
+      "result": "SessionDeleteResult"
     }
   },
   "session.events.since": {
@@ -169,6 +189,16 @@
       "result": "CanonicalSnapshot"
     }
   },
+  "session.set_hidden": {
+    "legacy": {
+      "params": "SessionSetHiddenParams",
+      "result": "SessionSetHiddenResult"
+    },
+    "authority": {
+      "params": "SessionSetHiddenParams",
+      "result": "SessionSetHiddenResult"
+    }
+  },
   "session.steer": {
     "legacy": {
       "params": "SessionCorrectionParams",
@@ -177,6 +207,16 @@
     "authority": {
       "params": "CanonicalCorrectionParams",
       "result": "CanonicalCorrectionResult"
+    }
+  },
+  "session.title": {
+    "legacy": {
+      "params": "SessionTitleParams",
+      "result": "SessionTitleResult"
+    },
+    "authority": {
+      "params": "SessionTitleParams",
+      "result": "SessionTitleResult"
     }
   },
   "shell.exec": {

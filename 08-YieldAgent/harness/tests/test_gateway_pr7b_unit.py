@@ -97,7 +97,8 @@ class MemorySessions:
             'started_at': 1.0, 'title': '', 'profile_name': kwargs['profile_name']})
 
     async def get_session(self, sid):
-        return self.shared.get((self.owner, sid))
+        row = self.shared.get((self.owner, sid))
+        return row if row and not row.get('deleted') else None
 
     async def get_session_title(self, sid):
         return (await self.get_session(sid))['title']
@@ -105,6 +106,15 @@ class MemorySessions:
     async def set_session_title(self, sid, title):
         (await self.get_session(sid))['title'] = title
         return True
+
+    async def set_session_deleted(self, sid):
+        (await self.get_session(sid))['deleted'] = True
+
+    async def set_session_archived(self, sid, archived=True):
+        (await self.get_session(sid))['archived'] = archived
+
+    async def set_session_hidden(self, sid, hidden=True):
+        (await self.get_session(sid))['hidden'] = hidden
 
     async def resolve_resume_session_id(self, sid):
         return (await self.get_session(sid)).get('tip', sid)
@@ -116,7 +126,8 @@ class MemorySessions:
         return (await self.get_session(sid)).get('rows', [])
 
     async def list_sessions_rich(self, **kwargs):
-        return [row for (owner, _), row in self.shared.items() if owner == self.owner]
+        return [row for (owner, _), row in self.shared.items() if owner == self.owner
+                and not any(row.get(flag) for flag in ('deleted', 'archived', 'hidden'))]
 
 
 class MemoryEvents:
@@ -539,6 +550,49 @@ def test_history_uses_same_verified_artifact_text_as_live_completion():
         assert '분석 코드' not in history_text
 
 
+def test_history_and_info_restore_completed_run_usage_and_duration():
+    services = MemoryServices()
+    with client_for(services, 'authority') as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        answer = 'verified answer'
+        services.runs.append({
+            'principal_id': 'alice', 'session_id': sid, 'run_id': 'run-usage',
+            'created_at': 1, 'query': 'summarize yield', 'active': False,
+            'status': 'completed', 'answer_text': answer,
+            'native_usage': {'input_tokens': 98714, 'output_tokens': 6599,
+                             'total_tokens': 105313, 'api_calls': 6},
+            'usage': {'active_seconds': 46.057},
+            'observations': [
+                {'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'},
+                 'validated_arguments': candidate_digest(answer)},
+            ],
+        })
+        resumed = call(ws, 'session.resume', {'session_id': sid})['result']
+        assistant = resumed['messages'][-1]
+        assert assistant['text'] == answer
+        assert assistant['usage'] == {'input': 98714, 'output': 6599, 'total': 105313, 'calls': 6}
+        assert assistant['duration_s'] == 46
+        assert resumed['info']['usage'] == assistant['usage']
+        info = call(ws, 'session.info', {'session_id': sid})['result']
+        assert info['usage'] == assistant['usage']
+        rest = client.get('/gateway-m1/api/sessions/' + sid + '/messages?include_compacted=true').json()
+        rest_assistant = [row for row in rest['messages'] if row['role'] == 'assistant'][-1]
+        assert rest_assistant['content'] == answer
+        assert rest_assistant['usage'] == assistant['usage']
+        assert rest_assistant['duration_s'] == 46
+
+
+def test_session_info_omits_usage_when_counters_are_incomplete():
+    services = MemoryServices()
+    with client_for(services, 'authority') as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        services.runs.append({'principal_id': 'alice', 'session_id': sid, 'query': 'hello',
+            'active': False, 'status': 'completed'})
+        response = call(ws, 'session.info', {'session_id': sid})
+        assert 'result' in response
+        assert 'usage' not in response['result']
+
+
 def test_history_keeps_native_tools_when_final_answer_is_unverified():
     services = MemoryServices()
     with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
@@ -811,3 +865,53 @@ def test_history_reopens_clarify_result_before_final_answer():
         assert json.loads(messages[1]['content']) == result
         assert messages[2]['name'] == 'query_db'
         assert call(ws, 'session.resume', {'session_id': sid})['result']['messages'] == messages
+
+
+def test_authority_title_get_set():
+    with client_for(MemoryServices(), 'authority') as client:
+        with client.websocket_connect('/gateway-m1/api/ws') as ws:
+            sid = call(ws, 'session.create')['result']['session_id']
+            assert call(ws, 'session.title', {'session_id': sid, 'title': 'Name'})['result'] == {'title': 'Name', 'pending': False}
+            assert call(ws, 'session.title', {'session_id': sid})['result'] == {'title': 'Name', 'session_key': sid}
+
+
+@pytest.mark.parametrize('method,params,expected', [
+    ('session.delete', {}, {'deleted': 'saved'}),
+    ('session.archive', {}, {'archived': True, 'session_key': 'saved'}),
+    ('session.archive', {'session_key': 'saved'}, {'archived': True, 'session_key': 'saved'}),
+    ('session.set_hidden', {'hidden': True}, {'hidden': True, 'session_key': 'saved'}),
+])
+def test_authority_owner_soft_flags(method, params, expected):
+    services = MemoryServices()
+    row = {'id': 'saved', 'source': 'cli', 'started_at': 1.0, 'title': 'Keep',
+           'rows': [{'id': 1, 'role': 'user', 'content': 'Keep message'}]}
+    services.sessions['alice', 'saved'] = row
+    args = params if 'session_key' in params else {'session_id': 'saved', **params}
+    with client_for(services, 'authority') as client:
+        with client.websocket_connect('/gateway-m1/api/ws', headers={'x-test-user': 'bob'}) as ws:
+            foreign = call(ws, method, args)['error']
+            missing = call(ws, method, {**params, 'session_id': 'missing', **({'session_key': 'missing'} if 'session_key' in params else {})})['error']
+            assert foreign == missing
+            assert foreign['message'] == 'not_found'
+            assert not any(row.get(flag) for flag in ('deleted', 'archived', 'hidden'))
+        with client.websocket_connect('/gateway-m1/api/ws') as ws:
+            assert call(ws, method, args)['result'] == expected
+            assert call(ws, 'session.list', {'scope': 'stored'})['result']['sessions'] == []
+            assert row['title'] == 'Keep' and row['rows'][0]['content'] == 'Keep message'
+            if method != 'session.delete':
+                field = 'hidden' if method == 'session.set_hidden' else 'archived'
+                assert call(ws, method, {'session_id': 'saved', field: False})['result'][field] is False
+                assert len(call(ws, 'session.list', {'scope': 'stored'})['result']['sessions']) == 1
+
+
+@pytest.mark.parametrize('method,params', [
+    ('session.delete', {}), ('session.delete', {'session_id': 'saved', 'extra': True}),
+    ('session.archive', {'session_id': 'saved', 'archived': 'true'}),
+    ('session.archive', {'session_id': 'saved', 'session_key': 'other'}),
+    ('session.set_hidden', {'session_id': 'saved'}),
+    ('session.set_hidden', {'session_id': 'saved', 'hidden': 1}),
+])
+def test_authority_soft_flags_validate_params(method, params):
+    with client_for(MemoryServices(), 'authority') as client:
+        with client.websocket_connect('/gateway-m1/api/ws') as ws:
+            assert call(ws, method, params)['error']['code'] == 4001

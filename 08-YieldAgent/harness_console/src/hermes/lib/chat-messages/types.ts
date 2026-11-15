@@ -59,9 +59,9 @@ export type ChatMessage = {
   durableComplete?: boolean
   /** Exact gateway receipt; whole-turn coverage is never inferred from prose. */
   persistedTurn?: PersistedTurn
-  /** Whole-turn wall-clock seconds (message.start → message.complete),
-   *  stamped by the desktop when it watched the turn run. Absent for
-   *  messages hydrated from history — the backend doesn't persist it. */
+  /** Whole-turn wall-clock seconds (message.start → message.complete).
+   *  Live turns stamp this when message.complete arrives; history-hydrated
+   *  messages receive it when the backend includes duration_s. */
   durationS?: number
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]

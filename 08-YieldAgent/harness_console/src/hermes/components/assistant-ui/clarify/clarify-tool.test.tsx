@@ -1,3 +1,4 @@
+import { WebPresentationProvider } from '../../../../web/presentation'
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
@@ -1397,7 +1398,7 @@ describe('ClarifyTool canonical per-question batch', () => {
     toolCallId
   })
 
-  it('steps through sibling prompts, keeps answers on back, and submits each prompt id in order', async () => {
+  it.each([false,true])('steps through sibling prompts, keeps answers on back, and submits each prompt id in order (web=%s)', async web => {
     Element.prototype.animate = () => ({ cancel() {}, finished: Promise.resolve() }) as unknown as Animation
     const request = vi.fn().mockResolvedValue({ status: 'resolved' })
     const product = { choices: ['4SS', '8SS'], question: 'Choose an option' }
@@ -1431,7 +1432,7 @@ describe('ClarifyTool canonical per-question batch', () => {
       )
     }
 
-    renderClarify(
+    const tree = (
       <SessionViewProvider value={{ $runtimeId: atom('session-1') } as unknown as SessionView}>
         <ClarifyTool {...props('provider-batch', [product, period])} />
         <ClarifyTool {...props('srq-1:q1', [product])} />
@@ -1439,7 +1440,8 @@ describe('ClarifyTool canonical per-question batch', () => {
       </SessionViewProvider>
     )
 
-    expect(screen.getByText('1/2')).toBeTruthy()
+    renderClarify(web ? <WebPresentationProvider>{tree}</WebPresentationProvider> : tree)
+    expect(screen.getByText(web ? '질문 1 / 2' : '1/2')).toBeTruthy()
     expect(document.querySelectorAll('form[data-clarify-stepper]')).toHaveLength(1)
     expect(document.querySelector('[data-clarify-batch-question="q1"]')).toBeTruthy()
     expect(document.querySelector('[data-clarify-batch-question="q2"]')).toBeNull()
@@ -1448,12 +1450,12 @@ describe('ClarifyTool canonical per-question batch', () => {
     fireEvent.click(productChoice)
 
     fireEvent.click(screen.getByRole('button', { name: '다음 →' }))
-    expect(screen.getByText('2/2')).toBeTruthy()
+    expect(screen.getByText(web ? '질문 2 / 2' : '2/2')).toBeTruthy()
     expect(document.querySelector('[data-clarify-batch-question="q1"]')).toBeNull()
     expect(document.querySelector('[data-clarify-batch-question="q2"]')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: '← 이전' }))
-    expect(screen.getByText('1/2')).toBeTruthy()
+    expect(screen.getByText(web ? '질문 1 / 2' : '1/2')).toBeTruthy()
     expect(screen.getByRole('button', { name: /4SS/ }).getAttribute('aria-pressed')).toBe('true')
 
     fireEvent.click(screen.getByRole('button', { name: '다음 →' }))

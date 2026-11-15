@@ -15,6 +15,15 @@ class NotConnected(Exception):
     pass
 
 
+def run_duration_s(run):
+    """Whole-turn seconds from the stored run duration, matching the live badge."""
+    blob = run.get('usage') if isinstance(run.get('usage'), dict) else {}
+    seconds = blob.get('active_seconds')
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds <= 0:
+        return None
+    return max(1, int(round(seconds)))
+
+
 def validate(params, allowed, *, mode):
     if not isinstance(params, dict) or params.keys() - set(allowed):
         raise RpcError('invalid_params', code=4000 if mode == 'legacy' else 4001)
@@ -174,17 +183,31 @@ class SessionRPC:
                                              'tool_call_id': call_id, 'args': args})
                 answer = verified_answer_with_artifacts(run)
                 if answer is not None:
-                    messages.append({'role': 'assistant', 'text': answer})
+                    message = {'role': 'assistant', 'text': answer}
+                    usage = observed_run_usage(run)
+                    if usage is not None:
+                        message['usage'] = usage
+                    duration_s = run_duration_s(run)
+                    if duration_s is not None:
+                        message['duration_s'] = duration_s
+                    messages.append(message)
         return messages
 
     async def info(self, sid):
         row = await self.owned(sid)
         # H/contracts/canonical.py:175-202; optional unsafe fields omitted.
-        return {'source': row.get('source') or 'cli', 'lazy': False,
-                'profile_id': self.execution.profile_id,
-                'profile_name': self.execution.profile_id,
-                'desktop_protocol': 'hermes-gateway-v1',
-                'title': row.get('title') or '', 'started_at': row['started_at']}
+        result = {'source': row.get('source') or 'cli', 'lazy': False,
+                  'profile_id': self.execution.profile_id,
+                  'profile_name': self.execution.profile_id,
+                  'desktop_protocol': 'hermes-gateway-v1',
+                  'title': row.get('title') or '', 'started_at': row['started_at']}
+        # Resume hydrates the composer token line from info.usage. Incomplete
+        # counters must not fail session.info / session.resume.
+        try:
+            result['usage'] = await self.usage(sid)
+        except NotConnected:
+            pass
+        return result
 
     async def public_list_row(self, row):
         """Shared WS/REST allowlist; raw session metadata is never returned."""
@@ -235,6 +258,37 @@ class SessionRPC:
         return result
 
     async def dispatch(self, method, params):
+        if method in ('session.delete', 'session.archive', 'session.set_hidden'):
+            if self.mode != 'authority':
+                raise NotConnected()
+            allowed = {'session_id'}
+            if method == 'session.archive':
+                allowed |= {'session_key', 'archived'}
+            elif method == 'session.set_hidden':
+                allowed.add('hidden')
+            validate(params, allowed, mode=self.mode)
+            sid = params.get('session_id', params.get('session_key'))
+            if method == 'session.archive':
+                if ('session_key' in params and not string(params['session_key'])) or (
+                        'session_id' in params and 'session_key' in params and params['session_id'] != params['session_key']):
+                    raise RpcError('invalid_params')
+                value = flag({'archived': params.get('archived', True)}, 'archived', self.mode)
+            elif method == 'session.set_hidden':
+                if 'hidden' not in params:
+                    raise RpcError('invalid_params')
+                value = flag(params, 'hidden', self.mode)
+            await self.owned(sid)
+            try:
+                if method == 'session.delete':
+                    await self.db.set_session_deleted(sid)
+                    return {'deleted': sid}
+                if method == 'session.archive':
+                    await self.db.set_session_archived(sid, value)
+                    return {'archived': value, 'session_key': sid}
+                await self.db.set_session_hidden(sid, value)
+                return {'hidden': value, 'session_key': sid}
+            except LookupError:
+                raise RpcError('not_found') from None
         if method == 'session.create':
             return await self.create(params)
         if method in ('session.list', 'session.most_recent'):

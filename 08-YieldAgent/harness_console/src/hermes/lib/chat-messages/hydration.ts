@@ -589,6 +589,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
         activeAssistant.parts = [...activeAssistant.parts, ...parts]
         activeAssistant.durableComplete = durableComplete
+        if (typeof message.duration_s === 'number' && Number.isFinite(message.duration_s)) {
+          activeAssistant.durationS = message.duration_s
+        }
         activeAssistant.timestamp = earliestTimestamp(
           activeAssistant.timestamp,
           message.timestamp,
@@ -635,6 +638,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
+      ...(message.role === 'assistant' && typeof message.duration_s === 'number' && Number.isFinite(message.duration_s)
+        ? { durationS: message.duration_s }
+        : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })
 

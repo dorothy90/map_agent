@@ -16,7 +16,8 @@ from pathlib import Path
 import re
 import subprocess
 
-from ..policy import UPSTREAM, UPSTREAM_COMMIT, event_policy, request_policy, route_policy, rpc_policy
+from ..rpc_rules import RPC_RULES
+from ..policy import expand, UPSTREAM, UPSTREAM_COMMIT, event_policy, request_policy, route_policy, rpc_policy
 
 TS_PATH = 'apps/shared/src/gateway-contract.generated.ts'
 
@@ -137,14 +138,19 @@ def extract_contract(root):
     text = (root / TS_PATH).read_text()
     inventories = {'legacy': interface(text, 'RpcMethods'),
                    'authority': interface(text, 'CanonicalRpcMethods')}
+    authority_names = {name for mode, patterns, *_ in RPC_RULES if mode == 'authority'
+                       for pattern in patterns for name in expand(pattern)}
+    for name in authority_names - inventories['authority'].keys():
+        if name in inventories['legacy']:
+            inventories['authority'][name] = inventories['legacy'][name]
     rpc = []
     for name in sorted(set().union(*inventories.values())):
         modes = {mode: {**entries[name], **rpc_policy(name, mode)}
                  for mode, entries in inventories.items() if name in entries}
         classifications = {entry['classification'] for entry in modes.values()}
-        if len(classifications) != 1:
-            raise ValueError(f'Mode classifications diverge for {name}; explicit aggregate policy needed')
         first = next(iter(modes.values()))
+        if len(classifications) != 1:
+            first = next(entry for entry in modes.values() if entry['classification'] == 'implemented')
         rpc.append({'name': name, **{k: first[k] for k in ('classification', 'reason', 'feature', 'detail', 'policy_source')},
                     'source': [entry['source'] for entry in modes.values()], 'modes': modes})
     generated = interface(text, 'BackendGatewayEventMap')

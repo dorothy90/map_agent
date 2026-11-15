@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from yield_viz import GMS_COLUMNS, PARA_COLUMNS, PT1C_COLUMNS, _build_html_table
 
 
-LEGACY_SHA256 = "566736a31943c3116f91d680c318534ad4f57b8e5893d8635c7eac5742d1225a"
+LEGACY_SHA256 = "a0bb53ebe57096e57569651c7d8ebedc6559047d473d1ba5a42c1a184ba545a1"
 
 
 def _legacy_rows():
@@ -102,7 +102,7 @@ def test_report_builder_uses_original_units_one_decimal_and_integer_counts():
         filter_params=["VTH"],
     )
 
-    assert '<td>7</td><td>14</td>' in html
+    assert '<td class="td-lot">7</td><td class="td-wf">14</td>' in html
     assert '>0.0</td>' in html
     assert '>0.7</td>' in html
     assert '>86.5</td>' in html
@@ -292,10 +292,10 @@ def test_report_tool_reuses_legacy_css_and_report_structure():
         ("th", "th-section th-section-pt1c"),
         ("th", "th-section th-section-gms"),
         ("tr", "delta"),
-        ("td", "delta-week"),
+        ("td", "delta-week td-week"),
     ):
         assert (tag, css_class) in classes
-    assert '<th class="th-meta" rowspan="2">LOT</th>' in html
-    assert '<th class="th-meta" rowspan="2">WF</th>' in html
+    assert '<th class="th-meta th-lot" rowspan="2">LOT</th>' in html
+    assert '<th class="th-meta th-wf" rowspan="2">WF</th>' in html
     assert ("td", "td-pt1c-sep") in classes
     assert ("td", "td-gms-sep") in classes

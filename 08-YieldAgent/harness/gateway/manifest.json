@@ -4825,12 +4825,13 @@
     },
     {
       "name": "session.archive",
-      "classification": "stub",
-      "reason": "deferred_milestone",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
       "feature": "session.archive",
-      "detail": "채팅 관리 확장 유예",
-      "policy_source": "m1_plan_codex.log:6175",
+      "detail": "소유자 세션 soft flag 관리; 제목·메시지 보존",
+      "policy_source": "harness/gateway/session_rpc.py",
       "source": [
+        "apps/shared/src/gateway-contract.generated.ts:6349",
         "apps/shared/src/gateway-contract.generated.ts:6349"
       ],
       "modes": {
@@ -4844,6 +4845,17 @@
           "reason": "deferred_milestone",
           "detail": "채팅 관리 확장 유예",
           "policy_source": "m1_plan_codex.log:6175"
+        },
+        "authority": {
+          "source": "apps/shared/src/gateway-contract.generated.ts:6349",
+          "schema": "{ params: SessionArchiveParams; result: SessionArchiveResult }",
+          "params": "SessionArchiveParams",
+          "result": "SessionArchiveResult",
+          "classification": "implemented",
+          "feature": "session.archive",
+          "reason": "m1_implementation_target",
+          "detail": "소유자 세션 soft flag 관리; 제목·메시지 보존",
+          "policy_source": "harness/gateway/session_rpc.py"
         }
       }
     },
@@ -5125,12 +5137,13 @@
     },
     {
       "name": "session.delete",
-      "classification": "stub",
-      "reason": "deferred_milestone",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
       "feature": "session.delete",
-      "detail": "삭제 UI/전체 lineage 삭제는 후속",
-      "policy_source": "m1_plan_codex.log:6180",
+      "detail": "소유자 세션 soft flag 관리; 제목·메시지 보존",
+      "policy_source": "harness/gateway/session_rpc.py",
       "source": [
+        "apps/shared/src/gateway-contract.generated.ts:6371",
         "apps/shared/src/gateway-contract.generated.ts:6371"
       ],
       "modes": {
@@ -5144,6 +5157,17 @@
           "reason": "deferred_milestone",
           "detail": "삭제 UI/전체 lineage 삭제는 후속",
           "policy_source": "m1_plan_codex.log:6180"
+        },
+        "authority": {
+          "source": "apps/shared/src/gateway-contract.generated.ts:6371",
+          "schema": "{ params: SessionDeleteParams; result: SessionDeleteResult }",
+          "params": "SessionDeleteParams",
+          "result": "SessionDeleteResult",
+          "classification": "implemented",
+          "feature": "session.delete",
+          "reason": "m1_implementation_target",
+          "detail": "소유자 세션 soft flag 관리; 제목·메시지 보존",
+          "policy_source": "harness/gateway/session_rpc.py"
         }
       }
     },
@@ -5617,12 +5641,13 @@
     },
     {
       "name": "session.set_hidden",
-      "classification": "stub",
-      "reason": "deferred_milestone",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
       "feature": "session.set_hidden",
-      "detail": "목록 관리 확장 유예",
-      "policy_source": "m1_plan_codex.log:6188",
+      "detail": "소유자 세션 soft flag 관리; 제목·메시지 보존",
+      "policy_source": "harness/gateway/session_rpc.py",
       "source": [
+        "apps/shared/src/gateway-contract.generated.ts:6397",
         "apps/shared/src/gateway-contract.generated.ts:6397"
       ],
       "modes": {
@@ -5636,6 +5661,17 @@
           "reason": "deferred_milestone",
           "detail": "목록 관리 확장 유예",
           "policy_source": "m1_plan_codex.log:6188"
+        },
+        "authority": {
+          "source": "apps/shared/src/gateway-contract.generated.ts:6397",
+          "schema": "{ params: SessionSetHiddenParams; result: SessionSetHiddenResult }",
+          "params": "SessionSetHiddenParams",
+          "result": "SessionSetHiddenResult",
+          "classification": "implemented",
+          "feature": "session.set_hidden",
+          "reason": "m1_implementation_target",
+          "detail": "소유자 세션 soft flag 관리; 제목·메시지 보존",
+          "policy_source": "harness/gateway/session_rpc.py"
         }
       }
     },
@@ -5731,10 +5767,22 @@
       "detail": "세션 제목 조회·저장; 자동 LLM 제목 생성은 미포함",
       "policy_source": "m1_plan_codex.log:6191",
       "source": [
+        "apps/shared/src/gateway-contract.generated.ts:6403",
         "apps/shared/src/gateway-contract.generated.ts:6403"
       ],
       "modes": {
         "legacy": {
+          "source": "apps/shared/src/gateway-contract.generated.ts:6403",
+          "schema": "{ params: SessionTitleParams; result: SessionTitleResult }",
+          "params": "SessionTitleParams",
+          "result": "SessionTitleResult",
+          "classification": "implemented",
+          "feature": "session.title",
+          "reason": "m1_implementation_target",
+          "detail": "세션 제목 조회·저장; 자동 LLM 제목 생성은 미포함",
+          "policy_source": "m1_plan_codex.log:6191"
+        },
+        "authority": {
           "source": "apps/shared/src/gateway-contract.generated.ts:6403",
           "schema": "{ params: SessionTitleParams; result: SessionTitleResult }",
           "params": "SessionTitleParams",

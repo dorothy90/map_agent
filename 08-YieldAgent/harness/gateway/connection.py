@@ -25,6 +25,7 @@ EXECUTION_METHODS = frozenset({'prompt.submit', 'prompt.receipt', 'prompt.cancel
 LIFECYCLE_METHODS = frozenset({'session.create', 'session.resume', 'session.activate',
                               'session.close', 'session.detach'})
 SESSION_METHODS = LIFECYCLE_METHODS | {'session.list', 'session.most_recent',
+    'session.delete', 'session.archive', 'session.set_hidden',
     'session.history', 'session.title', 'session.info', 'session.usage'}
 logger = logging.getLogger(__name__)
 
