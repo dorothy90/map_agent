@@ -749,6 +749,16 @@ def test_usage_reports_only_observed_counters_and_refuses_incomplete_usage():
         assert call(ws, 'session.usage', {'session_id': sid})['result'] == {'input': 12, 'output': 3, 'total': 15, 'calls': 2}
         services.runs[0]['active'] = True
         assert call(ws, 'session.usage', {'session_id': sid})['error']['code'] == -32005
+        services.runs[0]['active'] = False
+        observed = services.runs[0]['native_usage']
+        for key in observed:
+            for invalid in (None, -1, True, '1', 1.5):
+                services.runs[0]['native_usage'] = {**observed, key: invalid}
+                assert call(ws, 'session.usage', {'session_id': sid})['error']['code'] == -32005
+            services.runs[0]['native_usage'] = {k: v for k, v in observed.items() if k != key}
+            assert call(ws, 'session.usage', {'session_id': sid})['error']['code'] == -32005
+        del services.runs[0]['native_usage']
+        assert call(ws, 'session.usage', {'session_id': sid})['error']['code'] == -32005
 
 
 def test_pump_retries_admission_lock_contention_without_closing_peer():

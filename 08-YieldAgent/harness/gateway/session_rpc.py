@@ -7,7 +7,7 @@ import hashlib
 import json
 import uuid
 
-from .events import verified_answer_with_artifacts
+from .events import observed_run_usage, verified_answer_with_artifacts
 from .execution import RpcError, string
 
 
@@ -297,9 +297,7 @@ class SessionRPC:
         # H/methods_session.py:1448; contracts/common.py:28-57. The host saves
         # actual native counters in control.py:193-200, not reserved budgets.
         lineage = await self.db.get_compression_lineage(sid) or [sid]
-        counters = {'input': 'input_tokens', 'output': 'output_tokens',
-                    'total': 'total_tokens', 'calls': 'api_calls'}
-        totals = dict.fromkeys(counters, 0)
+        totals = dict.fromkeys(('input', 'output', 'total', 'calls'), 0)
         for ancestor in lineage:
             runs = await self.execution.store.runs.find({
                 'principal_id': self.execution.principal_id, 'session_id': ancestor
@@ -307,12 +305,11 @@ class SessionRPC:
             if not runs and await self.db.get_messages(ancestor, include_compacted=True):
                 raise NotConnected()  # imported history has no host usage evidence
             for run in runs:
-                usage = run.get('native_usage') or {}
-                if run.get('active') or any(type(usage.get(k)) is not int or usage[k] < 0
-                                            for k in counters.values()):
+                usage = observed_run_usage(run)
+                if usage is None:
                     raise NotConnected()
-                for field, key in counters.items():
-                    totals[field] += usage[key]
+                for field, value in usage.items():
+                    totals[field] += value
         return totals
 
     async def create(self, params):

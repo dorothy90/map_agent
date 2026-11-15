@@ -127,6 +127,17 @@ def verified_answer_with_artifacts(run):
     return '\n\n'.join([answer, *attachments])
 
 
+def observed_run_usage(run):
+    """Map complete, inactive native counters without inventing missing figures."""
+    counters = {'input': 'input_tokens', 'output': 'output_tokens',
+                'total': 'total_tokens', 'calls': 'api_calls'}
+    usage = run.get('native_usage') or {}
+    if run.get('active') or any(type(usage.get(k)) is not int or usage[k] < 0
+                                for k in counters.values()):
+        return None
+    return {field: usage[key] for field, key in counters.items()}
+
+
 def project_run_event(run, event):
     """Additional host projection (existing publication.py has no event projector).
 
@@ -141,7 +152,11 @@ def project_run_event(run, event):
     if kind == 'run_finished':
         answer = verified_answer_with_artifacts(run)
         if answer is not None:
-            return {'type': 'message.complete', 'payload': {'text': answer}}
+            completed = {'text': answer}
+            usage = observed_run_usage(run)
+            if usage is not None:
+                completed['usage'] = usage
+            return {'type': 'message.complete', 'payload': completed}
         return {'type': kind, 'payload': {'status': run.get('status')}}
     if kind in ('reasoning.delta', 'reasoning.available', 'thinking.delta', 'status.update'):
         return {'type': kind, 'payload': {'kind': 'status', 'text': '', 'status': 'running'}}
