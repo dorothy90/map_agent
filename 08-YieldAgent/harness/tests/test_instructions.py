@@ -41,27 +41,19 @@ def test_yield_report_recipe_is_native_only_and_keeps_contract():
     register(registry)
     tool_description = registry.tools["render_yield_table"].description
 
-    for recipe in (native, tool_description):
-        assert "DF_ALL_PARA_PRB" in recipe
-        assert "YIELD_TABLE='o'" in recipe
-        assert "PARAM_SEQNO" in recipe
-        assert "x100 소수 1자리" in recipe
-        assert "호환용으로 받지만" in recipe
-        for field in ("lot_cd", "period", "recent", "grains", "weeks", "months", "days", "report_totals", "monthly_counts", "weekly_counts", "daily_counts"):
-            assert field in recipe
-        assert "DF_DIE_TO_WF_YLD" not in recipe
-        assert "기준 측정일의 버킷을 포함하고 오래된 버킷부터" in recipe
-        assert "버킷별 수를 더해 기간 합계로 쓰거나" in recipe
-        assert "all-time counts" in recipe
-        assert "최신 DB 측정일" in recipe
-        assert "base_date를 전달하지 않는다" in recipe
-        assert "today-28 days" in recipe
-        assert "window(start/end와 버킷 목록)" in recipe
-        assert "후속 query_db/그룹 집계" in recipe
-        assert "recent_weeks" not in recipe
-        assert "report mode" not in recipe
-        assert "mode=" not in recipe
-        assert "delta_row" not in recipe
+    for field in ("lot_cd", "period", "report_scope_id", "grouping", "membership", "group_period"):
+        assert field in native
+    for phrase in ("DF_ALL_PARA_PRB", "YIELD_TABLE='o'", "PARAM_SEQNO", "x100 소수 1자리",
+                   "기준 측정일의 버킷을 포함하고 오래된 버킷부터", "최신 DB 측정일", "base_date를 전달하지 않는다",
+                   "today-28 days", "report_totals", "monthly_counts", "weekly_counts", "daily_counts",
+                   "group_id", "lot_id", "table_id", "disjoint_subsets", "partition", "comparison",
+                   "3번째", "5번째", "동일한 인자", "저장된 성공"):
+        assert phrase in native
+    for removed in ("long_result_id", "counts_result_id", "gms_result_id", "parameter_formats", "product_label"):
+        assert removed not in native
+    assert "결과에 표가 전체 1개뿐이고" in native
+    assert "같은 사용자·세션·실행(run)·epoch·runtime 안에서만" in native
+    assert "report_scope_id" in tool_description
     assert "수율 리포트는" not in notes
     assert "PARAM_NM을 필터링하지 않고 모든 PARAM_NM을" not in load_native_instructions()
 
@@ -189,3 +181,23 @@ def test_native_startup_contains_domain_notes(monkeypatch, tmp_path):
     assert startup["request_context"] == {
         "requested_at": "2026-11-01T09:00:00+09:00", "timezone": "Asia/Seoul",
     }
+
+
+def test_native_unanswered_group_criterion_stops_without_inventing_defaults():
+    native = (Path(__file__).parents[1] / "instructions" / "native.md").read_text(encoding="utf-8")
+    for sentence in (
+        "사용자가 '저수율'만 말했거나 그룹 구성원을 바꾸는 기준이 누락되었으면 `clarify`로 기준을 묻는다.",
+        "`clarify`가 timed_out, cancelled, 비어 있거나 누락된 answers를 반환하거나 그 밖에 사용자 기준을 받지 못했으면 임계값이나 규칙을 지어내지 않는다.",
+        "85%, 80%, 하위 10%, 모든 백분위수(percentile), 평균±σ, '데이터 기반 기본값'도 금지한다.",
+        "임의 기준으로 그룹을 만들기 위해 `run_python`이나 `render_yield_table`을 호출하지 않는다.",
+        "사용자 기준이 여전히 필요하다고 명확히 알리고 해당 턴을 종료한다.",
+    ):
+        assert sentence in native
+
+
+def test_native_group_reports_always_pass_comparison():
+    native = (Path(__file__).parents[1] / "instructions" / "native.md").read_text(encoding="utf-8")
+    assert "grouping이 있거나 layout이 group / group_period인 그룹 리포트에는 항상 `comparison={current,baseline}`으로 그룹 ID를 전달하여 Δ 행을 만든다." in native
+    assert "저수율 vs 나머지는 current에 저수율 그룹 ID, baseline에 나머지 그룹 ID를 전달한다." in native
+    assert "Δ의 방향은 current-baseline이다." in native
+    assert "그룹 ID를 명시할 때만 만든다" not in native

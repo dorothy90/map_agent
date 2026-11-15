@@ -123,10 +123,14 @@ def test_host_short_timeout(monkeypatch, tmp_path):
             worker = FakeWorker()
             native = bind_worker(monkeypatch, tmp_path, worker)
             await asyncio.wait_for(native.run_native(context, ToolRegistry()), 5)
-            assert worker.replies[0]['result'] == {'answers': {}, 'outcome': 'timed_out'}
+            assert worker.replies[0]['result'] == {
+                'answers': {}, 'outcome': 'timed_out',
+                'notice': '사용자가 답하지 않았습니다. 백분위수나 고정 임계값을 포함한 기준을 지어내지 말고, 사용자 기준이 여전히 필요하다고 알린 뒤 해당 턴을 종료하세요.',
+            }
             pending = await context.store.db.pending_prompts.find_one({})
             assert pending['timeout_s'] == pytest.approx(.02)
             assert pending['status'] == 'timed_out'
+            assert pending['result'] == {'answers': {}, 'outcome': 'timed_out'}
             assert [e['type'] for e in await events(context)] == ['clarify.request', 'yield.input_required', 'clarify.settled']
     asyncio.run(scenario())
 

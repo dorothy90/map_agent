@@ -217,3 +217,39 @@ def test_worker_callback_budget_expiry_cancels():
     def expired(*a, **kw): raise Empty()
     callback = worker.prompt_options({'native_prompts': True}, expired, lambda: None)['clarify_callback']
     assert callback([{'qid': 'q', 'question': 'q'}]) == {'answers': {}, 'outcome': 'cancelled'}
+
+
+@pytest.mark.parametrize('outcome,answers', [
+    ('timed_out', {}), ('submitted', {'q': 'below 80%'}), ('cancelled', {}),
+])
+def test_host_clarify_timeout_notice_is_return_only(monkeypatch, outcome, answers):
+    from unittest.mock import AsyncMock
+    from harness.native_hermes import NativePrompts
+
+    async def scenario():
+        stored_result = {'answers': answers, 'outcome': outcome}
+        pending = SimpleNamespace(
+            principal_id='p',
+            register_clarify=AsyncMock(return_value='prompt'),
+            pending_prompts=SimpleNamespace(find_one=AsyncMock(return_value={})),
+        )
+        context = SimpleNamespace(
+            run={'run_id': 'r', 'session_id': 's', 'epoch': 3},
+            check=AsyncMock(), remaining_seconds=lambda: 600,
+        )
+        prompts = NativePrompts(context, pending)
+        waiter = AsyncMock(return_value=stored_result)
+        monkeypatch.setattr(prompts, 'wait', waiter)
+        result = await prompts.clarify({'questions': [{'qid': 'q', 'question': 'Criterion?'}]})
+        waiter.assert_awaited_once_with('prompt', 300)
+        assert pending.register_clarify.call_args.kwargs['timeout_s'] == 300
+        assert stored_result == {'answers': answers, 'outcome': outcome}
+        if outcome == 'timed_out':
+            assert result == {
+                'answers': {}, 'outcome': 'timed_out',
+                'notice': '사용자가 답하지 않았습니다. 백분위수나 고정 임계값을 포함한 기준을 지어내지 말고, 사용자 기준이 여전히 필요하다고 알린 뒤 해당 턴을 종료하세요.',
+            }
+        else:
+            assert result == stored_result
+
+    asyncio.run(scenario())

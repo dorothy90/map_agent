@@ -236,7 +236,13 @@ class NativePrompts:
                 timeout_s=timeout, run_id=self.run['run_id'])
             self.rows[identity] = await self.pending.pending_prompts.find_one({
                 'principal_id': self.pending.principal_id, 'prompt_id': identity})
-        return await self.wait(identity, timeout)
+        result = await self.wait(identity, timeout)
+        if result.get('outcome') == 'timed_out':
+            return {**result, 'notice': (
+                '사용자가 답하지 않았습니다. 백분위수나 고정 임계값을 포함한 기준을 지어내지 말고, '
+                '사용자 기준이 여전히 필요하다고 알린 뒤 해당 턴을 종료하세요.'
+            )}
+        return result
 
     async def approve(self, name, description, effect):
         async with self.lock:
