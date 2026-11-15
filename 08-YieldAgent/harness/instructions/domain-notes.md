@@ -73,6 +73,7 @@
 - MEASURETIME_START·MEASURETIME_END는 테스트 측정 시작·종료 시각이다.
 - GMS 테이블은 DF_GMS_YIELD_WEEKLY / DF_GMS_YIELD_MONTHLY / DF_GMS_YIELD_DAILY이며 PERIOD_DATE는 각각 YYYYWW / YYYYMM / YYYYMMDD다(버킷의 대시 제거). 모두 LOTCODE, FAB_YIELD, PRB_YIELD, CUM0_YIELD를 제공하며 CUM2/PNT 원천 컬럼은 없다.
 - 최근 N은 기준 측정일의 버킷까지 연속 ISO 주/달력 월/날짜를 포함한다. 최근 N개월의 주별 결합은 첫 달 1일~기준 측정일에 겹치는 모든 ISO 주를 포함하며, 집계 날짜는 그 닫힌 구간으로 제한한다.
+- 리포트 구현 계약(업무 정의와 구분): 기간 리포트가 보존한 lot_population의 pt1h_mean은 해당 기간 lot의 PT1H 값에 대한 평균이며 pt1h_value_count는 그 평균의 관측 건수다. 이 통계는 그룹 구성·순위 판단의 근거이며 wafer 수와 동일하지 않다. 그룹 파라미터 집계는 저장된 value_sum/value_count를 합쳐 계산하고 lot 평균을 단순 평균하지 않는다. lot 수는 distinct LOT_ID, wafer 수는 distinct GORUPKEY다. 그룹은 기간 범위에 실제 존재하는 LOT_ID 목록으로 정의하며 표시 이름만으로 구성원을 추정하지 않는다.
 - 그 밖의 컬럼(T_ET~E1_E2 영역 값, AREA_STATUS, REPAIR_VAL, REJ_YN, TESTER_MODEL 등)의 업무 의미는 아직 확인되지 않았으므로 추정해서 쓰지 않는다.
 
 ### DF_GMS_YIELD_WEEKLY (제품별 주차 GMS)

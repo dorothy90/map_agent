@@ -54,6 +54,7 @@ class ToolRegistry:
     def __init__(self):
         self.tools: dict[str, ToolSpec] = {}
         self.hidden_groups: set[str] = set()
+        self._report_policy_states: dict[tuple, Any] = {}
 
     def add(self, spec: ToolSpec):
         if spec.name in self.tools:
@@ -80,6 +81,12 @@ class ToolRegistry:
         available = spec.available()
         if not available['available']:
             raise ValueError(available['reason'])
+        if name == "render_yield_table":
+            from .report_policy import ReportPolicyState, invoke_report, report_run_key
+
+            run_key = report_run_key(context)
+            state = self._report_policy_states.setdefault(run_key, ReportPolicyState()) if run_key is not None else ReportPolicyState()
+            return await invoke_report(spec, arguments, context, state=state)
         args = spec.schema.model_validate(arguments)
         return await spec.handler(args, context)
 
