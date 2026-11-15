@@ -37,6 +37,7 @@ export function HermesWebApp({resolver,fetcher=browserFetch,host:injected}:Herme
 function WebChat({host}:{host:WebHostAdapter}) {
  const navigate=useNavigate()
  const actions=useWebSession(host), gatewayState=useStore($gatewayState), sessions=useStore($sessions)
+ const visibleSessions=sessions.filter(session => !session.archived && !(session as SessionInfo & {deleted?:boolean}).deleted)
  const listError=useStore($sessionsLoadError), listLoading=useStore($sessionsLoading)
  const messages=useStore($messages)
  const currentStoredId=routeSessionId(useLocation().pathname) ?? actions.selectedStoredSessionId
@@ -96,17 +97,27 @@ function WebChat({host}:{host:WebHostAdapter}) {
    <div className="web-session-list"><p className="web-list-heading">최근 대화</p>
     {listError && <p role="alert">세션 목록을 불러오지 못했습니다. <button onClick={() => void actions.refreshSessions()}>다시 시도</button></p>}
     {failed && <button onClick={retry}>대화 제목 다시 불러오기</button>}
-    {sessions.filter(session => matchesSessionLabel(displaySessionLabel(session,labels[sessionLabelKey(session)]),query)).map(session => {
+    {visibleSessions.filter(session => matchesSessionLabel(displaySessionLabel(session,labels[sessionLabelKey(session)]),query)).map(session => {
      const label=displaySessionLabel(session,labels[sessionLabelKey(session)])
      return <WebSessionRow key={sessionLabelKey(session)} label={label} time={relativeSessionTime(session,now)} selected={session.id===actions.selectedStoredSessionId} disabled={!ready}
       onSelect={() => {setDraftTitle(null);setSidebarOpen(false);navigate(sessionRoute(session.id))}}
+      onArchive={async () => {
+       await host.gateway.request('session.archive',{session_id:session.id})
+       setSessions(rows => rows.filter(row => row.id!==session.id))
+       if(currentStoredId===session.id){setDraftTitle(null);setSidebarOpen(false);actions.startFreshSessionDraft()}
+      }}
+      onDelete={async () => {
+       await host.gateway.request('session.delete',{session_id:session.id})
+       setSessions(rows => rows.filter(row => row.id!==session.id))
+       if(currentStoredId===session.id){setDraftTitle(null);setSidebarOpen(false);actions.startFreshSessionDraft()}
+      }}
       onRename={async title => {
        const result=await host.gateway.request<{title:string;pending:boolean}>('session.title',{session_id:session.id,title})
        if(!result.title?.trim() || result.pending)throw new Error('Title was not saved')
        setSessions(rows => rows.map(row => sessionLabelKey(row)===sessionLabelKey(session) ? {...row,title:result.title} : row))
       }}/>
     })}
-    {query && !sessions.some(session => matchesSessionLabel(displaySessionLabel(session,labels[sessionLabelKey(session)]),query)) && <p className="web-list-heading">불러온 대화에서 일치하는 대화가 없습니다.</p>}
+    {query && !visibleSessions.some(session => matchesSessionLabel(displaySessionLabel(session,labels[sessionLabelKey(session)]),query)) && <p className="web-list-heading">불러온 대화에서 일치하는 대화가 없습니다.</p>}
     <button className="web-load-more" disabled={!ready} onClick={() => void actions.loadMoreSessions()}>이전 대화 더 보기</button>
    </div>
    <footer className="web-connection"><p><span aria-hidden="true">●</span> {gatewayState==='open' ? '연결됨' : gatewayState==='connecting' ? '연결 중' : '연결 끊김'}</p><p>대화를 선택하면 이전 내용을 이어서 볼 수 있습니다.</p></footer>

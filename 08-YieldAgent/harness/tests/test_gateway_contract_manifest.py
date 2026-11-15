@@ -34,7 +34,7 @@ def test_complete_inventory(manifest):
         assert len({r['name'] for r in rows}) == count
         assert all(r['classification'] in {'implemented', 'stub', 'unsupported'} for r in rows)
         assert all(r['reason'] and r['feature'] and r['source'] for r in rows)
-    assert Counter(m for r in manifest['rpc'] for m in r['modes']) == {'legacy': 254, 'authority': 48}
+    assert Counter(m for r in manifest['rpc'] for m in r['modes']) == {'legacy': 254, 'authority': 52}
     assert manifest['runtime_connected'] is False
 
 
@@ -46,7 +46,7 @@ def test_regeneration_matches_every_field(manifest, upstream):
 def test_overlap_contracts(manifest):
     overlaps = {r['name']: r for r in manifest['rpc'] if len(r['modes']) == 2}
     fixtures = json.loads((Path(__file__).parent / 'gateway_contract_overlap.json').read_text())
-    assert len(overlaps) == len(fixtures) == 19
+    assert len(overlaps) == len(fixtures) == 23
     assert set(overlaps) == set(fixtures)
     for name, expected in fixtures.items():
         for mode in ('legacy', 'authority'):
@@ -150,8 +150,10 @@ def test_memory_reset_only_is_denied(manifest):
 
 def test_individual_delete_and_queue_policies_are_preserved(manifest):
     rpc = {r['name']: r for r in manifest['rpc']}
-    for name in ['session.delete', 'prompt.steer_queued', 'prompt.replace_queued']:
+    for name in ['prompt.steer_queued', 'prompt.replace_queued']:
         assert rpc[name]['classification'] == 'stub'
+    assert rpc['session.delete']['modes']['legacy']['classification'] == 'stub'
+    assert rpc['session.delete']['modes']['authority']['classification'] == 'implemented'
     for name in ['session.steer', 'session.redirect']:
         assert rpc[name]['classification'] == 'unsupported'
     routes = {r['name']: r for r in manifest['routes']}
@@ -194,7 +196,7 @@ def test_http_mcp_denies_stdio_and_sse_without_reclassification(manifest):
 
 def test_classification_counts(manifest):
     sections = {
-        'rpc': (manifest['rpc'], (38, 58, 187)),
+        'rpc': (manifest['rpc'], (41, 55, 187)),
         'events': (manifest['events'], (35, 9, 42)),
         'server_requests': (manifest['server_requests'], (2, 2, 12)),
         'http': ([r for r in manifest['routes'] if r['method'] != 'WEBSOCKET'], (20, 71, 191)),

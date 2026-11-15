@@ -7,10 +7,11 @@ import { HermesWebApp } from './HermesWebApp'
 import { WebHostAdapter } from '../platform/web-host'
 import { capabilityError, restCapabilityError } from '../platform/capability-gate'
 import { stubThreadEnvironment } from '@/components/assistant-ui/test-utils'
+import { settleConfirm } from '@/store/confirm'
 import { NEW_CHAT_ROUTE, sessionRoute } from '@/app/routes'
 import { $activeSessionId, $selectedStoredSessionId, $freshDraftReady, $currentUsage, $turnStartedAt } from '@/store/session'
 stubThreadEnvironment()
-afterEach(() => {cleanup();window.history.replaceState(null,'',`#${NEW_CHAT_ROUTE}`);vi.useRealTimers();vi.restoreAllMocks()})
+afterEach(() => {settleConfirm(false);cleanup();window.history.replaceState(null,'',`#${NEW_CHAT_ROUTE}`);vi.useRealTimers();vi.restoreAllMocks()})
 it('fails closed without a resolver', () => {
  const spy = vi.spyOn(WebHostAdapter.prototype,'connect')
  render(<HermesWebApp />)
@@ -228,4 +229,38 @@ it('renames an unopened listed session through the real authority gateway withou
   expect(screen.queryByRole('alert')).toBeNull()
   expect(window.location.hash).toBe(`#${NEW_CHAT_ROUTE}`)
  } finally {cleanup();host.close();FakeWebSocket.instances=[]}
+})
+
+it.each(['archive','delete','cancel'])('session menu removes an open row after %s', async action => {
+ vi.useFakeTimers()
+ $freshDraftReady.set(false)
+ window.history.replaceState(null,'',`#${sessionRoute('saved')}`)
+ const host=new WebHostAdapter({rpcMode:'authority',location:{href:'http://localhost/'},reconnect:false})
+ vi.spyOn(host,'connect').mockResolvedValue()
+ const request=vi.spyOn(JsonRpcGatewayClient.prototype,'request').mockResolvedValue({})
+ vi.spyOn(host.gateway,'request').mockResolvedValue({session_id:'saved',session_key:'saved',messages:[],running:false,info:{}})
+ vi.spyOn(host,'api').mockResolvedValue({sessions:[{id:'saved',title:'관리할 대화',message_count:0}, {id:'archived',title:'보관된 대화',archived:true}, {id:'deleted',title:'삭제된 대화',deleted:true}],total:3})
+ render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host}/>)
+ await act(async () => {await vi.advanceTimersByTimeAsync(100)})
+ expect(screen.queryByRole('button',{name:'보관된 대화'})).toBeNull()
+ expect(screen.queryByRole('button',{name:'삭제된 대화'})).toBeNull()
+ fireEvent.click(screen.getByRole('button',{name:'관리할 대화 메뉴'}))
+ fireEvent.click(screen.getByRole('menuitem',{name:action==='archive' ? '보관' : '삭제'}))
+ await act(async () => {await vi.advanceTimersByTimeAsync(100)})
+ if(action!=='archive'){
+  expect(request.mock.calls.filter(([method]) => method==='session.delete')).toHaveLength(0)
+  expect(document.querySelector('.web-session-select[aria-label="관리할 대화"]')).toBeTruthy()
+  expect(screen.getByRole('dialog',{name:'대화를 삭제할까요?'})).toBeTruthy()
+  fireEvent.click(screen.getByRole('button',{name:action==='cancel' ? '취소' : '삭제'}))
+  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
+ }
+ if(action==='cancel'){
+  expect(screen.getByRole('button',{name:'관리할 대화'})).toBeTruthy()
+  expect(request.mock.calls.filter(([method]) => method==='session.delete')).toHaveLength(0)
+ }else{
+  expect(request).toHaveBeenCalledWith(`session.${action}`,{session_id:'saved'})
+  expect(screen.queryByRole('button',{name:'관리할 대화'})).toBeNull()
+  expect(window.location.hash).toBe(`#${NEW_CHAT_ROUTE}`)
+  expect($activeSessionId.get()).toBeNull()
+ }
 })

@@ -5,8 +5,6 @@ export type RpcMode = 'legacy' | 'authority'
 type Policy = { classification: string; reason: string; feature: string }
 const rpc: Record<string, Policy & { modes: Partial<Record<RpcMode, Policy>> }> = manifest.rpc
 export function capabilityError(method: string, mode: RpcMode): JsonRpcGatewayError | null {
-  // Yield implements plain title GET/SET on authority; the manifest lists legacy only.
-  if (mode === 'authority' && method === 'session.title') return null
   const policy = Object.hasOwn(rpc, method) ? rpc[method].modes[mode] : undefined
   if (policy?.classification === 'implemented') return null
   return new JsonRpcGatewayError('unsupported', { code: -32004, data: {

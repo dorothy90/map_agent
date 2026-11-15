@@ -7,6 +7,8 @@ exactly one rule; new upstream methods fail closed at generation time.
 
 # mode, finite name patterns, classification, rationale, evidence
 RPC_RULES = (
+    ('authority', ['session.title'], 'implemented', '세션 제목 조회·저장; 자동 LLM 제목 생성은 미포함', 'm1_plan_codex.log:6191'),
+    ('authority', ['session.delete', 'session.archive', 'session.set_hidden'], 'implemented', '소유자 세션 soft flag 관리; 제목·메시지 보존', 'harness/gateway/session_rpc.py'),
     # PR-8c: session.resume stays implemented in both modes. H/contracts/
     # sessions.py:185-195 and canonical_sessions.py:62-74 already declare source,
     # defer_history and omit_messages; SessionRPC enforces the supported subset.

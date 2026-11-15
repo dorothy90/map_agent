@@ -329,3 +329,25 @@ def test_append_payload_roundtrip_and_counts():
             assert (await a.get_session('s'))['tool_call_count'] == 1
             assert await a.message_count() == 1
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('method,field', [('set_session_deleted', 'deleted'), ('set_session_archived', 'archived'), ('set_session_hidden', 'hidden')])
+def test_owner_soft_flags_preserve_messages_and_title(method, field):
+    async def scenario():
+        async with database() as (a, b, harness):
+            await a.create_session('saved', 'cli')
+            await a.set_session_title('saved', 'Keep title')
+            await a.append_message('saved', 'user', 'Keep message')
+            for sid in ('saved', 'missing'):
+                with pytest.raises(LookupError):
+                    await getattr(b, method)(sid)
+            assert len(await a.list_sessions_rich()) == 1
+            await getattr(a, method)('saved')
+            row = await harness.db.gateway_sessions.find_one({'principal_id': 'a', 'id': 'saved'})
+            assert row[field] is True and row['title'] == 'Keep title'
+            assert await harness.db.gateway_messages.count_documents({'principal_id': 'a', 'session_id': 'saved'}) == 1
+            assert await a.list_sessions_rich() == []
+            if field != 'deleted':
+                await getattr(a, method)('saved', False)
+                assert len(await a.list_sessions_rich()) == 1
+    asyncio.run(scenario())

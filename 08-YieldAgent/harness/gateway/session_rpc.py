@@ -235,6 +235,37 @@ class SessionRPC:
         return result
 
     async def dispatch(self, method, params):
+        if method in ('session.delete', 'session.archive', 'session.set_hidden'):
+            if self.mode != 'authority':
+                raise NotConnected()
+            allowed = {'session_id'}
+            if method == 'session.archive':
+                allowed |= {'session_key', 'archived'}
+            elif method == 'session.set_hidden':
+                allowed.add('hidden')
+            validate(params, allowed, mode=self.mode)
+            sid = params.get('session_id', params.get('session_key'))
+            if method == 'session.archive':
+                if ('session_key' in params and not string(params['session_key'])) or (
+                        'session_id' in params and 'session_key' in params and params['session_id'] != params['session_key']):
+                    raise RpcError('invalid_params')
+                value = flag({'archived': params.get('archived', True)}, 'archived', self.mode)
+            elif method == 'session.set_hidden':
+                if 'hidden' not in params:
+                    raise RpcError('invalid_params')
+                value = flag(params, 'hidden', self.mode)
+            await self.owned(sid)
+            try:
+                if method == 'session.delete':
+                    await self.db.set_session_deleted(sid)
+                    return {'deleted': sid}
+                if method == 'session.archive':
+                    await self.db.set_session_archived(sid, value)
+                    return {'archived': value, 'session_key': sid}
+                await self.db.set_session_hidden(sid, value)
+                return {'hidden': value, 'session_key': sid}
+            except LookupError:
+                raise RpcError('not_found') from None
         if method == 'session.create':
             return await self.create(params)
         if method in ('session.list', 'session.most_recent'):

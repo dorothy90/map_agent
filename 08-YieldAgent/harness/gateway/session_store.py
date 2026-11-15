@@ -607,6 +607,21 @@ class MongoSessionStore:
                 raise ValueError('Title is already in use') from None
             return bool(result.matched_count)
 
+    async def _set_session_flag(self, session_id, field, value):
+        async with self._lock(session_id):
+            result = await self.sessions.update_one(self._session(session_id), {'$set': {field: value}})
+            if not result.matched_count:
+                raise LookupError('Session not found')
+
+    async def set_session_deleted(self, session_id):
+        await self._set_session_flag(session_id, 'deleted', True)
+
+    async def set_session_archived(self, session_id, archived=True):
+        await self._set_session_flag(session_id, 'archived', archived)
+
+    async def set_session_hidden(self, session_id, hidden=True):
+        await self._set_session_flag(session_id, 'hidden', hidden)
+
     async def start_run(self, session_id, request_id, query):
         """Host admission API (not a fabricated SessionDB method). Idempotent receipts
         and the partial active unique index remain solely owned by HarnessStore.

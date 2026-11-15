@@ -20,8 +20,8 @@ export function withWebGatewayCompat(host:WebHostAdapter):WebHostAdapter {
  const rawRequest=JsonRpcGatewayClient.prototype.request.bind(host.gateway)
  host.gateway.request=(...args) => {
   const [method,params]=args
-  // Yield title GET/SET uses the stored ID, without canonical mutation fences.
-  if(method==='session.title') return rawRequest(...args)
+  // Yield session management uses stored IDs and the legacy-shaped authority schemas.
+  if(['session.title','session.archive','session.delete','session.set_hidden'].includes(method)) return rawRequest(...args)
   let normalized=params
   if(method==='session.create' && params) {
    for(const [field,defaults] of Object.entries(CREATE_DEFAULTS)) {
