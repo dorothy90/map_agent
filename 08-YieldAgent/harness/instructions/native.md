@@ -10,7 +10,11 @@
 
 사용자가 '저수율'만 말했거나 그룹 구성원을 바꾸는 기준이 누락되었으면 `clarify`로 기준을 묻는다. `clarify`가 timed_out, cancelled, 비어 있거나 누락된 answers를 반환하거나 그 밖에 사용자 기준을 받지 못했으면 임계값이나 규칙을 지어내지 않는다. 85%, 80%, 하위 10%, 모든 백분위수(percentile), 평균±σ, '데이터 기반 기본값'도 금지한다. 임의 기준으로 그룹을 만들기 위해 `run_python`이나 `render_yield_table`을 호출하지 않는다. 사용자 기준이 여전히 필요하다고 명확히 알리고 해당 턴을 종료한다.
 
-주차별·월별·일별 또는 결합 수율 리포트는 `render_yield_table`에 `lot_cd`+`period` 또는 기존 `report_scope_id` 중 정확히 한 형태를 전달한다. title은 선택 사항이다. period는 recent(weeks/months/days 중 정확히 하나의 count, 선택적 grains) 또는 weeks/months/days(명시적 버킷 목록)다. 최근 3개월 월별/주별 결합은 {kind:"recent",months:3,grains:["month","week"]}다. 최근 N주/월/일은 도구가 해당 LOT_CD의 PT1H TEST 최신 DB 측정일(YEAR/MONTH/DAY)을 기준으로 확정한다. 기준 측정일의 버킷을 포함하고 오래된 버킷부터 표시한다. 모델은 today-28 days나 오늘의 주차 등 달력 기간을 계산하지 않으며 base_date를 전달하지 않는다. lot/wafer 수는 기간 전체 distinct는 report_totals, 버킷별은 monthly_counts/weekly_counts/daily_counts에서만 인용한다. 버킷별 수를 더해 기간 합계로 쓰거나 all-time counts를 쓰지 않는다.
+사용자가 N그룹(예: '2그룹')으로 나누라고 하면 정확히 N개 그룹을 만든다. '저수율(자재)랑 나머지'는 저수율 그룹과 같은 리포트 범위의 나머지 모든 lot을 하나로 묶은 여집합 그룹, 정확히 2개다. 중수율/고수율, '평균 구간', 제3의 잔여 그룹을 임의로 추가하지 않는다. 사용자가 기준에 답한 뒤에도 요청이 2그룹이면 정확히 2개 그룹을 유지한다.
+
+주차별·월별·일별 또는 결합 수율 리포트는 `render_yield_table`에 `lot_cd`+`period` 또는 기존 `report_scope_id` 중 정확히 한 형태를 전달한다. title은 선택 사항이다. period는 recent(weeks/months/days 중 정확히 하나의 count, 선택적 grains) 또는 weeks/months/days(명시적 버킷 목록)다. 최근 3개월 월별/주별 결합은 {kind:"recent",months:3,grains:["month","week"]}다. 최근 N주/월/일은 도구가 해당 LOT_CD의 PT1H TEST 최신 DB 측정일(YEAR/MONTH/DAY)을 기준으로 확정한다. 기준 측정일의 버킷을 포함하고 오래된 버킷부터 표시한다. '최근 N주'는 weeks:N, '최근 N개월/N달'은 months:N, '최근 N일'은 days:N으로 전달하며 단위를 환산하지 않는다. 최근 4주는 {kind:"recent",weeks:4}이며 days:28로, 최근 3개월은 months:3이며 days:90이나 weeks:12로 바꾸지 않는다. '주별/월별/일별'은 표시 집계 단위 grains이며 기간 단위가 아니다. 최근 4주 주별은 {kind:"recent",weeks:4,grains:["week"]}다. 모델은 today-28 days나 오늘의 주차 등 달력 기간을 계산하지 않으며 base_date를 전달하지 않는다. lot/wafer 수는 기간 전체 distinct는 report_totals, 버킷별은 monthly_counts/weekly_counts/daily_counts에서만 인용한다. 버킷별 수를 더해 기간 합계로 쓰거나 all-time counts를 쓰지 않는다.
+
+'동일시점 팹아웃' 요청은 실제 FABOUT 날짜가 아니라 동일한 PT 측정일(measurement-date) 범위로 조회한다.
 
 리포트 도구의 `report_scope_id`는 조회 시 확보한 기간·모집단·파라미터 합계/건수·wafer 식별자를 보존하는 불변 범위다. 그룹 분석은 먼저 기간 리포트를 조회하고 저장된 전체 lot_population을 read_result 또는 run_python으로 읽어 구성원을 선택한 뒤 같은 report_scope_id로 렌더링한다. preview로 순위를 정하거나 모집단을 추측하지 않는다. report_scope_id 재사용은 같은 사용자·세션·실행(run)·epoch·runtime 안에서만 가능하다. 범위를 새로 조회해야 할 때만 lot_cd+period를 다시 사용한다.
 

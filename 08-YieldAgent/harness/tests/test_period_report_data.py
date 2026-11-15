@@ -248,3 +248,39 @@ def test_recent_weekly_distinct_and_bucket_counts(period_db):
     assert sum(r['lot_count'] for r in evidence['weekly_counts']) == 40
     assert evidence['report_totals'][0]['period_wafer_count'] == 150
     assert sum(r['wafer_count'] for r in evidence['weekly_counts']) == 400
+
+
+def test_render_tool_schema_explains_recent_units():
+    from harness.tools.registry import ToolRegistry
+    from harness.tools.table_artifact import register
+    import json
+
+    registry = ToolRegistry()
+    register(registry)
+    schema = registry.tools['render_yield_table'].schema.model_json_schema()
+    fields = schema['$defs']['RecentPeriod']['properties']
+    expected = {
+        'weeks': ('최근 N주 → weeks:N', '최근 4주 → {kind:"recent",weeks:4}', 'days:28로 환산하지 않는다'),
+        'months': ('최근 N개월/N달 → months:N', '최근 3개월 → months:3', 'days:90이나 weeks:12로 환산하지 않는다'),
+        'days': ('최근 N일 → days:N', '최근 28일은 days:28', '주·개월을 일로 환산하지 않는다'),
+        'grains': ('주별/월별/일별', '기간 단위가 아니다', 'weeks:4,grains:["week"]'),
+    }
+    exposed = json.dumps(registry.model_tools(), ensure_ascii=False)
+    for field, phrases in expected.items():
+        description = fields[field]['description']
+        for phrase in phrases:
+            assert phrase in description
+        assert json.dumps(description, ensure_ascii=False) in exposed
+
+
+@pytest.mark.parametrize('period,start,key,count', [
+    ({'kind': 'recent', 'weeks': 4, 'grains': ['week']}, '2026-11-09', 'weeks', 4),
+    ({'kind': 'recent', 'days': 28}, '2026-11-03', 'days', 28),
+])
+def test_recent_week_and_genuine_day_windows_remain_distinct(period_db, period, start, key, count):
+    result = run(period)
+    assert result.status == 'success'
+    window = result.scope['window']
+    assert window['base_date'] == '2026-11-30'
+    assert window['start'] == start
+    assert len(window[key]) == count
