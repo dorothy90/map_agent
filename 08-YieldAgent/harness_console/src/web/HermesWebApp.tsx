@@ -1,19 +1,26 @@
-import { useEffect, useMemo, useState } from 'react'
+import { ArrowDown, Diamond, PanelLeft, Plus, Search } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@nanostores/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { HashRouter, useNavigate } from 'react-router'
-import { sessionRoute } from '@/app/routes'
+import { HashRouter, useLocation, useNavigate } from 'react-router'
+import { routeSessionId, sessionRoute } from '@/app/routes'
 import { I18nProvider } from '@/i18n'
 import { ChatRuntimeBoundary } from '@/app/chat'
 import { ChatBar } from '@/app/chat/composer'
 import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
 import { ConfirmHost } from '@/components/confirm-host'
 import { Thread } from '@/components/assistant-ui/thread'
-import { $gatewayState, $sessions, $turnStartedAt, $currentUsage, $sessionsLoadError, setConnection } from '@/store/session'
+import { $gatewayState, $sessions, $turnStartedAt, $currentUsage, $sessionsLoadError, $selectedStoredSessionId, $messages, setConnection } from '@/store/session'
 import { reportPrimaryGatewayState } from '@/store/gateway'
 import { WebHostAdapter, type WebHostOptions } from '../platform/web-host'
 import { webConnectionResolver } from './connection'
 import { withWebGatewayCompat } from './gateway-compat'
+import { $clarifyRequests, clarifyRequestsForSession } from '@/store/clarify'
+import type { SessionInfo } from '@/types/hermes'
+import { useSessionLabels } from './use-session-labels'
+import { matchesSessionLabel, relativeSessionTime, sessionLabelKey } from './session-labels'
+import { WebPresentationProvider } from './presentation'
+import { requestComposerSetDraft } from '@/app/chat/composer/focus'
 import { useWebSession } from './use-web-session'
 export type ConnectionResolver = NonNullable<WebHostOptions['getWebSocketConnection']>
 export interface HermesWebOptions { resolver?:ConnectionResolver; fetcher?:typeof fetch; host?:WebHostAdapter }
@@ -30,7 +37,31 @@ function WebChat({host}:{host:WebHostAdapter}) {
  const navigate=useNavigate()
  const actions=useWebSession(host), gatewayState=useStore($gatewayState), sessions=useStore($sessions)
  const listError=useStore($sessionsLoadError)
+ const messages=useStore($messages)
+ const currentStoredId=routeSessionId(useLocation().pathname) ?? actions.selectedStoredSessionId
  const [error,setError]=useState(''),[ready,setReady]=useState(false)
+ const [query,setQuery]=useState(''),[sidebarOpen,setSidebarOpen]=useState(false)
+ const [draftTitle,setDraftTitle]=useState<{text:string;sessionId:string|null}|null>(null)
+ const shell=useRef<HTMLElement>(null), search=useRef<HTMLInputElement>(null)
+ const labelSessions=useMemo(() => currentStoredId && !sessions.some(session => session.id===currentStoredId)
+  ? [...sessions,{id:currentStoredId} as SessionInfo] : sessions,[sessions,currentStoredId])
+ const {labels,failed,retry,remember}=useSessionLabels(labelSessions,ready,host)
+ useStore($clarifyRequests)
+ const pending=clarifyRequestsForSession(actions.activeSessionId).reduce((count,request) => count+request.questions.filter(q => !Object.hasOwn(request.lockedAnswers ?? {},q.qid)).length,0)
+ const selected=labelSessions.find(session => session.id===currentStoredId)
+ const title=(selected && labels[sessionLabelKey(selected)]) || (draftTitle?.sessionId===currentStoredId ? draftTitle.text : '') || (currentStoredId ? '대화 불러오는 중…' : '새 채팅')
+ const [now,setNow]=useState(Date.now())
+ useEffect(() => {const timer=setInterval(() => setNow(Date.now()),30000);return () => clearInterval(timer)},[])
+
+ useEffect(() => {
+  const onKey=(event:KeyboardEvent) => {if((event.metaKey || event.ctrlKey) && event.key==='k'){event.preventDefault();setSidebarOpen(true);requestAnimationFrame(() => search.current?.focus())}}
+  window.addEventListener('keydown',onKey);return () => window.removeEventListener('keydown',onKey)
+ },[])
+ const jumpToQuestion=() => {
+  const card=shell.current?.querySelector<HTMLElement>('[data-clarify-stepper], form:has([data-slot="clarify-inline"])')
+  if(card){card.scrollIntoView({block:'center',behavior:'smooth'});card.querySelector<HTMLElement>('button:not(:disabled),textarea:not(:disabled)')?.focus({preventScroll:true})}
+ }
+
  useEffect(() => {
    let disposed=false
    const releaseApi=host.installApiBridge(),releaseDesktop=host.installDesktopBridge()
@@ -43,26 +74,57 @@ function WebChat({host}:{host:WebHostAdapter}) {
    } catch {if(!disposed)setError('연결에 실패했습니다. 인증 resolver와 게이트웨이를 확인하세요.')}})()
    return () => {disposed=true;host.close();releaseDesktop();releaseApi();reportPrimaryGatewayState('closed')}
  },[host,actions.refreshSessions])
- return <main className="hermes-web">
-  {/* Upstream startFreshSessionDraft navigates to NEW_CHAT_ROUTE and clears the draft together. */}
-  <nav aria-label="세션 목록"><h1>Yield 채팅</h1><button disabled={!ready} onClick={() => actions.startFreshSessionDraft()}>새 채팅</button>
-   {listError && <p role="alert">세션 목록을 불러오지 못했습니다. <button onClick={() => void actions.refreshSessions()}>다시 시도</button></p>}
-   {sessions.map(session => <button key={session.id} aria-current={session.id===actions.selectedStoredSessionId ? 'page' : undefined} onClick={() => navigate(sessionRoute(session.id))}>{session.title || session.id}</button>)}
-   <button disabled={!ready} onClick={() => void actions.loadMoreSessions()}>더 보기</button>
+ return <main className="hermes-web" ref={shell} data-sidebar-open={sidebarOpen}>
+  <nav aria-label="세션 목록">
+   <div className="web-brand"><span aria-hidden="true"><Diamond size={19}/></span><div><h1>결</h1><p>수율 분석 앱</p></div></div>
+   <button className="web-new-chat" disabled={!ready} onClick={() => {setDraftTitle(null);setSidebarOpen(false);actions.startFreshSessionDraft()}}><Plus size={17} aria-hidden="true"/> 새 채팅</button>
+   <label className="web-search"><Search size={16} aria-hidden="true"/><input ref={search} aria-label="불러온 대화 검색" placeholder="대화 검색…" value={query} onChange={event => setQuery(event.target.value)}/><kbd>⌘ K</kbd></label>
+   <div className="web-session-list"><p className="web-list-heading">최근 대화</p>
+    {listError && <p role="alert">세션 목록을 불러오지 못했습니다. <button onClick={() => void actions.refreshSessions()}>다시 시도</button></p>}
+    {failed && <button onClick={retry}>대화 제목 다시 불러오기</button>}
+    {sessions.filter(session => matchesSessionLabel(labels[sessionLabelKey(session)],query)).map(session => {
+     const label=labels[sessionLabelKey(session)] ?? (Object.hasOwn(labels,sessionLabelKey(session)) ? '첫 질문 없음' : '대화 불러오는 중…')
+     return <button className="web-session" key={sessionLabelKey(session)} title={label} aria-label={label} aria-current={session.id===actions.selectedStoredSessionId ? 'page' : undefined} onClick={() => {setDraftTitle(null);setSidebarOpen(false);navigate(sessionRoute(session.id))}}><strong>{label}</strong><small>{relativeSessionTime(session,now)}</small></button>
+    })}
+    {query && !sessions.some(session => matchesSessionLabel(labels[sessionLabelKey(session)],query)) && <p className="web-list-heading">불러온 대화에서 일치하는 질문이 없습니다.</p>}
+    <button className="web-load-more" disabled={!ready} onClick={() => void actions.loadMoreSessions()}>이전 대화 더 보기</button>
+   </div>
+   <footer className="web-connection"><p><span aria-hidden="true">●</span> {gatewayState==='open' ? '연결됨' : gatewayState==='connecting' ? '연결 중' : '연결 끊김'}</p><p>대화를 선택하면 이전 내용을 이어서 볼 수 있습니다.</p></footer>
   </nav>
   <div className="hermes-web-chat">
-   {!ready && <p role={error ? 'alert' : 'status'}>{error || '게이트웨이 연결 중…'}</p>}
-   <UsageClock/><ConfirmHost/>
+   <header className="web-header"><button className="web-sidebar-toggle" aria-label="대화 목록 열기/닫기" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen(value => !value)}><PanelLeft size={18}/></button><h2 title={title}>{title}</h2>{pending>0 && <button className="web-pending" onClick={jumpToQuestion}>답변할 질문 {pending}개 <ArrowDown size={16} aria-hidden="true"/></button>}</header>
+   {!ready && <p className="web-connection-notice" role={error ? 'alert' : 'status'}>{error || '게이트웨이 연결 중…'}</p>}
+   <ConfirmHost/>
+   <WebPresentationProvider>
    <SessionViewProvider value={PRIMARY_SESSION_VIEW}><ChatRuntimeBoundary busy={actions.busy} suppressMessages={false} onCancel={actions.cancelRun} onEdit={actions.editMessage} onReload={actions.reloadFromMessage} onThreadMessagesChange={actions.handleThreadMessagesChange}>
-    <div className="hermes-web-thread"><Thread gateway={host.gateway} sessionId={actions.activeSessionId} sessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun}/></div>
-    <div className="hermes-web-composer"><ChatBar gateway={host.gateway} busy={actions.busy} disabled={!ready || gatewayState!=='open'} sessionId={actions.activeSessionId} queueSessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun} onSubmit={actions.submitText} onSteer={actions.steerPrompt}
-      state={{model:{model:'',provider:'',canSwitch:false},tools:{enabled:false,label:''},voice:{enabled:false,active:false}}}/></div>
-   </ChatRuntimeBoundary></SessionViewProvider>
+    <div className="hermes-web-thread">{!currentStoredId && messages.length===0 && <div className="web-empty-state"><span className="web-empty-mark" aria-hidden="true">결</span><h2>수율 데이터에 대해 물어보세요</h2><div>{[
+      '4SS 최근 4주 주차별 수율 리포트 작성해줘',
+      '4SS 최근 4주 저수율 자재랑 나머지 자재 2그룹으로 나눠서 리포트 작성해줘',
+      '4SS 최근 3개월 월별/주별 합쳐서 리포트 작성해줘',
+    ].map(question => <button type="button" key={question} onClick={() => {void requestComposerSetDraft([],question,{active:true});shell.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.focus()}}>{question}</button>)}</div></div>}<Thread gateway={host.gateway} sessionId={actions.activeSessionId} sessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun}/></div>
+    <div className="hermes-web-composer"><div className="web-runline"><span>{pending>0 ? '● 추가 비교를 위해 답변을 기다리고 있어요.' : actions.busy ? '● 응답을 기다리고 있어요.' : ''}</span><UsageClock/>{actions.busy && <button className="web-extra-stop" onClick={actions.cancelRun}>중지</button>}</div><ChatBar gateway={host.gateway} busy={actions.busy} disabled={!ready || gatewayState!=='open'} sessionId={actions.activeSessionId} queueSessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun} onSubmit={async (text, ...rest) => {
+       const fresh=!actions.selectedStoredSessionId
+       if(fresh)setDraftTitle({text,sessionId:null})
+       const sent=await actions.submitText(text,...rest)
+       if(fresh && sent){
+        const id=$selectedStoredSessionId.get()
+        const firstUser=$messages.get().find(message => message.role==='user')
+        const firstText=firstUser?.parts.filter(part => part.type==='text').map(part => part.text).join('')
+        if(id && firstText===text.trim()){remember($sessions.get().find(session => session.id===id) ?? {id} as SessionInfo,text);setDraftTitle({text,sessionId:id})}
+       } else if(fresh)setDraftTitle(null)
+       return sent
+      }} onSteer={actions.steerPrompt}
+      state={{model:{model:'',provider:'',canSwitch:false},tools:{enabled:false,label:''},voice:{enabled:false,active:false}}}/><p className="web-composer-help">분석 결과는 원본 데이터와 함께 확인하세요.</p></div>
+   </ChatRuntimeBoundary></SessionViewProvider></WebPresentationProvider>
   </div>
  </main>
 }
 function UsageClock() {
  const usage=useStore($currentUsage),started=useStore($turnStartedAt),[now,setNow]=useState(Date.now())
  useEffect(() => {if(!started)return;const id=setInterval(() => setNow(Date.now()),1000);return () => clearInterval(id)},[started])
- return <small aria-label="사용량과 실행 시간">{`입력 ${usage.input ?? 0} · 출력 ${usage.output ?? 0} 토큰`}{started && ` · ${Math.max(0,Math.floor((now-started)/1000))}초`}</small>
+ const hasUsage=(usage.input ?? 0)>0 || (usage.output ?? 0)>0
+ if(!hasUsage && !started)return null
+ const parts=hasUsage ? [usage.input != null ? `입력 ${usage.input}` : null,usage.output != null ? `출력 ${usage.output} 토큰` : null].filter(Boolean) : []
+ if(started)parts.push(`${Math.max(0,Math.floor((now-started)/1000))}s`)
+ return <small aria-label="사용량과 실행 시간">{parts.join(' · ')}</small>
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react'
+import { TextMessagePartProvider, useMessagePartText, useAuiState } from '@assistant-ui/react'
 import {
   type StreamdownTextComponents,
   StreamdownTextPrimitive,
@@ -48,6 +48,8 @@ import { useForcedTextDirection } from '@/store/text-direction'
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
+import { useWebPresentation } from '../../../web/presentation'
+import { parseMaybeObject } from './tool/fallback-model'
 import { YieldTableArtifactFrame } from './embeds/frame-embed'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
@@ -281,7 +283,28 @@ function flattenChildrenToText(node: unknown): string {
   return ''
 }
 
+// Associate metadata by the artifact reference, never by a reusable report title.
+function WebReportFrame({src,title}:{src:string;title:string}) {
+  const metadata=useAuiState(state => {
+    const artifactPath=new URL(src,'http://localhost').pathname
+    for(const message of state.thread.messages) {
+      for(const part of message.content) {
+        if(part.type!=='tool-call' || part.toolName!=='render_yield_table')continue
+        const result=parseMaybeObject(part.result)
+        const refs=result.artifact_refs
+        if(!Array.isArray(refs) || !refs.some(ref => ref && typeof ref==='object' && (ref.href===src || (typeof ref.artifact_id==='string' && artifactPath===`/harness/artifacts/${encodeURIComponent(ref.artifact_id)}`))))continue
+        const args=parseMaybeObject(part.args)
+        return JSON.stringify({title:typeof args.title==='string' ? args.title : title,subtitle:[args.lot_cd,args.period_label].filter(value => typeof value==='string').join(' · ')})
+      }
+    }
+    return JSON.stringify({title})
+  })
+  const report=JSON.parse(metadata) as {title:string;subtitle?:string}
+  return <YieldTableArtifactFrame src={src} title={report.title} subtitle={report.subtitle}>{null}</YieldTableArtifactFrame>
+}
+
 function HarnessArtifactLink({ children, className, href = '', ...props }: ComponentProps<'a'>) {
+  const web = useWebPresentation()
   const [isHtml, setIsHtml] = useState(false)
   const label = flattenChildrenToText(children) || 'HTML artifact'
 
@@ -299,7 +322,7 @@ function HarnessArtifactLink({ children, className, href = '', ...props }: Compo
   }, [href])
 
   return (
-    isHtml ? (
+    isHtml && web ? <WebReportFrame src={href} title={label}/> : isHtml ? (
       <YieldTableArtifactFrame src={href} title={label}>
         <a
           className={cn('ref wrap-anywhere', className)}

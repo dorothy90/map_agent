@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { useWebPresentation } from '../../../../../web/presentation'
 import { useI18n } from '@/i18n'
 import { resetBrowseState } from '@/store/composer-input-history'
 
@@ -20,6 +21,7 @@ interface UseComposerPlaceholderOptions {
  */
 export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: UseComposerPlaceholderOptions): string {
   const { t } = useI18n()
+  const web = useWebPresentation()
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
 
@@ -53,6 +55,9 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
   // we're trying to restore. During reconnect, keep the textbox editable so a
   // flaky network doesn't block drafting; only submit/backend actions stay
   // disabled until the gateway is open again.
+  if (web) {
+    return '추가로 요청할 내용을 입력하세요…'
+  }
   return disabled
     ? reconnecting
       ? t.composer.placeholderReconnecting

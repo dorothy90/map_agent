@@ -1,13 +1,142 @@
-.hermes-web { --hermes-system-font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-family: var(--hermes-system-font); font-size:14px; display:flex; flex-direction:row; height:100dvh; width:100%; overflow:hidden; color:var(--foreground, #20232b); background:var(--background, #fff); }
-.hermes-web nav { width:240px; height:100%; min-height:0; flex-shrink:0; padding:16px; overflow-y:auto; border-right:1px solid #cbd5e1; }
-.hermes-web nav button { display:block; width:100%; text-align:left; padding:10px; border-radius:8px; }
-.hermes-web nav button:hover { background:#e2e8f0; }
-.hermes-web nav button[aria-current="page"] { background:#dbeafe; color:#1e3a8a; font-weight:600; }
+/* B v3 is deliberately local to the web mount, including its theme tokens. */
+.hermes-web {
+ --hermes-system-font:ui-sans-serif,system-ui,-apple-system,"SF Pro Text","Segoe UI","Apple SD Gothic Neo","Noto Sans KR",sans-serif;
+ --background:#ffffff; --foreground:#1a1c1f; --primary:#111111; --primary-foreground:#ffffff; --muted:#f3f3f3; --muted-foreground:#6f6f6f; --border:#e6e6e6; --input:#e6e6e6; --ring:#6f6f6f; --accent:#f0f0f0; --accent-foreground:#1a1c1f; --destructive:#626262;
+ --dt-background:#ffffff; --dt-foreground:#1a1c1f; --dt-primary:#111111; --dt-primary-foreground:#ffffff; --dt-input:#e6e6e6; --dt-user-bubble:#f0f0f0; --dt-destructive:#626262; --dt-line-height:1.65;
+ --ui-text-primary:#1a1c1f; --ui-text-secondary:#6f6f6f; --ui-text-tertiary:#6f6f6f; --ui-text-quaternary:#6f6f6f; --ui-stroke-primary:#e6e6e6; --ui-stroke-secondary:#e6e6e6; --ui-stroke-tertiary:#e6e6e6; --chrome-action-hover:#f0f0f0; --ui-control-active-background:#e8e8e8;
+ --conversation-text-font-size:14px; --conversation-tool-font-size:12px; --conversation-caption-font-size:11px; --conversation-line-height:1.65; --conversation-scaffold-meta:#6f6f6f; --conversation-turn-gap:24px; --message-text-indent:0px;
+ --composer-width:940px; --composer-fill:#ffffff; --composer-surface-pad-x:16px; --composer-surface-pad-y:16px;
+ font-family:var(--hermes-system-font); font-size:14px; line-height:1.65; font-variant-numeric:tabular-nums; color-scheme:light;
+ display:flex; flex-direction:row; height:100dvh; width:100%; overflow:hidden; color:#1a1c1f; background:#ffffff;
+}
+.hermes-web *, .hermes-web *::before, .hermes-web *::after { box-sizing:border-box; box-shadow:none; }
+.hermes-web button, .hermes-web input, .hermes-web textarea { font-family:inherit; }
+.hermes-web button { cursor:pointer; }
+.hermes-web button:disabled { cursor:default; }
+.hermes-web :focus-visible { outline:2px solid #6f6f6f; outline-offset:3px; }
+.hermes-web nav { width:248px; height:100%; min-height:0; flex-shrink:0; padding:24px 18px; display:flex; flex-direction:column; gap:12px; border-right:1px solid #e6e6e6; background:#f3f3f3; }
+.hermes-web .web-brand { display:flex; align-items:center; gap:10px; padding:4px 8px 12px; }
+.hermes-web .web-brand>span { border:1px solid #6f6f6f; border-radius:9px; font-size:24px; line-height:26px; width:27px; text-align:center; }
+.hermes-web .web-brand h1 { margin:0; font-size:24px; font-weight:650; }
+.hermes-web .web-brand p { margin:2px 0 0; color:#6f6f6f; font-size:11px; }
+.hermes-web nav button { min-width:0; max-width:100%; text-align:left; }
+.hermes-web .web-new-chat { width:100%; flex-shrink:0; padding:10px 14px; border-radius:13px; color:#ffffff; background:#111111; font-weight:600; }
+.hermes-web .web-new-chat span { margin-right:5px; font-size:19px; }
+.hermes-web .web-search { display:flex; align-items:center; gap:8px; border:1px solid #e6e6e6; border-radius:11px; padding:10px 12px; color:#6f6f6f; }
+.hermes-web .web-search input { min-width:0; width:100%; background:transparent; border:0; font-size:12px; color:#1a1c1f; }
+.hermes-web .web-search kbd { white-space:nowrap; font-family:inherit; font-size:10px; }
+.hermes-web .web-session-list { min-height:0; flex:1; overflow:auto; margin-top:8px; }
+.hermes-web .web-list-heading { margin:4px 10px 10px; color:#6f6f6f; font-size:11px; }
+.hermes-web .web-session { display:block; width:100%; border-radius:12px; padding:11px 10px; margin-bottom:4px; background:transparent; }
+.hermes-web .web-session:hover { background:#ededed; }
+.hermes-web .web-session[aria-current="page"] { background:#e8e8e8; }
+.hermes-web .web-session strong { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; word-break:keep-all; overflow-wrap:break-word; text-overflow:ellipsis; font-weight:600; font-size:12px; line-height:1.65; }
+.hermes-web .web-session small { display:block; color:#6f6f6f; font-size:11px; margin-top:7px; }
+.hermes-web .web-session[aria-current="page"] small { color:#626262; }
+.hermes-web .web-load-more { padding:12px 10px; font-size:12px; }
+.hermes-web .web-connection { flex-shrink:0; border-top:1px solid #e6e6e6; color:#6f6f6f; font-size:11px; padding-top:14px; }
+.hermes-web .web-connection p { margin:0 0 12px; }
+.hermes-web .web-connection p:last-child { margin:0; }
+.hermes-web .web-connection span { font-size:8px; margin-right:4px; }
 .hermes-web .hermes-web-chat { display:flex; flex-direction:column; height:100%; min-height:0; min-width:0; flex:1; overflow:hidden; position:relative; }
+.hermes-web .web-header { flex-shrink:0; min-height:62px; display:flex; align-items:center; gap:16px; padding:12px 30px; border-bottom:1px solid #e6e6e6; }
+.hermes-web .web-header h2 { font-size:13px; font-weight:600; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
+.hermes-web .web-pending { border:1px solid #e6e6e6; padding:7px 12px; border-radius:30px; font-size:11px; white-space:nowrap; }
+.hermes-web .web-pending span { margin-left:10px; font-size:16px; }
+.hermes-web .web-sidebar-toggle { display:none; }
+.hermes-web .web-connection-notice { margin:4px 36px; color:#6f6f6f; font-size:12px; }
 .hermes-web .hermes-web-thread { position:relative; min-height:0; flex:1; overflow:hidden; }
-.hermes-web .hermes-web-composer { position:relative; flex-shrink:0; }
-/* Reserve the actual dock height in flow, including multiline input/status strips. */
-.hermes-web .hermes-web-composer [data-slot="composer-dock"]:not([data-popped-out]) { position:relative; bottom:auto; left:auto; translate:none; transform:none; margin-inline:auto; }
-.hermes-web small[aria-label="사용량과 실행 시간"] { align-self:flex-end; flex-shrink:0; padding:4px 16px; font-size:12px; text-align:right; }
-@media(max-width:700px) { .hermes-web nav { width:150px; } }
+.hermes-web [data-slot="aui_thread-content"] { max-width:940px; padding:24px 36px; }
+.hermes-web [data-slot="aui_user-message-root"] { align-items:flex-end; padding-bottom:24px; }
+.hermes-web .composer-human-message { width:fit-content; max-width:100%; margin-left:auto; padding:13px 18px; border:0; border-radius:16px 16px 4px 16px; background:#f0f0f0; backdrop-filter:none; }
+.hermes-web [data-slot="aui_assistant-message-root"] { padding-bottom:24px; }
+.hermes-web .web-answer-author { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:600; margin-bottom:16px; }
+.hermes-web .web-answer-author span { border:1px solid #e6e6e6; border-radius:50%; width:25px; height:25px; display:grid; place-items:center; }
+.hermes-web [data-slot="aui_assistant-message-content"] { font-size:14px; line-height:1.65; }
+.hermes-web [data-slot="aui_assistant-message-content"] h1, .hermes-web [data-slot="aui_assistant-message-content"] h2 { font-size:20px; font-weight:650; line-height:1.45; margin:0 0 14px; }
+.hermes-web [data-slot="aui_assistant-message-content"] h3 { font-size:16px; }
+.hermes-web [data-slot="aui_msg-actions"] { opacity:1; pointer-events:auto; margin-right:auto; color:#6f6f6f; font-size:11px; }
+.hermes-web [data-slot="tool-block"] { border:1px solid #e6e6e6; border-radius:10px; margin:6px 0; background:#ffffff; }
+.hermes-web .web-tool-row { display:flex; align-items:center; width:100%; min-height:35px; padding:8px 12px; gap:10px; text-align:left; font-size:11px; }
+.hermes-web .web-tool-row:disabled { opacity:1; }
+.hermes-web .web-tool-row strong { color:#1a1c1f; font-weight:600; }
+.hermes-web .web-tool-args { min-width:0; flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:#6f6f6f; }
+.hermes-web .web-tool-state { margin-left:auto; white-space:nowrap; color:#6f6f6f; }
+.hermes-web .web-tool-legacy-header { display:none; }
+.hermes-web [data-slot="aui_assistant-message-content"] img { max-width:100%; border-radius:12px; }
+.hermes-web [data-clarify-stepper], .hermes-web form:has(>[data-slot="clarify-inline"]) { border:1px solid #e6e6e6; border-radius:12px; padding:18px; margin:20px 0; font-size:14px; }
+.hermes-web [data-slot="clarify-inline"] { border:0; padding:0; background:#ffffff; }
+.hermes-web .web-clarify-status { margin-left:auto; color:#6f6f6f; font-size:11px; }
+.hermes-web .web-prior-answer { color:#6f6f6f; margin:0; font-size:13px; }
+.hermes-web [data-clarify-batch-question]>div:first-child { margin:6px 0 14px; font-size:16px; }
+.hermes-web [data-clarify-batch-question] [role="group"] { display:flex; flex-wrap:wrap; gap:8px; }
+.hermes-web [data-choice] { width:auto; border:1px solid #e6e6e6; border-radius:24px; padding:9px 13px; font-size:12px; }
+.hermes-web [data-choice] kbd { display:none; }
+.hermes-web [data-choice][aria-pressed="true"] { background:#111111; color:#ffffff; }
+.hermes-web [data-clarify-batch-question] label { flex-basis:100%; margin-top:10px; padding:0; }
+.hermes-web [data-clarify-batch-question] label kbd { display:none; }
+.hermes-web [data-clarify-batch-question] textarea { border:1px solid #e6e6e6; border-radius:9px; padding:10px 12px; font-size:12px; min-height:38px; background:#ffffff; }
+.hermes-web [data-clarify-stepper]>div:last-child { margin-top:4px; }
+.hermes-web [data-clarify-stepper] button[type="submit"] { background:#111111; color:#ffffff; border-radius:24px; padding:9px 22px; height:auto; }
+.hermes-web .hermes-web-composer { position:relative; flex-shrink:0; border-top:1px solid #e6e6e6; padding:12px 36px 18px; background:#ffffff; }
+.hermes-web .web-runline { display:flex; justify-content:space-between; gap:12px; max-width:868px; margin:0 auto 12px; font-size:11px; color:#6f6f6f; }
+.hermes-web small[aria-label="사용량과 실행 시간"] { font-size:11px; text-align:right; white-space:nowrap; }
+.hermes-web .hermes-web-composer [data-slot="composer-dock"]:not([data-popped-out]) { position:relative; bottom:auto; left:auto; translate:none; transform:none; margin-inline:auto; width:100%; max-width:868px; padding:0; }
+.hermes-web [data-slot="composer-root"], .hermes-web [data-slot="composer-surface"] { border-radius:22px; background:#ffffff; backdrop-filter:none; }
+.hermes-web [data-slot="composer-surface"] { border:1px solid #e6e6e6; }
+.hermes-web [data-slot="composer-fade"] { opacity:1; padding:16px; }
+.hermes-web [data-slot="composer-fade"]>div:has(>[class*="grid-area:input"]) { grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"input input" "menu controls"; gap:14px; }
+.hermes-web [data-slot="composer-fade"] [contenteditable="true"] { min-height:36px; font-size:14px; }
+.hermes-web [data-slot="composer-fade"] [class*="grid-area:menu"]::before { content:"Shift + Enter로 줄바꿈"; color:#6f6f6f; font-size:11px; }
+.hermes-web [data-slot="composer-fade"] button[type="submit"] { background:#111111; color:#ffffff; border-radius:24px; min-width:44px; height:34px; }
+.hermes-web .web-composer-help { text-align:center; margin:9px 0 0; color:#6f6f6f; font-size:10px; }
 .hermes-web .katex, .hermes-web .katex * { font-family:var(--hermes-system-font); }
+@media(max-width:1000px) { .hermes-web nav { width:210px; padding-inline:14px; } .hermes-web [data-slot="aui_thread-content"] { padding-inline:24px; } .hermes-web .hermes-web-composer { padding-inline:24px; } }
+@media(max-width:700px) {
+ .hermes-web nav { display:none; position:absolute; inset:0 auto 0 0; z-index:30; width:248px; padding-top:64px; }
+ .hermes-web[data-sidebar-open="true"] nav { display:flex; }
+ .hermes-web .web-sidebar-toggle { display:block; z-index:31; flex-shrink:0; }
+ .hermes-web .web-header { padding:12px 16px; gap:10px; }
+ .hermes-web [data-slot="aui_thread-content"] { padding:20px 16px; }
+ .hermes-web .hermes-web-composer { padding:10px 16px; }
+ .hermes-web .web-runline { flex-wrap:wrap; gap:4px; }
+ .hermes-web .web-pending { font-size:10px; padding:5px 8px; }
+ .hermes-web .web-tool-args { display:none; }
+}
+@media(prefers-reduced-motion:reduce) { .hermes-web *, .hermes-web *::before, .hermes-web *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; } }
+.hermes-web [data-web-stop] { width:auto; gap:8px; padding:8px 16px; }
+.hermes-web .hermes-web-composer:has([data-web-stop]) .web-extra-stop { display:none; }
+.hermes-web .web-extra-stop { border:1px solid #e6e6e6; border-radius:20px; padding:2px 12px; color:#1a1c1f; }
+.hermes-web .web-brand>span { display:grid; place-items:center; height:27px; }
+.hermes-web .web-new-chat, .hermes-web .web-pending { display:flex; align-items:center; gap:8px; }
+.hermes-web .web-search svg { flex-shrink:0; }
+.hermes-web [data-slot="composer-root"] { padding-inline:0; --composer-fill:#ffffff; }
+.hermes-web [data-slot="composer-root"]>.pointer-events-none { display:none; }
+.hermes-web [data-slot="clarify-inline"] button[type="submit"], .hermes-web [data-clarify-batch] button[type="submit"] { background:#111111; color:#ffffff; border-radius:24px; }
+
+.hermes-web [data-slot="composer-fade"] [class*="grid-area:menu"] button,
+.hermes-web [data-slot="composer-fade"] [class*="grid-area:menu"] [data-slot] { display:none; }
+.hermes-web a.ref { display:inline-block; margin-left:0.5rem; color:#6f6f6f; font-size:11px; }
+.hermes-web a.ref::before { content:"· "; }
+
+.hermes-web [data-slot="composer-fade"] textarea,
+.hermes-web [data-slot="composer-fade"] [contenteditable] { border:0; outline:none; box-shadow:none; background:transparent; }
+.hermes-web [data-slot="composer-fade"] .web-send-button { display:flex; flex-shrink:0; align-items:center; justify-content:center; gap:8px; width:auto; min-width:88px; padding:8px 18px; height:36px; border:0; font-size:13px; font-weight:600; }
+.hermes-web [data-slot="composer-fade"] [class*="grid-area:menu"]::after { content:"추가 지시 보내기"; margin-left:16px; font-size:11px; color:#1a1c1f; }
+.hermes-web [data-slot="thread-timeline"] { display:none; }
+.hermes-web [data-slot="aui_assistant-message-content"] .aui-md { font-size:14px; line-height:1.65; color:#1a1c1f; }
+.hermes-web [data-slot="aui_assistant-message-content"] .aui-md p { font-size:14px; line-height:1.65; margin-block:0.6em; }
+.hermes-web .web-report-section { display:block; margin:22px 0; }
+.hermes-web .web-report-heading { display:flex; align-items:baseline; justify-content:space-between; gap:16px; margin-bottom:10px; }
+.hermes-web .web-report-heading [role="heading"] { font-size:16px; font-weight:650; color:#1a1c1f; }
+.hermes-web .web-report-link { flex-shrink:0; font-size:11px; color:#6f6f6f; text-decoration:underline; }
+.hermes-web .web-report-subtitle { display:block; margin:0 0 12px; font-size:12px; color:#6f6f6f; }
+.hermes-web .web-report-scroll { display:block; width:100%; overflow-x:auto; border:1px solid #e6e6e6; border-radius:12px; }
+.hermes-web .yield-table-artifact-frame { display:block; width:100%; min-width:1400px; border:0; background:#ffffff; }
+.hermes-web .web-empty-state { position:absolute; inset:0; z-index:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; text-align:center; overflow:auto; }
+.hermes-web .web-empty-mark { display:grid; place-items:center; width:42px; height:42px; border:1px solid #e6e6e6; border-radius:14px; font-size:24px; font-weight:650; }
+.hermes-web .web-empty-state h2 { margin:18px 0 22px; font-size:20px; font-weight:600; }
+.hermes-web .web-empty-state>div { display:flex; flex-direction:column; align-items:center; gap:10px; }
+.hermes-web .web-empty-state button { max-width:540px; border:1px solid #e6e6e6; border-radius:20px; padding:10px 16px; background:#ffffff; color:#6f6f6f; font-size:12px; word-break:keep-all; overflow-wrap:break-word; }
+.hermes-web .web-empty-state button:hover { background:#f3f3f3; color:#1a1c1f; }
+@media(max-width:700px) { .hermes-web [data-slot="composer-fade"] [class*="grid-area:menu"]::after { display:none; } }

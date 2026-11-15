@@ -1,3 +1,4 @@
+import { WebPresentationProvider } from '../../../../web/presentation'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -18,6 +19,7 @@ describe('YieldTableArtifactFrame', () => {
     )
     const frame = getByTitle('table') as HTMLIFrameElement
 
+    expect(frame.classList.contains('yield-table-artifact-frame')).toBe(true)
     expect(frame.style.height).toBe('')
     expect(frame.className).toContain('h-[calc(100%-2rem)]')
     expect(frame.parentElement?.className).toContain('h-[720px]')
@@ -64,4 +66,12 @@ describe('YieldTableArtifactFrame', () => {
     expect(plotFrame.style.height).toBe('')
     expect(plotFrame.parentElement?.className).toContain('h-[720px]')
   })
+})
+
+it('places the web heading and original link immediately before the scrollable iframe container', () => {
+ const {getByRole,getByTitle}=render(<WebPresentationProvider><YieldTableArtifactFrame src="/artifact/table" title="실제 리포트 제목"><a href="/artifact/table">duplicate</a></YieldTableArtifactFrame></WebPresentationProvider>)
+ const heading=getByRole('heading',{name:'실제 리포트 제목'})
+ expect(heading.parentElement?.contains(getByRole('link',{name:'원본 열기'}))).toBe(true)
+ expect(heading.parentElement?.nextElementSibling?.contains(getByTitle('실제 리포트 제목'))).toBe(true)
+ expect(getByTitle('실제 리포트 제목').getAttribute('sandbox')).toBe('allow-scripts')
 })

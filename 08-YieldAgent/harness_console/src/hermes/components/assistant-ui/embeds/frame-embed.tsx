@@ -1,5 +1,7 @@
 'use client'
 
+import { useWebPresentation } from '../../../../web/presentation'
+
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import type { FrameEmbed } from './providers/types'
@@ -19,7 +21,8 @@ function isYieldTableHeightMessage(data: unknown): data is { type: 'yield-table-
   return message.type === 'yield-table-height' && typeof message.height === 'number' && Number.isFinite(message.height)
 }
 
-export function YieldTableArtifactFrame({ children, src, title }: { children: ReactNode; src: string; title: string }) {
+export function YieldTableArtifactFrame({ children, src, title, subtitle }: { children: ReactNode; src: string; title: string; subtitle?: string }) {
+  const web = useWebPresentation()
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [reported, setReported] = useState<{ src: string; height: number } | null>(null)
   const height = reported?.src === src ? reported.height : null
@@ -40,6 +43,12 @@ export function YieldTableArtifactFrame({ children, src, title }: { children: Re
     return () => window.removeEventListener('message', onMessage)
   }, [src])
 
+  if (web) return <span className="web-report-section">
+    <span className="web-report-heading"><span role="heading" aria-level={3}>{title}</span><a className="web-report-link" href={src} target="_blank" rel="noopener noreferrer">원본 열기</a></span>
+    {subtitle && <span className="web-report-subtitle">{subtitle}</span>}
+    <span className="web-report-scroll"><iframe className="yield-table-artifact-frame" loading="lazy" ref={frameRef} sandbox="allow-scripts" src={src} style={{height:height ?? 720}} title={title}/></span>
+  </span>
+
   return (
     <span className={height === null
       ? 'block h-[720px] min-h-60 max-h-[85vh] resize-y overflow-auto'
@@ -51,10 +60,10 @@ export function YieldTableArtifactFrame({ children, src, title }: { children: Re
         rel="noopener noreferrer"
         target="_blank"
       >
-        Open in new window
+        {web ? '원본 열기' : 'Open in new window'}
       </a>
       <iframe
-        className={`mt-2 block w-full border-0 ${height === null ? 'h-[calc(100%-2rem)]' : ''}`}
+        className={`yield-table-artifact-frame mt-2 block w-full border-0 ${height === null ? 'h-[calc(100%-2rem)]' : ''}`}
         loading="lazy"
         ref={frameRef}
         sandbox="allow-scripts"

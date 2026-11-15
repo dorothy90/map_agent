@@ -1,3 +1,4 @@
+import { useWebPresentation } from '../../../../web/presentation'
 import { disabledNative } from '@/pr9-disabled-native'
 import {
   ActionBarPrimitive,
@@ -305,6 +306,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
       onDoubleClick={collapsedNotice ? undefined : onDoubleClick}
       ref={enterRef}
     >
+      {!collapsedNotice && <WebAnswerAuthor/>}
       {collapsedNotice ?? (
         <>
           <div
@@ -1200,9 +1202,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
             <GitForkIcon className="size-3.5" />
           </TooltipIconButton>
         )}
-        <CopyButton
-          appearance="icon"
-          buttonSize="icon"
+        <WebAnswerCopy
           label={copy.copy}
           onCopied={() => recordAction(DESKTOP_BUTTON_ACTIONS.messageCopy, 'click')}
           text={getMessageText}
@@ -1352,4 +1352,11 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ dura
       <AssistantActionBar durationS={durationS} {...props} />
     </div>
   )
+}
+
+function WebAnswerAuthor() { return useWebPresentation() ? <div className="web-answer-author"><span>결</span>수율 분석</div> : null }
+
+function WebAnswerCopy(props: React.ComponentProps<typeof CopyButton>) {
+ const web=useWebPresentation()
+ return <CopyButton {...props} appearance={web ? 'inline' : 'icon'} buttonSize={web ? undefined : 'icon'} label={web ? '답변 복사' : props.label}/>
 }

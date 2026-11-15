@@ -1,3 +1,5 @@
+import { Fragment } from 'react'
+import { WebPresentationProvider } from '../../../../web/presentation'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -16,8 +18,9 @@ const state: ChatBarState = {
   voice: { active: false, enabled: false }
 }
 
-function renderControls(overrides: Partial<React.ComponentProps<typeof ComposerControls>> = {}) {
-  return render(
+function renderControls(overrides: Partial<React.ComponentProps<typeof ComposerControls>> = {}, web = false) {
+  const Wrapper=web ? WebPresentationProvider : Fragment
+  return render(<Wrapper>
     <I18nProvider configClient={null} initialLocale="en">
       <ComposerControls
         autoSpeak={false}
@@ -43,7 +46,7 @@ function renderControls(overrides: Partial<React.ComponentProps<typeof ComposerC
         voiceStatus="idle"
         {...overrides}
       />
-    </I18nProvider>
+    </I18nProvider></Wrapper>
   )
 }
 
@@ -237,4 +240,18 @@ describe('wake-word ear visibility', () => {
     const ear = screen.getByLabelText('Wake word: "hey hermes" — paused during voice chat')
     expect((ear as HTMLButtonElement).disabled).toBe(true)
   })
+})
+
+describe('web controls', () => {
+ it.each([
+   [false, false, '보내기'], [false, true, '보내기'],
+   [true, false, '중지'], [true, true, '보내기'],
+ ] as const)('shows a labeled SVG pill: busy=%s, payload=%s', (busy,hasComposerPayload,label) => {
+   renderControls({busy,hasComposerPayload},true)
+   const button=screen.getByRole('button',{name:label})
+   expect(button.textContent).toBe(label)
+   expect(button.querySelector('svg')).toBeTruthy()
+   expect(screen.getAllByRole('button')).toHaveLength(1)
+   expect(button.getAttribute('type')).toBe('submit')
+ })
 })
