@@ -175,6 +175,8 @@ def project_run_event(run, event):
         for key in ('args', 'result', 'summary'):
             if key in payload:
                 projected[key] = deepcopy(payload[key])
+        if 'is_error' in payload:
+            projected['is_error'] = bool(payload['is_error'])
         duration = payload.get('duration_s', payload.get('elapsed_seconds'))
         if duration is not None:
             projected['duration_s'] = duration

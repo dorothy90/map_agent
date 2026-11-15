@@ -784,3 +784,30 @@ def test_pump_retries_admission_lock_contention_without_closing_peer():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
     asyncio.run(scenario())
+
+
+def test_history_reopens_clarify_result_before_final_answer():
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        result = {'responses': [{'question': 'Criterion?', 'choices_offered': None,
+                  'status': 'answered', 'user_response': '80%'}], 'outcome': 'submitted'}
+        event = {'type': 'tool_finished', 'payload': {'name': 'clarify', 'tool_id': 'prompt',
+                 'args': {'questions': [{'question': 'Criterion?', 'choices': [], 'multi_select': False}]},
+                 'result': result}}
+        services.runs.append({'principal_id': 'alice', 'session_id': sid, 'run_id': 'r',
+            'created_at': 1, 'query': 'question', 'status': 'completed', 'active': False,
+            'native_messages': [
+                {'role': 'user', 'content': 'question'},
+                {'role': 'assistant', 'tool_calls': [{'id': 't1', 'function': {'name': 'query_db', 'arguments': '{}'}}]},
+                {'role': 'tool', 'tool_call_id': 't1', 'name': 'query_db'},
+            ], 'events': [event, event], 'answer_text': 'final',
+            'observations': [{'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'},
+                              'validated_arguments': candidate_digest('final')}]})
+        messages = call(ws, 'session.history', {'session_id': sid})['result']['messages']
+        assert [m['role'] for m in messages] == ['user', 'tool', 'tool', 'assistant']
+        assert messages[1]['tool_call_id'] == 'prompt'
+        assert messages[1]['name'] == 'clarify'
+        assert json.loads(messages[1]['content']) == result
+        assert messages[2]['name'] == 'query_db'
+        assert call(ws, 'session.resume', {'session_id': sid})['result']['messages'] == messages

@@ -460,8 +460,13 @@ def test_pending_adapter_wires_duplicates_and_answer_redaction():
         params = {'session_id': 's', 'execution_generation': 1, 'prompt_id': 'approve', 'choice': 'once'}
         assert (await a.rpc('approval.respond', 's', params))['result']['status'] == 'resolved'
         epoch = (await a.events.watermark('s'))['replay_epoch']
-        assert 'PRIVATE' not in str(await a.events.since('s', epoch))
-        assert 'PRIVATE' not in str(store.runs.rows[0]['events'])
+        replayed = (await a.events.since('s', epoch))['events']
+        completed = [e['payload'] for e in replayed if e['type'] == 'tool.complete']
+        assert {e['tool_id'] for e in completed} == {'question:q1', 'question:q2', 'single'}
+        assert all(len(e['result']['responses']) == 1 for e in completed)
+        assert 'PRIVATE2' in str(completed)
+        assert 'PRIVATE' not in str(await a.pending.list_audit())
+        assert 'PRIVATE' not in str(store.runs.rows[0].get('native_messages'))
     asyncio.run(scenario())
 
 

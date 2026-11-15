@@ -19,7 +19,8 @@ from .store import LeaseLost, BudgetExceeded
 from .gateway import publication
 from . import native_ipc as ipc
 from .gateway.pending_controls import PendingControls
-from .gateway.pending_wire import effective_timeout, decline_server_request
+from .gateway.pending_wire import (effective_timeout, decline_server_request,
+    clarify_tool_result, question_prompt_id, CLARIFY_TIMEOUT_NOTICE)
 from .isolation.backend import (
     cleanup_isolated_run,
     cleanup_profile_results,
@@ -117,21 +118,45 @@ def prompt_event_key(event):
     return 'native-prompt:' + event['type'] + ':' + (payload.get('prompt_id') or ','.join(payload.get('request_ids', [])))
 
 
+async def publish_clarify_completion(store, row, prompt_id):
+    """One result per parked authority row; answers come only from pending state."""
+    if row['kind'] != 'clarify' or prompt_id not in row['authority_ids']:
+        return
+    for index, question in enumerate(row['questions']):
+        authority_id = question_prompt_id(row['prompt_id'], row['questions'], index)
+        if row['status'] == 'pending' and authority_id != prompt_id:
+            continue
+        reply = row.get('result') or {}
+        answers = {**row['answers'], **(reply.get('answers') or {})}
+        # A batch can settle one answered row while the other questions still wait.
+        outcome = 'submitted' if row['status'] == 'pending' else reply['outcome']
+        notice = reply.get('notice') or (CLARIFY_TIMEOUT_NOTICE if outcome == 'timed_out' else None)
+        args = {'questions': [{'question': question['question'], 'choices': question.get('choices') or [],
+                               'multi_select': question.get('multi_select', False)}]}
+        await store.event(row['run_id'], 'tool_finished', {
+            'name': 'clarify', 'tool_id': authority_id, 'invocation_id': authority_id,
+            'args': args, 'result': clarify_tool_result([question], answers, outcome, notice),
+            'status': 'success', 'is_error': False,
+        }, epoch=row['execution_generation'], event_key='native-clarify-complete:' + authority_id)
+
+
 async def publish_stored_prompt_events(store, pending):
     """PR-7 helpers must drain their own 6a instance, including cancellation reason.
 
     No upstream persistence counterpart → PB:663. Old-generation descriptors
-    cannot attach to a recovered run's new epoch. Never query response bodies.
+    cannot attach to a recovered run's new epoch. Never query audit bodies.
     """
     events = pending.drain_events()
     for event in events:
         payload = event['payload']
         identity = payload.get('prompt_id') or payload['request_ids'][0]
         row = await pending.pending_prompts.find_one({'principal_id': pending.principal_id,
-            'authority_ids': identity}, {'run_id': 1, 'execution_generation': 1})
+            'authority_ids': identity})
         if row and row.get('run_id'):
             await store.event(row['run_id'], event['type'], payload,
                 epoch=row['execution_generation'], event_key=prompt_event_key(event))
+            if event['type'] == 'clarify.settled':
+                await publish_clarify_completion(store, row, identity)
     return events
 
 
@@ -144,7 +169,7 @@ async def cancel_run_prompts(store, principal_id, run_id, reason):
 
 
 class NativePrompts:
-    """Publish the 6a library's descriptors; never journal response bodies.
+    """Publish pending descriptors/results without journaling native_messages.
 
     Host lifetime adapter has no upstream counterpart → PB:517,576,663,731.
     Remote instances keep their own event queues: reconcile settled IDs with the
@@ -160,7 +185,7 @@ class NativePrompts:
         self.closed = False
 
     async def publish(self):
-        from .gateway.pending_wire import build_settled_event, question_prompt_id
+        from .gateway.pending_wire import build_settled_event
         async with self.lock:
             events = self.pending.drain_events()
             for identity in list(self.rows):
@@ -179,6 +204,9 @@ class NativePrompts:
             for event in events:
                 kind, payload = event['type'], event['payload']
                 prompt_id = payload.get('prompt_id')
+                if kind == 'clarify.settled':
+                    row = next(row for row in self.rows.values() if prompt_id in row['authority_ids'])
+                    await publish_clarify_completion(self.context.store, row, prompt_id)
                 if kind.endswith('.settled'):
                     if prompt_id in self.settled:
                         continue
@@ -238,10 +266,7 @@ class NativePrompts:
                 'principal_id': self.pending.principal_id, 'prompt_id': identity})
         result = await self.wait(identity, timeout)
         if result.get('outcome') == 'timed_out':
-            return {**result, 'notice': (
-                '사용자가 답하지 않았습니다. 백분위수나 고정 임계값을 포함한 기준을 지어내지 말고, '
-                '사용자 기준이 여전히 필요하다고 알린 뒤 해당 턴을 종료하세요.'
-            )}
+            return {**result, 'notice': CLARIFY_TIMEOUT_NOTICE}
         return result
 
     async def approve(self, name, description, effect):

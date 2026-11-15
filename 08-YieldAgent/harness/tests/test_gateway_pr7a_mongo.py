@@ -210,8 +210,16 @@ def test_pending_recovery_two_principals_wires_generation_and_no_answer_events()
             assert (await second.respond('s', params, kind='approval'))['status'] == 'resolved'
             assert (await second.respond('s', params, kind='approval'))['status'] == 'already_resolved'
             epoch = (await second.events.watermark('s'))['replay_epoch']
-            assert 'PRIVATE' not in str(await second.events.since('s', epoch))
-            assert 'PRIVATE' not in str((await store.get_run('a', receipt['run_id']))['events'])
+            replayed = await second.events.since('s', epoch)
+            completed = [e['payload'] for e in replayed['events'] if e['type'] == 'tool.complete']
+            assert {e['tool_id'] for e in completed} == {'batch:q1', 'batch:q2'}
+            assert all(len(e['result']['responses']) == 1 for e in completed)
+            assert [e['result']['responses'][0]['user_response'] for e in completed] == ['PRIVATE', 'PRIVATE2']
+            settled = [e for e in replayed['events'] if e['type'] != 'tool.complete']
+            assert 'PRIVATE' not in str(settled)
+            run = await store.get_run('a', receipt['run_id'])
+            assert 'PRIVATE' not in str(run.get('native_messages'))
+            assert 'PRIVATE' not in str(await second.pending.list_audit())
             # An expired owner becomes unknown, then explicit acknowledgement
             # retires that exact generation. No ID minting / automatic resubmit.
             await store.runs.update_one({'run_id': receipt['run_id']}, {'$set': {'lease_until': 0}})

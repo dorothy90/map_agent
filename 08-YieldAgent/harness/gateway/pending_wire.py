@@ -111,6 +111,48 @@ def clarify_prompts(prompt_id, generation, questions, answers=None, *, timeout_s
     return result
 
 
+# Same host deadline notice returned to the worker and displayed in the tool result.
+CLARIFY_TIMEOUT_NOTICE = (
+    '사용자가 답하지 않았습니다. 백분위수나 고정 임계값을 포함한 기준을 지어내지 말고, '
+    '사용자 기준이 여전히 필요하다고 알린 뒤 해당 턴을 종료하세요.'
+)
+
+
+def clarify_tool_result(questions, answers, outcome, notice=None):
+    """Mirror Hermes clarify_tool._result without importing the engine runtime."""
+    def strip_recommended(value):
+        text = str(value).strip()
+        label = '(Recommended)'
+        return text[:-len(label)].strip() if text.casefold().endswith(label.casefold()) else text
+
+    responses = []
+    for question in questions:
+        qid = question['qid']
+        raw = answers.get(qid)
+        value = None
+        if raw not in (None, ''):
+            if question.get('multi_select'):
+                if isinstance(raw, str):
+                    try:
+                        parsed = json.loads(raw)
+                    except json.JSONDecodeError:
+                        parsed = None
+                    raw = parsed if isinstance(parsed, list) else [raw]
+                value = [strip_recommended(item) for item in raw if str(item).strip()]
+            else:
+                value = strip_recommended(raw)
+        responses.append({
+            'question': question['question'],
+            'choices_offered': [strip_recommended(c) for c in question['choices']] if question.get('choices') else None,
+            'status': 'answered' if value else 'skipped' if qid in answers else 'unanswered',
+            'user_response': value or None,
+        })
+    result = {'responses': responses, 'outcome': outcome}
+    if notice:
+        result['notice'] = str(notice)
+    return result
+
+
 def validate_response(prompt, response, kind):
     # H/gateway/session_pending_controls.py:72-80 remote responder contract.
     field = 'answer' if kind == 'clarify' else 'choice'

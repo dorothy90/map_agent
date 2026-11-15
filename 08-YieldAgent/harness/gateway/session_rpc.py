@@ -106,6 +106,21 @@ class SessionRPC:
             previous_native = None
             for run in runs:
                 messages.append({'role': 'user', 'text': run['query']})
+                # Clarify is intentionally absent from native_messages. Its durable
+                # completion is the transcript evidence, scoped to this run/turn and
+                # placed before later host tools so reopen matches the live card order.
+                clarify_ids = set()
+                for event in run.get('events', []):
+                    payload = event.get('payload', {})
+                    if event.get('type') != 'tool_finished' or payload.get('name') != 'clarify':
+                        continue
+                    tool_id = payload.get('tool_id') or payload.get('invocation_id')
+                    if not tool_id or tool_id in clarify_ids or 'result' not in payload:
+                        continue
+                    clarify_ids.add(tool_id)
+                    messages.append({'role': 'tool', 'name': 'clarify', 'tool_call_id': tool_id,
+                                     'args': payload.get('args', {}),
+                                     'content': json.dumps(payload['result'], ensure_ascii=False)})
                 native = run.get('native_messages')
                 if isinstance(native, list):
                     if previous_native is not None and native[:len(previous_native)] == previous_native:
