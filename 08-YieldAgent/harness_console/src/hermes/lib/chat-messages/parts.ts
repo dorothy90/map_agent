@@ -457,6 +457,38 @@ export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessage
   return rowDeduped.filter((_, index) => index !== previous.index)
 }
 
+/** Put the verified final in the draft's first text slot and drop the rest. */
+function replaceDraftTextParts(
+  parts: ChatMessagePart[],
+  finalText: string,
+  fallbackTimestamp?: number
+): ChatMessagePart[] {
+  const previousText = parts.findLast(part => part.type === 'text')
+  const finalPart = assistantTextPart(finalText, previousText?.timestamp ?? fallbackTimestamp)
+
+  if (previousText?.completedAt !== undefined) {
+    finalPart.completedAt = previousText.completedAt
+  }
+
+  let inserted = false
+  const next: ChatMessagePart[] = []
+
+  for (const part of parts) {
+    if (part.type === 'text') {
+      if (!inserted) {
+        next.push(finalPart)
+        inserted = true
+      }
+
+      continue
+    }
+
+    next.push(part)
+  }
+
+  return inserted ? next : [...next, finalPart]
+}
+
 /**
  * Merge the final assistant text into a message's parts.
  *
@@ -500,19 +532,29 @@ export function mergeFinalAssistantText(
     const earlier = parts.slice(0, lastToolIndex + 1)
 
     const earlierText = partsText(earlier)
+    const earlierNorm = normalizeWs(earlierText)
+    const finalNorm = normalizeWs(finalText)
+    const earlierIsDraft =
+      Boolean(earlierNorm && finalNorm) &&
+      (earlierNorm === finalNorm || finalNorm.startsWith(earlierNorm) || earlierNorm.startsWith(finalNorm))
+
+    const suffix = parts.slice(lastToolIndex + 1)
+
+    // The text already in this bubble is this turn's streamed/interim draft
+    // (a later tool such as verify_answer may sit after it). Replace that
+    // draft with the verified final instead of appending the same prose.
+    if (earlierIsDraft) {
+      return replaceDraftTextParts(
+        [...earlier, ...suffix.filter(part => part.type !== 'text')],
+        finalText,
+        fallbackTimestamp
+      )
+    }
 
     // Some terminal frames carry cumulative text. Strip only an exact prefix;
     // fuzzy similarity is not proof that two assistant messages are the same.
     const responseText =
       earlierText && finalText.startsWith(earlierText) ? finalText.slice(earlierText.length) : finalText
-
-    const suffix = parts.slice(lastToolIndex + 1)
-
-    // A cumulative final can stop exactly at the pre-tool update. The suffix
-    // draft is still provisional; the ordinary empty-final path keeps drafts.
-    if (earlierText && finalText === earlierText) {
-      return [...earlier, ...suffix.filter(part => part.type !== 'text')]
-    }
 
     return [...earlier, ...mergeFinalAssistantText(suffix, responseText, fallbackTimestamp)]
   }
