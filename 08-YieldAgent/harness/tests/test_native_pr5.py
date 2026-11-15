@@ -127,8 +127,8 @@ def test_native_publication_boundary(monkeypatch, tmp_path, verdicts, flags, fin
             assert result['answer_text'] == candidates[1]
         else:
             assert result['stop_reason'] == ('verification_' + reason if reason in ('fail', 'unknown') else reason)
-            if reason == 'fail' and final == 'second' and not flags:
-                assert result['answer_text'].startswith(candidates[1] + '\n\n---\n⚠️')
+            if reason in ('fail', 'unknown') and verdicts and verdicts[-1] == reason and final == 'second' and flags in ({}, {'turn_exit_reason': 'completed'}):
+                assert result['answer_text'].startswith(candidates[1] + '\n\n---\n')
                 assert '- 근거 부족' in result['answer_text']
             else:
                 assert result['answer_text'].startswith('최종 검증을 통과하지 못해 답변을 확정하지 못했습니다.')

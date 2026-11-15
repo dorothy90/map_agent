@@ -1,5 +1,5 @@
 import json
-from harness.native_verification import checked_report, verify_and_repair
+from harness.native_verification import checked_report, verify_and_repair, FIXED_VERIFICATION_FAILURE, verification_failure_answer
 
 
 def entry(verdict='pass', issues=None, ids=None):
@@ -34,7 +34,9 @@ def test_pass_never_repairs_and_unknown_never_passes():
     assert good['completed'] and good['final_response'] == '근거 있는 답변'
     unknown = verify_and_repair({'completed':True,'final_response':'초안'}, lambda c: {'verdict':'unknown','issues':['자료 부족'],'result_ids':[]}, forbidden)
     assert unknown['partial'] and not unknown['completed']
-    assert '초안' not in unknown['final_response']
+    assert unknown['final_response'].startswith('초안\n\n---\n' + FIXED_VERIFICATION_FAILURE)
+    assert '- 자료 부족' in unknown['final_response']
+    assert unknown['verification_candidate'] == '초안'
 
 
 def test_empty_failed_answer_keeps_fixed_fallback():
@@ -81,3 +83,9 @@ def test_verifier_backend_capability_is_read_result_only(monkeypatch):
     assert contexts[-1].parent_invocation_id == 'review'
     assert not bridge.observations
     assert bridge.review_observations[0]['result_id'] == 'review-read'
+
+
+def test_unknown_empty_answer_uses_fixed_fallback():
+    report = {'verdict': 'unknown', 'issues': ['format failure'], 'result_ids': []}
+    for answer in (None, '', '   '):
+        assert verification_failure_answer(answer, report) == FIXED_VERIFICATION_FAILURE + '\n\n- format failure'

@@ -764,3 +764,19 @@ def test_resolve_unknown_concurrent_retries_are_idempotent():
         replies = await asyncio.gather(*(a.rpc('prompt.resolve_unknown', 's', params) for _ in range(5)))
         assert all('result' in r and r['result']['outcome'] == 'interrupted' for r in replies), replies
     asyncio.run(scenario())
+
+
+def test_partial_published_answer_completes_live_and_history_projection():
+    from harness.gateway.events import verified_answer, verified_answer_with_artifacts, project_run_event
+    answer = '[weekly table](/harness/artifacts/table)\n\nVerification notice'
+    run = {'status': 'partial', 'active': False, 'answer_text': answer,
+        'native_usage': {'input_tokens': 10, 'output_tokens': 2, 'total_tokens': 12, 'api_calls': 1}}
+    event = {'type': 'run_finished', 'payload': {}}
+    assert verified_answer(run) is None
+    assert verified_answer_with_artifacts(run) == answer
+    assert project_run_event(run, event) == {'type': 'message.complete', 'payload': {
+        'text': answer, 'usage': {'input': 10, 'output': 2, 'total': 12, 'calls': 1}}}
+    for changes in ({'active': True}, {'status': 'failed'}, {'status': 'cancelled'},
+                    {'answer_text': ''}, {'answer_text': '   '}, {'answer_text': None}):
+        assert verified_answer_with_artifacts({**run, **changes}) is None
+        assert project_run_event({**run, **changes}, event)['type'] == 'run_finished'
