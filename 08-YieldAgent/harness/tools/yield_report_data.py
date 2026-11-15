@@ -1,25 +1,60 @@
-"""Weekly report requests and database aggregates under one product/week scope."""
+"""Product-scoped SQL aggregates; recent windows use DB measurement dates only."""
 import re
+from calendar import monthrange
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from ..types import Contract
 
+Grain = Literal['month', 'week', 'day']
+GRAINS = {'month': ('months', 'monthly'), 'week': ('weeks', 'weekly'), 'day': ('days', 'daily')}
+MEASURE_DATE = "TO_DATE(YEAR||LPAD(MONTH,2,'0')||LPAD(DAY,2,'0'),'YYYYMMDD')"
+BASE_DATE_SOURCE = f"MAX({MEASURE_DATE}) FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST'; measurement date, not LAST_UPDATE or host clock"
 
-class RecentWeeks(Contract):
-    kind: Literal['recent_weeks']
-    base_date: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
-    weeks: int = Field(ge=1, le=26, strict=True)
 
-    @field_validator('base_date')
-    @classmethod
-    def valid_date(cls, value):
-        date.fromisoformat(value)
-        return value
+class RecentPeriod(Contract):
+    kind: Literal['recent']
+    weeks: int | None = Field(default=None, ge=1, le=26, strict=True)
+    months: int | None = Field(default=None, ge=1, le=24, strict=True)
+    days: int | None = Field(default=None, ge=1, le=92, strict=True)
+    grains: list[Grain] | None = Field(default=None, min_length=1, max_length=3)
+
+    @model_validator(mode='after')
+    def one_window(self):
+        if sum(getattr(self, key) is not None for key, _ in GRAINS.values()) != 1:
+            raise ValueError('recent requires exactly one of weeks/months/days to define one window')
+        if self.grains is not None and len(set(self.grains)) != len(self.grains):
+            raise ValueError('duplicate grain')
+        return self
+
+
+def _normalize_buckets(values, grain):
+    normalized = []
+    for value in values:
+        value = value.strip()
+        if grain == 'week':
+            match = re.fullmatch(r'(\d{4})(?:-W?|-)?(\d{2})', value, re.IGNORECASE)
+            if not match:
+                raise ValueError('week must be YYYY-Www, YYYY-WW, or YYYYWW')
+            year, week = map(int, match.groups())
+            date.fromisocalendar(year, week, 1)
+            normalized.append(f'{year:04d}-{week:02d}')
+        else:
+            fmt = r'\d{4}-\d{2}' if grain == 'month' else r'\d{4}-\d{2}-\d{2}'
+            length = 6 if grain == 'month' else 8
+            if re.fullmatch(r'\d{' + str(length) + '}', value):
+                value = value[:4] + '-' + value[4:6] + ('-' + value[6:] if grain == 'day' else '')
+            if not re.fullmatch(fmt, value):
+                raise ValueError('invalid calendar bucket')
+            date.fromisoformat(value + '-01' if grain == 'month' else value)
+            normalized.append(value)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError('duplicate bucket')
+    return sorted(normalized)
 
 
 class ExplicitWeeks(Contract):
@@ -28,38 +63,86 @@ class ExplicitWeeks(Contract):
 
     @field_validator('weeks')
     @classmethod
-    def normalized_weeks(cls, values):
-        normalized = []
-        for value in values:
-            match = re.fullmatch(r'(\d{4})(?:-W?|-)?(\d{2})', value.strip(), re.IGNORECASE)
-            if not match:
-                raise ValueError('week must be YYYY-Www, YYYY-WW, or YYYYWW')
-            year, week = map(int, match.groups())
-            date.fromisocalendar(year, week, 1)
-            normalized.append(f'{year:04d}-{week:02d}')
-        if len(set(normalized)) != len(normalized):
-            raise ValueError('duplicate ISO week')
-        return sorted(normalized)
+    def normalized(cls, values):
+        return _normalize_buckets(values, 'week')
 
 
-WeeklyPeriod = Annotated[RecentWeeks | ExplicitWeeks, Field(discriminator='kind')]
+class ExplicitMonths(Contract):
+    kind: Literal['months']
+    months: list[str] = Field(min_length=1, max_length=24)
+
+    @field_validator('months')
+    @classmethod
+    def normalized(cls, values):
+        return _normalize_buckets(values, 'month')
 
 
-def resolve_weeks(period: RecentWeeks | ExplicitWeeks) -> list[str]:
-    if isinstance(period, ExplicitWeeks):
-        return list(period.weeks)
-    base = date.fromisoformat(period.base_date)
-    weeks = []
-    for offset in reversed(range(period.weeks)):
-        year, week, _ = (base - timedelta(weeks=offset)).isocalendar()
-        weeks.append(f'{year:04d}-{week:02d}')
-    return weeks
+class ExplicitDays(Contract):
+    kind: Literal['days']
+    days: list[str] = Field(min_length=1, max_length=92)
+
+    @field_validator('days')
+    @classmethod
+    def normalized(cls, values):
+        return _normalize_buckets(values, 'day')
+
+
+ReportPeriod = Annotated[RecentPeriod | ExplicitWeeks | ExplicitMonths | ExplicitDays, Field(discriminator='kind')]
+
+
+def _bucket(day, grain):
+    if grain == 'week':
+        year, week, _ = day.isocalendar()
+        return f'{year:04d}-{week:02d}'
+    return day.isoformat()[:7] if grain == 'month' else day.isoformat()
+
+
+def _bounds(bucket, grain):
+    if grain == 'week':
+        start = date.fromisocalendar(*map(int, bucket.split('-')), 1)
+        return start, start + timedelta(days=6)
+    start = date.fromisoformat(bucket + '-01' if grain == 'month' else bucket)
+    return start, start.replace(day=monthrange(start.year, start.month)[1]) if grain == 'month' else start
+
+
+def resolve_window(period, base: date | None = None):
+    """DB MAX measurement date anchors consecutive buckets, including empty ones.
+
+    Weeks are ISO Monday-start (Oracle IYYY-IW). Combined grains overlap the
+    same closed date interval; leading/trailing weeks are clipped for aggregates.
+    Explicit nonconsecutive buckets keep their gaps excluded via SQL IN.
+    """
+    if isinstance(period, RecentPeriod):
+        if base is None:
+            raise ValueError('No PT1H measurement date for this product')
+        anchor = next(g for g, (key, _) in GRAINS.items() if getattr(period, key) is not None)
+        count = getattr(period, GRAINS[anchor][0])
+        if anchor == 'month':
+            index = base.year * 12 + base.month - count
+            start = date(index // 12, index % 12 + 1, 1)
+        elif anchor == 'week':
+            start = base - timedelta(days=base.weekday(), weeks=count - 1)
+        else:
+            start = base - timedelta(days=count - 1)
+        end = base
+        grains = period.grains or [anchor]
+        buckets = {key: list(dict.fromkeys(_bucket(start + timedelta(days=i), grain)
+                                         for i in range((end - start).days + 1)))
+                   for grain, (key, _) in GRAINS.items() if grain in grains}
+    else:
+        grain = next(g for g, (key, _) in GRAINS.items() if key == period.kind)
+        values = getattr(period, period.kind)
+        buckets = {period.kind: values}
+        start, end = _bounds(values[0], grain)[0], _bounds(values[-1], grain)[1]
+    return {'start': start.isoformat(), 'end': end.isoformat(), **buckets,
+            'base_date': base.isoformat() if base else None,
+            'base_date_source': BASE_DATE_SOURCE if base else 'explicit user bucket list; no DB anchor',
+            'selection': 'closed date range' if isinstance(period, RecentPeriod) else 'listed buckets only; gaps excluded'}
 
 
 @contextmanager
 def _report_cursor():
     from .query_db import _connection
-
     connection = cursor = None
     try:
         connection = _connection()
@@ -91,60 +174,89 @@ def fetch_parameter_metadata(lot_cd: str) -> list[tuple]:
 
 
 @dataclass(frozen=True)
-class WeeklyReportData:
+class PeriodReportData:
     lot_cd: str
-    weeks: tuple[str, ...]
+    window: dict
     metadata: list[tuple]
     yield_long: list[dict]
-    weekly_counts: list[dict]
+    counts: dict[str, list[dict]]
     period_lot_count: int
     period_wafer_count: int
-    gms_weekly: list[dict]
+    gms: dict[str, list[dict]]
 
 
-def fetch_weekly_report(lot_cd: str, weeks: list[str]) -> WeeklyReportData:
-    placeholders = ', '.join(f':w{i}' for i in range(len(weeks)))
-    binds = {'lot': lot_cd, **{f'w{i}': week for i, week in enumerate(weeks)}}
-    counts_filter = (
-        "FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' "
-        f"AND WEEK_HYNIX IN ({placeholders})"
-    )
+def _bucket_sql(grain, prefix=''):
+    if grain == 'week':
+        return prefix + 'WEEK_HYNIX'
+    value = f"{prefix}YEAR||'-'||LPAD({prefix}MONTH,2,'0')"
+    return value + (f"||'-'||LPAD({prefix}DAY,2,'0')" if grain == 'day' else '')
+
+
+def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
     with _report_cursor() as cursor:
+        base = None
+        if isinstance(period, RecentPeriod):
+            cursor.execute('SELECT ' + BASE_DATE_SOURCE.split(';')[0], {'lot': lot_cd})
+            base = cursor.fetchall()[0][0]
+            if base is None:
+                raise ValueError('No PT1H measurement date for this product')
+            if isinstance(base, datetime):
+                base = base.date()
+        window = resolve_window(period, base)
+        # :end is an Oracle reserved bind name (ORA-01745); use win_start/win_end.
+        binds = {'lot': lot_cd, 'win_start': window['start'], 'win_end': window['end']}
+        date_filter = f"{MEASURE_DATE} BETWEEN TO_DATE(:win_start,'YYYY-MM-DD') AND TO_DATE(:win_end,'YYYY-MM-DD')"
+        total_filter = date_filter
+        if not isinstance(period, RecentPeriod):
+            grain = next(g for g, (key, _) in GRAINS.items() if key == period.kind)
+            values = window[period.kind]
+            binds.update({f'b{i}': value for i, value in enumerate(values)})
+            total_filter += f" AND {_bucket_sql(grain)} IN ({', '.join(f':b{i}' for i in range(len(values)))})"
         metadata = _parameter_metadata(cursor, lot_cd)
         cursor.execute(
-            "SELECT y.WEEK_HYNIX, y.PROCESS, y.PARAM_NM, AVG(y.VALUE) "
-            "FROM DF_WF_ALL_PRB_V2 y WHERE y.LOT_CD=:lot "
-            "AND y.PROCESS IN ('PT1H TEST','PT1C TEST') "
-            f"AND y.WEEK_HYNIX IN ({placeholders}) "
-            "AND EXISTS (SELECT 1 FROM DF_ALL_PARA_PRB m WHERE m.LOT_CD=y.LOT_CD "
-            "AND m.PROC_GBN_CD||' TEST'=y.PROCESS AND m.PARAM_NM=y.PARAM_NM "
-            "AND TRIM(m.YIELD_TABLE)='o') "
-            "GROUP BY y.WEEK_HYNIX, y.PROCESS, y.PARAM_NM "
-            "ORDER BY y.WEEK_HYNIX, y.PROCESS, y.PARAM_NM", binds,
-        )
-        yield_long = [dict(zip(('week', 'process', 'param', 'value'), row)) for row in cursor.fetchall()]
-        cursor.execute(
-            "SELECT WEEK_HYNIX, COUNT(DISTINCT LOT_ID), COUNT(DISTINCT GORUPKEY) "
-            + counts_filter + " GROUP BY WEEK_HYNIX ORDER BY WEEK_HYNIX", binds,
-        )
-        counts = {row[0]: row[1:] for row in cursor.fetchall()}
-        cursor.execute(
-            "SELECT COUNT(DISTINCT LOT_ID), COUNT(DISTINCT GORUPKEY) " + counts_filter, binds,
-        )
+            "SELECT COUNT(DISTINCT LOT_ID), COUNT(DISTINCT GORUPKEY) "
+            "FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' AND " + total_filter, binds)
         lot_count, wafer_count = cursor.fetchall()[0]
-        cursor.execute(
-            "SELECT PERIOD_DATE, FAB_YIELD, PRB_YIELD, CUM0_YIELD "
-            "FROM DF_GMS_YIELD_WEEKLY WHERE LOTCODE=:lot "
-            f"AND PERIOD_DATE IN ({placeholders}) ORDER BY PERIOD_DATE",
-            {'lot': lot_cd, **{f'w{i}': week.replace('-', '') for i, week in enumerate(weeks)}},
-        )
-        gms = [dict(week=f'{row[0][:4]}-{row[0][4:]}',
-                    **dict(zip(('period_date', 'fab', 'prb', 'cum0'), row))) for row in cursor.fetchall()]
-    yield_weeks = {row['week'] for row in yield_long}
-    gms_weeks = {row['week'] for row in gms}
-    weekly_counts = [dict(week=week, lot_count=counts.get(week, (None, None))[0],
-                          wafer_count=counts.get(week, (None, None))[1],
-                          has_yield_data=week in yield_weeks, has_gms=week in gms_weeks)
-                     for week in weeks]
-    return WeeklyReportData(lot_cd, tuple(weeks), metadata, yield_long, weekly_counts,
-                            lot_count, wafer_count, gms)
+        yield_long, all_counts, all_gms = [], {}, {}
+        for grain, (key, unit) in GRAINS.items():
+            if key not in window:
+                continue
+            buckets = window[key]
+            placeholders = ', '.join(f':b{i}' for i in range(len(buckets)))
+            grain_binds = {'lot': lot_cd, 'win_start': window['start'], 'win_end': window['end'],
+                           **{f'b{i}': value for i, value in enumerate(buckets)}}
+            bucket_sql = _bucket_sql(grain)
+            # A single source alias leaves YEAR/MONTH/DAY unambiguous in this predicate.
+            cursor.execute(
+                f"SELECT {_bucket_sql(grain, 'y.')}, y.PROCESS, y.PARAM_NM, AVG(y.VALUE) "
+                "FROM DF_WF_ALL_PRB_V2 y WHERE y.LOT_CD=:lot "
+                "AND y.PROCESS IN ('PT1H TEST','PT1C TEST') "
+                f"AND {date_filter} AND {_bucket_sql(grain, 'y.')} IN ({placeholders}) "
+                "AND EXISTS (SELECT 1 FROM DF_ALL_PARA_PRB m WHERE m.LOT_CD=y.LOT_CD "
+                "AND m.PROC_GBN_CD||' TEST'=y.PROCESS AND m.PARAM_NM=y.PARAM_NM "
+                "AND TRIM(m.YIELD_TABLE)='o') "
+                f"GROUP BY {_bucket_sql(grain, 'y.')}, y.PROCESS, y.PARAM_NM "
+                f"ORDER BY {_bucket_sql(grain, 'y.')}, y.PROCESS, y.PARAM_NM", grain_binds)
+            rows = [dict(grain=grain, bucket=row[0], **dict(zip((grain, 'process', 'param', 'value'), row)))
+                    for row in cursor.fetchall()]
+            yield_long.extend(rows)
+            cursor.execute(
+                f"SELECT {bucket_sql}, COUNT(DISTINCT LOT_ID), COUNT(DISTINCT GORUPKEY) "
+                "FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' "
+                f"AND {date_filter} AND {bucket_sql} IN ({placeholders}) "
+                f"GROUP BY {bucket_sql} ORDER BY {bucket_sql}", grain_binds)
+            counts = {row[0]: row[1:] for row in cursor.fetchall()}
+            cursor.execute(
+                "SELECT PERIOD_DATE, FAB_YIELD, PRB_YIELD, CUM0_YIELD "
+                f"FROM DF_GMS_YIELD_{unit.upper()} WHERE LOTCODE=:lot "
+                f"AND PERIOD_DATE IN ({placeholders}) ORDER BY PERIOD_DATE",
+                {'lot': lot_cd, **{f'b{i}': bucket.replace('-', '') for i, bucket in enumerate(buckets)}})
+            by_period = {b.replace('-', ''): b for b in buckets}
+            gms = [dict(**{grain: by_period[str(row[0])]},
+                        **dict(zip(('period_date', 'fab', 'prb', 'cum0'), row))) for row in cursor.fetchall()]
+            yield_buckets, gms_buckets = {r['bucket'] for r in rows}, {r[grain] for r in gms}
+            all_counts[grain] = [dict(**{grain: b}, lot_count=counts.get(b, (None, None))[0],
+                                      wafer_count=counts.get(b, (None, None))[1],
+                                      has_yield_data=b in yield_buckets, has_gms=b in gms_buckets) for b in buckets]
+            all_gms[grain] = gms
+    return PeriodReportData(lot_cd, window, metadata, yield_long, all_counts, lot_count, wafer_count, all_gms)

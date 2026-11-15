@@ -47,12 +47,18 @@ def test_yield_report_recipe_is_native_only_and_keeps_contract():
         assert "PARAM_SEQNO" in recipe
         assert "x100 소수 1자리" in recipe
         assert "호환용으로 받지만" in recipe
-        for field in ("lot_cd", "period", "recent_weeks", "base_date", "weeks", "report_totals", "weekly_counts"):
+        for field in ("lot_cd", "period", "recent", "grains", "weeks", "months", "days", "report_totals", "monthly_counts", "weekly_counts", "daily_counts"):
             assert field in recipe
         assert "DF_DIE_TO_WF_YLD" not in recipe
-        assert "기준일이 속한 주를 포함하고 오래된 주부터" in recipe
-        assert "주별 수를 더해 기간 합계로 쓰거나" in recipe
+        assert "기준 측정일의 버킷을 포함하고 오래된 버킷부터" in recipe
+        assert "버킷별 수를 더해 기간 합계로 쓰거나" in recipe
         assert "all-time counts" in recipe
+        assert "최신 DB 측정일" in recipe
+        assert "base_date를 전달하지 않는다" in recipe
+        assert "today-28 days" in recipe
+        assert "window(start/end와 버킷 목록)" in recipe
+        assert "후속 query_db/그룹 집계" in recipe
+        assert "recent_weeks" not in recipe
         assert "report mode" not in recipe
         assert "mode=" not in recipe
         assert "delta_row" not in recipe

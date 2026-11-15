@@ -8,8 +8,8 @@ from pydantic import Field, model_validator
 from ..types import Contract, ResultTable
 from .registry import ToolResult, ToolSpec
 from .yield_report_data import (
-    WeeklyPeriod, WeeklyReportData, fetch_parameter_metadata as _fetch_parameter_metadata,
-    fetch_weekly_report, resolve_weeks,
+    ReportPeriod, PeriodReportData, GRAINS, fetch_parameter_metadata as _fetch_parameter_metadata,
+    fetch_period_report,
 )
 from yield_viz import GMS_COLUMNS, _build_html_table
 
@@ -92,8 +92,8 @@ class YieldTableInput(Contract):
             "{period, label, lot_count, wf_count, gms:{cum0,cum2,fab,prb,pnt}}. When omitted, group names and order come from first appearance in LONG rows, then counts/GMS. When supplied, it declares all groups in display order; LONG rows use matching period IDs. label optionally overrides the displayed group name."
         ),
     )
-    period: WeeklyPeriod | None = Field(
-        default=None, description="Weekly report query: recent_weeks (base_date + weeks) or explicit weeks. Requires lot_cd; forbids group rows/result IDs.",
+    period: ReportPeriod | None = Field(
+        default=None, description="Period query: recent with exactly one count (weeks/months/days), optional grains; DB latest measurement anchors the window. Or explicit weeks/months/days lists. Requires lot_cd; forbids group rows/result IDs.",
     )
     period_label: str | None = Field(default=None, min_length=1)
     comparison: ReportComparison | None = Field(
@@ -101,7 +101,7 @@ class YieldTableInput(Contract):
     )
     parameter_formats: list[ReportParameterFormat] = Field(
         default_factory=list,
-        description="Accepted for compatibility; ignored in week and group reports. Metadata parameter values always use x100, one decimal, no percent sign.",
+        description="Accepted for compatibility; ignored in period and group reports. Metadata parameter values always use x100, one decimal, no percent sign.",
     )
     long_result_id: str | None = Field(
         default=None,
@@ -131,7 +131,6 @@ class YieldTableInput(Contract):
             if not self.lot_cd or not self.lot_cd.strip():
                 raise ValueError("period requires lot_cd (product code)")
             self.lot_cd = self.lot_cd.strip()
-            resolve_weeks(self.period)
             return self
         for columns_field, result_id_field in (
             ("long_columns", "long_result_id"),
@@ -273,7 +272,7 @@ def _report_render_data(args: YieldTableInput, parameter_columns: dict[str, list
 
 
 def _html(args: YieldTableInput, report_data: _ReportRenderData,
-          displayed_rows: list[dict] | None = None) -> str:
+          displayed_rows: list[dict] | None = None, *, unit="weekly") -> str:
     ids = [p.period for p in _group_periods(args)]
     comparison = None
     if args.comparison:
@@ -283,7 +282,7 @@ def _html(args: YieldTableInput, report_data: _ReportRenderData,
     formats = {key: ("scaled", 1) for key in report_data.parameter_keys}
     formats.update({f"gms_{p}": ("number", 1) for p in GMS_COLUMNS})
     return _build_html_table(
-        report_data.rows, args.product_label or "", unit="weekly",
+        report_data.rows, args.product_label or "", unit=unit,
         parameter_columns=report_data.parameter_columns,
         parameter_formats=formats, comparison=comparison,
         period_label=args.period_label or "GROUP",
@@ -415,8 +414,11 @@ async def _resolve_report_results(args: YieldTableInput, ctx) -> YieldTableInput
 
 async def render_yield_table(args: YieldTableInput, ctx) -> ToolResult:
     if args.period is not None:
-        data = await asyncio.to_thread(fetch_weekly_report, args.lot_cd, resolve_weeks(args.period))
-        return _render_weekly_report(args, data)
+        try:
+            data = await asyncio.to_thread(fetch_period_report, args.lot_cd, args.period)
+        except ValueError as exc:
+            return ToolResult(status="error", summary=str(exc))
+        return _render_period_report(args, data)
     source_result_ids = [
         result_id for result_id in (
             args.long_result_id, args.counts_result_id, args.gms_result_id,
@@ -436,7 +438,7 @@ async def render_yield_table(args: YieldTableInput, ctx) -> ToolResult:
     return _render_report(args, lot_cd, metadata, source_result_ids)
 
 
-def _render_report(args, lot_cd, metadata, source_result_ids, *, delta_definition=None, allow_empty_metadata=False):
+def _render_report(args, lot_cd, metadata, source_result_ids, *, delta_definition=None, allow_empty_metadata=False, unit="weekly"):
     metadata_columns = ["PROC_GBN_CD", "PARAM_NM", "PARAM_SEQNO", "PARAM_KIND_CD", "YIELD_TABLE"]
     metadata_rows = [
         {**dict(zip(metadata_columns, row)), "displayed": str(row[4]).strip() == "o"}
@@ -451,7 +453,7 @@ def _render_report(args, lot_cd, metadata, source_result_ids, *, delta_definitio
         parameter_columns[_normalize_process(row["PROC_GBN_CD"])].append(row["PARAM_NM"])
     report_data = _report_render_data(args, parameter_columns)
     displayed_rows = []
-    html = _html(args, report_data, displayed_rows)
+    html = _html(args, report_data, displayed_rows, unit=unit)
     displayed_columns = ["lot", "wf",
                          *(f"PT1H TEST/{p}" for p in parameter_columns["pt1h"]),
                          *(f"PT1C TEST/{p}" for p in parameter_columns["pt1c"]),
@@ -492,78 +494,119 @@ def _render_report(args, lot_cd, metadata, source_result_ids, *, delta_definitio
     )
 
 
-def _render_weekly_report(args: YieldTableInput, data: WeeklyReportData) -> ToolResult:
-    """Adapt the queried bundle to the shared pivot/HTML path, then attach evidence."""
-    gms = {row["week"]: row for row in data.gms_weekly}
-    render_args = YieldTableInput(
-        title=args.title, product_label=args.product_label or data.lot_cd,
-        period_label=args.period_label or "WEEK",
-        rows=[YieldReportRow(period=row["week"], process=row["process"],
-                             param=row["param"], value=row["value"]) for row in data.yield_long],
-        periods=[YieldReportPeriod(
-            period=row["week"], lot_count=row["lot_count"], wf_count=row["wafer_count"],
-            gms=YieldReportGms(**{key: gms.get(row["week"], {}).get(key) for key in ("fab", "prb", "cum0")}),
-        ) for row in data.weekly_counts],
-        comparison=ReportComparison(current=data.weeks[-1], baseline=data.weeks[-2]) if len(data.weeks) > 1 else None,
-    )
-    result = _render_report(render_args, data.lot_cd, data.metadata, [],
-                            delta_definition="Δ = latest week − previous week", allow_empty_metadata=True)
+def _render_period_report(args: YieldTableInput, data: PeriodReportData) -> ToolResult:
+    """Render each grain through the same pivot/HTML path and attach shared evidence."""
+    rendered, count_tables, gms_tables, displayed_rows = [], [], [], []
+    missing, missing_gms, deltas = {}, {}, {}
     totals = {
-        "lot_cd": data.lot_cd, "weeks": ",".join(data.weeks), "week_count": len(data.weeks),
+        "lot_cd": data.lot_cd, "start": data.window["start"], "end": data.window["end"],
         "counts_process": "PT1H TEST", "period_lot_count": data.period_lot_count,
         "period_wafer_count": data.period_wafer_count,
-        "sum_of_weekly_lot_count": sum(row["lot_count"] or 0 for row in data.weekly_counts),
-        "sum_of_weekly_wafer_count": sum(row["wafer_count"] or 0 for row in data.weekly_counts),
-        "definition": "period_* = distinct over all requested weeks; weekly counts overlap, do not add them",
+        "definition": "period_* = distinct over resolved window; bucket counts overlap, do not add them",
     }
+    sql_filters = {
+        "DF_ALL_PARA_PRB": {"LOT_CD": data.lot_cd},
+        "DF_WF_ALL_PRB_V2": {"LOT_CD": data.lot_cd, "processes": ["PT1H TEST", "PT1C TEST"],
+                              "window": data.window, "yield_parameters": "TRIM(YIELD_TABLE)='o'",
+                              "counts_process": "PT1H TEST"},
+    }
+    for grain, (key, unit) in GRAINS.items():
+        if grain not in data.counts:
+            continue
+        buckets, counts = data.window[key], data.counts[grain]
+        gms = {row[grain]: row for row in data.gms[grain]}
+        render_args = YieldTableInput(
+            title=args.title, product_label=args.product_label or data.lot_cd,
+            period_label={"month": "MONTH", "week": "WEEK", "day": "DATE"}[grain],
+            rows=[YieldReportRow(period=row["bucket"], process=row["process"],
+                                 param=row["param"], value=row["value"])
+                  for row in data.yield_long if row["grain"] == grain],
+            periods=[YieldReportPeriod(
+                period=row[grain], lot_count=row["lot_count"], wf_count=row["wafer_count"],
+                gms=YieldReportGms(**{k: gms.get(row[grain], {}).get(k) for k in ("fab", "prb", "cum0")}),
+            ) for row in counts],
+            comparison=ReportComparison(current=buckets[-1], baseline=buckets[-2]) if len(buckets) > 1 else None,
+        )
+        result = _render_report(render_args, data.lot_cd, data.metadata, [],
+                                delta_definition=f"Δ = latest {grain} − previous {grain}" if len(buckets) > 1 else "Δ absent (single bucket)",
+                                allow_empty_metadata=True, unit=unit)
+        rendered.append(result)
+        deltas[grain] = result.scope["delta_definition"]
+        displayed_rows.extend({"grain": grain, **row} for row in result.tables[0].rows)
+        totals.update({key: ",".join(buckets), f"{grain}_count": len(buckets),
+                       f"sum_of_{unit}_lot_count": sum(row["lot_count"] or 0 for row in counts),
+                       f"sum_of_{unit}_wafer_count": sum(row["wafer_count"] or 0 for row in counts)})
+        count_tables.append(ResultTable(table_id=f"{unit}_counts", title=f"{unit.title()} counts", rows=counts,
+                                        columns=[grain, "lot_count", "wafer_count", "has_yield_data", "has_gms"], complete=True))
+        gms_tables.append(ResultTable(table_id=f"gms_{unit}", title=f"{unit.title()} GMS", rows=data.gms[grain],
+                                      columns=[grain, "period_date", "fab", "prb", "cum0"], complete=True))
+        missing[grain] = [r[grain] for r in counts if not r["has_yield_data"]]
+        missing_gms[grain] = [r[grain] for r in counts if not r["has_gms"]]
+        sql_filters[f"DF_GMS_YIELD_{unit.upper()}"] = {
+            "LOTCODE": data.lot_cd, "PERIOD_DATE": [b.replace("-", "") for b in buckets]}
+    result = rendered[0]
+    # Reuse the first document's existing styles and append the other table bodies.
+    html = result.artifacts[0]["data"]
+    for other in rendered[1:]:
+        body = other.artifacts[0]["data"].split("<body>", 1)[1].rsplit("</body>", 1)[0]
+        html = html.replace("</body>", body + "</body>")
+    result.artifacts[0]["data"] = html
     result.tables = [
         ResultTable(table_id="report_totals", title="Period distinct totals", rows=[totals], columns=list(totals), complete=True),
-        ResultTable(table_id="weekly_counts", title="Weekly counts", rows=data.weekly_counts,
-                    columns=["week", "lot_count", "wafer_count", "has_yield_data", "has_gms"], complete=True),
+        *count_tables,
         ResultTable(table_id="yield_long", title="Displayed parameter averages", rows=data.yield_long,
-                    columns=["week", "process", "param", "value"], complete=True),
-        ResultTable(table_id="gms_weekly", title="Weekly GMS", rows=data.gms_weekly,
-                    columns=["week", "period_date", "fab", "prb", "cum0"], complete=True),
-        *result.tables,
+                    columns=["grain", "bucket", *data.counts, "process", "param", "value"], complete=True),
+        *gms_tables,
+        ResultTable(table_id="displayed_yield_table", title=args.title, rows=displayed_rows,
+                    columns=["grain", "row", "column", "raw", "shown"], complete=True),
+        result.tables[-1],
     ]
-    lots = "/".join(str(row["lot_count"]) if row["lot_count"] is not None else "-" for row in data.weekly_counts)
-    wafers = "/".join(str(row["wafer_count"]) if row["wafer_count"] is not None else "-" for row in data.weekly_counts)
     result.summary = (
-        f"LOT_CD={data.lot_cd} {data.weeks[0]}~{data.weeks[-1]} ({len(data.weeks)}주, PT1H): "
+        f"LOT_CD={data.lot_cd} {data.window['start']}~{data.window['end']}: "
         f"기간 distinct lot {data.period_lot_count}, wafer {data.period_wafer_count}; "
-        f"주별 lot {lots}, wafer {wafers}; "
-        f"{result.scope['selection_rule']}; {result.scope['delta_definition']}"
+        f"{result.scope['selection_rule']}; {'; '.join(deltas.values())}; "
+        "기간 수는 report_totals, 버킷 수는 grain counts 표만 인용; 더하지 않는다"
     )
-    missing = [row["week"] for row in data.weekly_counts if not row["has_yield_data"]]
     result.scope.update({
-        "period": args.period.model_dump(), "resolved_weeks": list(data.weeks),
-        "sql_filters": {
-            "DF_ALL_PARA_PRB": {"LOT_CD": data.lot_cd},
-            "DF_WF_ALL_PRB_V2": {"LOT_CD": data.lot_cd, "processes": ["PT1H TEST", "PT1C TEST"],
-                                  "weeks": list(data.weeks), "yield_parameters": "TRIM(YIELD_TABLE)='o'",
-                                  "counts_process": "PT1H TEST"},
-            "DF_GMS_YIELD_WEEKLY": {"LOTCODE": data.lot_cd, "PERIOD_DATE": [w.replace("-", "") for w in data.weeks]},
-        },
-        "missing_weeks": missing,
+        "period": args.period.model_dump(exclude_none=True), "window": data.window,
+        "sql_filters": sql_filters, "missing_buckets": missing, "missing_gms": missing_gms,
+        "row_count": sum(len(rows) for rows in data.counts.values()),
+        "delta_definitions": deltas,
+        "delta_definition": "; ".join(deltas.values()),
+        "comparisons": {grain: {"current": data.window[GRAINS[grain][0]][-1],
+                                 "baseline": data.window[GRAINS[grain][0]][-2]}
+                        if len(data.window[GRAINS[grain][0]]) > 1 else None for grain in data.counts},
         "query_consistency": "Single connection, statement-level reads; no cross-statement snapshot guarantee",
         "gms_source_columns": ["FAB_YIELD", "PRB_YIELD", "CUM0_YIELD"],
-        "gms_unavailable": "CUM2/PNT have no source column; shown as '-'",
+        "gms_unavailable": "CUM2/PNT have no source column; shown as '-'; missing GMS buckets also shown as '-'",
+        "gms_bucket_scope": "GMS is the source table's whole-bucket value; yield/counts use the resolved date window (including clipped edge buckets)",
         "tables_available": [table.table_id for table in result.tables],
         "default_table_id": "report_totals",
     })
+    if "weeks" in data.window:
+        result.scope.update(resolved_weeks=data.window["weeks"], missing_weeks=missing["week"])
     result.status = ("empty" if not data.yield_long and not any(
-        row["lot_count"] or row["wafer_count"] for row in data.weekly_counts
-    ) else "partial" if missing else "success")
+        r["lot_count"] or r["wafer_count"] for rows in data.counts.values() for r in rows
+    ) else "partial" if any(missing.values()) else "success")
     return result
 
 
 def register(registry):
     registry.add(ToolSpec(
         "render_yield_table",
-        "기존 pt1h·pt1c·gms 수율 리포트 전용 렌더러다. 행은 주차/그룹이고 열은 파라미터다. 기존 디자인의 리포트를 요청하면 이 렌더러로 시각 결과를 "
-        "생성한다. 주차 보고서는 lot_cd와 period로 요청한다: recent_weeks는 base_date+weeks, weeks는 명시적 주차 목록이다. "
-        "최근 N주는 기준일이 속한 주를 포함하고 오래된 주부터 표시한다. 제품이나 기간이 없으면 clarify로 먼저 묻는다. "
-        "lot/wafer 수는 기간 전체는 report_totals, 주별은 weekly_counts만 인용한다. 주별 수를 더해 기간 합계로 쓰거나 전체 기간 밖의 all-time counts를 쓰지 않는다. "
+        "기존 pt1h·pt1c·gms 수율 리포트 전용 렌더러다. 행은 월/주차/날짜/그룹이고 열은 파라미터다. 기존 디자인의 리포트를 요청하면 이 렌더러로 시각 결과를 "
+        '생성한다. '
+        '주차별·월별·일별 또는 결합 수율 리포트는 render_yield_table에 lot_cd와 period를 전달한다. '
+        'period는 recent(weeks/months/days 중 정확히 하나의 count, 선택적 grains) 또는 weeks/months/days(명시적 버킷 목록)다. '
+        '최근 3개월 월별/주별 결합은 {kind:"recent",months:3,grains:["month","week"]}다. '
+        '최근 N주/월/일은 도구가 해당 LOT_CD의 PT1H TEST 최신 DB 측정일(YEAR/MONTH/DAY)을 기준으로 확정한다. '
+        '기준 측정일의 버킷을 포함하고 오래된 버킷부터 표시한다. '
+        '모델은 today-28 days나 오늘의 주차 등 달력 기간을 계산하지 않으며 base_date를 전달하지 않는다. '
+        'lot/wafer 수는 기간 전체 distinct는 report_totals, 버킷별은 monthly_counts/weekly_counts/daily_counts에서만 인용한다. '
+        '버킷별 수를 더해 기간 합계로 쓰거나 all-time counts를 쓰지 않는다. '
+        '최근 N… 조건의 그룹 보고서도 먼저 이 도구의 window(start/end와 버킷 목록)를 얻고 후속 query_db/그룹 집계에 같은 날짜와 버킷을 사용한다. '
+        '그룹 보고서의 달력 기간도 임의로 만들지 않는다. '
+        '제품이나 기간이 없으면 clarify로 먼저 묻는다. '
         "Python은 조회 결과의 정리·그룹 집계·계산에 사용할 수 있다. 그룹 보고서는 LONG rows의 period에 임의 그룹 이름을 바로 넣는다. "
         "별도 periods는 선택 사항이고, 생략하면 LONG rows, counts, GMS의 첫 등장 순서로 표시한다. "
         "periods를 주면 모든 그룹의 ID와 표시 순서를 선언하며 label로 표시 이름을 바꿀 수 있다. "
@@ -572,7 +615,7 @@ def register(registry):
         "query_db의 long_result_id, counts_result_id, gms_result_id와 필요시 각 columns 매핑을 전달한다. "
         "gms_columns의 명시적 매핑을 우선하며, 미지정 필드는 결과에 존재하는 PERIOD_DATE 및 "
         "CUM0_YIELD, CUM2_YIELD, FAB_YIELD, PRB_YIELD, PNT_YIELD로 자동 매핑한다. "
-        "주차·그룹 모두 렌더러가 lot_cd(그룹에서 생략 시 product_label)의 DF_ALL_PARA_PRB YIELD_TABLE='o'를 조회하여 "
+        "기간·그룹 모두 렌더러가 lot_cd(그룹에서 생략 시 product_label)의 DF_ALL_PARA_PRB YIELD_TABLE='o'를 조회하여 "
         "PT1H 다음 PT1C, 각각 PARAM_SEQNO 순서의 정확한 PARAM_NM 열을 표시한다. 파라미터 값은 x100 소수 1자리, % 없이 표시하고 "
         "GMS는 원값 소수 1자리, lot/wafer 수는 정수다. 답변은 전체 파라미터가 아니라 YIELD_TABLE='o' 파라미터라고 설명한다. "
         "사용자가 표·아티팩트·리포트 형태를 요청한 경우에만 호출하고 일반 수율 조회에는 호출하지 않는다.",

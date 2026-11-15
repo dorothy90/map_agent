@@ -69,9 +69,10 @@
 - WFID는 wafer 번호이며 한 자리 번호는 앞에 0 없이 적힌다(예: '7'). ALIAS_LOT_ID_N은 ALIAS_LOT_ID.두 자리 wafer 번호(예: 4SSTQXD.05)이고, GORUPKEY는 LOT_ID.두 자리 wafer 번호(예: 4SS7T9AA.10)다. wafer 수는 distinct GORUPKEY로 센다. 키를 직접 만들 때 WFID를 그대로 붙이지 말고 GORUPKEY·ALIAS_LOT_ID_N 컬럼을 사용한다.
 - PROCESS는 'PT1H TEST' 또는 'PT1C TEST'다.
 - PARAM_NM과 PARAM_SEQNO는 DF_ALL_PARA_PRB의 PARAM_NM·PARAM_SEQNO와 같다. BINITEM은 I=item, B=bin이며 DF_ALL_PARA_PRB.PARAM_KIND_CD와 같은 구분이다.
-- WEEK_HYNIX는 'YYYY-WW' 형식의 주차이고, 주차별 집계는 WEEK_HYNIX를 사용한다. YEAR·MONTH·DAY는 측정 날짜다.
+- WEEK_HYNIX는 ISO 주차 'YYYY-WW'(월요일 시작, Oracle IYYY-IW)로 측정 날짜의 ISO 주차와 같다. YEAR·MONTH·DAY는 측정 날짜이며 TRUNC(MEASURETIME_START)와 일치한다. 최근 N주/월/일은 LOT_CD의 PROCESS='PT1H TEST'에서 MAX(TO_DATE(YEAR||LPAD(MONTH,2,'0')||LPAD(DAY,2,'0'),'YYYYMMDD'))를 기준으로 하며 LAST_UPDATE나 호스트 시계를 사용하지 않는다. 해당 행이 없으면 기간을 만들지 않는다.
 - MEASURETIME_START·MEASURETIME_END는 테스트 측정 시작·종료 시각이다.
-- 주차 GMS(DF_GMS_YIELD_WEEKLY)와 연결할 때는 WEEK_HYNIX에서 대시를 뺀 값('2026-46' → '202646')이 PERIOD_DATE와 같다.
+- GMS 테이블은 DF_GMS_YIELD_WEEKLY / DF_GMS_YIELD_MONTHLY / DF_GMS_YIELD_DAILY이며 PERIOD_DATE는 각각 YYYYWW / YYYYMM / YYYYMMDD다(버킷의 대시 제거). 모두 LOTCODE, FAB_YIELD, PRB_YIELD, CUM0_YIELD를 제공하며 CUM2/PNT 원천 컬럼은 없다.
+- 최근 N은 기준 측정일의 버킷까지 연속 ISO 주/달력 월/날짜를 포함한다. 최근 N개월의 주별 결합은 첫 달 1일~기준 측정일에 겹치는 모든 ISO 주를 포함하며, 집계 날짜는 그 닫힌 구간으로 제한한다.
 - 그 밖의 컬럼(T_ET~E1_E2 영역 값, AREA_STATUS, REPAIR_VAL, REJ_YN, TESTER_MODEL 등)의 업무 의미는 아직 확인되지 않았으므로 추정해서 쓰지 않는다.
 
 ### DF_GMS_YIELD_WEEKLY (제품별 주차 GMS)

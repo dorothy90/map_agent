@@ -12,14 +12,17 @@ WEEKS = ['2026-43', '2026-44', '2026-45', '2026-46']
 PERIOD = {'kind': 'weeks', 'weeks': WEEKS}
 
 
-def test_period_resolution():
-    from harness.tools.yield_report_data import resolve_weeks
-    recent = YieldTableInput(title='weekly', lot_cd='4SS', period={
-        'kind': 'recent_weeks', 'base_date': '2027-01-06', 'weeks': 3})
-    assert resolve_weeks(recent.period) == ['2026-52', '2026-53', '2027-01']
+def test_period_resolution(weekly_db):
+    from datetime import datetime
+    from harness.tools.yield_report_data import resolve_window, fetch_period_report
+    cursor, _ = weekly_db
+    cursor.base = datetime(2027, 1, 6)
+    cursor.yields, cursor.counts, cursor.gms = [], [], []
+    recent = YieldTableInput(title='weekly', lot_cd='4SS', period={'kind': 'recent', 'weeks': 3})
+    assert fetch_period_report('4SS', recent.period).window['weeks'] == ['2026-52', '2026-53', '2027-01']
     explicit = YieldTableInput(title='weekly', lot_cd='4SS', period={
         'kind': 'weeks', 'weeks': ['2027-W01', '202653', '2026-52']})
-    assert resolve_weeks(explicit.period) == ['2026-52', '2026-53', '2027-01']
+    assert resolve_window(explicit.period)['weeks'] == ['2026-52', '2026-53', '2027-01']
     assert explicit.period.model_dump() == {'kind': 'weeks', 'weeks': ['2026-52', '2026-53', '2027-01']}
 
 
@@ -64,7 +67,9 @@ def weekly_db(monkeypatch):
         closed = False
         def execute(self, sql, binds):
             self.calls.append((sql, binds))
-            if 'AVG(' in sql:
+            if 'MAX(' in sql:
+                self.rows = [(self.base,)]
+            elif 'AVG(' in sql:
                 self.rows = self.yields
             elif 'COUNT(' in sql:
                 self.rows = self.counts if 'GROUP BY' in sql else [self.totals]
@@ -116,8 +121,9 @@ def test_period_distinct_counts_evidence_and_sql(weekly_db):
     assert total['sum_of_weekly_wafer_count'] == 1400
     assert total['counts_process'] == 'PT1H TEST'
     assert total['weeks'] == ','.join(WEEKS) and total['week_count'] == 4
-    assert total['definition'] == 'period_* = distinct over all requested weeks; weekly counts overlap, do not add them'
-    assert result.summary.startswith('LOT_CD=4SS 2026-43~2026-46 (4주, PT1H): 기간 distinct lot 40, wafer 900; 주별 lot 15/18/14/19')
+    assert total['definition'] == 'period_* = distinct over resolved window; bucket counts overlap, do not add them'
+    assert result.summary.startswith('LOT_CD=4SS 2026-10-19~2026-11-15: 기간 distinct lot 40, wafer 900;')
+    assert [r['lot_count'] for r in result.tables[1].rows] == [15, 18, 14, 19]
     assert 'Δ = latest week − previous week' in result.summary
     assert connection.opened == 1 and connection.closed and cursor.closed
     sqls = [sql for sql, _ in cursor.calls]
@@ -135,9 +141,9 @@ def test_period_distinct_counts_evidence_and_sql(weekly_db):
     assert sum('GROUP BY' not in s for s, _ in count_queries) == 1
     for sql, binds in cursor.calls:
         assert binds['lot'] == '4SS' and '4SS' not in sql
-        if 'w0' in binds:
+        if 'b0' in binds:
             expected = [w.replace('-', '') for w in WEEKS] if 'DF_GMS_YIELD_WEEKLY' in sql else WEEKS
-            assert [binds[f'w{i}'] for i in range(4)] == expected
+            assert [binds[f'b{i}'] for i in range(4)] == expected
             assert ' IN (' in sql and all(w not in sql for w in WEEKS)
     assert result.scope['period'] == PERIOD
     assert result.scope['resolved_weeks'] == WEEKS
