@@ -50,9 +50,17 @@ def test_report_html_freezes_week_lot_wf_on_horizontal_scroll():
     week, lot, wf = (_rule(REPORT_STYLE, sel) for sel in (
         "th.th-week, td.td-week", "th.th-lot, td.td-lot", "th.th-wf, td.td-wf"))
     assert "position: sticky" in week and "left: 0" in week
-    assert "position: sticky" in lot and "left: 70px" in lot
-    assert "position: sticky" in wf and "left: 106px" in wf
+    assert "width: max-content" in week and "min-width: max-content" in week
+    assert "white-space: nowrap" in week
+    assert "position: sticky" in lot and "left: var(--sticky-week-width)" in lot
+    assert "width: max-content" in lot
+    assert "position: sticky" in wf
+    assert "left: calc(var(--sticky-week-width) + var(--sticky-lot-width))" in wf
+    assert "width: max-content" in wf
     assert "box-shadow" in wf
+    assert "70px" not in week + lot + wf and "106px" not in week + lot + wf
+    assert "--sticky-week-width" in REPORT_STYLE
+    assert "syncStickyOffsets" in html
 
 
 def test_report_headers_keep_group_identity_with_neutral_tone():
@@ -83,3 +91,21 @@ def test_report_scrolls_inside_container_not_document():
     html = _rendered_report()
     assert "document.body.getBoundingClientRect().height" in html
     assert "ResizeObserver" in html
+
+
+def test_period_column_sizes_to_daily_and_weekly_labels():
+    for label, value in (("WEEK", "2026-49"), ("MONTH", "2026-11"), ("DAY", "2026-11-15")):
+        rows = [ReportRow(
+            metadata=[ReportCell(value, "td-week"), ReportCell("L1"), ReportCell("5")],
+            values=[ReportCell("99.1")],
+        )]
+        groups = [ReportGroup("pt1h", "th-section-pt1h", [ReportColumn("VTH", "th-blue")])]
+        html = render_report_html(
+            rows, groups, metadata_columns=["LOT", "WF"], period_label=label, delta_row=None,
+        )
+        assert f'>{label}</th>' in html
+        assert f'>{value}</td>' in html
+        week = _rule(REPORT_STYLE, "th.th-week, td.td-week")
+        assert "max-content" in week and "white-space: nowrap" in week
+        assert "width: 70px" not in week
+
