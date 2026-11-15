@@ -1,3 +1,4 @@
+import { JsonRpcGatewayClient } from '@hermes/shared'
 import type { WebHostAdapter } from '../platform/web-host'
 
 // harness/gateway/session_rpc.py:228-240 rejects the presence of authority
@@ -16,8 +17,11 @@ const installed = new WeakSet<WebHostAdapter>()
 export function withWebGatewayCompat(host:WebHostAdapter):WebHostAdapter {
  if(host.rpcMode!=='authority' || installed.has(host)) return host
  const request=host.gateway.request.bind(host.gateway)
+ const rawRequest=JsonRpcGatewayClient.prototype.request.bind(host.gateway)
  host.gateway.request=(...args) => {
   const [method,params]=args
+  // Yield title GET/SET uses the stored ID, without canonical mutation fences.
+  if(method==='session.title') return rawRequest(...args)
   let normalized=params
   if(method==='session.create' && params) {
    for(const [field,defaults] of Object.entries(CREATE_DEFAULTS)) {

@@ -10,7 +10,7 @@ import { ChatBar } from '@/app/chat/composer'
 import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
 import { ConfirmHost } from '@/components/confirm-host'
 import { Thread } from '@/components/assistant-ui/thread'
-import { $gatewayState, $sessions, $turnStartedAt, $currentUsage, $sessionsLoadError, $selectedStoredSessionId, $messages, setConnection } from '@/store/session'
+import { $gatewayState, $sessions, $turnStartedAt, $currentUsage, $sessionsLoadError, $sessionsLoading, $selectedStoredSessionId, $messages, setConnection, setSessions } from '@/store/session'
 import { reportPrimaryGatewayState } from '@/store/gateway'
 import { WebHostAdapter, type WebHostOptions } from '../platform/web-host'
 import { webConnectionResolver } from './connection'
@@ -18,9 +18,10 @@ import { withWebGatewayCompat } from './gateway-compat'
 import { $clarifyRequests, clarifyRequestsForSession } from '@/store/clarify'
 import type { SessionInfo } from '@/types/hermes'
 import { useSessionLabels } from './use-session-labels'
-import { matchesSessionLabel, relativeSessionTime, sessionLabelKey } from './session-labels'
+import { displaySessionLabel, matchesSessionLabel, relativeSessionTime, sessionLabelKey } from './session-labels'
 import { WebPresentationProvider } from './presentation'
 import { requestComposerSetDraft } from '@/app/chat/composer/focus'
+import { WebSessionRow } from './WebSessionRow'
 import { useWebSession } from './use-web-session'
 export type ConnectionResolver = NonNullable<WebHostOptions['getWebSocketConnection']>
 export interface HermesWebOptions { resolver?:ConnectionResolver; fetcher?:typeof fetch; host?:WebHostAdapter }
@@ -36,7 +37,7 @@ export function HermesWebApp({resolver,fetcher=browserFetch,host:injected}:Herme
 function WebChat({host}:{host:WebHostAdapter}) {
  const navigate=useNavigate()
  const actions=useWebSession(host), gatewayState=useStore($gatewayState), sessions=useStore($sessions)
- const listError=useStore($sessionsLoadError)
+ const listError=useStore($sessionsLoadError), listLoading=useStore($sessionsLoading)
  const messages=useStore($messages)
  const currentStoredId=routeSessionId(useLocation().pathname) ?? actions.selectedStoredSessionId
  const [error,setError]=useState(''),[ready,setReady]=useState(false)
@@ -49,7 +50,20 @@ function WebChat({host}:{host:WebHostAdapter}) {
  useStore($clarifyRequests)
  const pending=clarifyRequestsForSession(actions.activeSessionId).reduce((count,request) => count+request.questions.filter(q => !Object.hasOwn(request.lockedAnswers ?? {},q.qid)).length,0)
  const selected=labelSessions.find(session => session.id===currentStoredId)
- const title=(selected && labels[sessionLabelKey(selected)]) || (draftTitle?.sessionId===currentStoredId ? draftTitle.text : '') || (currentStoredId ? '대화 불러오는 중…' : '새 채팅')
+ // A deep link can point outside the currently loaded list page.
+ const outsideListId=currentStoredId && !sessions.some(session => session.id===currentStoredId) ? currentStoredId : null
+ const [remoteTitle,setRemoteTitle]=useState<{host:WebHostAdapter;id:string;title?:string}|null>(null)
+ useEffect(() => {
+  if(!ready || listLoading || !outsideListId)return
+  let disposed=false
+  void host.gateway.request<{title?:string}>('session.title',{session_id:outsideListId})
+   .then(result => {if(!disposed)setRemoteTitle({host,id:outsideListId,title:result.title})})
+   .catch(() => {if(!disposed)setRemoteTitle({host,id:outsideListId})})
+  return () => {disposed=true}
+ },[host,ready,listLoading,outsideListId])
+ const remote=remoteTitle?.host===host && remoteTitle.id===outsideListId ? remoteTitle : null
+ const question=selected && Object.hasOwn(labels,sessionLabelKey(selected)) ? labels[sessionLabelKey(selected)] : draftTitle?.sessionId===currentStoredId ? draftTitle.text : undefined
+ const title=outsideListId && !remote ? '대화 불러오는 중…' : selected ? displaySessionLabel(outsideListId ? {title:remote?.title} : selected,question) : draftTitle?.text.trim() || '새 채팅'
  const [now,setNow]=useState(Date.now())
  useEffect(() => {const timer=setInterval(() => setNow(Date.now()),30000);return () => clearInterval(timer)},[])
 
@@ -82,11 +96,17 @@ function WebChat({host}:{host:WebHostAdapter}) {
    <div className="web-session-list"><p className="web-list-heading">최근 대화</p>
     {listError && <p role="alert">세션 목록을 불러오지 못했습니다. <button onClick={() => void actions.refreshSessions()}>다시 시도</button></p>}
     {failed && <button onClick={retry}>대화 제목 다시 불러오기</button>}
-    {sessions.filter(session => matchesSessionLabel(labels[sessionLabelKey(session)],query)).map(session => {
-     const label=labels[sessionLabelKey(session)] ?? (Object.hasOwn(labels,sessionLabelKey(session)) ? '첫 질문 없음' : '대화 불러오는 중…')
-     return <button className="web-session" key={sessionLabelKey(session)} title={label} aria-label={label} aria-current={session.id===actions.selectedStoredSessionId ? 'page' : undefined} onClick={() => {setDraftTitle(null);setSidebarOpen(false);navigate(sessionRoute(session.id))}}><strong>{label}</strong><small>{relativeSessionTime(session,now)}</small></button>
+    {sessions.filter(session => matchesSessionLabel(displaySessionLabel(session,labels[sessionLabelKey(session)]),query)).map(session => {
+     const label=displaySessionLabel(session,labels[sessionLabelKey(session)])
+     return <WebSessionRow key={sessionLabelKey(session)} label={label} time={relativeSessionTime(session,now)} selected={session.id===actions.selectedStoredSessionId} disabled={!ready}
+      onSelect={() => {setDraftTitle(null);setSidebarOpen(false);navigate(sessionRoute(session.id))}}
+      onRename={async title => {
+       const result=await host.gateway.request<{title:string;pending:boolean}>('session.title',{session_id:session.id,title})
+       if(!result.title?.trim() || result.pending)throw new Error('Title was not saved')
+       setSessions(rows => rows.map(row => sessionLabelKey(row)===sessionLabelKey(session) ? {...row,title:result.title} : row))
+      }}/>
     })}
-    {query && !sessions.some(session => matchesSessionLabel(labels[sessionLabelKey(session)],query)) && <p className="web-list-heading">불러온 대화에서 일치하는 질문이 없습니다.</p>}
+    {query && !sessions.some(session => matchesSessionLabel(displaySessionLabel(session,labels[sessionLabelKey(session)]),query)) && <p className="web-list-heading">불러온 대화에서 일치하는 대화가 없습니다.</p>}
     <button className="web-load-more" disabled={!ready} onClick={() => void actions.loadMoreSessions()}>이전 대화 더 보기</button>
    </div>
    <footer className="web-connection"><p><span aria-hidden="true">●</span> {gatewayState==='open' ? '연결됨' : gatewayState==='connecting' ? '연결 중' : '연결 끊김'}</p><p>대화를 선택하면 이전 내용을 이어서 볼 수 있습니다.</p></footer>

@@ -20,3 +20,7 @@ export function relativeSessionTime(session: {last_active?:number|null;started_a
  const [divisor,unit]:[number,Intl.RelativeTimeFormatUnit]=Math.abs(seconds)<60 ? [1,'second'] : Math.abs(seconds)<3600 ? [60,'minute'] : Math.abs(seconds)<86400 ? [3600,'hour'] : [86400,'day']
  return new Intl.RelativeTimeFormat('ko',{numeric:'auto'}).format(Math.round(seconds/divisor),unit)
 }
+
+export function displaySessionLabel(session: {title?:string|null}, question?:string|null) {
+ return session.title?.trim() || question?.trim() || (question===undefined ? '대화 불러오는 중…' : '첫 질문 없음')
+}

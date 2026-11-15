@@ -140,3 +140,15 @@
 .hermes-web .web-empty-state button { max-width:540px; border:1px solid #e6e6e6; border-radius:20px; padding:10px 16px; background:#ffffff; color:#6f6f6f; font-size:12px; word-break:keep-all; overflow-wrap:break-word; }
 .hermes-web .web-empty-state button:hover { background:#f3f3f3; color:#1a1c1f; }
 @media(max-width:700px) { .hermes-web [data-slot="composer-fade"] [class*="grid-area:menu"]::after { display:none; } }
+
+/* Web-only rename controls keep the quiet two-line session list. */
+.hermes-web .web-session-content { display:flex; width:100%; align-items:flex-start; gap:6px; }
+.hermes-web .web-session-select { flex:1; min-width:0; background:transparent; padding:0; }
+.hermes-web .web-session-more { flex-shrink:0; color:#626262; background:transparent; border-radius:5px; padding:0 4px; }
+.hermes-web .web-session-more:hover { background:#e8e8e8; }
+.hermes-web .web-session-content input { flex:1; min-width:0; outline:none; box-shadow:none; border:1px solid #e6e6e6; border-radius:5px; background:#ffffff; color:#1a1c1f; padding:4px 6px; font-size:12px; }
+.hermes-web .web-session-menu { margin-top:6px; padding:4px; border:1px solid #e6e6e6; border-radius:6px; background:#ffffff; }
+.hermes-web .web-session-menu button { width:100%; padding:4px 6px; color:#1a1c1f; font-size:12px; }
+.hermes-web .web-session-error { margin:6px 0 0; color:#626262; font-size:11px; }
+
+.hermes-web .web-session-content input:focus, .hermes-web .web-session-content input:focus-visible { outline:none; box-shadow:none; }

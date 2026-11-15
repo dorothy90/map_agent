@@ -15,7 +15,7 @@ export function useSessionLabels(sessions: SessionInfo[], enabled: boolean, owne
   if(!enabled)return
   let disposed=false,index=0
   // Empty history is provisional: the optimistic session row can precede its first send.
-  const pending=sessions.filter(session => !cache.get(sessionLabelKey(session)))
+  const pending=sessions.filter(session => !session.title?.trim() && !cache.get(sessionLabelKey(session)))
   setFailed(false)
   async function worker() {
    while(!disposed && index<pending.length) {
