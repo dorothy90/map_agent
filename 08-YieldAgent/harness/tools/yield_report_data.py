@@ -1,4 +1,9 @@
-"""Product-scoped SQL aggregates; recent windows use DB measurement dates only."""
+"""Product-scoped SQL aggregates; latest wafer/process test precedes date filters.
+
+Tests rank by MEASURETIME_START then END across the product; full ties retain
+all parameter rows. NULL wafer identities are retained without deduplication.
+Report dates use YEAR/MONTH/DAY = TRUNC(MEASURETIME_START), not test end.
+"""
 import re
 from calendar import monthrange
 from contextlib import contextmanager
@@ -13,7 +18,19 @@ from ..types import Contract
 Grain = Literal['month', 'week', 'day']
 GRAINS = {'month': ('months', 'monthly'), 'week': ('weeks', 'weekly'), 'day': ('days', 'daily')}
 MEASURE_DATE = "TO_DATE(YEAR||LPAD(MONTH,2,'0')||LPAD(DAY,2,'0'),'YYYYMMDD')"
-BASE_DATE_SOURCE = f"MAX({MEASURE_DATE}) FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST'; measurement date, not LAST_UPDATE or host clock"
+
+def _latest_test_source():
+    """Rank the full product before any date, bucket or parameter predicate."""
+    return (
+        "(SELECT * FROM (SELECT prb.*, DENSE_RANK() OVER ("
+        "PARTITION BY LOT_CD, LOT_ID, WFID, PROCESS "
+        "ORDER BY MEASURETIME_START DESC, MEASURETIME_END DESC) report_test_rank "
+        "FROM DF_WF_ALL_PRB_V2 prb WHERE LOT_CD=:lot) "
+        "WHERE report_test_rank=1 OR LOT_ID IS NULL OR WFID IS NULL)"
+    )
+
+
+BASE_DATE_SOURCE = f"MAX({MEASURE_DATE}) FROM {_latest_test_source()} WHERE LOT_CD=:lot AND PROCESS='PT1H TEST'; latest wafer/process test measurement date, not LAST_UPDATE or host clock"
 
 
 class RecentPeriod(Contract):
@@ -202,6 +219,7 @@ class PeriodReportData:
     lot_population: list[dict] = field(default_factory=list)
     lot_parameter_stats: list[dict] = field(default_factory=list)
     lot_wafer_members: list[dict] = field(default_factory=list)
+    wafer_parameter_stats: list[dict] | None = None
 
 
 def _bucket_sql(grain, prefix=''):
@@ -234,11 +252,11 @@ def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
         metadata = _parameter_metadata(cursor, lot_cd)
         cursor.execute(
             "SELECT COUNT(DISTINCT LOT_ID), COUNT(DISTINCT GORUPKEY) "
-            "FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' AND " + total_filter, binds)
+            f"FROM {_latest_test_source()} WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' AND " + total_filter, binds)
         lot_count, wafer_count = cursor.fetchall()[0]
         # Capture complete additive statistics and distinct identities while the
         # existing report connection is open. No later group query is necessary.
-        population, stats, members = _capture_lots(cursor, total_filter, binds)
+        population, stats, members, wafer_stats = _capture_lots(cursor, total_filter, binds)
         yield_long, all_counts, all_gms = [], {}, {}
         for grain, (key, unit) in GRAINS.items():
             if key not in window:
@@ -248,15 +266,16 @@ def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
             grain_binds = {'lot': lot_cd, 'win_start': window['start'], 'win_end': window['end'],
                            **{f'b{i}': value for i, value in enumerate(buckets)}}
             bucket_sql = _bucket_sql(grain)
-            _, bucket_stats, bucket_members = _capture_lots(
+            _, bucket_stats, bucket_members, bucket_wafer_stats = _capture_lots(
                 cursor, f"{date_filter} AND {bucket_sql} IN ({placeholders})",
                 grain_binds, grain=grain)
             stats.extend(bucket_stats)
+            wafer_stats.extend(bucket_wafer_stats)
             members.extend(bucket_members)
             # A single source alias leaves YEAR/MONTH/DAY unambiguous in this predicate.
             cursor.execute(
                 f"SELECT {_bucket_sql(grain, 'y.')}, y.PROCESS, y.PARAM_NM, AVG(y.VALUE) "
-                "FROM DF_WF_ALL_PRB_V2 y WHERE y.LOT_CD=:lot "
+                f"FROM {_latest_test_source()} y WHERE y.LOT_CD=:lot "
                 "AND y.PROCESS IN ('PT1H TEST','PT1C TEST') "
                 f"AND {date_filter} AND {_bucket_sql(grain, 'y.')} IN ({placeholders}) "
                 "AND EXISTS (SELECT 1 FROM DF_ALL_PARA_PRB m WHERE m.LOT_CD=y.LOT_CD "
@@ -269,7 +288,7 @@ def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
             yield_long.extend(rows)
             cursor.execute(
                 f"SELECT {bucket_sql}, COUNT(DISTINCT LOT_ID), COUNT(DISTINCT GORUPKEY) "
-                "FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' "
+                f"FROM {_latest_test_source()} WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' "
                 f"AND {date_filter} AND {bucket_sql} IN ({placeholders}) "
                 f"GROUP BY {bucket_sql} ORDER BY {bucket_sql}", grain_binds)
             counts = {row[0]: row[1:] for row in cursor.fetchall()}
@@ -286,7 +305,7 @@ def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
                                       wafer_count=counts.get(b, (None, None))[1],
                                       has_yield_data=b in yield_buckets, has_gms=b in gms_buckets) for b in buckets]
             all_gms[grain] = gms
-    return PeriodReportData(lot_cd, window, metadata, yield_long, all_counts, lot_count, wafer_count, all_gms, population, stats, members)
+    return PeriodReportData(lot_cd, window, metadata, yield_long, all_counts, lot_count, wafer_count, all_gms, population, stats, members, wafer_stats)
 
 
 def _capture_lots(cursor, predicate, binds, *, grain='all'):
@@ -297,14 +316,14 @@ def _capture_lots(cursor, predicate, binds, *, grain='all'):
             "/* report_lot_population */ SELECT LOT_ID, COUNT(DISTINCT GORUPKEY), "
             "AVG(CASE WHEN PARAM_NM='PT1H' THEN VALUE END), "
             "COUNT(CASE WHEN PARAM_NM='PT1H' THEN VALUE END) "
-            "FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' AND "
+            f"FROM {_latest_test_source()} WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' AND "
             + predicate + " GROUP BY LOT_ID ORDER BY LOT_ID", binds)
         population = [dict(lot_id=row[0], wafer_count=int(row[1]),
                            pt1h_mean=float(row[2]) if row[2] is not None else None,
                            pt1h_value_count=int(row[3])) for row in cursor.fetchall() if row[0] is not None]
     cursor.execute(
         f"/* report_lot_stats */ SELECT {bucket}, y.LOT_ID, y.PROCESS, y.PARAM_NM, SUM(y.VALUE), COUNT(y.VALUE) "
-        "FROM DF_WF_ALL_PRB_V2 y WHERE y.LOT_CD=:lot "
+        f"FROM {_latest_test_source()} y WHERE y.LOT_CD=:lot "
         "AND y.PROCESS IN ('PT1H TEST','PT1C TEST') AND " + predicate +
         " AND ((y.PROCESS='PT1H TEST' AND y.PARAM_NM='PT1H') OR EXISTS "
         "(SELECT 1 FROM DF_ALL_PARA_PRB m WHERE m.LOT_CD=y.LOT_CD "
@@ -316,15 +335,28 @@ def _capture_lots(cursor, predicate, binds, *, grain='all'):
                   param=row[3], value_sum=float(row[4]) if row[4] is not None else 0.0,
                   value_count=int(row[5])) for row in cursor.fetchall()]
     cursor.execute(
-        f"/* report_lot_members */ SELECT DISTINCT {bucket}, LOT_ID, GORUPKEY "
-        "FROM DF_WF_ALL_PRB_V2 WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' AND "
+        f"/* report_wafer_stats */ SELECT {bucket}, y.LOT_ID, y.WFID, y.PROCESS, y.PARAM_NM, SUM(y.VALUE), COUNT(y.VALUE) "
+        f"FROM {_latest_test_source()} y WHERE y.LOT_CD=:lot "
+        "AND y.PROCESS IN ('PT1H TEST','PT1C TEST') AND " + predicate +
+        " AND ((y.PROCESS='PT1H TEST' AND y.PARAM_NM='PT1H') OR EXISTS "
+        "(SELECT 1 FROM DF_ALL_PARA_PRB m WHERE m.LOT_CD=y.LOT_CD "
+        "AND m.PROC_GBN_CD||' TEST'=y.PROCESS AND m.PARAM_NM=y.PARAM_NM "
+        "AND TRIM(m.YIELD_TABLE)='o')) "
+        + ("GROUP BY " if grain == 'all' else f"GROUP BY {bucket}, ")
+        + "y.LOT_ID, y.WFID, y.PROCESS, y.PARAM_NM", binds)
+    wafer_stats = [dict(grain=grain, bucket=row[0] or '', lot_id=row[1], wf_id=row[2], process=row[3],
+                  param=row[4], value_sum=float(row[5]) if row[5] is not None else 0.0,
+                  value_count=int(row[6])) for row in cursor.fetchall()]
+    cursor.execute(
+        f"/* report_lot_members */ SELECT DISTINCT {bucket}, LOT_ID, GORUPKEY, WFID "
+        f"FROM {_latest_test_source()} WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' AND "
         + predicate, binds)
-    members = [dict(grain=grain, bucket=row[0] or '', lot_id=row[1], gorupkey=row[2])
+    members = [dict(grain=grain, bucket=row[0] or '', lot_id=row[1], gorupkey=row[2], wf_id=row[3])
                for row in cursor.fetchall()]
-    return population, stats, members
+    return population, stats, members, wafer_stats
 
 
-def aggregate_groups(data, membership, group_ids, *, grain='all', bucket=''):
+def aggregate_groups(data, membership, group_ids, *, grain='all', bucket='', member_grain='lot'):
     """Aggregate solely from captured sufficient statistics and wafer identities."""
     rows, counts = [], []
     displayed = {(str(row[0]) + ' TEST', row[1]) for row in data.metadata
@@ -336,6 +368,18 @@ def aggregate_groups(data, membership, group_ids, *, grain='all', bucket=''):
                     and (row['process'], row['param']) in displayed]
         identities = [row for row in data.lot_wafer_members
                       if row['grain'] == grain and row['bucket'] == bucket and row['lot_id'] in lots]
+        if member_grain == 'wafer':
+            wafers = {(row['lot_id'], row['wf_id']) for row in membership if row['group_id'] == group}
+            selected = [row for row in data.wafer_parameter_stats
+                        if row['grain'] == grain and row['bucket'] == bucket
+                        and (row['lot_id'], row['wf_id']) in wafers
+                        and (row['process'], row['param']) in displayed]
+            # Canonical wafer addition order makes capture and scope reuse identical.
+            selected.sort(key=lambda row: tuple((row[key] is not None, row[key] or '')
+                                                for key in ('lot_id', 'wf_id', 'process', 'param', 'bucket')))
+            identities = [row for row in data.lot_wafer_members
+                          if row['grain'] == grain and row['bucket'] == bucket
+                          and (row['lot_id'], row['wf_id']) in wafers]
         totals = {}
         for row in selected:
             key = (row['process'], row['param'])

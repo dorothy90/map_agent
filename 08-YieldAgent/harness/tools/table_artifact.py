@@ -87,6 +87,7 @@ Identifier = Annotated[str, StringConstraints(strict=True, min_length=1)]
 
 class TableMembership(Contract):
     kind: Literal["table"]
+    member_grain: Literal["lot", "wafer"] = "lot"
     result_id: Identifier
     table_id: Identifier | None = None
 
@@ -254,12 +255,17 @@ async def render_yield_table(args: YieldTableInput, ctx) -> ToolResult:
         scope_id = None
     source_ids = []
     if args.grouping:
-        membership, groups, origin, uncovered = await _membership(args, data, ctx)
+        membership, groups, origin, uncovered, uncovered_wafers = await _membership(args, data, ctx)
+        member_grain = getattr(args.grouping.membership, "member_grain", "lot")
         result = _render_groups(args, data, membership, groups)
         result.scope.update(membership=origin, coverage=args.grouping.coverage,
-                            definition=args.grouping.definition, uncovered_lot_count=uncovered)
-        result.tables.append(ResultTable(table_id="group_membership", title="Accepted lot membership",
-                                        rows=membership, columns=["group_id", "lot_id"], complete=True))
+                            definition=args.grouping.definition, uncovered_lot_count=uncovered,
+                            member_grain=member_grain)
+        if member_grain == "wafer":
+            result.scope["uncovered_wafer_count"] = uncovered_wafers
+        result.tables.append(ResultTable(table_id="group_membership", title=f"Accepted {member_grain} membership",
+                                        rows=membership, columns=["group_id", "lot_id"] +
+                                        (["wf_id"] if member_grain == "wafer" else []), complete=True))
         if origin.get("result_id"):
             source_ids.append(origin["result_id"])
     else:
@@ -283,6 +289,9 @@ async def _membership(args, data, ctx):
     from .report_policy import ReportContractError
     grouping = args.grouping
     source = grouping.membership
+    member_grain = getattr(source, "member_grain", "lot")
+    if member_grain == "wafer" and data.wafer_parameter_stats is None:
+        raise ReportContractError("WAFER_CAPTURE_REQUIRED", "call again with lot_cd+period")
     if isinstance(source, TableMembership):
         if ctx is None:
             raise ReportContractError("MEMBERSHIP_UNAVAILABLE", "Saved membership requires a result store")
@@ -303,15 +312,22 @@ async def _membership(args, data, ctx):
                 "message": "Unknown table_id; available tables: " + ", ".join(choices), "table_ids": choices})
         if obs.status not in ("success", "partial", "empty") or not table.complete:
             raise ReportContractError("INCOMPLETE_MEMBERSHIP", "Membership table must be complete")
-        if not {"group_id", "lot_id"} <= set(table.columns):
-            raise ReportContractError("MEMBERSHIP_COLUMNS", "Membership table requires group_id, lot_id columns")
+        columns = ["group_id", "lot_id"] + (["wf_id"] if member_grain == "wafer" else [])
+        if not set(columns) <= set(table.columns):
+            raise ReportContractError("MEMBERSHIP_COLUMNS", "Membership table requires " + ", ".join(columns) + " columns")
         try:
             raw = await ctx.store.rows(ctx.run["principal_id"], ctx.run["session_id"], source.result_id, table_id=table_id)
         except (PermissionError, KeyError, ValueError) as exc:
             raise ReportContractError("MEMBERSHIP_UNAVAILABLE", "Cannot read complete membership table") from exc
         if len(raw) != table.total_rows:
             raise ReportContractError("INCOMPLETE_MEMBERSHIP", "Complete membership row count does not match stored table")
-        rows = [{"group_id": r.get("group_id"), "lot_id": r.get("lot_id")} for r in raw]
+        if member_grain == "lot" and any(
+                r.get("wf_id") is not None and (not isinstance(r["wf_id"], str) or r["wf_id"].strip()) for r in raw):
+            raise ReportContractError("MEMBERSHIP_GRAIN_MISMATCH", 'use member_grain "wafer" or drop the column')
+        rows = [{key: r.get(key) for key in columns} for r in raw]
+        if member_grain == "wafer" and any(
+                not isinstance(r["wf_id"], str) or not r["wf_id"].strip() or r["wf_id"] != r["wf_id"].strip() for r in rows):
+            raise ReportContractError("INVALID_MEMBERSHIP", 'wf_id must be a nonempty unpadded str; cast to str exactly as in WFID, e.g. "7"')
         inferred = list(dict.fromkeys(r["group_id"] for r in rows if isinstance(r["group_id"], str)))
         origin = {"kind": "table", "result_id": source.result_id, "table_id": table_id}
     else:
@@ -338,6 +354,21 @@ async def _membership(args, data, ctx):
     if args.comparison and not {args.comparison.current, args.comparison.baseline} <= set(ids):
         raise ReportContractError("UNKNOWN_COMPARISON", "comparison refers to unknown group IDs")
     population = {r["lot_id"] for r in data.lot_population}
+    if member_grain == "wafer":
+        selectable = {(r["lot_id"], r["wf_id"]) for r in
+                      [*data.lot_wafer_members, *data.wafer_parameter_stats] if r["grain"] == "all"}
+        assigned_wafers = set()
+        for row in rows:
+            key = (row["lot_id"], row["wf_id"])
+            if key not in selectable:
+                raise ReportContractError("UNKNOWN_WAFER", f"unknown wafer key: {key}")
+            if key in assigned_wafers:
+                raise ReportContractError("INVALID_MEMBERSHIP", f"duplicate wafer membership: {key}")
+            assigned_wafers.add(key)
+        uncovered_wafers = len(selectable - assigned_wafers)
+        if grouping.coverage == "partition" and uncovered_wafers:
+            raise ReportContractError("INCOMPLETE_PARTITION", f"partition leaves {uncovered_wafers} wafers uncovered")
+        return rows, groups, origin, len(population - {r["lot_id"] for r in rows}), uncovered_wafers
     assigned = {}
     for row in rows:
         group, lot = row["group_id"], row["lot_id"]
@@ -354,17 +385,18 @@ async def _membership(args, data, ctx):
     uncovered = len(population - assigned.keys())
     if grouping.coverage == "partition" and uncovered:
         raise ReportContractError("INCOMPLETE_PARTITION", f"partition leaves {uncovered} lots uncovered")
-    return rows, groups, origin, uncovered
+    return rows, groups, origin, uncovered, None
 
 
 def _render_groups(args, data, membership, groups):
+    member_grain = getattr(args.grouping.membership, "member_grain", "lot")
     rendered, counts, values, cells = [], [], [], []
     slices = [("all", "")]
     if args.layout == "group_period":
         slices = [(grain, bucket) for grain, (key, _) in GRAINS.items()
                   for bucket in data.window.get(key, [])]
     for grain, bucket in slices:
-        aggregated = aggregate_groups(data, membership, [g.id for g in groups], grain=grain, bucket=bucket)
+        aggregated = aggregate_groups(data, membership, [g.id for g in groups], grain=grain, bucket=bucket, member_grain=member_grain)
         by_group = {r["period"]: r for r in aggregated["counts"]}
         presentation = _ReportInput(title=args.title, product_label=data.lot_cd, group_gms_unavailable=True,
             period_label="GROUP" if grain == "all" else f"{grain.upper()} {bucket} / GROUP",
@@ -401,6 +433,9 @@ def _render_groups(args, data, membership, groups):
         aggregation="Source-row AVG(VALUE); not an average of lot means",
         comparison=args.comparison.model_dump() if args.comparison else None)
     result.status = "empty" if not any(r["lot_count"] for r in counts) else "partial" if missing else "success"
+    if member_grain == "wafer":
+        result.scope["aggregation"] = "Source-row AVG(VALUE) over selected (LOT_ID, WFID); not an average of wafer means"
+        result.status = "empty" if not any(r["lot_count"] or r["has_yield_data"] for r in counts) else "partial" if missing else "success"
     result.summary = (f"LOT_CD={data.lot_cd} {data.window['start']}~{data.window['end']}: "
                       f"{len(groups)} groups; counts in group_counts; {result.scope['selection_rule']}; "
                       "group GMS unavailable; selection meaning requires verification")
@@ -568,9 +603,12 @@ def register(registry):
         "최근 기간은 PT1H TEST 최신 DB 측정일 기준이며 오늘 날짜를 계산하지 않는다. ISO 주차와 빈 버킷을 보존한다. "
         "결과 lot_population의 전체 lot_id, wafer_count, pt1h_mean, pt1h_value_count로 Python에서 그룹을 선택한다. "
         "grouping.membership은 {kind:'table',result_id,table_id}로 group_id,lot_id 표를 참조한다. "
+        "wafer 멤버십은 member_grain:'wafer'와 group_id,lot_id,wf_id 열(PRB WFID 원문 문자열)을 사용한다. "
+        "멤버십은 query_db/run_python으로 구성하고 OPER_ID별 EQP_ID 등 공식 그룹 수율 표는 이 도구로 렌더링한다. "
+        "동일 OPER_ID의 wafer가 여러 EQP 행에 매칭되면 임의 중복 제거 없이 clarify한다. "
         "단일 표이면 table_id 생략 가능, 여러 표이면 반드시 지정한다. 소수 lot은 {kind:'inline',groups:[{group_id,lot_ids}]}도 가능하다. "
         "grouping.groups=[{id,label}] 생략 시 멤버십 순서를 사용한다. coverage 기본 disjoint_subsets는 단일 부분집합도 허용하며 "
-        "partition은 전체 lot의 정확한 분할이다. definition은 선택 기준 설명이며 도구는 해석하지 않는다. "
+        "partition은 선택한 member_grain 전체 모집단의 정확한 분할이다. definition은 선택 기준 설명이며 도구는 해석하지 않는다. "
         "layout은 period/group/group_period이며 group_period는 같은 그룹의 버킷별 추이다. "
         "comparison={current,baseline}은 그룹 간 Δ이며 group_period에서는 같은 버킷 안에서 비교한다. "
         "도구가 distinct LOT_ID/GORUPKEY, source-row AVG(VALUE), DF_ALL_PARA_PRB YIELD_TABLE='o' 열, "

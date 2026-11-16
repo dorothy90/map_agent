@@ -25,7 +25,7 @@ def period_db(monkeypatch):
             buckets = [v for k, v in binds.items() if k.startswith('b') and k[1:].isdigit()]
             if 'MAX(' in sql:
                 self.rows = [(self.base,)]
-            elif '/* report_lot_' in sql:
+            elif '/* report_' in sql:
                 self.rows = []
             elif 'AVG(' in sql:
                 self.rows = [(b, p, n, .7469 + i / 100) for i, b in enumerate(buckets)
@@ -212,7 +212,7 @@ def test_explicit_gaps_are_excluded_in_totals_and_every_aggregate(period_db, key
             assert ' IN (:b0, :b1)' in sql
             assert binds['b0'] == values[0] and binds['b1'] == values[1]
             assert ' BETWEEN ' in sql
-            if '/* report_lot_' in sql:
+            if '/* report_' in sql:
                 continue
             if 'AVG(' in sql:
                 assert 'GROUP BY' in sql

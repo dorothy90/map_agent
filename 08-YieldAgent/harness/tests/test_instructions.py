@@ -231,3 +231,39 @@ def test_same_time_fabout_uses_measurement_window():
     notes = (directory / "domain-notes.md").read_text(encoding="utf-8")
     assert "'동일시점 팹아웃' 요청은 실제 FABOUT 날짜가 아니라 동일한 PT 측정일(measurement-date) 범위로 조회한다." in native
     assert "동일시점 팹아웃(사용자 확인, 2026-11-15): 동일한 PT 측정일 범위를 뜻하며 실제 FABOUT 날짜 범위와는 구분한다." in notes
+
+def test_domain_notes_describe_wf_legend_join_and_forbid_substitutes():
+    notes = (Path(__file__).parents[1] / "instructions" / "domain-notes.md").read_text(encoding="utf-8")
+    for phrase in (
+        "### DF_WF_LEGEND",
+        "한 wafer는 여러 OPER_ID 행을 가진다",
+        "OPER_DET_DESC는 공정 설명이다",
+        "WF_ID=WFID",
+        "WF_ID는 선행 0 없는 문자다",
+        "EQP_ID(장비)",
+        "EQP_CH(챔버)",
+        "포토 공정에만 값",
+        "RWK_CNT(리워크 횟수)",
+        "END_TM(공정 종료 시각 'YYYY-MM-DD HH24:MI:SS')",
+        "LOT_ID 및 WF_ID=WFID로 조인해 query_db/run_python으로 멤버십을 조회·구성한다",
+        "모든 공식 그룹 수율 표는 render_yield_table로 렌더링",
+        "임의 중복 제거 없이 clarify로 분류 기준을 확인",
+        "기간(최근 N주)은 기존 규칙대로 수율 측정일 기준이다",
+        "사용자가 OPER_ID나 공정 설명을 주면 이 테이블에서 찾는다",
+        "DF_LEGEND_LONG과 DF_FDC_ALARM은 장비 이력 용도로 쓰지 않으며",
+        "DF_LEGEND_LONG을 대체로 쓰지 않는다",
+        "\ud14c\uc2a4\ud2b8\uc6a9 \ub354\ubbf8",
+    ):
+        if phrase == "\ud14c\uc2a4\ud2b8\uc6a9 \ub354\ubbf8":
+            assert phrase not in notes
+        else:
+            assert phrase in notes
+
+
+def test_wafer_membership_rendering_contract():
+    root = Path(__file__).resolve().parents[1] / 'instructions'
+    for name in ('native.md', 'domain-notes.md'):
+        text = (root / name).read_text()
+        for required in ('member_grain:"wafer"', 'group_id,lot_id,wf_id', 'PRB WFID 원문 문자열',
+                         'query_db/run_python', 'render_yield_table', '임의 중복 제거 없이 clarify'):
+            assert required in text

@@ -62,7 +62,7 @@ def population_data():
                 stats.append(dict(grain=grain, bucket=bucket, lot_id=lot, process='PT1H TEST',
                                   param=param, value_sum=score*wafers, value_count=wafers))
             for wf in range(wafers):
-                members.append(dict(grain=grain, bucket=bucket, lot_id=lot, gorupkey=f'{lot}.{wf:02}'))
+                members.append(dict(grain=grain, bucket=bucket, lot_id=lot, gorupkey=f'{lot}.{wf:02}', wf_id=str(wf)))
     counts = []
     yields = []
     for week in weeks:
@@ -78,7 +78,11 @@ def population_data():
         metadata=[('PT1H', 'PT1H', 1, 'B', 'o'), ('PT1H', 'VTH', 2, 'I', 'o')],
         yield_long=yields, counts={'week': counts}, period_lot_count=57, period_wafer_count=1100,
         gms={'week': [dict(week=w, period_date=w.replace('-', ''), fab=90, prb=80, cum0=70) for w in weeks]},
-        lot_population=population, lot_parameter_stats=stats, lot_wafer_members=members)
+        lot_population=population, lot_parameter_stats=stats, lot_wafer_members=members,
+        wafer_parameter_stats=[dict(grain=m['grain'], bucket=m['bucket'], lot_id=m['lot_id'], wf_id=m['wf_id'],
+            process=s['process'], param=s['param'], value_sum=s['value_sum']/s['value_count'], value_count=1)
+            for m in members for s in stats if (s['grain'], s['bucket'], s['lot_id']) ==
+            (m['grain'], m['bucket'], m['lot_id'])])
 
 
 @pytest.fixture
@@ -319,3 +323,440 @@ def test_undeclared_empty_inline_group_is_not_silently_discarded(setup_report):
     grouping['groups'] = [{'id': 'LOW'}]
     result = call(lot_cd='4SS', period={'kind': 'recent', 'weeks': 4}, grouping=grouping)
     assert result.status == 'error' and result.scope['code'] == 'UNDECLARED_GROUP'
+
+
+@pytest.mark.parametrize('layout', ['group', 'group_period'])
+def test_lot_output_matches_pre_wafer_capture(setup_report, population_data, layout):
+    import json
+    from pathlib import Path
+    expected = json.loads(Path(__file__).with_name('lot_membership_baseline.json').read_text())[layout]
+    call, _, _, _ = setup_report
+    result = call(lot_cd='4SS', period={'kind': 'recent', 'weeks': 4}, layout=layout,
+        grouping=inline(('LOW', [r['lot_id'] for r in population_data.lot_population[:14]]),
+                        ('REST', [r['lot_id'] for r in population_data.lot_population[14:]])),
+        comparison={'current': 'LOW', 'baseline': 'REST'})
+    assert {'status': result.status, **{name: table_rows(result, name) for name in expected if name != 'status'}} == expected
+
+
+def test_wafer_table_contract():
+    source = tool.TableMembership(kind='table', result_id='members', member_grain='wafer')
+    assert source.member_grain == 'wafer'
+
+
+@pytest.fixture
+def wafer_report(setup_report, population_data, monkeypatch):
+    from dataclasses import replace
+    data = replace(population_data, wafer_parameter_stats=[], lot_wafer_members=[])
+    data.metadata[:] = [('PT1H', 'PT1H', 1, 'B', 'o'), ('PT1C', 'COLD', 1, 'B', 'o')]
+    for grain, bucket in [('all', ''), ('week', '2026-46')]:
+        for wf, process, param, value, count in [
+            ('7', 'PT1H TEST', 'PT1H', .8, 1), ('8', 'PT1H TEST', 'PT1H', .6, 1),
+            ('7', 'PT1C TEST', 'COLD', .4, 1), ('9', 'PT1C TEST', 'COLD', 1.8, 2)]:
+            data.wafer_parameter_stats.append(dict(grain=grain, bucket=bucket, lot_id='L0', wf_id=wf,
+                process=process, param=param, value_sum=value, value_count=count))
+        data.lot_wafer_members.extend(dict(grain=grain, bucket=bucket, lot_id='L0', wf_id=wf,
+            gorupkey='L0.'+wf) for wf in ['7', '8'])
+    def fetch(lot, period):
+        setup_report[2].append((lot, period))
+        return copy.deepcopy(data)
+    monkeypatch.setattr(tool, 'fetch_period_report', fetch)
+    return setup_report
+
+
+def wafer_call(setup, rows, **kwargs):
+    call, store, _, _ = setup
+    rid = store.membership(rows)
+    grain = kwargs.pop('member_grain', 'wafer')
+    coverage = kwargs.pop('coverage', 'disjoint_subsets')
+    source = kwargs.pop('report_scope_id', None)
+    return call(**({'report_scope_id': source} if source else {'lot_cd': '4SS', 'period': {'kind': 'recent', 'weeks': 4}}),
+        grouping={'membership': {'kind': 'table', 'result_id': rid, 'member_grain': grain}, 'coverage': coverage}, **kwargs)
+
+
+def test_wafer_split_independent_columns_and_reuse(wafer_report):
+    rows = [dict(group_id=g, lot_id='L0', wf_id=w) for g, w in [('A', '7'), ('B', '8'), ('A', '9')]]
+    result = wafer_call(wafer_report, rows, coverage='partition', comparison={'current':'A', 'baseline':'B'})
+    assert result.status == 'success', result.summary
+    assert result.scope['member_grain'] == 'wafer'
+    assert result.scope['uncovered_lot_count'] == 56
+    assert result.scope['uncovered_wafer_count'] == 0
+    assert table_rows(result, 'group_membership') == rows
+    values = {(r['period'],r['process']):r['value'] for r in table_rows(result,'group_yield_long')}
+    assert values == {('A','PT1H TEST'):.8, ('A','PT1C TEST'):2.2/3, ('B','PT1H TEST'):.6}
+    assert [(r['lot_count'],r['wf_count']) for r in table_rows(result,'group_counts')] == [(1,1),(1,1)]
+    reused = wafer_call(wafer_report, rows, report_scope_id=result.scope['report_scope_id'])
+    assert table_rows(reused, 'group_yield_long') == table_rows(result, 'group_yield_long')
+    assert len(wafer_report[2]) == 1
+
+
+def test_pt1c_only_wafer_and_bucket_absence(wafer_report):
+    rows = [dict(group_id='C', lot_id='L0', wf_id='9')]
+    result = wafer_call(wafer_report, rows)
+    assert result.status == 'success', result.summary
+    assert table_rows(result,'group_counts')[0]['wf_count'] == 0
+    period = wafer_call(wafer_report, rows, layout='group_period')
+    assert period.status == 'partial'
+    counts = table_rows(period, 'group_counts')
+    assert [r['has_yield_data'] for r in counts] == [True, False, False, False]
+    assert period.scope['uncovered_wafer_count'] == 2
+
+
+@pytest.mark.parametrize('wf,code', [(7,'INVALID_MEMBERSHIP'), ('','INVALID_MEMBERSHIP'),
+    (None,'INVALID_MEMBERSHIP'), (' ','INVALID_MEMBERSHIP'), (' 7','INVALID_MEMBERSHIP'), ('07','UNKNOWN_WAFER'), ('99','UNKNOWN_WAFER')])
+def test_invalid_wafer_identity(wafer_report, wf, code):
+    result = wafer_call(wafer_report, [dict(group_id='A',lot_id='L0',wf_id=wf)])
+    assert result.scope['code'] == code
+
+
+@pytest.mark.parametrize('group', ['A', 'B'])
+def test_duplicate_wafer_rejected(wafer_report, group):
+    result = wafer_call(wafer_report, [dict(group_id=g,lot_id='L0',wf_id='7') for g in ['A',group]])
+    assert result.scope['code'] == 'INVALID_MEMBERSHIP'
+
+
+def test_wafer_partition_requires_all_keys(wafer_report):
+    result = wafer_call(wafer_report, [dict(group_id='A',lot_id='L0',wf_id='7')], coverage='partition')
+    assert result.scope['code'] == 'INCOMPLETE_PARTITION'
+
+
+@pytest.mark.parametrize('wf', ['7', 7, 0])
+def test_lot_rejects_stray_wafer(wafer_report, wf):
+    result = wafer_call(wafer_report, [dict(group_id='A',lot_id='L0',wf_id=wf)], member_grain='lot')
+    assert result.scope['code'] == 'MEMBERSHIP_GRAIN_MISMATCH'
+
+
+@pytest.mark.parametrize('wf', [None, '', ' '])
+def test_lot_allows_empty_wafer(wafer_report, wf):
+    result = wafer_call(wafer_report, [dict(group_id='A',lot_id='L0',wf_id=wf)], member_grain='lot')
+    assert result.status == 'success'
+    assert table_rows(result, 'group_membership') == [dict(group_id='A',lot_id='L0')]
+
+
+def test_old_scope_lot_works_wafer_requires_recapture(wafer_report):
+    call, store, calls, _ = wafer_report
+    original = call(lot_cd='4SS',period={'kind':'recent','weeks':4})
+    scope_id = original.scope['report_scope_id']
+    obs, tables = store.saved[scope_id.removeprefix('yield-report:')]
+    legacy_wafer_scope(store, scope_id, wafer_report[3])
+    obs.scope.pop('wafer_capture', None)
+    obs.tables = [t for t in obs.tables if t.table_id != 'wafer_parameter_stats']
+    tables.pop('wafer_parameter_stats', None)
+    members = next(t for t in obs.tables if t.table_id == 'lot_wafer_members')
+    members.columns = [c for c in members.columns if c != 'wf_id']
+    for row in tables['lot_wafer_members']:
+        row.pop('wf_id')
+    lot = call(report_scope_id=scope_id, grouping=inline(('A',['L0'])))
+    assert lot.status == 'success'
+    result = wafer_call(wafer_report, [dict(group_id='A',lot_id='L0',wf_id='7')], report_scope_id=scope_id)
+    assert result.scope['code'] == 'WAFER_CAPTURE_REQUIRED'
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('encoding', ['legacy', 'packed-v1'])
+@pytest.mark.parametrize('damage', ['columns', 'complete', 'count', 'missing', 'member_columns'])
+def test_wafer_scope_requires_complete_capture(wafer_report, damage, encoding):
+    call, store, calls, _ = wafer_report
+    original = call(lot_cd='4SS', period={'kind':'recent','weeks':4})
+    scope_id = original.scope['report_scope_id']
+    obs, _ = store.saved[scope_id.removeprefix('yield-report:')]
+    assert obs.scope['contract'] == 'yield-report-scope/v1'
+    assert obs.scope['wafer_capture'] is True
+    ref = next(t for t in obs.tables if t.table_id == 'wafer_parameter_stats')
+    if encoding == 'legacy':
+        legacy_wafer_scope(store, scope_id, wafer_report[3])
+        assert ref.columns == ['grain','bucket','lot_id','wf_id','process','param','value_sum','value_count']
+    else:
+        assert ref.columns == ['grain','bucket','lot_id','wf_id','process','values']
+    if damage == 'columns':
+        ref.columns = [c for c in ref.columns if c != 'wf_id']
+    elif damage == 'complete':
+        ref.complete = False
+    elif damage == 'count':
+        ref.total_rows += 1
+    elif damage == 'member_columns':
+        members = next(t for t in obs.tables if t.table_id == 'lot_wafer_members')
+        members.columns = [c for c in members.columns if c != 'wf_id']
+    else:
+        obs.tables.remove(ref)
+    result = call(report_scope_id=scope_id, grouping=inline(('A',['L0'])))
+    assert result.scope['code'] == 'INCOMPLETE_REPORT_SCOPE'
+    assert len(calls) == 1
+
+
+def test_captured_empty_wafer_stats_is_not_old_scope(wafer_report):
+    from harness.tools.yield_report_scope import load_scope
+    call, store, _, ctx = wafer_report
+    result = call(lot_cd='4SS',period={'kind':'recent','weeks':4})
+    scope_id = result.scope['report_scope_id']
+    obs, tables = store.saved[scope_id.removeprefix('yield-report:')]
+    tables['wafer_parameter_stats'] = []
+    next(t for t in obs.tables if t.table_id == 'wafer_parameter_stats').total_rows = 0
+    data, _, _ = asyncio.run(load_scope(scope_id, ctx))
+    assert data.wafer_parameter_stats == []
+    # Identity-only wafers remain selectable even without displayed statistics.
+    rendered = wafer_call(wafer_report, [dict(group_id='A',lot_id='L0',wf_id='7')], report_scope_id=scope_id)
+    assert rendered.status == 'partial'
+
+
+def test_wafer_requires_column_and_every_row(wafer_report):
+    missing_column = wafer_call(wafer_report, [dict(group_id='A',lot_id='L0')])
+    assert missing_column.scope['code'] == 'MEMBERSHIP_COLUMNS'
+    mixed = wafer_call(wafer_report, [dict(group_id='A',lot_id='L0',wf_id='7'), dict(group_id='B',lot_id='L0')])
+    assert mixed.scope['code'] == 'INVALID_MEMBERSHIP'
+
+
+@pytest.mark.parametrize('grain,key,buckets', [
+    ('month','months',['2026-10','2026-11']), ('day','days',['2026-11-09','2026-11-10'])])
+def test_wafer_group_period_uses_each_grain_slice(wafer_report, grain, key, buckets):
+    call, store, _, _ = wafer_report
+    original = call(lot_cd='4SS',period={'kind':'recent','weeks':4})
+    scope_id = original.scope['report_scope_id']
+    obs, tables = store.saved[scope_id.removeprefix('yield-report:')]
+    legacy_wafer_scope(store, scope_id, wafer_report[3])
+    obs.scope['window'] = {**obs.scope['window'], key: buckets}
+    for name in ('wafer_parameter_stats','lot_wafer_members'):
+        tables[name].extend(dict(row, grain=grain, bucket=buckets[0]) for row in list(tables[name]) if row['grain']=='all')
+        next(t for t in obs.tables if t.table_id == name).total_rows = len(tables[name])
+    result = wafer_call(wafer_report, [dict(group_id='A',lot_id='L0',wf_id='7'),dict(group_id='B',lot_id='L0',wf_id='8')],
+        report_scope_id=scope_id, layout='group_period', comparison={'current':'A','baseline':'B'})
+    counts = [r for r in table_rows(result,'group_counts') if r['grain']==grain]
+    assert [(r['bucket'],r['lot_count'],r['wf_count']) for r in counts] == [
+        (buckets[0],1,1),(buckets[0],1,1),(buckets[1],0,0),(buckets[1],0,0)]
+    cells = [r for r in table_rows(result,'displayed_yield_table') if r['grain']==grain]
+    assert any(r['raw'] == .8 for r in cells if r['bucket']==buckets[0])
+    assert not any(r['raw'] == .8 for r in cells if r['bucket']==buckets[1])
+
+
+def test_wafer_stats_can_select_lot_outside_pt1h_population(wafer_report):
+    call, store, _, _ = wafer_report
+    original = call(lot_cd='4SS',period={'kind':'recent','weeks':4})
+    scope_id = original.scope['report_scope_id']
+    _, tables = store.saved[scope_id.removeprefix('yield-report:')]
+    for row in tables['wafer_parameter_stats']:
+        if row['wf_id']=='9':
+            row['lot_id']='PT1C_ONLY'
+    result = wafer_call(wafer_report, [dict(group_id='C',lot_id='PT1C_ONLY',wf_id='9')], report_scope_id=scope_id)
+    assert result.status == 'success'
+    assert result.scope['uncovered_lot_count'] == 57
+    assert table_rows(result,'group_counts')[0]['lot_count'] == 0
+
+
+def test_packed_scope_round_trip_and_size(population_data, setup_report):
+    import json
+    from collections import Counter
+    from dataclasses import replace
+    from harness.tools.yield_report_scope import save_scope, load_scope
+    _, store, _, ctx = setup_report
+    rows = [dict(grain=g, bucket=b, lot_id=f'4SS_LOT_{i // 25:04}', wf_id=str(i % 25 + 1),
+                 process='PT1H TEST', param=f'PARAM_{j:02}', value_sum=0.0 if j < 2 else .8123456789,
+                 value_count=0 if j == 0 else 2 if j == 2 else 1)
+            for g, b in [('all', ''), ('week', '2026-46')]
+            for i in range(1100) for j in range(25) if not (i == 0 and j == 3)]
+    data = replace(population_data, wafer_parameter_stats=rows)
+    identity = asyncio.run(save_scope(data, {}, ctx))
+    obs, tables = store.saved[identity.removeprefix('yield-report:')]
+    assert obs.scope['wafer_capture_encoding'] == 'packed-v1'
+    packed = tables['wafer_parameter_stats']
+    assert len(packed) == 1100
+    values = dict(zip(obs.scope['wafer_params']['PT1H TEST'], packed[0]['values']))
+    assert [values[f'PARAM_{i:02}'] for i in range(4)] == [[0.0, 0], 0.0, [.8123456789, 2], None]
+    size = len(json.dumps(packed).encode())
+    print(f'packed wafer table: {size:,} bytes')
+    assert size < 900_000
+    assert all('row_order' not in row and 'all_order' not in row for row in packed)
+    loaded, _, _ = asyncio.run(load_scope(identity, ctx))
+    canonical = lambda rs: Counter(tuple(sorted(r.items())) for r in rs)
+    assert canonical(loaded.wafer_parameter_stats) == canonical(rows)
+    assert loaded.lot_parameter_stats == data.lot_parameter_stats
+
+
+@pytest.mark.parametrize('layout', ['group', 'group_period'])
+def test_packed_reuse_preserves_wafer_outputs(wafer_report, layout):
+    rows = [dict(group_id='A', lot_id='L0', wf_id='7'), dict(group_id='B', lot_id='L0', wf_id='8')]
+    first = wafer_call(wafer_report, rows, layout=layout)
+    second = wafer_call(wafer_report, rows, layout=layout, report_scope_id=first.scope['report_scope_id'])
+    assert first.status == second.status == ('partial' if layout == 'group_period' else 'success')
+    for name in ('displayed_yield_table', 'group_counts'):
+        assert table_rows(first, name) == table_rows(second, name)
+
+
+def legacy_wafer_scope(store, scope_id, ctx):
+    """Convert a captured scope into the pre-encoding dict storage fixture."""
+    from harness.tools.yield_report_scope import load_scope, CAPTURE_COLUMNS
+    data, _, _ = asyncio.run(load_scope(scope_id, ctx))
+    obs, tables = store.saved[scope_id.removeprefix('yield-report:')]
+    for key in ('wafer_capture_encoding', 'wafer_params', 'wafer_all_from_grain'):
+        obs.scope.pop(key, None)
+    tables['wafer_parameter_stats'] = data.wafer_parameter_stats
+    ref = next(t for t in obs.tables if t.table_id == 'wafer_parameter_stats')
+    ref.columns = CAPTURE_COLUMNS['wafer_parameter_stats'][:]
+    ref.total_rows = len(data.wafer_parameter_stats)
+    return data
+
+
+def test_old_dict_scope_readable(wafer_report):
+    from harness.tools.yield_report_scope import load_scope
+    call, store, _, ctx = wafer_report
+    first = call(lot_cd='4SS', period={'kind': 'recent', 'weeks': 4})
+    identity = first.scope['report_scope_id']
+    expected = legacy_wafer_scope(store, identity, ctx)
+    actual, _, _ = asyncio.run(load_scope(identity, ctx))
+    assert actual == expected
+    result = wafer_call(wafer_report, [dict(group_id='A', lot_id='L0', wf_id='7')], report_scope_id=identity)
+    assert result.status == 'success'
+
+
+@pytest.mark.parametrize('damage', [
+    'unknown', 'length', 'string', 'bool', 'negative_count', 'float_count', 'bad_pair',
+    'null_sum', 'nan', 'duplicate_row', 'duplicate_param', 'missing_params', 'bad_identity', 'bad_grain',
+    'null_encoding',
+])
+def test_packed_scope_rejects_corruption(wafer_report, damage):
+    call, store, _, _ = wafer_report
+    original = call(lot_cd='4SS', period={'kind': 'recent', 'weeks': 4})
+    identity = original.scope['report_scope_id']
+    obs, tables = store.saved[identity.removeprefix('yield-report:')]
+    packed = tables['wafer_parameter_stats']
+    if damage == 'unknown':
+        obs.scope['wafer_capture_encoding'] = 'packed-v999'
+    elif damage == 'null_encoding':
+        obs.scope['wafer_capture_encoding'] = None
+    elif damage == 'length':
+        packed[0]['values'].append(1)
+    elif damage == 'duplicate_row':
+        packed.append(copy.deepcopy(packed[0]))
+        next(t for t in obs.tables if t.table_id == 'wafer_parameter_stats').total_rows += 1
+    elif damage == 'duplicate_param':
+        obs.scope['wafer_params']['PT1H TEST'].append('PT1H')
+    elif damage == 'missing_params':
+        obs.scope.pop('wafer_params')
+    elif damage == 'bad_identity':
+        packed[0]['wf_id'] = 7
+    elif damage == 'bad_grain':
+        obs.scope['wafer_all_from_grain'] = []
+    else:
+        packed[0]['values'][0] = dict(string='0.8', bool=True, negative_count=[0, -1],
+            float_count=[0, 1.5], bad_pair=[0], null_sum=[None, 0], nan=float('nan'))[damage]
+    result = call(report_scope_id=identity)
+    assert result.status == 'error'
+    assert result.scope['code'] == 'INCOMPLETE_REPORT_SCOPE'
+
+
+@pytest.mark.parametrize('case', ['no_buckets', 'null_identity', 'different_total'])
+def test_packed_all_fallback_preserves_exact_captured_rows(population_data, setup_report, case):
+    from collections import Counter
+    from dataclasses import replace
+    from harness.tools.yield_report_scope import save_scope, load_scope
+    _, store, _, ctx = setup_report
+    stats = [dict(grain=g, bucket=b, lot_id=None if case == 'null_identity' else 'L0', wf_id='007',
+                  process='PT1H TEST', param='PT1H', value_sum=s, value_count=n)
+             for g, b, s, n in [('all', '', .3, 2), ('week', '2026-46', .1, 1), ('week', '2026-47', .2, 1)]]
+    if case == 'no_buckets':
+        stats = stats[:1]
+    data = replace(population_data, wafer_parameter_stats=stats,
+                   window={} if case == 'no_buckets' else population_data.window)
+    identity = asyncio.run(save_scope(data, {}, ctx))
+    obs, tables = store.saved[identity.removeprefix('yield-report:')]
+    assert obs.scope['wafer_all_from_grain'] is None
+    assert any(r['grain'] == 'all' for r in tables['wafer_parameter_stats'])
+    decoded, _, _ = asyncio.run(load_scope(identity, ctx))
+    assert Counter(tuple(r.items()) for r in decoded.wafer_parameter_stats) == Counter(tuple(r.items()) for r in stats)
+
+
+@pytest.mark.parametrize('period', [
+    {'kind': 'recent', 'months': 2, 'grains': ['month', 'week', 'day']},
+    {'kind': 'weeks', 'weeks': ['2026-43', '2026-46']},
+])
+def test_packed_rebuild_uses_one_grain_for_clipped_and_gapped_windows(population_data, setup_report, period):
+    from collections import Counter
+    from dataclasses import replace
+    from datetime import date
+    from harness.tools.yield_report_data import RecentPeriod, ExplicitWeeks, resolve_window, GRAINS
+    from harness.tools.yield_report_scope import save_scope, load_scope
+    _, store, _, ctx = setup_report
+    request = RecentPeriod(**period) if period['kind'] == 'recent' else ExplicitWeeks(**period)
+    window = resolve_window(request, date(2026, 11, 10) if period['kind'] == 'recent' else None)
+    grains = [g for g, (key, _) in GRAINS.items() if key in window]
+    # One test date per process; PT1C can occupy a different bucket than PT1H.
+    stats = [dict(grain=g, bucket=b, lot_id='A', wf_id='007', process=process, param='P',
+                  value_sum=value, value_count=count)
+             for process, value, count, index in [('PT1H TEST', .75, 1, 0), ('PT1C TEST', 0.0, 0, -1)]
+             for g, b in [('all', ''), *((g, window[GRAINS[g][0]][index]) for g in grains)]]
+    data = replace(population_data, window=window, counts={g: [] for g in grains}, wafer_parameter_stats=stats,
+                   metadata=[('PT1H', 'P', 1, 'P', 'o'), ('PT1C', 'P', 1, 'P', 'o')])
+    identity = asyncio.run(save_scope(data, period, ctx))
+    obs, tables = store.saved[identity.removeprefix('yield-report:')]
+    assert obs.scope['wafer_all_from_grain'] == grains[0]
+    assert all(r['grain'] != 'all' for r in tables['wafer_parameter_stats'])
+    loaded, _, _ = asyncio.run(load_scope(identity, ctx))
+    canonical = lambda rs: Counter(tuple(sorted(r.items())) for r in rs)
+    assert canonical(loaded.wafer_parameter_stats) == canonical(stats)
+    from harness.tools.yield_report_data import aggregate_groups
+    membership = [dict(group_id='G', lot_id='A', wf_id='007')]
+    before = aggregate_groups(data, membership, ['G'], member_grain='wafer')
+    after = aggregate_groups(loaded, membership, ['G'], member_grain='wafer')
+    assert before == after
+    assert next(r for r in after['rows'] if r['process'] == 'PT1C TEST')['value'] is None
+    assert after['counts'][0]['has_yield_data'] is True
+
+
+def test_packed_reuse_has_identical_canonical_wafer_floats(population_data, setup_report):
+    from dataclasses import replace
+    from harness.tools.yield_report_scope import save_scope, load_scope
+    from harness.tools.yield_report_data import aggregate_groups
+    _, _, _, ctx = setup_report
+    stats = []
+    for grain, bucket, wafers in [('all', '', [('1', .1), ('2', .2), ('3', .3)]),
+                                  ('week', '2026-46', [('3', .3), ('2', .2), ('1', .1)])]:
+        for wf, value in wafers:
+            stats.append(dict(grain=grain, bucket=bucket, lot_id='A', wf_id=wf,
+                              process='PT1H TEST', param='PT1H', value_sum=value, value_count=1))
+        # Parameter ordering can differ from the first parameter's wafer order.
+        for wf, value in reversed(wafers):
+            stats.append(dict(grain=grain, bucket=bucket, lot_id='A', wf_id=wf,
+                              process='PT1H TEST', param='VTH', value_sum=value, value_count=1))
+    data = replace(population_data, wafer_parameter_stats=stats)
+    identity = asyncio.run(save_scope(data, {}, ctx))
+    decoded, _, _ = asyncio.run(load_scope(identity, ctx))
+    members = [dict(group_id='G', lot_id='A', wf_id=wf) for wf in ['1', '2', '3']]
+    for grain, bucket in [('all', ''), ('week', '2026-46')]:
+        assert aggregate_groups(data, members, ['G'], grain=grain, bucket=bucket, member_grain='wafer') == aggregate_groups(
+            decoded, members, ['G'], grain=grain, bucket=bucket, member_grain='wafer')
+
+
+def test_wafer_outputs_are_invariant_to_stat_row_permutations(population_data):
+    from dataclasses import replace
+    from itertools import permutations
+    from harness.tools.yield_report_data import aggregate_groups
+    stats = [dict(grain='all', bucket='', lot_id=lot, wf_id=wf, process='PT1H TEST',
+                  param='PT1H', value_sum=value, value_count=1)
+             for lot, wf, value in [('A', '1', .1), ('A', '2', .2), ('A', '3', .3), (None, '1', 0.), ('A', None, 0.)]]
+    members = [dict(group_id='G', lot_id=r['lot_id'], wf_id=r['wf_id']) for r in stats]
+    data = replace(population_data, wafer_parameter_stats=stats)
+    expected = aggregate_groups(data, members, ['G'], member_grain='wafer')
+    for permuted in permutations(stats):
+        actual = aggregate_groups(replace(data, wafer_parameter_stats=list(permuted)),
+                                  members, ['G'], member_grain='wafer')
+        assert actual == expected
+
+
+def test_packed_null_identity_multibucket_rebuild_is_exact(population_data, setup_report):
+    from collections import Counter
+    from dataclasses import replace
+    from harness.tools.yield_report_scope import save_scope, load_scope
+    _, store, _, ctx = setup_report
+    stats = []
+    for param, buckets in [('PT1H', [('2026-48', .3), ('2026-47', .2), ('2026-46', .1)]),
+                           ('VTH', [('2026-46', .1), ('2026-47', .2), ('2026-48', .3)])]:
+        for grain, bucket, value in [('all', '', .1 + .2 + .3),
+                                     *(('week', bucket, value) for bucket, value in buckets)]:
+            stats.append(dict(grain=grain, bucket=bucket, lot_id=None, wf_id='7',
+                              process='PT1H TEST', param=param, value_sum=value,
+                              value_count=3 if grain == 'all' else 1))
+    data = replace(population_data, wafer_parameter_stats=stats)
+    identity = asyncio.run(save_scope(data, {}, ctx))
+    obs, _ = store.saved[identity.removeprefix('yield-report:')]
+    assert obs.scope['wafer_all_from_grain'] == 'week'
+    loaded, _, _ = asyncio.run(load_scope(identity, ctx))
+    canonical = lambda rows: Counter(tuple(sorted(row.items())) for row in rows)
+    assert canonical(loaded.wafer_parameter_stats) == canonical(stats)

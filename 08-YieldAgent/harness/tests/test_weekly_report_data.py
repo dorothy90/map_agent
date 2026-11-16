@@ -69,7 +69,7 @@ def weekly_db(monkeypatch):
             self.calls.append((sql, binds))
             if 'MAX(' in sql:
                 self.rows = [(self.base,)]
-            elif '/* report_lot_' in sql:
+            elif '/* report_' in sql:
                 self.rows = []
             elif 'AVG(' in sql:
                 self.rows = self.yields
@@ -129,13 +129,13 @@ def test_period_distinct_counts_evidence_and_sql(weekly_db):
     assert 'Δ = latest week − previous week' in result.summary
     assert connection.opened == 1 and connection.closed and cursor.closed
     sqls = [sql for sql, _ in cursor.calls]
-    assert len(sqls) == 10
+    assert len(sqls) == 12
     assert all('DF_DIE_TO_WF_YLD' not in sql for sql in sqls)
-    data_sql = next(sql for sql in sqls if 'AVG(' in sql and '/* report_lot_' not in sql)
+    data_sql = next(sql for sql in sqls if 'AVG(' in sql and '/* report_' not in sql)
     assert 'DF_WF_ALL_PRB_V2' in data_sql and 'DF_ALL_PARA_PRB' in data_sql
     assert "TRIM(m.YIELD_TABLE)='o'" in data_sql
     assert "m.PROC_GBN_CD||' TEST'" in data_sql and 'm.LOT_CD' in data_sql
-    count_queries = [(s, b) for s, b in cursor.calls if 'COUNT(' in s and '/* report_lot_' not in s]
+    count_queries = [(s, b) for s, b in cursor.calls if 'COUNT(' in s and '/* report_' not in s]
     assert len(count_queries) == 2
     for sql, binds in count_queries:
         assert 'COUNT(DISTINCT LOT_ID)' in sql and 'COUNT(DISTINCT GORUPKEY)' in sql

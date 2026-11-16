@@ -71,16 +71,24 @@
 - PROCESS는 'PT1H TEST' 또는 'PT1C TEST'다.
 - PARAM_NM과 PARAM_SEQNO는 DF_ALL_PARA_PRB의 PARAM_NM·PARAM_SEQNO와 같다. BINITEM은 I=item, B=bin이며 DF_ALL_PARA_PRB.PARAM_KIND_CD와 같은 구분이다.
 - WEEK_HYNIX는 ISO 주차 'YYYY-WW'(월요일 시작, Oracle IYYY-IW)로 측정 날짜의 ISO 주차와 같다. YEAR·MONTH·DAY는 측정 날짜이며 TRUNC(MEASURETIME_START)와 일치한다. 최근 N주/월/일은 LOT_CD의 PROCESS='PT1H TEST'에서 MAX(TO_DATE(YEAR||LPAD(MONTH,2,'0')||LPAD(DAY,2,'0'),'YYYYMMDD'))를 기준으로 하며 LAST_UPDATE나 호스트 시계를 사용하지 않는다. 해당 행이 없으면 기간을 만들지 않는다.
-- MEASURETIME_START·MEASURETIME_END는 테스트 측정 시작·종료 시각이다.
+- MEASURETIME_START·MEASURETIME_END는 테스트 측정 시작·종료 시각이다. 동일 LOT_CD 안에서 (LOT_ID, WFID, PROCESS, MEASURETIME_START, MEASURETIME_END)가 같은 행들을 한 테스트로 본다. 제품 전체에서 (LOT_CD, LOT_ID, WFID, PROCESS)별 START가 가장 최신인 테스트만 사용하고, START 동률이면 END가 최신인 테스트를 선택한다. START·END가 모두 같으면 모든 행을 유지해 기존 SUM/COUNT로 집계한다. LOT_ID 또는 WFID가 NULL이면 제거하지 않는다. 이 선택 후 START 기준 측정일로 기간·버킷을 필터링하므로 재시험은 최신 버킷으로 이동하며 최신 테스트가 기간 밖이면 제외된다. 기간·lot·wafer 리포트와 기준일 조회에 같은 규칙을 적용한다.
 - GMS 테이블은 DF_GMS_YIELD_WEEKLY / DF_GMS_YIELD_MONTHLY / DF_GMS_YIELD_DAILY이며 PERIOD_DATE는 각각 YYYYWW / YYYYMM / YYYYMMDD다(버킷의 대시 제거). 모두 LOTCODE, FAB_YIELD, PRB_YIELD, CUM0_YIELD를 제공하며 CUM2/PNT 원천 컬럼은 없다.
 - 최근 N은 기준 측정일의 버킷까지 연속 ISO 주/달력 월/날짜를 포함한다. 최근 N개월의 주별 결합은 첫 달 1일~기준 측정일에 겹치는 모든 ISO 주를 포함하며, 집계 날짜는 그 닫힌 구간으로 제한한다.
-- 리포트 구현 계약(업무 정의와 구분): 기간 리포트가 보존한 lot_population의 pt1h_mean은 해당 기간 lot의 PT1H 값에 대한 평균이며 pt1h_value_count는 그 평균의 관측 건수다. 이 통계는 그룹 구성·순위 판단의 근거이며 wafer 수와 동일하지 않다. 그룹 파라미터 집계는 저장된 value_sum/value_count를 합쳐 계산하고 lot 평균을 단순 평균하지 않는다. lot 수는 distinct LOT_ID, wafer 수는 distinct GORUPKEY다. 그룹은 기간 범위에 실제 존재하는 LOT_ID 목록으로 정의하며 표시 이름만으로 구성원을 추정하지 않는다.
+- 리포트 구현 계약(업무 정의와 구분): 기간 리포트가 보존한 lot_population의 pt1h_mean은 해당 기간 lot의 PT1H 값에 대한 평균이며 pt1h_value_count는 그 평균의 관측 건수다. 이 통계는 그룹 구성·순위 판단의 근거이며 wafer 수와 동일하지 않다. 그룹 파라미터 집계는 저장된 value_sum/value_count를 합쳐 계산하고 lot 평균을 단순 평균하지 않는다. lot 수는 distinct LOT_ID, wafer 수는 distinct GORUPKEY다. 그룹은 lot 멤버십(group_id,lot_id) 또는 wafer 멤버십(member_grain:"wafer", group_id,lot_id,wf_id)으로 정의한다. wf_id는 PRB WFID 원문 문자열이며 표시 이름만으로 구성원을 추정하지 않는다.
 - 그 밖의 컬럼(T_ET~E1_E2 영역 값, AREA_STATUS, REPAIR_VAL, REJ_YN, TESTER_MODEL 등)의 업무 의미는 아직 확인되지 않았으므로 추정해서 쓰지 않는다.
 
 ### DF_GMS_YIELD_WEEKLY (제품별 주차 GMS)
 
 - 한 행은 제품(LOTCODE) 하나·주차(PERIOD_DATE) 하나의 FAB_YIELD, PRB_YIELD, CUM0_YIELD다.
 - PERIOD_DATE는 대시 없는 'YYYYWW' 문자열(예: '202646')이다. 문자열이라 '>= 2026-46' 같은 대시 형식 비교는 모든 주차에 맞아 버리므로, 필요한 주차를 'YYYYWW'로 바꿔 IN으로 조회한다.
+
+### DF_WF_LEGEND (wafer별 공정 이력·레전드, 사용자 확인, 2026-11-15)
+
+- 한 wafer는 여러 OPER_ID 행을 가진다. 행은 공정 순서이며 OPER_DET_DESC는 공정 설명이다.
+- 식별 키는 LOT_ID, WF_ID, ALIAS_LOT_ID, LOT_CD, PROD_ID다. 수율 테이블 DF_WF_ALL_PRB_V2와는 LOT_ID와 WF_ID=WFID로 조인한다. WF_ID는 선행 0 없는 문자다(예: '7').
+- 레전드 열: EQP_ID(장비), EQP_CH(챔버), RECIPE_ID, RETICLE_ID·STEPPER_ID·STEPPER_RECIPE_ID·CHUCK_ID·START_CHUCK_ID(포토 공정에만 값), ZONE_ID, EQP_MODEL_CD, FLOW_ID, PORT_NO, BATCH_ID, WF_CNT, RWK_CNT(리워크 횟수), HOT_TYP, TRBL_LOT_YN, DELAY_TIME, END_TM(공정 종료 시각 'YYYY-MM-DD HH24:MI:SS').
+- 장비·챔버·레시피·레티클 등 레전드별 수율 비교는 이 테이블과 DF_WF_ALL_PRB_V2를 LOT_ID 및 WF_ID=WFID로 조인해 query_db/run_python으로 멤버십을 조회·구성한다. OPER_ID별 EQP_ID 그룹을 포함한 모든 공식 그룹 수율 표는 render_yield_table로 렌더링하며 직접 만들지 않는다. 같은 OPER_ID에서 한 wafer에 여러 EQP 행이 매칭되면 임의 중복 제거 없이 clarify로 분류 기준을 확인한다. 기간(최근 N주)은 기존 규칙대로 수율 측정일 기준이다. 사용자가 OPER_ID나 공정 설명을 주면 이 테이블에서 찾는다.
+- 장비 이력 조회에는 DF_WF_LEGEND를 사용한다. DF_LEGEND_LONG과 DF_FDC_ALARM은 장비 이력 용도로 쓰지 않으며, DF_LEGEND_LONG을 대체로 쓰지 않는다.
 
 ## 계속 지식을 추가하는 방법과 사내 이식
 
