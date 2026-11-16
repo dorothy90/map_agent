@@ -298,3 +298,144 @@ def test_policy_without_epoch_can_persist_with_full_ownership_filter():
     result = asyncio.run(setup_registry(handler).invoke('render_yield_table', {}, context))
     assert result.scope['count'] == 1
     assert runs.writes[0][0] == {'_id': 'run', 'principal_id': 'p', 'session_id': 's'}
+
+
+def grouping_arguments():
+    return {'grouping': {'membership': {
+        'kind': 'table', 'member_grain': 'wafer',
+        'result_id': 'members', 'table_id': 'cohorts',
+    }}}
+
+
+def setup_scope_registry(handler):
+    from harness.tools.table_artifact import YieldTableInput
+    registry = ToolRegistry()
+    registry.add(ToolSpec('render_yield_table', 'report', YieldTableInput, handler))
+    return registry
+
+
+@pytest.mark.parametrize('empty_fields', [{}, {
+    'report_scope_id': None, 'lot_cd': None, 'period': None,
+}, {'report_scope_id': '', 'lot_cd': '', 'period': {}}])
+def test_grouping_autofills_latest_scope_without_mutating_arguments(empty_fields):
+    import copy
+    from harness.tools.report_policy import ReportPolicyState, invoke_report
+    from harness.tools.table_artifact import YieldTableInput
+    received = []
+    async def handler(args, context):
+        received.append(args)
+        return ToolResult(summary='rendered', scope={'report_scope_id': args.report_scope_id})
+    state = ReportPolicyState(successful_reports=[
+        {'report_scope_id': 'yield-report:older'},
+        {'report_scope_id': 'yield-report:latest'},
+        {'membership_result_id': 'members'},
+    ])
+    arguments = {**grouping_arguments(), **empty_fields,
+                 'comparison': {'current': 'A', 'baseline': 'B'}}
+    original = copy.deepcopy(arguments)
+    result = asyncio.run(invoke_report(
+        ToolSpec('render_yield_table', 'report', YieldTableInput, handler),
+        arguments, None, state=state))
+    assert received[0].report_scope_id == 'yield-report:latest'
+    assert result.scope['report_scope_autofilled'] is True
+    assert result.scope['report_scope_autofilled_from'] == 'yield-report:latest'
+    assert '; report_scope_id auto-filled from latest scope in this session: yield-report:latest' in result.summary
+    assert state.failures == 0
+    assert arguments == original
+
+
+@pytest.mark.parametrize('arguments', [
+    grouping_arguments(),
+    {'comparison': {'current': 'A', 'baseline': 'B'}},
+])
+def test_missing_scope_still_rejected(arguments):
+    async def handler(args, context):
+        pytest.fail('invalid input must not reach handler')
+    registry = setup_scope_registry(handler)
+    result = call(registry, arguments)
+    assert result.scope['code'] == 'invalid_report_schema'
+    assert result.scope['count'] == 1
+
+
+@pytest.mark.parametrize('explicit', [
+    {'report_scope_id': 'yield-report:explicit'},
+    {'lot_cd': '4SS', 'period': {'kind': 'recent', 'weeks': 4}},
+])
+def test_explicit_scope_is_not_autofilled(explicit):
+    from harness.tools.report_policy import ReportPolicyState, invoke_report
+    from harness.tools.table_artifact import YieldTableInput
+    async def handler(args, context):
+        assert args.report_scope_id == explicit.get('report_scope_id')
+        return ToolResult(summary='rendered')
+    state = ReportPolicyState(successful_reports=[{'report_scope_id': 'yield-report:prior'}])
+    result = asyncio.run(invoke_report(
+        ToolSpec('render_yield_table', 'report', YieldTableInput, handler),
+        {**grouping_arguments(), **explicit}, None, state=state))
+    assert result.status != 'error'
+    assert 'report_scope_autofilled' not in result.scope
+    assert result.summary == 'rendered'
+
+
+@pytest.mark.parametrize('changed_key', ['session_id', 'principal_id', 'run_id'])
+@pytest.mark.parametrize('persisted', [False, True])
+def test_autofill_scope_isolated_and_restored(changed_key, persisted):
+    runs_a, runs_b = PersistentRuns(), PersistentRuns()
+    runs_b.record['_id' if changed_key == 'run_id' else changed_key] = 'other'
+
+    class Runs:
+        async def find_one(self, query):
+            return await runs_a.find_one(query) or await runs_b.find_one(query)
+
+        async def update_one(self, query, update):
+            target = runs_a if runs_a.matches(query) else runs_b
+            return await target.update_one(query, update)
+
+    store = SimpleNamespace(runs=Runs()) if persisted else None
+    run = {'run_id': 'run', 'principal_id': 'p', 'session_id': 's', 'epoch': 1}
+    context_a = SimpleNamespace(run=run, store=store)
+    context_b = SimpleNamespace(run={**run, changed_key: 'other'}, store=store)
+    received = []
+    async def handler(args, context):
+        received.append(args)
+        return ToolResult(summary='rendered', scope={'report_scope_id': 'yield-report:A'})
+
+    async def exercise():
+        registry = setup_scope_registry(handler)
+        await registry.invoke('render_yield_table',
+                              {'lot_cd': '4SS', 'period': {'kind': 'recent', 'weeks': 4}}, context_a)
+        if persisted:
+            registry = setup_scope_registry(handler)
+        result_b = await registry.invoke('render_yield_table', grouping_arguments(), context_b)
+        assert result_b.scope['code'] == 'invalid_report_schema'
+        assert result_b.scope['count'] == 1
+        result_a = await registry.invoke('render_yield_table', grouping_arguments(), context_a)
+        assert result_a.scope['report_scope_autofilled_from'] == 'yield-report:A'
+        comparison_only = await registry.invoke(
+            'render_yield_table', {'comparison': {'current': 'A', 'baseline': 'B'}}, context_a)
+        assert comparison_only.scope['code'] == 'invalid_report_schema'
+    asyncio.run(exercise())
+    assert len(received) == 2
+    assert received[-1].report_scope_id == 'yield-report:A'
+    if persisted:
+        assert runs_b.record['report_contract_policy']['successful_reports'] == []
+
+
+def test_autofill_handler_error_uses_original_fingerprint_without_success_markers():
+    import hashlib
+    import json
+    from harness.tools.report_policy import ReportPolicyState, invoke_report
+    from harness.tools.table_artifact import YieldTableInput
+    arguments = grouping_arguments()
+    fingerprint = hashlib.sha256(json.dumps(
+        arguments, sort_keys=True, default=str, ensure_ascii=False).encode()).hexdigest()
+    async def handler(args, context):
+        assert args.report_scope_id == 'yield-report:prior'
+        return ToolResult(status='error', scope={'code': 'invalid_membership'})
+    state = ReportPolicyState(successful_reports=[{'report_scope_id': 'yield-report:prior'}])
+    result = asyncio.run(invoke_report(
+        ToolSpec('render_yield_table', 'report', YieldTableInput, handler),
+        arguments, None, state=state))
+    assert state.invalid_arguments == {fingerprint: 1}
+    assert state.failures == 1
+    assert 'report_scope_autofilled' not in result.scope
+    assert 'auto-filled' not in result.summary

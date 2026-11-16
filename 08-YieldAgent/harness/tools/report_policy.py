@@ -76,6 +76,9 @@ def _failure(state, fingerprint, code, details, *, record=True):
             'legal_shapes': LEGAL_SHAPES,
             'membership_hint': {
                 'required_columns': ['group_id', 'lot_id'],
+                'wafer_columns': ['group_id', 'lot_id', 'wf_id'],
+                'member_grain': '기본 lot; wafer는 member_grain=wafer와 PRB WFID 원문 문자열 wf_id가 필요하다.',
+                'rendering': 'query_db/run_python으로 멤버십 구성 후 공식 그룹 수율 표는 render_yield_table로 렌더링한다. 동일 OPER_ID의 wafer에 여러 EQP 행이면 임의 중복 제거 없이 clarify한다.',
                 'reference': 'Use a saved result_id and table_id for complete identifier-only membership; do not send report cells or raw measurement rows.',
                 'table_selection': 'table_id may be omitted only when the result contains exactly one table overall and that table has group_id and lot_id.',
             },
@@ -127,6 +130,16 @@ async def _invoke_report(spec, arguments, context, state):
                         'The five-failure report repair budget is exhausted for this run.', record=False)
     if state.invalid_arguments.get(fingerprint, 0) >= 2:
         return _failure(state, fingerprint, 'repeated_invalid_report', 'Unchanged invalid arguments were repeated; change the request shape before retrying.')
+    autofilled_scope = None
+    if (isinstance(arguments, dict) and arguments.get('grouping')
+            and not any(arguments.get(key) for key in ('report_scope_id', 'lot_cd', 'period'))):
+        autofilled_scope = next((report['report_scope_id'] for report in reversed(state.successful_reports)
+                                 if report.get('report_scope_id')), None)
+        if autofilled_scope:
+            arguments = {**arguments, 'report_scope_id': autofilled_scope}
+            # Empty scope selectors are absent, including empty strings/dicts.
+            arguments.pop('lot_cd', None)
+            arguments.pop('period', None)
     try:
         args = spec.schema.model_validate(arguments)
     except ValidationError as exc:
@@ -139,6 +152,10 @@ async def _invoke_report(spec, arguments, context, state):
     if result.status == 'error' and result.scope.get('code'):
         return _failure(state, fingerprint, result.scope['code'], result.scope.get('details', result.summary))
     if result.status != 'error':
+        if autofilled_scope:
+            result.scope['report_scope_autofilled'] = True
+            result.scope['report_scope_autofilled_from'] = autofilled_scope
+            result.summary += f'; report_scope_id auto-filled from latest scope in this session: {autofilled_scope}'
         reference = {key: result.scope[key] for key in ('report_scope_id', 'membership_result_id', 'membership_table_id') if key in result.scope}
         membership = result.scope.get('membership')
         if isinstance(membership, dict):
