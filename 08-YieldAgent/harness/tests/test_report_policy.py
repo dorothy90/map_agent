@@ -439,3 +439,28 @@ def test_autofill_handler_error_uses_original_fingerprint_without_success_marker
     assert state.failures == 1
     assert 'report_scope_autofilled' not in result.scope
     assert 'auto-filled' not in result.summary
+
+
+@pytest.mark.parametrize('arguments,missing,misplaced', [
+    ({'comparison': {'current': 'A', 'baseline': 'B'}},
+     ['report_scope_id (or lot_cd+period)', 'grouping.membership'], {}),
+    (grouping_arguments(), ['report_scope_id (or lot_cd+period)'], {}),
+    ({**grouping_arguments(), 'report_scope_id': 'yield-report:scope', 'coverage': 'partition'},
+     [], {'coverage': 'move into grouping.coverage'}),
+    ({'layout': 'group', 'definition': 'private-value', 'groups': [], 'membership': {}, 'member_grain': 'wafer'},
+     ['report_scope_id (or lot_cd+period)', 'grouping.membership'],
+     {'definition': 'move into grouping.definition', 'groups': 'move into grouping.groups',
+      'membership': 'move into grouping.membership', 'member_grain': 'move into grouping.membership.member_grain'}),
+])
+def test_contract_feedback_identifies_received_missing_and_misplaced(arguments, missing, misplaced):
+    async def handler(args, context):
+        pytest.fail('invalid input must not reach handler')
+    result = call(setup_scope_registry(handler), arguments)
+    assert result.scope['code'] == 'invalid_report_schema'
+    details = result.scope['details']
+    assert details['received_keys'] == sorted(arguments)
+    assert details['missing'] == missing
+    assert details['misplaced'] == misplaced
+    assert details['example']['report_scope_id'] == 'yield-report:<stored scope result id>'
+    assert 'title alone' not in str(result)
+    assert 'private-value' not in str(result)

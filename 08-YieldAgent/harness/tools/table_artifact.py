@@ -132,7 +132,7 @@ class YieldTableInput(Contract):
             if not self.report_scope_id.startswith("yield-report:"):
                 raise ValueError("report_scope_id must be a yield-report: reference returned by this tool")
         elif self.lot_cd is None or not self.lot_cd.strip() or self.period is None:
-            raise ValueError("Provide lot_cd+period OR report_scope_id; title alone is not a scope")
+            raise ValueError("Missing scope: pass report_scope_id from the earlier render_yield_table result (or lot_cd+period).")
         if self.lot_cd:
             self.lot_cd = self.lot_cd.strip()
         if self.layout is None:
@@ -389,6 +389,12 @@ async def _membership(args, data, ctx):
 
 
 def _render_groups(args, data, membership, groups):
+    comparison = args.comparison
+    comparison_source = "caller" if comparison else None
+    if comparison is None and len(groups) > 1:
+        comparison = ReportComparison(current=groups[-1].id, baseline=groups[0].id)
+        comparison_source = "default_last_minus_first"
+    delta_definition = "Δ = last group − first group (default)" if comparison_source == "default_last_minus_first" else None
     member_grain = getattr(args.grouping.membership, "member_grain", "lot")
     rendered, counts, values, cells = [], [], [], []
     slices = [("all", "")]
@@ -403,8 +409,9 @@ def _render_groups(args, data, membership, groups):
             rows=aggregated["rows"],
             periods=[YieldReportPeriod(period=g.id, label=g.label,
                 lot_count=by_group[g.id]["lot_count"], wf_count=by_group[g.id]["wf_count"]) for g in groups],
-            comparison=args.comparison)
-        part = _render_report(presentation, data.lot_cd, data.metadata, [], allow_empty_metadata=True)
+            comparison=comparison)
+        part = _render_report(presentation, data.lot_cd, data.metadata, [],
+                              delta_definition=delta_definition, allow_empty_metadata=True)
         rendered.append(part)
         counts.extend({"grain": grain, "bucket": bucket, **r} for r in aggregated["counts"])
         values.extend({"grain": grain, "bucket": bucket, **r} for r in aggregated["rows"])
@@ -431,7 +438,8 @@ def _render_groups(args, data, membership, groups):
         missing_group_buckets=missing, default_table_id="group_counts",
         gms_unavailable={"reason": "not_available_at_lot_group_granularity"},
         aggregation="Source-row AVG(VALUE); not an average of lot means",
-        comparison=args.comparison.model_dump() if args.comparison else None)
+        comparison=comparison.model_dump() if comparison else None,
+        comparison_source=comparison_source)
     result.status = "empty" if not any(r["lot_count"] for r in counts) else "partial" if missing else "success"
     if member_grain == "wafer":
         result.scope["aggregation"] = "Source-row AVG(VALUE) over selected (LOT_ID, WFID); not an average of wafer means"
@@ -607,10 +615,12 @@ def register(registry):
         "멤버십은 query_db/run_python으로 구성하고 OPER_ID별 EQP_ID 등 공식 그룹 수율 표는 이 도구로 렌더링한다. "
         "동일 OPER_ID의 wafer가 여러 EQP 행에 매칭되면 임의 중복 제거 없이 clarify한다. "
         "단일 표이면 table_id 생략 가능, 여러 표이면 반드시 지정한다. 소수 lot은 {kind:'inline',groups:[{group_id,lot_ids}]}도 가능하다. "
-        "grouping.groups=[{id,label}] 생략 시 멤버십 순서를 사용한다. coverage 기본 disjoint_subsets는 단일 부분집합도 허용하며 "
+        "그룹 호출은 이전 render_yield_table의 report_scope_id(또는 lot_cd+period)와 grouping.membership이 필수다. "
+        "grouping.groups=[{id,label}] 생략 시 멤버십 순서를 사용한다. grouping.coverage 기본 disjoint_subsets는 단일 부분집합도 허용하며 "
         "partition은 선택한 member_grain 전체 모집단의 정확한 분할이다. definition은 선택 기준 설명이며 도구는 해석하지 않는다. "
         "layout은 period/group/group_period이며 group_period는 같은 그룹의 버킷별 추이다. "
-        "comparison={current,baseline}은 그룹 간 Δ이며 group_period에서는 같은 버킷 안에서 비교한다. "
+        "comparison={current,baseline}은 특정 비교 요청 시에만 전달하며 방향은 current−baseline이다. "
+        "생략 시 2개 이상 그룹은 표시 순서의 마지막−첫 그룹 Δ를 추가하며 group_period는 버킷마다 적용한다. "
         "도구가 distinct LOT_ID/GORUPKEY, source-row AVG(VALUE), DF_ALL_PARA_PRB YIELD_TABLE='o' 열, "
         "PT1H 다음 PT1C PARAM_SEQNO 순서와 ×100 소수 1자리(% 없음)를 계산한다. 수율 셀이나 열 매핑을 만들지 않는다. "
         "기간 합계는 report_totals이며 버킷 수를 더하지 않는다. 그룹 GMS는 적용 불가로 '-'이다. "

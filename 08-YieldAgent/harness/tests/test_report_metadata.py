@@ -167,7 +167,7 @@ def test_title_only_public_report_fails_closed_before_data_access(monkeypatch):
     monkeypatch.setattr(query, '_connection', forbidden)
     monkeypatch.setattr(report, 'fetch_period_report', forbidden)
     monkeypatch.setattr(report, '_fetch_parameter_metadata', forbidden)
-    with pytest.raises(ValidationError, match='lot_cd.*period.*report_scope_id'):
+    with pytest.raises(ValidationError, match='Missing scope:.*report_scope_id.*lot_cd.*period'):
         report.YieldTableInput(title='report')
 
 

@@ -195,9 +195,11 @@ def test_native_unanswered_group_criterion_stops_without_inventing_defaults():
         assert sentence in native
 
 
-def test_native_group_reports_always_pass_comparison():
+def test_native_group_reports_use_optional_comparison_and_required_scope():
     native = (Path(__file__).parents[1] / "instructions" / "native.md").read_text(encoding="utf-8")
-    assert "grouping이 있거나 layout이 group / group_period인 그룹 리포트에는 항상 `comparison={current,baseline}`으로 그룹 ID를 전달하여 Δ 행을 만든다." in native
+    assert "`comparison={current,baseline}`은 선택 사항이며 사용자가 특정 비교를 요청할 때만 전달한다." in native
+    assert "표시 순서의 마지막 그룹 − 첫 그룹 Δ" in native
+    assert "`report_scope_id`(또는 lot_cd+period)와 `grouping.membership`이 필수이며 coverage는 grouping 안에 둔다." in native
     assert "저수율 vs 나머지는 current에 저수율 그룹 ID, baseline에 나머지 그룹 ID를 전달한다." in native
     assert "Δ의 방향은 current-baseline이다." in native
     assert "그룹 ID를 명시할 때만 만든다" not in native

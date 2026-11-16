@@ -760,3 +760,52 @@ def test_packed_null_identity_multibucket_rebuild_is_exact(population_data, setu
     loaded, _, _ = asyncio.run(load_scope(identity, ctx))
     canonical = lambda rows: Counter(tuple(sorted(row.items())) for row in rows)
     assert canonical(loaded.wafer_parameter_stats) == canonical(stats)
+
+
+@pytest.mark.parametrize('layout', ['group', 'group_period'])
+@pytest.mark.parametrize('ordered', [False, True])
+@pytest.mark.parametrize('explicit', [False, True])
+def test_group_effective_comparison(setup_report, layout, ordered, explicit):
+    call, _, _, _ = setup_report
+    grouping = inline(('A', ['L0', 'L1', 'L2', 'L3']),
+                      ('B', ['L4', 'L5', 'L6', 'L7']),
+                      ('C', ['L8', 'L9', 'L10', 'L11']))
+    if ordered:
+        grouping['groups'] = [{'id': name} for name in ['C', 'A', 'B']]
+    comparison = {'current': 'A', 'baseline': 'C'} if explicit else {
+        'current': 'B' if ordered else 'C', 'baseline': 'C' if ordered else 'A'}
+    result = call(lot_cd='4SS', period={'kind': 'recent', 'weeks': 4},
+                  layout=layout, grouping=grouping,
+                  **({'comparison': comparison} if explicit else {}))
+    assert result.status == 'success', result.summary
+    assert result.scope['comparison'] == comparison
+    assert result.scope['comparison_source'] == ('caller' if explicit else 'default_last_minus_first')
+    cells = table_rows(result, 'displayed_yield_table')
+    label = f"Δ {comparison['current']} − {comparison['baseline']}"
+    assert label in result.artifacts[0]['data']
+    deltas = [r for r in cells if r['row'] == 'Δ' and r['column'] == 'PT1H TEST/PT1H']
+    assert len(deltas) == (4 if layout == 'group_period' else 1)
+    for delta in deltas:
+        values = {r['row']: r['raw'] for r in cells
+                  if r['bucket'] == delta['bucket'] and r['column'] == delta['column']}
+        assert delta['raw'] == pytest.approx(values[comparison['current']] - values[comparison['baseline']])
+    assert result.artifacts[0]['data'].count('<tr class="delta">') == len(deltas)
+    if not explicit:
+        assert 'last group − first group (default)' in result.scope['delta_definition']
+
+
+@pytest.mark.parametrize('layout', ['group', 'group_period'])
+def test_single_group_has_no_default_delta(setup_report, layout):
+    call, _, _, _ = setup_report
+    result = call(lot_cd='4SS', period={'kind': 'recent', 'weeks': 4},
+                  layout=layout, grouping=inline(('A', ['L0', 'L1', 'L2', 'L3'])))
+    assert result.scope['comparison'] is None
+    assert result.scope['comparison_source'] is None
+    assert '<tr class="delta">' not in result.artifacts[0]['data']
+
+
+def test_period_comparison_remains_latest_minus_previous(setup_report):
+    call, _, _, _ = setup_report
+    result = call(lot_cd='4SS', period={'kind': 'recent', 'weeks': 4})
+    assert result.scope['comparisons']['week'] == {'current': '2026-49', 'baseline': '2026-48'}
+    assert 'latest week − previous week' in result.scope['delta_definition']

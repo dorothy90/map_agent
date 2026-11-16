@@ -45,6 +45,36 @@ LEGAL_SHAPES = [
 ]
 
 
+
+def _contract_feedback(received, arguments, details):
+    received_keys = sorted(received) if isinstance(received, dict) else []
+    arguments = arguments if isinstance(arguments, dict) else {}
+    missing = []
+    if not arguments.get('report_scope_id') and not (arguments.get('lot_cd') and arguments.get('period')):
+        missing.append('report_scope_id (or lot_cd+period)')
+    group_required = (arguments.get('layout') in ('group', 'group_period')
+                      or arguments.get('comparison') is not None
+                      or arguments.get('grouping') is not None)
+    grouping = arguments.get('grouping')
+    if group_required and not (isinstance(grouping, dict) and grouping.get('membership')):
+        missing.append('grouping.membership')
+    paths = {key: f'grouping.{key}' for key in ('coverage', 'definition', 'groups', 'membership')}
+    paths['member_grain'] = 'grouping.membership.member_grain'
+    misplaced = {key: f'move into {path}' for key, path in paths.items() if key in received_keys}
+    example = copy.deepcopy(LEGAL_SHAPES[2] if group_required or misplaced else LEGAL_SHAPES[1])
+    if 'grouping' in example:
+        example['grouping']['membership']['groups'] = [{'group_id': '<group id>', 'lot_ids': ['<lot id>']}]
+    feedback = dict(details) if isinstance(details, dict) else {'message': details}
+    if missing:
+        message = ('Missing scope: pass report_scope_id from the earlier render_yield_table result (or lot_cd+period). '
+                   if 'report_scope_id (or lot_cd+period)' in missing else '')
+        if 'grouping.membership' in missing:
+            message += 'Missing grouping.membership: pass identifier membership. '
+        feedback.setdefault('message', message + f'Received keys: {received_keys}')
+    return {**feedback, 'received_keys': received_keys, 'missing': missing,
+            'misplaced': misplaced, 'example': example}
+
+
 def _failure(state, fingerprint, code, details, *, record=True):
     from .registry import ToolResult
 
@@ -130,6 +160,7 @@ async def _invoke_report(spec, arguments, context, state):
                         'The five-failure report repair budget is exhausted for this run.', record=False)
     if state.invalid_arguments.get(fingerprint, 0) >= 2:
         return _failure(state, fingerprint, 'repeated_invalid_report', 'Unchanged invalid arguments were repeated; change the request shape before retrying.')
+    received = arguments
     autofilled_scope = None
     if (isinstance(arguments, dict) and arguments.get('grouping')
             and not any(arguments.get(key) for key in ('report_scope_id', 'lot_cd', 'period'))):
@@ -144,13 +175,15 @@ async def _invoke_report(spec, arguments, context, state):
         args = spec.schema.model_validate(arguments)
     except ValidationError as exc:
         details = [{'location': list(error['loc']), 'type': error['type'], 'msg': error['msg']} for error in exc.errors(include_input=False, include_context=False, include_url=False)]
-        return _failure(state, fingerprint, 'invalid_report_schema', {'errors': details})
+        return _failure(state, fingerprint, 'invalid_report_schema',
+                        _contract_feedback(received, arguments, {'errors': details}))
     try:
         result = await spec.handler(args, context)
     except ReportContractError as exc:
-        return _failure(state, fingerprint, exc.code, exc.details)
+        return _failure(state, fingerprint, exc.code, _contract_feedback(received, arguments, exc.details))
     if result.status == 'error' and result.scope.get('code'):
-        return _failure(state, fingerprint, result.scope['code'], result.scope.get('details', result.summary))
+        return _failure(state, fingerprint, result.scope['code'],
+                        _contract_feedback(received, arguments, result.scope.get('details', result.summary)))
     if result.status != 'error':
         if autofilled_scope:
             result.scope['report_scope_autofilled'] = True
