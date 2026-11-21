@@ -1,0 +1,145 @@
+status	path	in_source	role	transfer
+M	.gitignore	yes	두 저장소의 제외 규칙 병합용. 런타임과 자격증명 제외 및 원본 dist 예외 확인	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/AGENTS.md	yes	하네스 작업 규칙. 사내 에이전트 지침과 비교	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/INTERNAL_PORTING_LUNA.md	no	이전 이식 기록 또는 개발자 작업 지침	업무 실행에 불필요한 기록. 설명서 기준으로 비교
+M	08-YieldAgent/harness/MIGRATION.md	no	이전 이식 기록 또는 개발자 작업 지침	업무 실행에 불필요한 기록. 설명서 기준으로 비교
+M	08-YieldAgent/harness/README.md	yes	개발 서버 시작 및 구성 설명	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/control.py	yes	실행 접수·취소·복구	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/dev/local_gateway_app.py	yes	개발 전용 루프백 게이트웨이 · local_gateway_app.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/engine/PATCHES.diff	yes	Hermes 고정 배포본 · 원본 런타임·배포 구성 · PATCHES.diff	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/engine/UPSTREAM.json	yes	Hermes 고정 배포본 · 원본 런타임·배포 구성 · UPSTREAM.json	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/engine/hermes_bootstrap.py	yes	Hermes 고정 배포본 · 원본 런타임·배포 구성 · hermes_bootstrap.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/engine/model_tools.py	yes	Hermes 고정 배포본 · 원본 런타임·배포 구성 · model_tools.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/engine/plugins/hermes-achievements/dashboard/dist/index.js	yes	Hermes 고정 배포본 · 배포 플러그인과 리소스 · plugins/hermes-achievements/dashboard/dist/index.js	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/engine/plugins/hermes-achievements/dashboard/dist/style.css	yes	Hermes 고정 배포본 · 배포 플러그인과 리소스 · plugins/hermes-achievements/dashboard/dist/style.css	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/engine/plugins/kanban/dashboard/dist/index.js	yes	Hermes 고정 배포본 · 배포 플러그인과 리소스 · plugins/kanban/dashboard/dist/index.js	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/engine/plugins/kanban/dashboard/dist/style.css	yes	Hermes 고정 배포본 · 배포 플러그인과 리소스 · plugins/kanban/dashboard/dist/style.css	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/engine/plugins/platforms/photon/sidecar/.gitignore	yes	Hermes 고정 배포본 · 배포 플러그인과 리소스 · plugins/platforms/photon/sidecar/.gitignore	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/engine/pm/extras.py	yes	Hermes 고정 배포본 · 패키지 기능 · pm/extras.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/engine/run_agent.py	yes	Hermes 고정 배포본 · 원본 런타임·배포 구성 · run_agent.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/evals/run_live.py	yes	수율 하네스 평가 · run_live.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/executor.py	yes	인증된 도구 실행과 결과 저장	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/gateway/events.py	yes	HTTP·WebSocket 세션, 사용자 인증 및 권한 · events.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/gateway/execution.py	yes	HTTP·WebSocket 세션, 사용자 인증 및 권한 · execution.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/gateway/manifest.json	yes	HTTP·WebSocket 세션, 사용자 인증 및 권한 · manifest.json	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/gateway/rest.py	yes	HTTP·WebSocket 세션, 사용자 인증 및 권한 · rest.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/gateway/rpc_rules.py	yes	HTTP·WebSocket 세션, 사용자 인증 및 권한 · rpc_rules.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/gateway/session_rpc.py	yes	HTTP·WebSocket 세션, 사용자 인증 및 권한 · session_rpc.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/gateway/session_store.py	yes	HTTP·WebSocket 세션, 사용자 인증 및 권한 · session_store.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/hermes_chat.py	yes	현재 웹 채팅 실행과 프로필 생성	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/hermes_chat_worker.py	yes	Hermes 모델·도구·스트림을 한 채팅에 연결	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/instructions/native.md	yes	Hermes 모델에 실제 전달되는 지침 · native.md	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/map_intent.py	yes	사용자가 요청한 측정·기간·LOT별 웨이퍼 선택을 근거와 연결	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/native_budget.py	yes	실행 시간·모델 호출량 제한	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/native_hermes.py	yes	Hermes 프로필·공통 상태 및 기존 실행 호환	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/native_ipc.py	yes	프로세스 간 실행 메시지	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/native_tools.py	yes	수율 도구 6개를 Hermes의 yield 도구 묶음에 등록	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/native_worker.py	yes	기존 실행 경로의 Hermes 격리 프로세스	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/router.py	yes	제품·스킬·결과·산출물 HTTP API	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/skill_catalog_worker.py	yes	현재 사용자 프로필의 스킬 검색·목록	FILES.tsv 목적지와 plan.tsv를 대조
+D	08-YieldAgent/harness/skills.py	no	옛 스킬 로더 또는 구형 고정 스킬	기준에서 제거됨. 기존 사내 호출자를 먼저 확인하고 개인 프로필 스킬 경로로 전환
+D	08-YieldAgent/harness/skills/failure-investigation/SKILL.md	no	옛 스킬 로더 또는 구형 고정 스킬	기준에서 제거됨. 기존 사내 호출자를 먼저 확인하고 개인 프로필 스킬 경로로 전환
+D	08-YieldAgent/harness/skills/report-writing/SKILL.md	no	옛 스킬 로더 또는 구형 고정 스킬	기준에서 제거됨. 기존 사내 호출자를 먼저 확인하고 개인 프로필 스킬 경로로 전환
+D	08-YieldAgent/harness/skills/wads-investigation/SKILL.md	no	옛 스킬 로더 또는 구형 고정 스킬	기준에서 제거됨. 기존 사내 호출자를 먼저 확인하고 개인 프로필 스킬 경로로 전환
+D	08-YieldAgent/harness/skills/wafer-map-analysis/SKILL.md	no	옛 스킬 로더 또는 구형 고정 스킬	기준에서 제거됨. 기존 사내 호출자를 먼저 확인하고 개인 프로필 스킬 경로로 전환
+D	08-YieldAgent/harness/skills/yield-analysis/SKILL.md	no	옛 스킬 로더 또는 구형 고정 스킬	기준에서 제거됨. 기존 사내 호출자를 먼저 확인하고 개인 프로필 스킬 경로로 전환
+M	08-YieldAgent/harness/store.py	yes	Mongo 세션·실행·테이블·산출물 저장	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/conftest.py	yes	백엔드 회귀·계약 테스트 및 fixture · conftest.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_artifact_delivery.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_artifact_delivery.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_control.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_control.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_declarative_yield_report.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_declarative_yield_report.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_gateway_pr7b2_mongo.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_gateway_pr7b2_mongo.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_gateway_pr7b2_unit.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_gateway_pr7b2_unit.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_gateway_pr7b_mongo.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_gateway_pr7b_mongo.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_gateway_pr7b_unit.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_gateway_pr7b_unit.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_gateway_pr8c_mongo.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_gateway_pr8c_mongo.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_gateway_session_db.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_gateway_session_db.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_hermes_chat.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_hermes_chat.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_hermes_native_tools.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_hermes_native_tools.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_instructions.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_instructions.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_load_wafer_maps.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_load_wafer_maps.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_map_aggregate.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_aggregate.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_map_aggregate_plot.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_aggregate_plot.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_map_intent.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_intent.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_map_loader_scope.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_loader_scope.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_map_scope.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_scope.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_map_scope_dialogue.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_scope_dialogue.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_native_budget.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_native_budget.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_native_config_contract.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_native_config_contract.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_native_hermes.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_native_hermes.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_native_tool_allowlist.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_native_tool_allowlist.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_native_transport.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_native_transport.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_native_worker_shutdown.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_native_worker_shutdown.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_profile_skill_catalog.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_profile_skill_catalog.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_read_result_projection.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_read_result_projection.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_recovery.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_recovery.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_report_analysis.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_report_analysis.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_report_bin_maps.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_report_bin_maps.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_report_scatter.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_report_scatter.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_result_tables.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_result_tables.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_runtime_upgrade.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_runtime_upgrade.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_skills.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_skills.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tests/test_wafer_map_normalization.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_wafer_map_normalization.py	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tools/load_wafer_maps.py	yes	load_wafer_maps 개별 맵·누적 맵 조회	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tools/map_aggregate.py	yes	원본 MAP에서 그룹별 좌표 집계	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tools/map_aggregate_plot.py	yes	누적 맵 Plotly 시각화	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tools/map_bin_plot.py	yes	기억한 그룹별 개별 측정의 좌표·BIN 표시	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tools/map_scope.py	yes	제품·검사·기간·메모 그룹을 실제 조회조건에 결합	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tools/python_tools.py	yes	read_result·run_python 결과 읽기와 분석	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tools/registry.py	yes	도구 공개 스키마·실행 명세 묶음	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tools/report_analysis.py	yes	수율일보 요청 계약	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tools/report_bin_maps.py	yes	주차별 BIN 누적·델타맵	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tools/report_policy.py	yes	수율표 범위·근거·재시도 정책	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tools/report_scatter.py	yes	웨이퍼 단위 열화·개선 산점도	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tools/table_artifact.py	yes	render_yield_table 수율표 및 결과 링크	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tools/wafer_group_report.py	yes	웨이퍼별 보고서 렌더링	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tools/yield_report_data.py	yes	수율표 DB 조회와 집계	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/tools/yield_report_scope.py	yes	재사용 가능한 결과 범위·멤버십 검증	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness/types.py	yes	저장 결과·도구 입력·출력 계약	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/README.md	yes	콘솔 개발·검증 참고 · README.md	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/index.html	yes	프론트 설치·TypeScript 빌드·웹 로딩 · index.html	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/app/chat/composer/controls.test.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · app/chat/composer/controls.test.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/app/chat/composer/controls.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · app/chat/composer/controls.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/app/chat/composer/hooks/use-composer-placeholder.ts	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · app/chat/composer/hooks/use-composer-placeholder.ts	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/app/chat/composer/index.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · app/chat/composer/index.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/app/chat/composer/types.ts	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · app/chat/composer/types.ts	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/components/assistant-ui/markdown-text.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · components/assistant-ui/markdown-text.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/components/assistant-ui/thread/assistant-message.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · components/assistant-ui/thread/assistant-message.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/components/assistant-ui/thread/list-session-scroll.test.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · components/assistant-ui/thread/list-session-scroll.test.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/components/assistant-ui/thread/list.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · components/assistant-ui/thread/list.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/components/assistant-ui/thread/message-hover-time.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · components/assistant-ui/thread/message-hover-time.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/components/assistant-ui/thread/message-parts.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · components/assistant-ui/thread/message-parts.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/components/assistant-ui/thread/response-group.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · components/assistant-ui/thread/response-group.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/components/assistant-ui/thread/status.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · components/assistant-ui/thread/status.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/components/assistant-ui/thread/user-message.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · components/assistant-ui/thread/user-message.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/components/assistant-ui/tool/fallback.tsx	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · components/assistant-ui/tool/fallback.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/lib/chat-messages/hydration.ts	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · lib/chat-messages/hydration.ts	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/lib/inflight-turn-journal.test.ts	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · lib/inflight-turn-journal.test.ts	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/hermes/types/hermes.ts	yes	Hermes에서 이식한 채팅 UI와 앱 상태 · types/hermes.ts	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/platform/web-host.ts	yes	웹 호스트 및 게이트웨이 호환 어댑터 · web-host.ts	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/HermesWebApp.test.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · HermesWebApp.test.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/HermesWebApp.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · HermesWebApp.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/ProductPicker.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · ProductPicker.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/SkillsCatalog.css	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · SkillsCatalog.css	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/SkillsCatalog.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · SkillsCatalog.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/WebSessionRow.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · WebSessionRow.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/completed-answer-scroll.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · completed-answer-scroll.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/dev-connection.ts	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · dev-connection.ts	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/execution-trace.test.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · execution-trace.test.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/execution-trace.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · execution-trace.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/gateway-compat.test.ts	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · gateway-compat.test.ts	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/presentation.test.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · presentation.test.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/session-labels.test.ts	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · session-labels.test.ts	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/session-labels.ts	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · session-labels.ts	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/sidebar.css	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · sidebar.css	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/tool-summary.ts	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · tool-summary.ts	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/use-web-session-list.test.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · use-web-session-list.test.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/use-web-session-list.ts	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · use-web-session-list.ts	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/use-web-session.ts	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · use-web-session.ts	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/wafer-map-data.ts	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · wafer-map-data.ts	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/wafer-map-gallery.css	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · wafer-map-gallery.css	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/wafer-map-gallery.test.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · wafer-map-gallery.test.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness_console/src/web/wafer-map-gallery.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · wafer-map-gallery.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/web-layout.test.tsx	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · web-layout.test.tsx	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/src/web/web.css	yes	사내 웹 호스트용 채팅·사이드바·제품 선택·맵 화면 · web.css	FILES.tsv 목적지와 plan.tsv를 대조
+M	08-YieldAgent/harness_console/vite.config.ts	yes	프론트 설치·TypeScript 빌드·웹 로딩 · vite.config.ts	FILES.tsv 목적지와 plan.tsv를 대조
