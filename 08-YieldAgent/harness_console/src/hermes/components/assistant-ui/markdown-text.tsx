@@ -49,6 +49,7 @@ import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { useWebPresentation } from '../../../web/presentation'
+import { WaferMapGallery } from '../../../web/wafer-map-gallery'
 import { parseMaybeObject } from './tool/fallback-model'
 import { YieldTableArtifactFrame } from './embeds/frame-embed'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
@@ -287,9 +288,12 @@ function flattenChildrenToText(node: unknown): string {
 function WebReportFrame({src,title}:{src:string;title:string}) {
   const metadata=useAuiState(state => {
     const artifactPath=new URL(src,'http://localhost').pathname
+    let hasAggregateMaps = false
     for(const message of state.thread.messages) {
       for(const part of message.content) {
-        if(part.type!=='tool-call' || part.toolName!=='render_yield_table')continue
+        if (part.type !== 'tool-call') continue
+        if (part.toolName === 'load_wafer_maps' && parseMaybeObject(part.args).aggregate) hasAggregateMaps = true
+        if (part.toolName !== 'render_yield_table') continue
         const result=parseMaybeObject(part.result)
         const refs=result.artifact_refs
         if(!Array.isArray(refs) || !refs.some(ref => ref && typeof ref==='object' && (ref.href===src || (typeof ref.artifact_id==='string' && artifactPath===`/harness/artifacts/${encodeURIComponent(ref.artifact_id)}`))))continue
@@ -297,10 +301,11 @@ function WebReportFrame({src,title}:{src:string;title:string}) {
         return JSON.stringify({title:typeof args.title==='string' ? args.title : title,subtitle:[args.lot_cd,args.period_label].filter(value => typeof value==='string').join(' · ')})
       }
     }
-    return JSON.stringify({title})
+    return JSON.stringify({title, hasAggregateMaps})
   })
-  const report=JSON.parse(metadata) as {title:string;subtitle?:string}
-  return <YieldTableArtifactFrame src={src} title={report.title} subtitle={report.subtitle}>{null}</YieldTableArtifactFrame>
+  const report=JSON.parse(metadata) as {title:string;subtitle?:string;hasAggregateMaps?:boolean}
+  const original = <YieldTableArtifactFrame src={src} title={report.title} subtitle={report.subtitle}>{null}</YieldTableArtifactFrame>
+  return report.hasAggregateMaps ? <WaferMapGallery key={src} src={src} title={title}>{original}</WaferMapGallery> : original
 }
 
 function HarnessArtifactLink({ children, className, href = '', ...props }: ComponentProps<'a'>) {

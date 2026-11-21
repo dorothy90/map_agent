@@ -1,6 +1,8 @@
 import { ThreadPrimitive, useAuiState } from '@assistant-ui/react'
 import { type ComponentProps, createContext, useMemo } from 'react'
 
+import { WebTraceScope } from '../../../../web/execution-trace'
+
 import { contentHasVisibleText, messageContentText, PROCESS_NOTIFICATION_RE } from './content'
 
 interface GroupMessage {
@@ -93,9 +95,11 @@ export function ResponseMessages({ components, indices }: ResponseMessagesProps)
     section.response ? (
       <ResponseMessageIds.Provider key={section.key} value={section.assistantIds}>
         <div className="group flex min-w-0 flex-col gap-(--scaffold-block-gap)" data-slot="aui_response-group">
+          <WebTraceScope indices={section.indices}>
           {section.indices.map(index => (
             <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
           ))}
+          </WebTraceScope>
         </div>
       </ResponseMessageIds.Provider>
     ) : (

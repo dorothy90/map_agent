@@ -12,6 +12,25 @@ from typing import Any
 from pydantic import ValidationError
 
 
+REPORT_SCOPE_CONTRACT = 'yield-report-scope/v1'
+LOT_POPULATION_PROJECTION = {
+    'group_by': ['lot_id'],
+    'aggregations': {'pt1h_mean': 'mean'},
+    'units': {'pt1h_mean': 'fraction'},
+    'preview_policy': 'read_result',
+}
+
+
+def legacy_report_projections(scope):
+    """Recover the table contract when reading a report stored before projections were declared."""
+    population = scope.get('lot_population')
+    if isinstance(population, dict) and population.get('table_id'):
+        return {population['table_id']: LOT_POPULATION_PROJECTION}
+    if scope.get('contract') == REPORT_SCOPE_CONTRACT:
+        return {'lot_population': LOT_POPULATION_PROJECTION}
+    return {}
+
+
 class ReportContractError(ValueError):
     def __init__(self, code: str, details: str | dict):
         self.code = code
@@ -42,6 +61,8 @@ LEGAL_SHAPES = [
      'grouping': {'membership': {'kind': 'inline', 'groups': [{'group_id': 'A', 'lot_ids': ['LOT_ID']}]}}},
     {'report_scope_id': 'yield-report:<stored scope result id>', 'layout': 'group_period',
      'grouping': {'membership': {'kind': 'table', 'result_id': '<saved result id>', 'table_id': '<membership table id>'}}},
+    {'lot_cd': 'product code', 'analysis': {key: 'requested count' for key in
+        ('months', 'weeks', 'days', 'parameters_per_direction', 'bins_per_test')}},
 ]
 
 
@@ -50,6 +71,10 @@ def _contract_feedback(received, arguments, details):
     received_keys = sorted(received) if isinstance(received, dict) else []
     arguments = arguments if isinstance(arguments, dict) else {}
     missing = []
+    if 'analysis' in arguments:
+        feedback = dict(details) if isinstance(details, dict) else {'message': details}
+        return {**feedback, 'received_keys': received_keys, 'missing': [] if arguments.get('lot_cd') else ['lot_cd'],
+                'example': copy.deepcopy(LEGAL_SHAPES[-1])}
     if not arguments.get('report_scope_id') and not (arguments.get('lot_cd') and arguments.get('period')):
         missing.append('report_scope_id (or lot_cd+period)')
     group_required = (arguments.get('layout') in ('group', 'group_period')

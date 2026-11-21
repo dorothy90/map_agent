@@ -165,7 +165,7 @@ def test_native_startup_contains_domain_notes(monkeypatch, tmp_path):
             "run_id": "run-1", "session_id": "session-1", "principal_id": "alice",
             "epoch": 1, "query": "수율을 보여줘", "created_at": "2026-11-01T09:00:00+09:00",
         },
-        store=SimpleNamespace(runs=Runs()),
+        store=SimpleNamespace(db=SimpleNamespace(gateway_event_logs=None), runs=Runs()),
         remaining_seconds=lambda: 30,
         check=lambda: asyncio.sleep(0),
     )

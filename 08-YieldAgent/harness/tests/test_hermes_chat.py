@@ -1,0 +1,185 @@
+import asyncio
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
+from uuid import uuid4
+
+from harness import hermes_chat, native_hermes
+from harness.config import Settings
+from harness.control import RunController
+from harness.gateway.session_store import MongoSessionStore
+from harness.store import HarnessStore
+from harness.tools.registry import domain_registry
+
+
+def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_path):
+    """Drive the real stock worker, its native tool and a real isolated Mongo DB."""
+    principal, session = 'chat-test', str(uuid4())
+    seen_tools = []
+    title_requests = []
+    generated_title = 'Read stored result'
+    second_prompt = 'same session follow-up'
+    answer = 'stored value 7921'
+    answered_history = []
+    local_media = 'MEDIA:/private/tmp/local.png'
+    source_id = None
+    entered, release = threading.Event(), threading.Event()
+
+    class Model(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            if 'messages' not in request:
+                self.send_error(404)
+                return
+            messages = request['messages']
+            if messages[-1].get('content') == second_prompt:
+                answered_history.append([m.get('content') for m in messages if m['role'] == 'assistant'])
+            if messages[-1].get('content') == 'cancel this turn':
+                entered.set()
+                release.wait(35)
+            if request.get('tools'):
+                seen_tools.append({tool['function']['name'] for tool in request['tools']})
+            if request.get('response_format', {}).get('json_schema', {}).get('name') == 'session_title':
+                title_requests.append(messages[-1]['content'])
+                message = {'role': 'assistant', 'content': json.dumps({'title': generated_title})}
+                reason = 'stop'
+            elif any(m.get('role') == 'tool' and '7921' in str(m['content']) for m in messages):
+                message = {'role': 'assistant', 'content': local_media + '\n\n' + answer}
+                reason = 'stop'
+            else:
+                message = {'role': 'assistant', 'content': None, 'tool_calls': [
+                    {'index': 0, 'id': 'stock-call', 'type': 'function', 'function': {
+                        'name': 'read_result', 'arguments': json.dumps({'result_id': source_id})}}]}
+                reason = 'tool_calls'
+            payload = {'id': 'stock-test', 'object': 'chat.completion', 'model': 'test-model', 'created': 1,
+                       'choices': [{'index': 0, 'message': message, 'finish_reason': reason}],
+                       'usage': {'prompt_tokens': 10, 'completion_tokens': 3, 'total_tokens': 13}}
+            mime = 'application/json'
+            data = json.dumps(payload).encode()
+            if request.get('stream'):
+                deltas = [message] if reason == 'tool_calls' else [
+                    {'role': 'assistant', 'content': 'ME'}, {'content': 'DIA:/private/tmp/'},
+                    {'content': 'local.png\n\n'}, {'content': answer}]
+                chunks = []
+                for delta in deltas + [{}]:
+                    chunks.append({**payload, 'object': 'chat.completion.chunk', 'choices': [
+                        {'index': 0, 'delta': delta, 'finish_reason': None if delta else reason}]})
+                data = (''.join('data: ' + json.dumps(c) + '\n\n' for c in chunks) + 'data: [DONE]\n\n').encode()
+                mime = 'text/event-stream'
+            self.send_response(200)
+            self.send_header('Content-Type', mime)
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            try:
+                self.wfile.write(data)
+            except (ConnectionResetError, BrokenPipeError):
+                pass
+
+    monkeypatch.setattr(native_hermes, 'ROOT', tmp_path)
+    monkeypatch.setattr(hermes_chat, 'ROOT', tmp_path)
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Model)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    async def scenario():
+        nonlocal source_id
+        store = HarnessStore(database='test_stock_chat_' + uuid4().hex)
+        settings = Settings(model='test-model', api_key='local', base_url=f'http://127.0.0.1:{server.server_port}/v1')
+        controller = RunController(store, settings)
+        try:
+            await store.setup()
+            await MongoSessionStore(store, principal).create_session(session, 'api_server')
+            source = await store.put_result(principal, session, {'run_id': 'fixture', 'invocation_id': 'data',
+                'tool_name': 'query_db', 'status': 'success'}, [{'value': 7921}], [])
+            source_id = source.result_id
+            for query in ('read the stored result', second_prompt):
+                run = await controller.start(principal, session, str(uuid4()), query)
+                await controller.tasks[run['run_id']]
+                saved = await store.get_run(principal, run['run_id'])
+                assert saved['status'] == 'completed', saved['stop_reason']
+                assert saved['native_engine']['entrypoint'] == 'stock_chat'
+                assert saved['answer_text'].strip() == answer
+                assert local_media not in json.dumps(saved['native_messages'])
+                title_events = [e['payload'] for e in saved['events'] if e['type'] == 'session.title']
+                if query != second_prompt:
+                    assert [o['tool_name'] for o in saved['observations']] == ['read_result']
+                    assert saved['observations'][0]['invocation_id'] == 'stock-call'
+                    sessions = MongoSessionStore(store, principal)
+                    assert await sessions.get_session_title(session) == generated_title
+                    assert await sessions.get_session_title_source(session) == 'llm'
+                    assert title_events == [
+                        {'session_id': session, 'title': query},
+                        {'session_id': session, 'title': generated_title},
+                    ]
+                    await sessions.set_session_title(session, 'My chosen title')
+                else:
+                    assert not title_events
+                    assert any(m.get('role') == 'tool' for m in saved['native_messages'])
+                    assert await sessions.get_session_title(session) == 'My chosen title'
+                    assert await sessions.get_session_title_source(session) == 'user'
+            assert title_requests == ['read the stored result']
+            assert answered_history and any(str(m).strip() == answer for m in answered_history[0])
+            assert local_media not in json.dumps(answered_history)
+            journal = await store.db.gateway_event_logs.find_one({'principal_id': principal, 'session_id': session})
+            live_messages = [json.loads(item['frozen']) for item in journal['ring']]
+            assert any(event['type'] == 'message.delta' for event in live_messages)
+            assert '/private/tmp/local.png' not in json.dumps(live_messages)
+            assert set(domain_registry().tools) <= seen_tools[0]
+            assert {'terminal', 'execute_code', 'read_file'}.isdisjoint(seen_tools[0])
+            run = await controller.start(principal, session, str(uuid4()), 'cancel this turn')
+            assert await asyncio.to_thread(entered.wait, 40)
+            stopped = await asyncio.wait_for(controller.cancel(principal, run['run_id']), 15)
+            assert stopped['status'] == 'cancelled'
+            assert controller.tasks[run['run_id']].done()
+        finally:
+            release.set()
+            await controller.close()
+            await store.client.drop_database(store.db.name)
+            store.client.close()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_pre_migration_admission_keeps_legacy_entry_on_retry_and_recovery(monkeypatch):
+    routes = []
+
+    async def fake_stock(context, *, history):
+        routes.append(('stock', context.run['run_id']))
+        return {'status': 'completed', 'stop_reason': 'completed', 'answer': 'done'}
+
+    async def fake_legacy(context, registry, *, history):
+        routes.append(('legacy', context.run['run_id']))
+        return {'status': 'completed', 'stop_reason': 'completed', 'answer': 'done'}
+
+    monkeypatch.setattr(hermes_chat, 'run_chat', fake_stock)
+    monkeypatch.setattr(native_hermes, 'run_native', fake_legacy)
+
+    async def scenario():
+        store = HarnessStore(database='test_chat_recovery_' + uuid4().hex)
+        controller = RunController(store, Settings())
+        try:
+            await store.setup()
+            before = await store.start_run('owner', 'old-session', 'original-request', 'before upgrade')
+            await store.runs.update_one({'_id': before['run_id']}, {'$unset': {'chat_entrypoint': ''}})
+            retry = await store.start_run('owner', 'old-session', 'original-request', 'before upgrade')
+            assert retry['run_id'] == before['run_id'] and 'chat_entrypoint' not in retry
+            await controller.recover()
+            await controller.tasks[before['run_id']]
+            after = await controller.start('owner', 'old-session', 'new-request', 'after upgrade')
+            await controller.tasks[after['run_id']]
+            assert after['chat_entrypoint'] == 'stock_chat'
+            assert routes == [('legacy', before['run_id']), ('stock', after['run_id'])]
+        finally:
+            await controller.close()
+            await store.client.drop_database(store.db.name)
+            store.client.close()
+
+    asyncio.run(scenario())

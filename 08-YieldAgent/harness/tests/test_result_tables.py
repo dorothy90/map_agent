@@ -5,6 +5,27 @@ import uuid
 import pytest
 
 
+def test_model_preview_limits_each_table_by_its_full_size():
+    from harness.types import TableRef, ToolObservation
+
+    def table(size):
+        return TableRef(table_id=str(size), title=str(size), columns=['n'], total_rows=size,
+                        preview_rows=[{'n': n} for n in range(size)], complete=True, data_ref='blob')
+
+    small, large = table(25), table(26)
+    obs = ToolObservation(principal_id='a', session_id='s', run_id='r', invocation_id='i',
+                          result_id='x', tool_name='run_python', tables=[small, large])
+    view = obs.model_view()
+    assert [len(t['preview_rows']) for t in view['tables']] == [25, 10]
+    assert [t['truncated'] for t in view['tables']] == [False, True]
+    assert view['truncated']
+    for source, expected in [(small, 25), (large, 10)]:
+        single = obs.model_copy(update=dict(tables=[source], total_rows=source.total_rows,
+                                            preview_rows=source.preview_rows)).model_view()
+        assert single['preview_rows'] == source.preview_rows[:expected]
+        assert single['truncated'] == (source.total_rows > expected)
+
+
 def test_legacy_observation_adapts_without_claiming_partial_complete():
     from harness.types import ToolObservation
     obs = ToolObservation.model_validate(dict(schema_version='harness-observation/v1', principal_id='a', session_id='s', run_id='r', invocation_id='i', result_id='x', tool_name='q', status='partial', columns=['n'], preview_rows=[{'n': 1}], total_rows=120, truncated=True, data_ref='blob'))

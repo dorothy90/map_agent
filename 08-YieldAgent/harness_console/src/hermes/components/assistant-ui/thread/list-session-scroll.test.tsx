@@ -2,6 +2,7 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { act, render, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { WebPresentationProvider } from '../../../../web/presentation'
 import { PaneLifecycleContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { rescopeConnectionScopedStores } from '@/lib/connection-scoped'
 import { keybindAction } from '@/lib/keybinds/actions'
@@ -128,6 +129,43 @@ function ScrollHarness({
 }
 
 describe('list session-scroll restore', () => {
+  it.each([true, false])('lands at the start of a completed web answer only when following (%s)', async following => {
+    const messages = sessionMessages('answer')
+    const view = (running: boolean) => (
+      <WebPresentationProvider>
+        <ScrollHarness isRunning={running} messages={messages} sessionKey="answer" />
+      </WebPresentationProvider>
+    )
+    const { container, rerender } = render(view(true))
+    await settleScroll(10)
+    const viewport = viewportEl(container)
+    const content = container.querySelector<HTMLElement>('[data-slot="aui_assistant-message-content"]')!
+    vi.spyOn(content, 'getBoundingClientRect').mockImplementation(() =>
+      ({ top: 3000 - viewport.scrollTop, height: 2000, bottom: 5000 - viewport.scrollTop }) as DOMRect
+    )
+    if (!following) {
+      act(() => {
+        viewport.dispatchEvent(new WheelEvent('wheel', { deltaY: -300, bubbles: true }))
+        viewport.scrollTop = 1500
+        viewport.dispatchEvent(new Event('scroll'))
+      })
+      await settleScroll()
+    }
+    rerender(view(false))
+    await settleScroll(10)
+    if (following) {
+      expect(viewport.scrollTop).toBeGreaterThan(2900)
+      expect(viewport.scrollTop).toBeLessThanOrEqual(3000)
+    } else {
+      expect(viewport.scrollTop).toBe(1500)
+    }
+
+    rerender(view(true))
+    await settleScroll(10)
+    if (following) expect(viewport.scrollTop).toBeGreaterThanOrEqual(SCROLL_H - CLIENT_H - 1)
+    else expect(viewport.scrollTop).toBe(1500)
+  })
+
   it('marks the chat surface data-session-switching while a switched transcript settles, then clears it', async () => {
     // The documented theme hook for chat-switch transitions: present from the
     // commit the new transcript lands until its scroll restore settles.

@@ -1,3 +1,4 @@
+import { useWebTraceMessage, WebAnswerAuthor } from '../../../../web/execution-trace'
 import { useWebPresentation } from '../../../../web/presentation'
 import { disabledNative } from '@/pr9-disabled-native'
 import {
@@ -220,6 +221,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   onDismissError
 }) => {
   const messageId = useAuiState(s => s.message.id)
+  const trace = useWebTraceMessage(messageId)
   const messageRuntime = useMessageRuntime()
   const threadRuntime = useThreadRuntime()
   const responseIds = useContext(ResponseMessageIds)
@@ -297,7 +299,9 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
         'group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden',
         collapsedNotice && 'pb-(--conversation-turn-gap)'
       )}
+      hidden={trace?.archived && !collapsedNotice && !approval || undefined}
       data-approval-activity-only={approval && activityOnly ? '' : undefined}
+      data-answer-id={messageId}
       data-role="assistant"
       data-slot="aui_assistant-message-root"
       // Collapsed inter-agent rows never carried the tapback listener; keeping
@@ -306,7 +310,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
       onDoubleClick={collapsedNotice ? undefined : onDoubleClick}
       ref={enterRef}
     >
-      {!collapsedNotice && <WebAnswerAuthor/>}
+      {!collapsedNotice && !trace && !hasVisibleText && <WebAnswerAuthor/>}
       {collapsedNotice ?? (
         <>
           <div
@@ -316,7 +320,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
             {/* Todos render in the composer status stack now, not inline. */}
             {MESSAGE_PARTS}
             <StoppedNotice />
-            <AssistantStatusSlot />
+            {!trace && <AssistantStatusSlot />}
             <AssistantPreviewEmbeds />
             <MessagePrimitive.Error>
               <ErrorPrimitive.Root
@@ -352,7 +356,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
             responseTail &&
             (!isInterim || (responseIds.length > 0 && responseIds.at(-1) === messageId)) && (
               <AssistantFooter
-                durationS={turnDurationS}
+                durationS={trace ? undefined : turnDurationS}
                 fullResponseAvailable={fullResponseAvailable}
                 getFullResponseText={getFullResponseText}
                 getMessageText={getMessageText}
@@ -1354,7 +1358,7 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ dura
   )
 }
 
-function WebAnswerAuthor() { return useWebPresentation() ? <div className="web-answer-author"><span>결</span>수율 분석</div> : null }
+
 
 function WebAnswerCopy(props: React.ComponentProps<typeof CopyButton>) {
  const web=useWebPresentation()

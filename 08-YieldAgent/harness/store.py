@@ -214,7 +214,7 @@ class HarnessStore:
         blob = await self.blobs.open_download_stream(ObjectId(artifact_id))
         return {"result_id": record["observation"]["result_id"], **ref}, await blob.read()
 
-    async def start_run(self, principal_id, session_id, request_id, query, *, execution_kind="harness", ready=True, engine="hermes"):
+    async def start_run(self, principal_id, session_id, request_id, query, *, execution_kind="harness", ready=True, engine="hermes", chat_entrypoint="stock_chat"):
         key = {"principal_id": principal_id, "session_id": session_id, "request_id": request_id}
         old = await self.runs.find_one(key)
         if old:
@@ -222,16 +222,15 @@ class HarnessStore:
                 raise Conflict("Request ID already used")
             return old
         run_id = str(uuid.uuid4())
-        from .skills import SkillCatalog
-        catalog = SkillCatalog()
         record = {**key, "_id": run_id, "run_id": run_id, "query": query, "runtime_version": "harness/v2",
-            "contract_version": "harness-observation/v2", "skill_snapshot": catalog.snapshot,
-            "skill_versions": {item["name"]: item["version"] for item in catalog.list()},
+            "contract_version": "harness-observation/v2", "skill_reads": [],
             "execution_kind": execution_kind, "ready": ready, "engine": engine,
             "status": "created", "active": True, "epoch": 0, "lease_until": 0.0, "created_at": now(),
             "events": [], "goal_revision": 1, "usage": {"tools": 0, "models": 0, "tokens": 0, "active_seconds": 0.0}}
         if engine == "hermes":
             record["artifact_delivery"] = ARTIFACT_DELIVERY
+            if execution_kind in ("harness", "gateway"):
+                record["chat_entrypoint"] = chat_entrypoint
         try:
             await self.runs.insert_one(record)
         except DuplicateKeyError:

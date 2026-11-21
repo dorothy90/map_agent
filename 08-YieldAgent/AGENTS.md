@@ -12,7 +12,7 @@ legacy engine retained for existing sessions and rollback.
 - Preserve complete results and provenance in the harness store. Never calculate from a truncated preview.
 - A `finish` submission uses answer/result_ids and optional scope/limitations. Resolve owned stored evidence and lineage, then review semantic completion; do not reintroduce manual claims/coverage proof fields. Work notes are optional and replaceable, never authoritative user constraints. Preserve useful scoped tables under narrative failure and report partial outcomes honestly.
 - Runtime, principal, session, run and epoch boundaries apply to recovery and artifacts.
-- New runs pin skill hashes and use a shared 300-second active deadline including answer/review. Active v1 checkpoints require the old runtime or explicit cancellation; only completed history is adapted.
+- New runs record the SHA-256 of each text resource Hermes reads (including auto-loaded skills) and use a shared 300-second active deadline including answer/review. Active v1 checkpoints require the old runtime or explicit cancellation; only completed history is adapted.
 - Named tables preserve schema/completeness separately. Missing heterogeneous scope metadata is reviewed semantically, not rejected solely for absent keys.
 - Distinguish scripted tests from actual model/DB/browser evaluations. Full rollout requires the plan's release gate.
 

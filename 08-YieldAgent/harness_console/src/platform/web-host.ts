@@ -169,7 +169,7 @@ export class WebHostAdapter {
       ...(request.body === undefined ? {} : { body: JSON.stringify(request.body), headers: { 'Content-Type': 'application/json' } }),
       ...(request.timeoutMs && request.timeoutMs > 0 ? { signal: AbortSignal.timeout(request.timeoutMs) } : {}),
     })
-    if (!response.ok) throw new Error(`Web API request failed (${response.status})`)
+    if (!response.ok) throw Object.assign(new Error(`Web API request failed (${response.status})`), {status: response.status})
     return response.json() as Promise<T>
   }
 }

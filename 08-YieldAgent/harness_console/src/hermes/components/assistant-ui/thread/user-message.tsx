@@ -17,6 +17,7 @@ import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/type
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
+import { CopyButton } from '@/components/ui/copy-button'
 import { Tip } from '@/components/ui/tooltip'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
@@ -64,9 +65,7 @@ export function StickyHumanMessageContainer({
 }
 
 // Shared "user bubble" base. Both the read-only message and the inline
-// edit composer render the same bubble surface (rounded glass card);
-// they only differ in border weight, cursor, and padding-right (the
-// read-only view reserves room for the restore icon).
+// edit composer render the same bubble surface (rounded glass card).
 //
 // no-drag: sticky bubbles park at --sticky-human-top (~4px), sliding under the
 // titlebar's [-webkit-app-region:drag] strips (app-shell.tsx). Electron resolves
@@ -269,7 +268,8 @@ const UserBubbleActions: FC<UserBubbleActionsProps> = ({
 
   return (
     <>
-      <MessageHoverTime className={cn(!showStop && !showRestore && 'pr-0.5')} />
+      <MessageHoverTime side="bottom" />
+      {fullText && <CopyButton appearance="icon" className="size-6" text={fullText} />}
       {showStop ? (
         <button
           aria-label={copy.stop}
@@ -442,7 +442,7 @@ export const UserMessage: FC<{
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
-    'cursor-pointer pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    'cursor-pointer text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
     'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
@@ -572,21 +572,22 @@ export const UserMessage: FC<{
                     </button>
                   </ActionBarPrimitive.Edit>
                 )}
-                {/* Hover cluster, bottom-right: when it was sent, then Stop or
-                    Restore. Its fill masks the last line's tail while shown. */}
-                <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center gap-1 rounded-md bg-(--dt-user-bubble) pl-1 opacity-0 transition-opacity group-hover/user-message:opacity-100 group-hover/user-message:transition-none group-focus-within/user-message:opacity-100">
-                  <UserBubbleActions
-                    fullText={messageText}
-                    messageId={messageId}
-                    onCancel={onCancel}
-                    onRequestRestoreConfirm={onRequestRestoreConfirm}
-                    runtimeUserOrdinal={runtimeUserOrdinal}
-                    showRestore={showRestore}
-                    showStop={showStop}
-                  />
-                </div>
               </div>
             </ReactionPicker>
+            <div
+              className="invisible flex min-h-6 items-center justify-end gap-2 pr-1 opacity-0 transition-opacity group-hover/user-message:visible group-hover/user-message:opacity-100 group-focus-within/user-message:visible group-focus-within/user-message:opacity-100 [@media(hover:none)]:visible [@media(hover:none)]:opacity-100 motion-reduce:transition-none"
+              data-slot="aui_user-message-footer"
+            >
+              <UserBubbleActions
+                fullText={messageText}
+                messageId={messageId}
+                onCancel={onCancel}
+                onRequestRestoreConfirm={onRequestRestoreConfirm}
+                runtimeUserOrdinal={runtimeUserOrdinal}
+                showRestore={showRestore}
+                showStop={showStop}
+              />
+            </div>
             {/* Below the bubble, same register as the assistant action row:
                 same emoji size, same vertical padding, right-aligned to the
                 sent bubble. Overlaying the corner read badly in practice. */}

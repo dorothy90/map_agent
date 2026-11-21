@@ -92,8 +92,8 @@ export function ComposerControls({
   const showStop = busy && !hasComposerPayload
 
   if (web) {
-    return <button className="web-send-button" type="submit" aria-label={showStop ? '중지' : '보내기'} data-web-stop={showStop || undefined} disabled={disabled || !canSubmit} onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}>
-      {showStop ? <StopIcon size={14} aria-hidden="true"/> : <ArrowUp size={16} aria-hidden="true"/>}<span>{showStop ? '중지' : '보내기'}</span>
+    return <button className="web-send-button" type="submit" title={showStop ? '중지' : '보내기'} aria-label={showStop ? '중지' : '보내기'} data-web-stop={showStop || undefined} disabled={disabled || !canSubmit} onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}>
+      {showStop ? <StopIcon size={14} aria-hidden="true"/> : <ArrowUp size={18} aria-hidden="true"/>}
     </button>
   }
 

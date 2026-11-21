@@ -42,7 +42,7 @@ const clockOnly = (time: string) => time
  * the label only. Stands down while `display.timestamps` is on, because the
  * transcript already prints every stamp.
  */
-export const MessageHoverTime: FC<{ className?: string }> = ({ className }) => {
+export const MessageHoverTime: FC<{ className?: string; side?: 'top' | 'bottom' }> = ({ className, side = 'top' }) => {
   const { t } = useI18n()
   const timelineStamps = useStore($displayTimestamps)
   const seconds = useMessageTime()
@@ -54,7 +54,7 @@ export const MessageHoverTime: FC<{ className?: string }> = ({ className }) => {
   const date = new Date(seconds * 1000)
 
   return (
-    <Tip label={<HoverTimeDetail ms={date.getTime()} />} side="top">
+    <Tip label={<HoverTimeDetail ms={date.getTime()} />} side={side}>
       <time
         className={cn(
           'pointer-events-auto cursor-default select-none whitespace-nowrap text-[0.6875rem] leading-5 tabular-nums text-(--ui-text-tertiary)',

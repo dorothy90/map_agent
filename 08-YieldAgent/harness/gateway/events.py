@@ -101,10 +101,12 @@ def verified_answer(run):
 
 
 def published_answer(run):
-    """Publish only settled partial text or a verified completed answer."""
+    """Read the persisted final text using the publication contract of its writer."""
     if run.get('active'):
         return None
-    if run.get('status') == 'partial':
+    engine = run.get('native_engine') or {}
+    stock_completion = run.get('status') == 'completed' and engine.get('entrypoint') == 'stock_chat'
+    if stock_completion or run.get('status') == 'partial':
         answer = run.get('answer_text')
         return answer if isinstance(answer, str) and answer.strip() else None
     return verified_answer(run)

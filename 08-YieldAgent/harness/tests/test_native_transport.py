@@ -21,8 +21,10 @@ import harness.native_hermes as native
 @pytest.mark.parametrize("mode", ['pass', 'read', 'repair', 'invalid', 'cancel', 'cancel_review', 'budget', 'delegate', 'delegate_budget'])
 def test_actual_native_engine_roundtrips_backend_tool_without_external_model(monkeypatch, tmp_path, mode):
     cancel = mode in ('cancel', 'cancel_review')
-    shutil.copytree(native.ROOT / '08-YieldAgent/harness/skills/yield-analysis', tmp_path / 'skills/yield-analysis')
-    (tmp_path / 'config.yaml').write_text('skills:\n  auto_load:\n    - yield-analysis\nagent:\n  environment_probe: false\n')
+    skill = tmp_path / 'skills/transport-probe/SKILL.md'
+    skill.parent.mkdir(parents=True)
+    skill.write_text('---\nname: transport-probe\ndescription: Transport reference\n---\nTRANSPORT_SKILL_BODY')
+    (tmp_path / 'config.yaml').write_text('skills:\n  auto_load: [transport-probe]\nagent:\n  environment_probe: false\n')
     relocated = tmp_path / 'relocated/harness'
     shutil.copytree(Path(native.__file__).parent, relocated, ignore=shutil.ignore_patterns('__pycache__', 'tests'))
     # Audit the child itself: it must not fall back to installed Hermes or run installers.
@@ -63,8 +65,7 @@ sys.addaudithook(audit_embedded)
                 'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'synthetic-call',
                     'type': 'function', 'function': function}]}
             if mode in ('delegate', 'delegate_budget'):
-                messages = json.dumps(request.get('messages', []), ensure_ascii=False)
-                if 'delegate_disabled' not in messages:
+                if not any(m.get('tool_call_id') == 'delegate-call' for m in request.get('messages', [])):
                     observed = False
                     message = {'role': 'assistant', 'content': None, 'tool_calls': [{
                         'id': 'delegate-call', 'type': 'function', 'function': {
@@ -144,7 +145,8 @@ sys.addaudithook(audit_embedded)
                 status='success', preview_rows=[{'value': 7}], total_rows=1)
     async def noop(*args, **kwargs): pass
     async def put_result(principal, session, observation, rows, artifacts):
-        return ToolObservation(principal_id=principal, session_id=session, result_id='review-synthetic', **observation)
+        return ToolObservation(principal_id=principal, session_id=session, result_id=observation['invocation_id'], **observation)
+    monkeypatch.setattr(native, 'SessionEvents', lambda *_: SimpleNamespace(publish_live=noop))
     monkeypatch.setattr(native, 'ToolExecutor', Executor)
     monkeypatch.setattr(native, 'prepare_profile', lambda principal: tmp_path)
     registry = ToolRegistry()
@@ -152,7 +154,7 @@ sys.addaudithook(audit_embedded)
     registry.add(ToolSpec('read_result', 'Read stored evidence', Contract, lambda *a: None))
     context = ExecutionContext(run={'principal_id': 'synthetic', 'session_id': 's', 'run_id': 'r',
         'epoch': 1, 'query': 'Read the synthetic value'},
-        settings=Settings(model='synthetic', base_url=f'http://127.0.0.1:{server.server_port}/v1',
+        settings=Settings(native_allowed_tools=['synthetic_read', 'read_result'], model='synthetic', base_url=f'http://127.0.0.1:{server.server_port}/v1',
             api_key='synthetic-not-a-secret', model_limit=3 if mode in ('budget', 'delegate_budget') else 10),
         store=SimpleNamespace(event=noop, put_result=put_result, runs=SimpleNamespace(update_one=noop)))
     context.check = noop
@@ -199,7 +201,8 @@ sys.addaudithook(audit_embedded)
             for message in result['native_messages'] if message.get('role') == 'assistant'
             for call in message.get('tool_calls') or []}
         assert calls[0]['id'] in history_tool_ids
-        assert result['result_ids'] == ['stored-synthetic']
+        assert 'stored-synthetic' in result['result_ids']
+        assert any(o['tool_name'] == 'skill_view' for o in result['observations'])
         assert 'Synthetic result is 7.' in result['answer']
         assert any('stored-synthetic' in json.dumps(r) for r in requests)
         assert 'earlier synthetic answer' in json.dumps(requests)
@@ -208,15 +211,19 @@ sys.addaudithook(audit_embedded)
         assert result['native_usage']['total_tokens'] == len(model_requests) * 40
         assert result['native_engine']['verification'][-1]['verdict'] == 'pass'
         main_request = next(r for r in requests if r.get('tools'))
-        assert 'delegate_task' in [t['function']['name'] for t in main_request['tools']]
+        names = {t['function']['name'] for t in main_request['tools']}
+        assert 'delegate_task' not in names and 'skill_view' in names
         review_requests = [r for r in requests
             if '독립적인 결과 검증 에이전트' in json.dumps(r.get('messages', []), ensure_ascii=False)]
-        assert all('delegate_task' not in [t['function']['name'] for t in r.get('tools', [])]
-            for r in review_requests)
+        assert review_requests
+        for request in review_requests:
+            names = {tool['function']['name'] for tool in request.get('tools', [])}
+            assert names.isdisjoint({'skills_list', 'skill_view', 'skill_manage', 'delegate_task'})
         if mode == 'delegate':
             assert not any('delegation-probe-child' in str(m.get('content', ''))
                 for r in requests for m in r.get('messages', []) if m.get('role') in ('system', 'user'))
-            assert 'delegate_disabled' in json.dumps(result['native_messages'])
+            denied = next(m for m in result['native_messages'] if m.get('tool_call_id') == 'delegate-call')
+            assert "Tool 'delegate_task' does not exist" in denied['content']
         if mode == 'read':
             assert result['native_engine']['verification'][-1]['result_ids'] == ['review-read']
             assert [c['name'] for c in calls] == ['synthetic_read', 'read_result']
@@ -225,7 +232,7 @@ sys.addaudithook(audit_embedded)
             assert [r['verdict'] for r in result['native_engine']['verification']] == ['fail', 'pass']
             assert '내부 자동 검증 결과입니다' not in json.dumps(result['native_messages'], ensure_ascii=False)
             assert sum(m.get('content') == 'Synthetic result is 7.' for m in result['native_messages']) == 1
-        assert '합집합 수율' in json.dumps(next(r for r in requests if 'messages' in r), ensure_ascii=False)
+        assert 'TRANSPORT_SKILL_BODY' in json.dumps(next(r for r in requests if 'messages' in r), ensure_ascii=False)
     finally:
         release_review.set()
         server.shutdown()

@@ -144,7 +144,7 @@ def test_load_wafer_maps_returns_only_fact_summary_and_stored_die_table(monkeypa
     monkeypatch.setattr(
         tool,
         "_load_rows_and_patterns",
-        lambda args: (rows, {}, False, {"lot_ids": ["LOT1"], "wf_ids": [1]}),
+        lambda args, selection: (rows, {}, False, {"lot_ids": ["LOT1"], "wf_ids": [1]}),
     )
     async def immediate(function, *args):
         return function(*args)
@@ -164,6 +164,27 @@ def test_load_wafer_maps_returns_only_fact_summary_and_stored_die_table(monkeypa
     assert facts["lots_found"] == ["LOT1"]
     assert facts["wafers_found"] == [1]
     assert facts["missing_requests"] == {"lot_ids": ["MISSING"], "wf_ids": [9]}
+    evidence = result.scope["map_measurements"]
+    assert evidence["measurement_count"] == 1
+    row, = evidence["preview_rows"]
+    assert (row["lot_id"], row["wf_id"], row["oper"], row["measurement_id"]) == (
+        "LOT1", 1, "PT1H TEST", result.tables[0].rows[0]["measurement_id"])
+    assert (row["pass_die_count"], row["die_count"], row["map_pass_fraction"]) == (1, 2, .5)
+    assert evidence["wafer_yield_lookup"]["source"] == "DF_WF_ALL_PRB_V2"
+    assert "value" not in evidence["wafer_yield_lookup"]
+
+
+def test_measurement_preview_bounds_observed_measurements_and_preserves_all_dies():
+    from harness.tools.load_wafer_maps import map_measurements, normalize_map_rows
+
+    measurements = [map_row(wf_id=wf) for wf in range(12)]
+    measurements.append(map_row(wf_id=20, payload='{"MAP": []}'))
+    result = normalize_map_rows(measurements, max_dies=50, max_measurements=20)
+    evidence = map_measurements({None: result.die_rows})
+    assert result.measurement_count == 13 and len(result.die_rows) == 24
+    assert evidence["grain"] == "MAP measurement with observed dies"
+    assert evidence["measurement_count"] == 12 and len(evidence["preview_rows"]) == 10
+    assert evidence["truncated"] and all(row["map_pass_fraction"] == .5 for row in evidence["preview_rows"])
 
 
 def test_database_loader_materializes_map_clob_before_reusing_cursor(monkeypatch):
@@ -239,3 +260,48 @@ def test_tool_description_separates_selection_filters_from_aggregation_groups():
     assert "선택 필터" in description
     assert "집계 그룹" in description
 
+
+
+def test_memory_selection_filters_the_lot_and_wafer_as_a_pair():
+    import sqlite3
+    import harness.tools.load_wafer_maps as tool
+
+    args = tool.LoadWaferMapsInput(memory_refs=["one", "two"], oper="op")
+    groups = [dict(label="one", lot_id="A", wf_ids=[1, 3]), dict(label="two", lot_id="B", wf_ids=[2])]
+    where, binds = tool._filters(args, groups)
+    with sqlite3.connect(":memory:") as db:
+        db.execute("CREATE TABLE map(lot_id, wf_id, oper_det_desc)")
+        db.executemany("INSERT INTO map VALUES (?, ?, ?)",
+                       [(lot, wf, oper) for lot in "AB" for wf in (1, 2, 3) for oper in ("op", "other")])
+        assert db.execute("SELECT lot_id,wf_id FROM map WHERE " + where, binds).fetchall() == [
+            ("A", 1), ("A", 3), ("B", 2)]
+
+
+def test_remembered_raw_maps_render_original_coordinates_and_report_missing_pairs(monkeypatch):
+    import harness.tools.load_wafer_maps as tool
+    from harness.native_verification import validate_wafer_map_contract
+    from plotly.basedatatypes import BaseFigure
+
+    args = tool.LoadWaferMapsInput(memory_refs=["one", "two"])
+    groups = [dict(label="one", lot_id="A", wf_ids=[1, 2]), dict(label="two", lot_id="B", wf_ids=[2])]
+    rows = [map_row("A", 1), map_row("B", 2)]
+    found = dict(lot_ids=["A", "B"], wf_ids=[1, 2])
+    monkeypatch.setattr(tool, "_load_rows_and_patterns", lambda args, selection: (rows, {}, False, found))
+    figures = []
+    def capture(figure, **kwargs):
+        figures.append(figure)
+        return "<html></html>"
+    monkeypatch.setattr(BaseFigure, "to_html", capture)
+    result = tool._load(args, groups, "result")
+    assert result.status == "partial"
+    assert result.scope["wafer_maps"]["missing_requests"]["lot_wafers"] == [["A", 2]]
+    assert result.scope["filters"]["wafer_groups"] == groups
+    assert len(result.artifacts) == 1
+    assert [(t.meta["label"], t.meta["lot_id"], t.meta["wf_id"]) for t in figures[0].data] == [
+        ("one", "A", 1), ("two", "B", 2)]
+    for trace in figures[0].data:
+        actual = {(row, col): cell for row, line in zip(trace.y, trace.customdata)
+                  for col, cell in zip(trace.x, line) if cell is not None}
+        assert actual == {(-2, 7): ["A", "B"], (3, -5): ["?", "?"]}
+    tables = {table.table_id: table.rows for table in result.tables}
+    assert validate_wafer_map_contract(tables, {"result": tables["wafer_map_dies"]})["verdict"] == "pass"

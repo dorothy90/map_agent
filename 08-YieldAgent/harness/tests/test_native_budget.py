@@ -26,6 +26,19 @@ def payload(**kwargs):
         'max_tokens': 100, **kwargs}
 
 
+def test_optional_call_refusal_does_not_stop_main_turn(budget):
+    optional = True
+    used = budget(model_limit=0, is_optional_call=lambda: optional)
+    with httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail('request admitted'))) as client:
+        with pytest.raises(NativeBudgetExceeded, match='models_limit'):
+            client.post('https://offline/v1/chat/completions', json=payload())
+        assert used.exhausted_reason is None
+        optional = False
+        with pytest.raises(NativeBudgetExceeded, match='models_limit'):
+            client.post('https://offline/v1/chat/completions', json=payload())
+        assert used.exhausted_reason == 'models_limit'
+
+
 def test_all_clients_share_admission_and_metadata_is_free(budget):
     used = budget()
     sent = []

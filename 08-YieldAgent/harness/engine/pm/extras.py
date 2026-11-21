@@ -187,8 +187,51 @@ def ensure_import(extra: str) -> None:
     — including when a platform gate excludes this machine."""
     if available(extra):
         return
+    if not extra_supported(extra):
+        from pm.package import InstallError
+
+        marker = _platform_gates().get(extra, "")
+        raise InstallError(
+            "venv",
+            f"extra {extra!r} is not supported on this platform "
+            f"(gate: {marker!r}); the adapter degrades without it",
+        )
+    import sys
     from pm.package import InstallError
-    raise InstallError("venv", f"Optional dependency {extra!r} is not installed. Add approved packages through the host project's dependency process; runtime installation is disabled.")
+
+    # prompt_toolkit already owns stdin during a CLI turn; never read from it.
+    app_running = False
+    if "prompt_toolkit.application.current" in sys.modules:
+        from prompt_toolkit.application.current import get_app_or_none
+
+        app_running = bool(getattr(get_app_or_none(), "is_running", False))
+    if not app_running and sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            answer = input(f"\nThis needs Hermes' optional {extra!r} feature, which isn't installed yet.\n"
+                           "Install it now? [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer and answer not in {"y", "yes"}:
+            raise InstallError("venv", f"installation of extra {extra!r} declined")
+    from pm.client import sync_venv
+
+    sync_venv([extra])
+    # The sync published a new generation. Swap this process onto it when nothing
+    # already imported would change underneath it (adopt_selected); otherwise only
+    # a restart can load it.
+    from pm.environments import selected_venv, site_packages
+    from pm.environments_adopt import adopt_selected, restart_needed
+    from pm.paths import repo_root, runtime_facts_path
+    import sys
+    from pathlib import Path
+
+    if runtime_facts_path().is_file():
+        root = repo_root()
+        adopt_selected(root)
+        selected = site_packages(selected_venv(root)).resolve()
+        if selected not in {Path(entry).resolve() for entry in sys.path}:
+            reason = restart_needed(root) or "this process does not run from the install's dependency environment"
+            raise InstallError("venv", f"{extra} installed; restart Hermes to activate it ({reason})")
 
 
 def ensure_and_bind(extra, importer, target_globals) -> bool:

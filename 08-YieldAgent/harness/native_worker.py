@@ -1,5 +1,7 @@
 """JSON-lines transport only. Reasoning and tool orchestration are upstream Hermes."""
+import hashlib
 import json
+from functools import wraps
 import os
 import sys
 import threading
@@ -54,6 +56,25 @@ class WorkerControl:
                 print('Worker interrupt callback failed', file=sys.stderr)
 
 
+def observe_skill_reads(skills_tool, emit):
+    """Hermes uses skill_view for both model tool calls and configured auto-loads."""
+    view = skills_tool.skill_view
+
+    @wraps(view)
+    def observed(*args, **kwargs):
+        result = view(*args, **kwargs)
+        payload = json.loads(result)
+        if payload.get('success') and not payload.get('is_binary') and isinstance(payload.get('content'), str):
+            emit({'type': 'skill_read', 'name': payload['name'], 'resource': payload.get('file') or 'SKILL.md',
+                  'sha256': hashlib.sha256(payload['content'].encode('utf-8')).hexdigest()})
+            if kwargs.get('preprocess') is False:
+                emit({'type': 'skill_result', 'invocation_id': 'preload-' + uuid.uuid4().hex,
+                      'name': 'skill_view', 'args': {'name': payload['name']}, 'result': result})
+        return result
+
+    skills_tool.skill_view = observed
+
+
 def configure_engine(registry, executor, limit, agent_class):
     if type(limit) is not int or not 1 <= limit <= 8:
         raise ValueError('parallel_tool_limit must be between 1 and 8')
@@ -71,7 +92,7 @@ def configure_engine(registry, executor, limit, agent_class):
 
 def enabled_toolsets(startup):
     if startup.get('allowed_tools') is not None:
-        return ['yield_backend', 'yield_evidence'] + (
+        return ['yield_backend', 'yield_evidence', 'skills'] + (
             ['clarify'] if native_prompts_enabled(startup) else [])
     return ['yield_backend', 'yield_evidence', 'skills', 'memory', 'delegation'] \
         + (['code_execution', 'file', 'terminal', 'todo', 'session_search', 'vision', 'clarify']
@@ -304,7 +325,10 @@ def main():
     active_tool_call = threading.local()
     def tool_start(call_id, _name, _args):
         active_tool_call.id = call_id
-    def tool_complete(call_id, _name, _args, _result):
+    def tool_complete(call_id, name, args, result):
+        if name in ('skills_list', 'skill_view', 'skill_manage'):
+            emit({'type': 'skill_result', 'invocation_id': call_id, 'name': name,
+                  'args': args, 'result': result})
         if getattr(active_tool_call, 'id', None) == call_id:
             del active_tool_call.id
     def handler(name):
@@ -337,10 +361,8 @@ def main():
             token_limit=startup['token_limit'], max_output_tokens=startup['max_tokens'],
             base_url=startup['base_url'], on_usage=budget_update, call_timeout=startup['call_timeout'])
         os.environ['HERMES_API_TIMEOUT'] = str(startup['call_timeout'])
-        import hermes_constants
-        hermes_constants.get_skills_dir = lambda: Path(startup['skills_path'])
         from tools import skills_tool
-        skills_tool.SKILLS_DIR = Path(startup['skills_path'])
+        observe_skill_reads(skills_tool, emit)
         from tools.registry import registry
         if startup.get('no_yield_tools', False):
             from tools.registry import discover_builtin_tools
@@ -349,7 +371,10 @@ def main():
         verify_isolated_engine(startup)
         register_backend_tools(startup, registry, handler)
         from run_agent import AIAgent
-        from agent import tool_executor
+        from agent import title_generator, tool_executor
+        # The legacy planner/verifier owns a fixed model budget and never projects
+        # model-generated titles. Keep its opt-out local to this process.
+        title_generator._model_title_upgrade_enabled = lambda: False
         # Import registers delegation before replacing only its model-facing handler.
         from tools import delegate_tool
         configure_engine(registry, tool_executor, startup.get('parallel_tool_limit', 8), AIAgent)

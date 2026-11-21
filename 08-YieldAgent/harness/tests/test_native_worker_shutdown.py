@@ -46,7 +46,7 @@ sys.modules.update({
         snapshot=lambda: dict(input_tokens=0, output_tokens=0, tokens=0, models=0))),
     'native_stop_gate': NS(NativeVerificationGate=Gate),
     'hermes_constants': NS(),
-    'tools': NS(skills_tool=NS(), delegate_tool=NS(), session_search_tool=NS()),
+    'tools': NS(skills_tool=NS(skill_view=lambda *args: None), delegate_tool=NS(), session_search_tool=NS()),
     'tools.registry': NS(registry=NS(get_tool_names_for_toolset=lambda name: [])),
     'run_agent': NS(AIAgent=Agent),
     'agent': NS(tool_executor=NS(_MAX_TOOL_WORKERS=8)),
@@ -67,7 +67,7 @@ def test_worker_exits_cleanly_and_flushes_output(tmp_path, mode):
     worker = Path(__file__).resolve().parents[1] / 'native_worker.py'
     startup = dict(run_budget_seconds=10, max_iterations=1, token_limit=100,
         max_tokens=10, base_url='https://unused.invalid', call_timeout=1,
-        skills_path=str(tmp_path), tools=[], model='synthetic', api_key='synthetic',
+        tools=[], model='synthetic', api_key='synthetic',
         session_id='shutdown-test', temperature=0, query='q', instructions='', history=[])
 
     async def scenario():

@@ -3,6 +3,7 @@
 Only public projections: no agent objects, model/provider, filesystem or secrets.
 Host run transcript projection has no upstream equivalent → PB:503,575,639,664.
 """
+from collections import Counter
 import hashlib
 import json
 import uuid
@@ -119,11 +120,20 @@ class SessionRPC:
                 # completion is the transcript evidence, scoped to this run/turn and
                 # placed before later host tools so reopen matches the live card order.
                 clarify_ids = set()
+                tool_statuses = {}
                 for event in run.get('events', []):
                     payload = event.get('payload', {})
-                    if event.get('type') != 'tool_finished' or payload.get('name') != 'clarify':
+                    if event.get('type') != 'tool_finished':
                         continue
                     tool_id = payload.get('tool_id') or payload.get('invocation_id')
+                    result = payload.get('result')
+                    status = result.get('status') if isinstance(result, dict) else None
+                    if payload.get('is_error') is True:
+                        status = 'error'
+                    if tool_id and status in ('success', 'partial', 'empty', 'error', 'cancelled'):
+                        tool_statuses[tool_id] = status
+                    if payload.get('name') != 'clarify':
+                        continue
                     if not tool_id or tool_id in clarify_ids or 'result' not in payload:
                         continue
                     clarify_ids.add(tool_id)
@@ -132,6 +142,7 @@ class SessionRPC:
                                      'content': json.dumps(payload['result'], ensure_ascii=False)})
                 native = run.get('native_messages')
                 if isinstance(native, list):
+                    public_interims = Counter(text.strip() for text in run.get('public_interims', []))
                     if previous_native is not None and native[:len(previous_native)] == previous_native:
                         turn = native[len(previous_native):]
                     else:
@@ -149,6 +160,11 @@ class SessionRPC:
                             continue
                         if item.get('role') == 'assistant':
                             calls = item.get('tool_calls')
+                            content = item.get('content')
+                            text = content.strip() if isinstance(content, str) else ''
+                            if isinstance(calls, list) and calls and text and public_interims[text] > 0:
+                                messages.append({'role': 'assistant', 'text': text, 'interim': True})
+                                public_interims[text] -= 1
                             for call in calls if isinstance(calls, list) else []:
                                 if not isinstance(call, dict):
                                     continue
@@ -179,11 +195,14 @@ class SessionRPC:
                             preview = json.dumps(args, ensure_ascii=False, separators=(',', ':')) if args else ''
                             if len(preview) > 80:
                                 preview = preview[:77] + '...'
-                            messages.append({'role': 'tool', 'name': name or 'tool', 'context': preview,
-                                             'tool_call_id': call_id, 'args': args})
+                            message = {'role': 'tool', 'name': name or 'tool', 'context': preview,
+                                       'tool_call_id': call_id, 'args': args}
+                            if call_id in tool_statuses:
+                                message['content'] = json.dumps({'status': tool_statuses[call_id]})
+                            messages.append(message)
                 answer = verified_answer_with_artifacts(run)
                 if answer is not None:
-                    message = {'role': 'assistant', 'text': answer}
+                    message = {'role': 'assistant', 'text': answer, 'interim': False}
                     usage = observed_run_usage(run)
                     if usage is not None:
                         message['usage'] = usage

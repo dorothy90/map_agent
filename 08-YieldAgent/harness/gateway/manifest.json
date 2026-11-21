@@ -5764,7 +5764,7 @@
       "classification": "implemented",
       "reason": "m1_implementation_target",
       "feature": "session.title",
-      "detail": "세션 제목 조회·저장; 자동 LLM 제목 생성은 미포함",
+      "detail": "Hermes가 생성한 제목 조회 및 사용자 지정 제목 저장",
       "policy_source": "m1_plan_codex.log:6191",
       "source": [
         "apps/shared/src/gateway-contract.generated.ts:6403",
@@ -5779,7 +5779,7 @@
           "classification": "implemented",
           "feature": "session.title",
           "reason": "m1_implementation_target",
-          "detail": "세션 제목 조회·저장; 자동 LLM 제목 생성은 미포함",
+          "detail": "Hermes가 생성한 제목 조회 및 사용자 지정 제목 저장",
           "policy_source": "m1_plan_codex.log:6191"
         },
         "authority": {
@@ -5790,7 +5790,7 @@
           "classification": "implemented",
           "feature": "session.title",
           "reason": "m1_implementation_target",
-          "detail": "세션 제목 조회·저장; 자동 LLM 제목 생성은 미포함",
+          "detail": "Hermes가 생성한 제목 조회 및 사용자 지정 제목 저장",
           "policy_source": "m1_plan_codex.log:6191"
         }
       }

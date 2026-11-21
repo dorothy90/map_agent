@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, isInaccessible, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { Thread } from '@/components/assistant-ui/thread'
 import { assistantMessage, ThreadRuntime, stubThreadEnvironment, stubThreadViewportSize } from '@/components/assistant-ui/test-utils'
@@ -21,7 +21,8 @@ it('shows compact tools and moves the matching report title and subtitle to its 
  expect(container.querySelector('.web-tool-row')?.textContent).toContain('1.4')
  expect(container.querySelector('.web-tool-row')?.textContent).toContain('완료')
  expect(screen.getAllByRole('button',{name:'답변 복사'}).length).toBeGreaterThan(0)
- expect(screen.getAllByText('수율 분석').length).toBeGreaterThan(0)
+ expect([...container.querySelectorAll<HTMLElement>('.web-execution-trace .web-answer-author')]
+   .filter(author => !isInaccessible(author))).toHaveLength(0)
  const heading=await screen.findByRole('heading',{name:'실제 리포트 제목'})
  expect(heading.closest('[data-slot="tool-block"]')).toBeNull()
  const section=heading.closest('.web-report-section')!

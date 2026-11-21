@@ -4,10 +4,10 @@ import uuid
 from collections import Counter
 
 from ..types import ResultTable
-from .report_policy import ReportContractError
+from .report_policy import LOT_POPULATION_PROJECTION, REPORT_SCOPE_CONTRACT, ReportContractError
 from .yield_report_data import GRAINS, PeriodReportData
 
-CONTRACT = 'yield-report-scope/v1'
+CONTRACT = REPORT_SCOPE_CONTRACT
 PREFIX = 'yield-report:'
 METADATA_COLUMNS = ['PROC_GBN_CD', 'PARAM_NM', 'PARAM_SEQNO', 'PARAM_KIND_CD', 'YIELD_TABLE']
 CAPTURE_COLUMNS = {
@@ -160,7 +160,8 @@ async def save_scope(data, period, ctx):
                   'runtime_version': ctx.run.get('runtime_version'),
                   'window': data.window, 'grains': list(data.counts),
                   'period_lot_count': data.period_lot_count, 'period_wafer_count': data.period_wafer_count,
-                  'default_table_id': 'lot_population'},
+                  'default_table_id': 'lot_population',
+                  'table_projections': {'lot_population': LOT_POPULATION_PROJECTION}},
         'source_result_ids': [], 'provenance': {'data_origin': 'live'},
     }
     if data.wafer_parameter_stats is not None:
@@ -239,4 +240,5 @@ def attach_population(result, data, scope_id):
                         'source_result_id': scope_id.removeprefix(PREFIX),
                         'definition': "PT1H population; wafer_count=distinct GORUPKEY; pt1h_mean=source-row AVG(VALUE) for PT1H TEST/PT1H; null scores retained"},
         tables_available=[t.table_id for t in result.tables],
+        table_projections={'lot_population': LOT_POPULATION_PROJECTION},
     )

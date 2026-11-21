@@ -756,6 +756,8 @@ export interface SessionMessage {
   row_id?: number
   id?: number
   text?: unknown
+  /** Published assistant commentary (true) or final answer (false), when supplied. */
+  interim?: boolean
   /** Whole-turn seconds from a completed run, when the history backend supplies it. */
   duration_s?: number
   /** Observed token counters for this completed assistant turn, when supplied. */

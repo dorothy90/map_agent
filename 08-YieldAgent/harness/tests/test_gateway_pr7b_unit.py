@@ -570,6 +570,7 @@ def test_history_and_info_restore_completed_run_usage_and_duration():
         resumed = call(ws, 'session.resume', {'session_id': sid})['result']
         assistant = resumed['messages'][-1]
         assert assistant['text'] == answer
+        assert assistant['interim'] is False
         assert assistant['usage'] == {'input': 98714, 'output': 6599, 'total': 105313, 'calls': 6}
         assert assistant['duration_s'] == 46
         assert resumed['info']['usage'] == assistant['usage']
@@ -578,6 +579,7 @@ def test_history_and_info_restore_completed_run_usage_and_duration():
         rest = client.get('/gateway-m1/api/sessions/' + sid + '/messages?include_compacted=true').json()
         rest_assistant = [row for row in rest['messages'] if row['role'] == 'assistant'][-1]
         assert rest_assistant['content'] == answer
+        assert rest_assistant['interim'] is False
         assert rest_assistant['usage'] == assistant['usage']
         assert rest_assistant['duration_s'] == 46
 
@@ -611,6 +613,55 @@ def test_history_keeps_native_tools_when_final_answer_is_unverified():
             {'role': 'tool', 'name': 'fallback_tool', 'context': '',
                 'tool_call_id': 'missing-call', 'args': {}}]
         assert 'PRIVATE' not in json.dumps(messages)
+
+
+def test_history_restores_only_published_tool_commentary_in_order():
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        public = 'Reading the stored rows.'
+        native = [{'role': 'user', 'content': 'question'}]
+        for number, text in enumerate(('Unpublished tool draft', public, f'\n{public} ', public)):
+            call_id = f'call-{number}'
+            native.extend([
+                {'role': 'assistant', 'content': text, 'reasoning': 'private reasoning',
+                 'tool_calls': [{'id': call_id, 'function': {'name': 'read_result'}}]},
+                {'role': 'tool', 'tool_call_id': call_id, 'content': 'private raw rows'}])
+        native.append({'role': 'assistant', 'content': 'Unsettled answer'})
+        services.runs.append({'principal_id': 'alice', 'session_id': sid, 'run_id': 'run',
+            'created_at': 1, 'query': 'question', 'active': False, 'status': 'completed',
+            'answer_text': 'Published answer', 'public_interims': [public, 'Unsettled answer', f' {public}\n'],
+            'native_messages': native, 'observations': [{'tool_name': 'verify_answer',
+                'scope': {'verdict': 'pass'}, 'validated_arguments': candidate_digest('Published answer')}]})
+
+        rows = call(ws, 'session.history', {'session_id': sid})['result']['messages']
+        assert [r.get('text', r.get('tool_call_id')) for r in rows] == [
+            'question', 'call-0', public, 'call-1', public, 'call-2', 'call-3', 'Published answer']
+        assert rows[2]['interim'] is rows[4]['interim'] is True
+        assert 'private' not in json.dumps(rows)
+        restored = client.get(f'/gateway-m1/api/sessions/{sid}/messages').json()['messages']
+        assert restored[2] == {'role': 'assistant', 'content': public, 'interim': True}
+
+
+def test_history_preserves_public_tool_completion_status_without_result_data():
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        native = [{'role': 'user', 'content': 'question'}]
+        events = []
+        for call_id, state in [('one', 'error'), ('two', 'partial'), ('three', 'success')]:
+            native.extend([
+                {'role': 'assistant', 'tool_calls': [{'id': call_id, 'function': {'name': 'render_yield_table'}}]},
+                {'role': 'tool', 'tool_call_id': call_id, 'content': 'private result'}])
+            events.append({'type': 'tool_finished', 'payload': {'tool_id': call_id, 'name': 'render_yield_table',
+                'result': {'status': state, 'rows': ['private row']}, 'summary': 'private detail'}})
+        services.runs.append({'principal_id': 'alice', 'session_id': sid, 'run_id': 'run',
+            'created_at': 1, 'query': 'question', 'active': False, 'status': 'completed',
+            'events': events, 'native_messages': native})
+        history = client.get(f'/gateway-m1/api/sessions/{sid}/messages').json()['messages']
+        assert [(row['tool_call_id'], json.loads(row['content'])) for row in history if row['role'] == 'tool'] == [
+            ('one', {'status': 'error'}), ('two', {'status': 'partial'}), ('three', {'status': 'success'})]
+        assert 'private' not in json.dumps(history)
 
 
 def test_history_projects_ordered_gateway_tool_rows_without_result_bodies():

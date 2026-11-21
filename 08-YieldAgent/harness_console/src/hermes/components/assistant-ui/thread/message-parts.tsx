@@ -1,8 +1,10 @@
+import { useWebTraceNotes } from '../../../../web/execution-trace'
 import {
   type ReasoningMessagePartComponent,
   type TextMessagePartProps,
   type ToolCallMessagePartProps,
   useAuiState,
+  useAui,
   useMessagePartReasoning,
   useMessagePartText
 } from '@assistant-ui/react'
@@ -201,6 +203,10 @@ type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; time
 
 const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => {
   const { text } = useMessagePartText()
+  const messageId = useAuiState(s => s.message.id)
+  const selector = useAui().part.query
+  const notes = useWebTraceNotes()
+  if (selector?.type === 'index' && notes?.has(messageId + '/' + selector.index)) return null
 
   // assistant-ui adds an empty continuation after a tool starts. It is not
   // prose yet and must not create paragraph spacing above pending approvals.

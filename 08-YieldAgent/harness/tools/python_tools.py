@@ -1,14 +1,25 @@
+from collections import defaultdict
+import json
+from typing import Literal
+
 from pydantic import Field
 from ..runtime.container import ContainerRuntime
 from ..runtime.process import ProcessRuntime
 from ..types import Contract, ResultPage, ResultTable
-from ..native_verification import normalize_wafer_map_tables
+from ..native_verification import WAFER_MAP_CONTRACT_VERSION, normalize_wafer_map_tables
+from .load_wafer_maps import map_measurements
 from .registry import ToolResult, ToolSpec
+from .wafer_group_report import wafer_group_report
 
 
 class PythonInput(Contract):
     code: str = Field(min_length=1, max_length=30000, description="tables[result_id][table_id]는 표별 전체 DataFrame이다. datasets[result_id]와 df(첫 입력)는 단일 표 결과에만 제공한다. 계산값은 emit_table로 출력해 셀 단위 근거로 저장한다. 도구 입력 인자는 자동으로 Python 변수가 되지 않는다.")
     input_result_ids: list[str] = Field(default_factory=list, max_length=10)
+
+
+class WaferReport(Contract):
+    threshold_pct: float = Field(ge=0, le=100, description="사용자가 지정한 기준 수율(%)")
+    delivery: Literal['complete_answer', 'section'] = Field(description="보고서가 요청 전체에 답하면 complete_answer, 추가 분석이나 다른 산출물도 요청되면 section.")
 
 
 class ReadInput(Contract):
@@ -17,18 +28,52 @@ class ReadInput(Contract):
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=50, ge=1, le=1000)
     columns: list[str] | None = None
+    wafer_report: WaferReport | None = Field(default=None, description="단일 lot의 LOT_ID, PARAM_NM, WFID, VALUE(0~1) 전체 표에서 요약과 상세 표를 함께 표시한다.")
+
+
+def _selected_map_measurements(tables, sources):
+    """Resolve the plotted member IDs without reaggregating cumulative-map cells."""
+    invalid = {"selection_status": "unverified", "preview_rows": []}
+    groups = defaultdict(set)
+    try:
+        for row in tables["wafer_map_members"]:
+            key = (row["source_result_id"], row["lot_id"], str(row["wf_id"]), row["measurement_id"])
+            members = groups[row["selection_id"], row["group_id"]]
+            if row["contract_version"] != WAFER_MAP_CONTRACT_VERSION or key in members:
+                return invalid
+            members.add(key)
+        selected = set()
+        for row in tables["wafer_map_manifest"]:
+            members = groups.pop((row["selection_id"], row["group_id"]))
+            if (row["contract_version"] != WAFER_MAP_CONTRACT_VERSION or len(members) != int(row["member_count"])
+                    or {key[0] for key in members} != set(json.loads(row["source_result_ids_json"]))):
+                return invalid
+            selected.update(members)
+    except (KeyError, TypeError, ValueError):
+        return invalid
+    return map_measurements(sources, members=selected) if selected and not groups else invalid
 
 
 async def read_result(args, ctx):
-    page = await ctx.store.read_result(ctx.run["principal_id"], ctx.run["session_id"], **args.model_dump())
+    page = await ctx.store.read_result(ctx.run["principal_id"], ctx.run["session_id"],
+                                       **args.model_dump(exclude={'wafer_report'}))
     projection = ResultPage(table_id=page["table_id"], source_total_rows=page["total_rows"],
                             offset=page["offset"], limit=args.limit)
     complete = page["complete"] and not page["truncated"]
+    artifacts = []
+    scope = dict(page["scope"])
+    scope.pop("rendered_summary", None)
+    if args.wafer_report is not None and page["total_rows"]:
+        if not complete:
+            raise ValueError("The wafer report requires a complete query and a full page starting at offset 0.")
+        caption, report = wafer_group_report(page["rows"], args.wafer_report.threshold_pct)
+        artifacts.append(report)
+        scope['rendered_summary'] = caption
     reason = page["missing_reason"] or ("Only a page of the source table was read" if page["truncated"] else None)
     return ToolResult(tables=[ResultTable(table_id=page["table_id"], title=page["title"],
         rows=page["rows"], columns=page["columns"], units=page["units"], complete=complete, missing_reason=reason)],
-        summary=projection.summary(len(page["rows"])), page=projection,
-        scope=page["scope"], source_result_ids=[args.result_id], status="partial" if not complete else None,
+        summary=projection.summary(len(page["rows"])), page=projection, artifacts=artifacts,
+        scope=scope, source_result_ids=[args.result_id], status="partial" if not complete else None,
         data_origin=page["provenance"].get("data_origin", "unknown"))
 
 
@@ -36,17 +81,18 @@ async def run_python(args, ctx):
     datasets = {}
     origins = []
     limitations = []
-    has_wafer_map_source = False
+    map_sources = {}
     for result_id in args.input_result_ids:
         obs = await ctx.store.observation(ctx.run["principal_id"], ctx.run["session_id"], result_id)
         if obs.status not in ("success", "partial", "empty"):
             raise ValueError("Cannot analyze an error result")
         origins.append(obs.provenance.get("data_origin"))
-        has_wafer_map_source |= obs.tool_name == 'load_wafer_maps'
         datasets[result_id] = {}
         for table in obs.tables:
             rows = await ctx.store.rows(
                 ctx.run["principal_id"], ctx.run["session_id"], result_id, table_id=table.table_id)
+            if obs.tool_name == "load_wafer_maps" and table.table_id == "wafer_map_dies":
+                map_sources[result_id] = rows
             datasets[result_id][table.table_id] = {"rows": rows,
                 "columns": list(dict.fromkeys([*table.columns, *(key for row in rows for key in row)]))}
             if not table.complete:
@@ -60,12 +106,15 @@ async def run_python(args, ctx):
         runtime = (ContainerRuntime(ctx.settings.python_image) if ctx.settings.python_runtime == "docker"
             else ProcessRuntime(ctx.settings.python_executable))
     result = await runtime.execute(args.code, datasets)
+    scope = {"python_workspace": result["workspace"]} if "workspace" in result else {}
     renamed = {}
-    if has_wafer_map_source:
+    if map_sources:
         raw_tables = result['tables']
         names = [table['table_id'] for table in raw_tables]
         if len(names) == len(set(names)):
-            _, renamed = normalize_wafer_map_tables({table['table_id']: table['rows'] for table in raw_tables})
+            normalized, renamed = normalize_wafer_map_tables({table['table_id']: table['rows'] for table in raw_tables})
+            if 'wafer_map_members' in normalized and result['status'] == 'success':
+                scope['map_measurements'] = _selected_map_measurements(normalized, map_sources)
         result['tables'] = [{**table,
             'table_id': renamed.get(table['table_id'], table['table_id']),
             'title': renamed.get(table['table_id'], table['title'])} for table in raw_tables]
@@ -83,7 +132,7 @@ async def run_python(args, ctx):
     if renamed:
         summary += '\n근거 표 이름 자동 보정: ' + ', '.join(f'{old} → {new}' for old, new in renamed.items())
     return ToolResult(tables=tables, summary=summary,
-        scope={"python_workspace": result["workspace"]} if "workspace" in result else {},
+        scope=scope,
         status=("partial" if limitations else "success") if result["status"] == "success" else "error", artifacts=artifacts,
         source_result_ids=args.input_result_ids, data_origin="fixture" if "fixture" in origins else
             "unknown" if any(origin != "live" for origin in origins) else "live")

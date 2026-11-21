@@ -191,6 +191,13 @@ def _report_cursor():
                 connection.close()
 
 
+def fetch_product_codes() -> list[str]:
+    with _report_cursor() as cursor:
+        cursor.execute("SELECT DISTINCT TRIM(LOT_CD) AS LOT_CD FROM DF_WF_ALL_PRB_V2 "
+                       "WHERE TRIM(LOT_CD) IS NOT NULL ORDER BY 1")
+        return [code for code, in cursor]
+
+
 def _parameter_metadata(cursor, lot_cd):
     cursor.execute(
         "SELECT PROC_GBN_CD, PARAM_NM, PARAM_SEQNO, PARAM_KIND_CD, YIELD_TABLE FROM DF_ALL_PARA_PRB "
@@ -229,10 +236,9 @@ def _bucket_sql(grain, prefix=''):
     return value + (f"||'-'||LPAD({prefix}DAY,2,'0')" if grain == 'day' else '')
 
 
-def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
+def fetch_period_report(lot_cd: str, period, *, base=None, report_tests=None) -> PeriodReportData:
     with _report_cursor() as cursor:
-        base = None
-        if isinstance(period, RecentPeriod):
+        if base is None and isinstance(period, RecentPeriod):
             cursor.execute('SELECT ' + BASE_DATE_SOURCE.split(';')[0], {'lot': lot_cd})
             base = cursor.fetchall()[0][0]
             if base is None:
@@ -240,6 +246,12 @@ def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
             if isinstance(base, datetime):
                 base = base.date()
         window = resolve_window(period, base)
+        test_binds = {f'test{i}': test for i, test in enumerate(report_tests or [])}
+        selected = ', '.join(f':{name}' for name in test_binds)
+        yield_tests = selected or "'PT1H TEST','PT1C TEST'"
+        count_test = f'PROCESS IN ({selected})' if test_binds else "PROCESS='PT1H TEST'"
+        if test_binds:
+            window['base_date_source'] = 'Shared report date for selected product and tests'
         # :end is an Oracle reserved bind name (ORA-01745); use win_start/win_end.
         binds = {'lot': lot_cd, 'win_start': window['start'], 'win_end': window['end']}
         date_filter = f"{MEASURE_DATE} BETWEEN TO_DATE(:win_start,'YYYY-MM-DD') AND TO_DATE(:win_end,'YYYY-MM-DD')"
@@ -250,13 +262,17 @@ def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
             binds.update({f'b{i}': value for i, value in enumerate(values)})
             total_filter += f" AND {_bucket_sql(grain)} IN ({', '.join(f':b{i}' for i in range(len(values)))})"
         metadata = _parameter_metadata(cursor, lot_cd)
+        if report_tests:
+            metadata = [row for row in metadata if f'{row[0]} TEST' in report_tests]
         cursor.execute(
             "SELECT COUNT(DISTINCT LOT_ID), COUNT(DISTINCT GORUPKEY) "
-            f"FROM {_latest_test_source()} WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' AND " + total_filter, binds)
+            f"FROM {_latest_test_source()} WHERE LOT_CD=:lot AND {count_test} AND " + total_filter, {**binds, **test_binds})
         lot_count, wafer_count = cursor.fetchall()[0]
         # Capture complete additive statistics and distinct identities while the
         # existing report connection is open. No later group query is necessary.
-        population, stats, members, wafer_stats = _capture_lots(cursor, total_filter, binds)
+        population, stats, members, wafer_stats = [], [], [], []
+        if report_tests is None:
+            population, stats, members, wafer_stats = _capture_lots(cursor, total_filter, binds)
         yield_long, all_counts, all_gms = [], {}, {}
         for grain, (key, unit) in GRAINS.items():
             if key not in window:
@@ -266,31 +282,32 @@ def fetch_period_report(lot_cd: str, period) -> PeriodReportData:
             grain_binds = {'lot': lot_cd, 'win_start': window['start'], 'win_end': window['end'],
                            **{f'b{i}': value for i, value in enumerate(buckets)}}
             bucket_sql = _bucket_sql(grain)
-            _, bucket_stats, bucket_members, bucket_wafer_stats = _capture_lots(
-                cursor, f"{date_filter} AND {bucket_sql} IN ({placeholders})",
-                grain_binds, grain=grain)
-            stats.extend(bucket_stats)
-            wafer_stats.extend(bucket_wafer_stats)
-            members.extend(bucket_members)
+            if report_tests is None:
+                _, bucket_stats, bucket_members, bucket_wafer_stats = _capture_lots(
+                    cursor, f"{date_filter} AND {bucket_sql} IN ({placeholders})",
+                    grain_binds, grain=grain)
+                stats.extend(bucket_stats)
+                wafer_stats.extend(bucket_wafer_stats)
+                members.extend(bucket_members)
             # A single source alias leaves YEAR/MONTH/DAY unambiguous in this predicate.
             cursor.execute(
                 f"SELECT {_bucket_sql(grain, 'y.')}, y.PROCESS, y.PARAM_NM, AVG(y.VALUE) "
                 f"FROM {_latest_test_source()} y WHERE y.LOT_CD=:lot "
-                "AND y.PROCESS IN ('PT1H TEST','PT1C TEST') "
+                f"AND y.PROCESS IN ({yield_tests}) "
                 f"AND {date_filter} AND {_bucket_sql(grain, 'y.')} IN ({placeholders}) "
                 "AND EXISTS (SELECT 1 FROM DF_ALL_PARA_PRB m WHERE m.LOT_CD=y.LOT_CD "
                 "AND m.PROC_GBN_CD||' TEST'=y.PROCESS AND m.PARAM_NM=y.PARAM_NM "
                 "AND TRIM(m.YIELD_TABLE)='o') "
                 f"GROUP BY {_bucket_sql(grain, 'y.')}, y.PROCESS, y.PARAM_NM "
-                f"ORDER BY {_bucket_sql(grain, 'y.')}, y.PROCESS, y.PARAM_NM", grain_binds)
+                f"ORDER BY {_bucket_sql(grain, 'y.')}, y.PROCESS, y.PARAM_NM", {**grain_binds, **test_binds})
             rows = [dict(grain=grain, bucket=row[0], **dict(zip((grain, 'process', 'param', 'value'), row)))
                     for row in cursor.fetchall()]
             yield_long.extend(rows)
             cursor.execute(
                 f"SELECT {bucket_sql}, COUNT(DISTINCT LOT_ID), COUNT(DISTINCT GORUPKEY) "
-                f"FROM {_latest_test_source()} WHERE LOT_CD=:lot AND PROCESS='PT1H TEST' "
+                f"FROM {_latest_test_source()} WHERE LOT_CD=:lot AND {count_test} "
                 f"AND {date_filter} AND {bucket_sql} IN ({placeholders}) "
-                f"GROUP BY {bucket_sql} ORDER BY {bucket_sql}", grain_binds)
+                f"GROUP BY {bucket_sql} ORDER BY {bucket_sql}", {**grain_binds, **test_binds})
             counts = {row[0]: row[1:] for row in cursor.fetchall()}
             cursor.execute(
                 "SELECT PERIOD_DATE, FAB_YIELD, PRB_YIELD, CUM0_YIELD "

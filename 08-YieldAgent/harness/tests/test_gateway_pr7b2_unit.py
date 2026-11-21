@@ -176,7 +176,7 @@ def test_verified_history_and_mixed_history_fail_closed():
                    observations=[{'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'},
                                   'validated_arguments': candidate_digest('VERIFIED')}])
         body = client.get(path).json()
-        assert body['messages'][-1] == {'role': 'assistant', 'content': 'VERIFIED'}
+        assert body['messages'][-1] == {'role': 'assistant', 'content': 'VERIFIED', 'interim': False}
         assert 'PRIVATE-CANDIDATE' not in json.dumps(body)
         assert client.get(PREFIX + '/api/sessions?min_messages=2').json()['total'] == 1
         services.sessions['alice', 'alice-session']['rows'] = [
@@ -217,7 +217,7 @@ def test_rest_and_ws_preserve_the_same_native_tool_projection():
             'tool_call_id': 'call', 'args': {'lot': 'L-1'}},
         {'role': 'tool', 'name': 'broken_tool', 'context': '',
             'tool_call_id': 'non-finite', 'args': {}},
-        {'role': 'assistant', 'content': answer}]
+        {'role': 'assistant', 'content': answer, 'interim': False}]
     assert wire[1:3] == rest[1:3]
     assert 'PRIVATE' not in json.dumps(rest)
 

@@ -169,7 +169,7 @@ def test_ws_submit_push_ack_loss_reconnect_gap_and_publication(monkeypatch):
                 'replay_epoch': created['replay_epoch'], 'last_sequence': 0}, rid=4)
             assert [f['seq'] for f in replayed['events']] == seq
             restored = result(ws, 'session.resume', {'session_id': sid}, rid=5)
-            assert restored['messages'][-1] == {'role': 'assistant', 'text': 'VERIFIED-FINAL'}
+            assert restored['messages'][-1] == {'role': 'assistant', 'text': 'VERIFIED-FINAL', 'interim': False}
             assert state.controller.launches == [admitted['run_id']]
 
         # Force actual bounded-ring eviction, then recover by snapshot. The

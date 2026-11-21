@@ -28,8 +28,10 @@ from harness.gateway.auth import AuthenticationFailure, Principal
 from harness.gateway.routes import build_gateway_router
 from harness.gateway.services import GatewayServices
 
-ORIGIN = 'http://127.0.0.1:61313'
-HOSTS = frozenset(('127.0.0.1:61313', '127.0.0.1:61302'))
+WEB_HOST = f"127.0.0.1:{int(os.getenv('HARNESS_WEB_PORT', '61313'))}"
+GATEWAY_HOST = f"127.0.0.1:{int(os.getenv('HARNESS_GATEWAY_PORT', '61302'))}"
+ORIGIN = f'http://{WEB_HOST}'
+HOSTS = frozenset((WEB_HOST, GATEWAY_HOST))
 
 
 class TicketLogRedaction(logging.Filter):

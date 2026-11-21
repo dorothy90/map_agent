@@ -65,7 +65,7 @@
 | `config.py`, `app.py`, `router.py`, `control.py`, `store.py` | 설정, 서버 연결, 실행·저장·복구 |
 | `executor.py`, `types.py`, `completion.py` 등 나머지 Python 파일 | 결과 계약과 예산·관측·기존 경로 의존성. 초기에는 함께 유지 |
 | `tools/`, `domain_metrics.py` | 업무 연결 어댑터와 지표 계산. 사내 업무 정의와 대조 |
-| `instructions/`, `skills/` | 도구 사용 지침·업무 지식. 연결되지 않은 도구 안내를 남기지 않는다. |
+| `instructions/` | 도구 사용 지침·업무 지식. 연결되지 않은 도구 안내를 남기지 않는다. |
 | `runtime/` | 기존 동기 업무 함수 격리, 생성 Python 코드의 별도 프로세스 실행(기본) 또는 Docker 실행 |
 | `tests/`, `evals/` | 합성 검증과 실제 서비스 평가 도구 |
 
@@ -128,7 +128,7 @@ Hermes를 별도 설치하거나 임의의 최신 upstream으로 교체하지 �
 
 설정은 `.env.example`와 `config.py`를 함께 읽는다. 실제 키를 코드·문서·스크린샷에 넣지 않는다. `HARNESS_MODEL`, `HARNESS_BASE_URL`, `HARNESS_API_KEY`, `HARNESS_MONGO_URI`, `HARNESS_MONGO_DB`는 사내 값으로 설정한다. 사내 공급자가 지원하지 않는 `reasoning_effort` 등은 실제 요청으로 확인해 맞춘다.
 
-`.runtime/hermes/profiles/`는 사용자별 런타임 데이터다. 사내에서 쓰기 가능한 지속 저장 경로를 준비한다. 외부 개인 프로필·메모리를 옮기지 않는다. 기존 프로필 스킬은 소스 변경만으로 덮어쓰지 않으므로 버전과 갱신 방법을 별도로 확인한다.
+`.runtime/hermes/profiles/`는 사용자별 런타임 데이터다. 사내에서 쓰기 가능한 지속 저장 경로를 준비한다. 외부 개인 프로필·메모리를 옮기지 않는다. Hermes는 사용자 프로필 안의 `skills/`에서 스킬을 읽고 수정한다.
 
 통과 조건: 새 세션에서 실제 사내 LLM이 합성 도구를 호출하고 결과가 MongoDB에 저장되며 응답·취소·재접속이 동작한다. 단순 import 성공으로 단계 완료를 선언하지 않는다.
 
@@ -150,7 +150,7 @@ Hermes를 별도 설치하거나 임의의 최신 upstream으로 교체하지 �
 
 ## 7. 단계 D — 위임과 독립 검증 유지
 
-- 일반 실행은 `yield_backend`, `yield_evidence`, `skills`, `memory`, `delegation` 도구셋을 사용한다.
+- 기본 채팅은 `yield_backend`, `yield_evidence`, `skills`, `clarify` 도구셋을 사용한다.
 - 프로필 `delegation.orchestrator_enabled=true`, `agent.environment_probe=false`를 유지한다. 기존 프로필에도 적용되는지 확인한다.
 - worker는 요청 후 종료된다. 원본 `declare_stateless_channel()`을 유지해 하위 결과를 기다린 뒤 최종 응답과 검증을 진행한다. 백그라운드 완료를 받을 별도 소비자가 없는데 이 선언을 지우지 않는다.
 - 하위 작업 깊이·개수 제한은 원본 설정을 존중한다. 이식 중 임의로 무제한으로 늘리지 않는다.

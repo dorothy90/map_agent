@@ -1,9 +1,10 @@
 """Adapter to the bundled Hermes engine using the backend Python interpreter."""
 import asyncio
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 import tempfile
 import uuid
@@ -15,6 +16,7 @@ import yaml
 
 from .executor import ToolExecutor
 from .instructions import load_native_instructions
+from .native_tools import domain_model_result
 from .store import LeaseLost, BudgetExceeded
 from .gateway import publication
 from .gateway.events import SessionEvents
@@ -358,6 +360,36 @@ async def handle_server_request(prompts, request, params, *, review_id=None):
     return decline_server_request(request, params)
 
 
+async def record_skill_result(context, executor, message):
+    name = message['name']
+    if name not in ('skills_list', 'skill_view', 'skill_manage'):
+        raise ValueError('Unexpected Hermes skill tool')
+    payload = message['result']
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            payload = {'error': payload}
+    if not isinstance(payload, dict):
+        payload = {'error': 'Invalid Hermes skill response', 'response': payload}
+    args = message['args']
+    if name == 'skill_manage':
+        operations = args.get('operations')
+        args = {'operations': [
+            {k: op[k] for k in ('action', 'name', 'file_path') if k in op}
+            for op in operations if isinstance(op, dict)
+        ]} if isinstance(operations, list) else {}
+    status = 'error' if payload.get('error') or payload.get('success') is False else 'success'
+    run = context.run
+    observation = await context.store.put_result(run['principal_id'], run['session_id'],
+        {'run_id': run['run_id'], 'invocation_id': message['invocation_id'], 'tool_name': name,
+         'validated_arguments': args, 'status': status,
+         'summary': name, 'provenance': {'source_system': 'hermes', 'data_origin': 'live'}},
+        [payload], [])
+    await executor.publish(observation, run)
+    return observation
+
+
 class NativeBridge:
     def __init__(self, registry, context, *, approval_tools=frozenset(), pending=None):
         self.approval_tools = frozenset(approval_tools)
@@ -383,6 +415,10 @@ class NativeBridge:
     def schemas(self):
         return [tool for tool in self.registry.model_tools() if tool['function']['name'] in self.allowed]
 
+    async def record_skill_result(self, message):
+        observation = await record_skill_result(self.context, self.executor, message)
+        self.observations.append(observation.model_dump(mode='json'))
+
     async def invoke(self, call, *, review_id=None):
         if call['name'] not in self.allowed:
             raise PermissionError('Tool is outside this run capability set')
@@ -397,13 +433,7 @@ class NativeBridge:
         executor = ToolExecutor(self.registry, replace(self.context, parent_invocation_id=review_id)) if review_id else self.executor
         observation = await executor.execute(call)
         (self.review_observations if review_id else self.observations).append(observation.model_dump(mode='json'))
-        if call['name'] in {'query_db', 'list_tables'} and observation.status in {
-            'success', 'partial', 'empty'}:
-            facts = observation.scope[call['name']]
-            return {'result_id': observation.result_id,
-                'table_id': observation.tables[0].table_id, **facts,
-                'status': observation.status, 'summary': observation.summary}
-        return observation.model_view()
+        return domain_model_result(observation)
 
 
 def result_status(result):
@@ -479,26 +509,48 @@ def native_prompts_enabled(settings):
     return bool(settings.native_prompts or settings.no_yield_tools)
 
 
+def profile_path(principal_id):
+    return ROOT / '.runtime/hermes/profiles' / principal_hash(principal_id)
+
+
+@contextmanager
+def profile_write_lock(profile):
+    # A run can refresh its terminal settings while the user changes a skill.
+    fd = os.open(profile, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def prepare_profile(principal_id, isolation=None):
-    profile = ROOT / '.runtime/hermes/profiles' / principal_hash(principal_id)
+    profile = profile_path(principal_id)
     profile.mkdir(parents=True, exist_ok=True)
-    for directory in Path(__file__).with_name('skills').iterdir():
-        if directory.is_dir():
-            target = profile / 'skills' / directory.name
-            if not target.exists():
-                shutil.copytree(directory, target)
+    with profile_write_lock(profile):
+        _prepare_profile_config(profile, isolation)
+    return profile
+
+
+def _prepare_profile_config(profile, isolation):
     config = profile / 'config.yaml'
-    content = yaml.safe_load(config.read_text()) if config.exists() else {'skills': {'auto_load': ['yield-analysis']}}
+    content = (yaml.safe_load(config.read_text()) or {}) if config.exists() else {}
     # This worker has no host terminal tool; probing its package manager is irrelevant.
     content.setdefault('agent', {})
     content.setdefault('delegation', {})
-    title_generation = content.setdefault('auxiliary', {}).setdefault('title_generation', {})
     changed = (content['agent'].get('environment_probe') is not False
-        or content['delegation'].get('orchestrator_enabled') is not False
-        or title_generation.get('model_upgrade_enabled') is not False)
+        or content['delegation'].get('orchestrator_enabled') is not False)
+    # Old managed profiles forced the model upgrade off on every run. Restore the
+    # native default once, leaving later user choices and other title options alone.
+    title_migration = profile / '.native-title-default-v1'
+    title_generation = content.get('auxiliary', {}).get('title_generation', {})
+    if (not title_migration.exists() and not changed
+            and content.get('tools', {}).get('tool_search', {}).get('enabled') == 'off'
+            and title_generation.get('model_upgrade_enabled') is False):
+        del title_generation['model_upgrade_enabled']
+        changed = True
     content['agent']['environment_probe'] = False
     content['delegation']['orchestrator_enabled'] = False
-    title_generation['model_upgrade_enabled'] = False
     if isolation is not None:
         if isolation.get('backend') == 'seatbelt':
             terminal = {
@@ -514,16 +566,17 @@ def prepare_profile(principal_id, isolation=None):
             }
         changed = changed or content.get('terminal') != terminal
         content['terminal'] = terminal
-        content.setdefault('tools', {}).setdefault('tool_search', {})
-        changed = changed or content['tools']['tool_search'].get('enabled') != 'off'
-        content['tools']['tool_search']['enabled'] = 'off'
-        changed = changed or content['tools']['tool_search'].get('defer') != []
-        content['tools']['tool_search']['defer'] = []
+    content.setdefault('tools', {}).setdefault('tool_search', {})
+    changed = changed or content['tools']['tool_search'].get('enabled') != 'off'
+    content['tools']['tool_search']['enabled'] = 'off'
+    changed = changed or content['tools']['tool_search'].get('defer') != []
+    content['tools']['tool_search']['defer'] = []
     if changed:
         with tempfile.NamedTemporaryFile(mode='w', dir=profile, delete=False) as pending:
             pending.write(yaml.safe_dump(content, allow_unicode=True))
         os.replace(pending.name, config)
-    return profile
+    if not title_migration.exists():
+        title_migration.touch()
 
 
 async def run_native(context, registry, *, history=None):
@@ -557,7 +610,10 @@ async def run_native(context, registry, *, history=None):
     skill_config = config.get('skills') or {}
     if skill_config.get('external_dirs') or skill_config.get('create_dir'):
         await cleanup_remote()
-        raise ValueError('Native runs require profile-local skills; external skill directories cannot be versioned for this run')
+        raise ValueError('Native runs use per-user skills; external skill directories are outside the profile')
+    if skill_config.get('inline_shell'):
+        await cleanup_remote()
+        raise ValueError('Skill inline_shell would run commands outside the analysis environment')
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR') if key in os.environ}
     env.update(HERMES_HOME=str(profile), PYTHONUNBUFFERED='1', HERMES_DISABLE_LAZY_INSTALLS='1',
         HERMES_TIMEZONE=settings.timezone or config.get('timezone') or 'Asia/Seoul')
@@ -575,18 +631,9 @@ async def run_native(context, registry, *, history=None):
         await cleanup_remote()
         raise
     try:
-        from .skills import SkillCatalog
-        skills_path = Path(workspace.name) / 'skills'
-        if (profile / 'skills').exists():
-            shutil.copytree(profile / 'skills', skills_path)
-        else:
-            skills_path.mkdir()
-        catalog = SkillCatalog(skills_path)
-        skill_record = {'request_context': request_context, 'skill_snapshot': catalog.snapshot,
-            'skill_versions': {item['name']: item['version'] for item in catalog.list()}}
         await context.store.runs.update_one({'_id': run['run_id'], 'epoch': run['epoch'], 'status': 'running'},
-            {'$set': skill_record})
-        run.update(skill_record)
+            {'$set': {'request_context': request_context}})
+        run['request_context'] = request_context
         # Keep Hermes worker diagnostics instead of discarding them (stdout carries the RPC stream).
         log_dir = ROOT / '.runtime/hermes/logs'
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -607,7 +654,7 @@ async def run_native(context, registry, *, history=None):
     startup = {'model': settings.model, 'base_url': settings.base_url,
         'api_key': settings.api_key.get_secret_value(), 'max_tokens': settings.max_output_tokens,
         'temperature': settings.temperature, 'reasoning_effort': settings.reasoning_effort,
-        'call_timeout': settings.call_timeout, 'skills_path': str(skills_path),
+        'call_timeout': settings.call_timeout,
         'parallel_tool_limit': settings.parallel_tool_limit,
         'max_iterations': settings.model_limit - prior_usage.get('models', 0), 'run_budget_seconds': context.remaining_seconds(),
         'token_limit': max(0, settings.token_limit - prior_usage.get('tokens', 0)), 'session_id': run['session_id'],
@@ -678,7 +725,14 @@ async def run_native(context, registry, *, history=None):
                 last_usage = message
             await context.check()
             kind = message['method'] if message['type'] == 'call' else message['type']
-            if kind == 'tool_call':
+            if kind == 'skill_read':
+                version = {key: message[key] for key in ('name', 'resource', 'sha256')}
+                await context.store.runs.update_one(
+                    {'_id': run['run_id'], 'epoch': run['epoch'], 'status': 'running'},
+                    {'$addToSet': {'skill_reads': version}})
+            elif kind == 'skill_result':
+                await bridge.record_skill_result(message)
+            elif kind == 'tool_call':
                 task = asyncio.create_task(invoke(message))
                 tasks.add(task)
             elif kind == 'server_request':

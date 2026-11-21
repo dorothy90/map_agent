@@ -8,3 +8,11 @@ export function toolArgumentSummary(args: Record<string,unknown>) {
  }
  return values.filter(value => typeof value==='string' || typeof value==='number').join(' · ')
 }
+
+const stepLabels: Record<string, string> = {
+  query_db: '데이터 조회', read_result: '조회 결과 확인', render_yield_table: '수율표 생성',
+  load_wafer_maps: '웨이퍼 맵 조회', run_python: '데이터 계산', list_tables: '테이블 목록 확인',
+}
+export function toolStepLabel(name: string) {
+  return stepLabels[name] ?? '도구 실행'
+}

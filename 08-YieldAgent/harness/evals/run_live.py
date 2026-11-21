@@ -57,7 +57,7 @@ async def evaluate(queries, output, no_domain_tools=False, *, registry_factory=N
             if unfinished:
                 run = await controller.cancel("live-eval", run["run_id"])
             calls = await store.calls.find({"run_id": run["run_id"]}, {"_id": 0}).to_list(None)
-            case = {k: run.get(k) for k in ("run_id", "query", "status", "answer", "stop_reason", "question", "usage", "observations", "goal_revision", "active", "events", "runtime_version", "skill_versions")}
+            case = {k: run.get(k) for k in ("run_id", "query", "status", "answer", "stop_reason", "question", "usage", "observations", "goal_revision", "active", "events", "runtime_version", "skill_reads")}
             case.update(action=action, elapsed=round(time.monotonic() - started, 2), calls=calls)
             if unfinished:
                 case["evaluation_error"] = "nonterminal_worker_exit"

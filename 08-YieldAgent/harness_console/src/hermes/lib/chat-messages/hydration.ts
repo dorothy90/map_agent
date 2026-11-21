@@ -492,7 +492,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const parts: ChatMessagePart[] = []
     const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
     const sourceHasTools = Array.isArray(message.tool_calls) && message.tool_calls.length > 0
-    const durableComplete = sourceHasTools ? false : rowId !== undefined ? true : undefined
+    const durableComplete = sourceHasTools || message.interim === true
+      ? false
+      : message.interim === false || rowId !== undefined ? true : undefined
 
     const codexText =
       displayRole === 'assistant' && message.display_kind !== 'hidden' ? codexMessageItemText(message) : null

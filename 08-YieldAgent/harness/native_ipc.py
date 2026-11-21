@@ -50,7 +50,10 @@ def valid(message):
     elif kind == 'control':
         return isinstance(message.get('action'), str)
     else:
-        required = {'step': {'tokens': int, 'models': int}, 'commentary': {'content': str},
+        required = {'skill_read': {'name': str, 'resource': str, 'sha256': str},
+            'session_title': {'title': str, 'source': str},
+            'skill_result': {'invocation_id': str, 'name': str, 'args': dict, 'result': (str, dict)},
+            'step': {'tokens': int, 'models': int}, 'commentary': {'content': str},
             'result': {'result': dict}, 'error': {'message': str}}.get(kind) if isinstance(kind, str) else None
         if required is None:
             return False

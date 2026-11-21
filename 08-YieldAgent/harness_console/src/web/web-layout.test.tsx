@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
-const css=readFileSync(`${process.cwd()}/src/web/web.css`,'utf8')
+const css=['web.css','sidebar.css'].map(file => readFileSync(`${process.cwd()}/src/web/${file}`,'utf8')).join('\n')
 
 afterEach(() => { document.head.innerHTML=''; document.body.innerHTML='' })
 
@@ -9,12 +9,12 @@ it('isolates the row layout and keeps the dock in flow outside both scroll regio
  // Reproduce the legacy main rule and upstream dock utilities without a browser.
  style.textContent=`main { display:flex; flex-direction:column } .absolute { position:absolute; bottom:0; left:50%; translate:-50% } ${css}`
  document.head.append(style)
- document.body.innerHTML=`<main id="legacy"></main><main class="hermes-web"><nav></nav><div class="hermes-web-chat"><div class="hermes-web-thread"></div><div class="hermes-web-composer"><div data-slot="composer-dock" class="absolute"></div></div></div></main>`
+ document.body.innerHTML=`<main id="legacy"></main><main class="hermes-web"><nav class="web-sidebar"></nav><div class="hermes-web-chat"><div class="hermes-web-thread"></div><div class="hermes-web-composer"><div data-slot="composer-dock" class="absolute"></div></div></div></main>`
  const computed=(selector:string) => getComputedStyle(document.querySelector(selector)!)
  expect(computed('#legacy').flexDirection).toBe('column')
  expect(computed('.hermes-web').flexDirection).toBe('row')
  expect(computed('.hermes-web').fontSize).toBe('14px')
- expect(computed('.hermes-web nav').width).toBe('248px')
+ expect(computed('.hermes-web nav').width).toBe('222px')
  expect(computed('.hermes-web-chat').overflow).toBe('hidden')
  expect(computed('.hermes-web-thread').minHeight).toBe('0px')
  expect(computed('[data-slot="composer-dock"]').position).toBe('relative')
@@ -29,13 +29,13 @@ it('preserves report colors', () => {
  expect(getComputedStyle(document.querySelector('#other')!).filter).not.toBe('grayscale(1)')
 })
 
-it('keeps composer input borderless and session titles phrase-wrapped', () => {
+it('keeps composer input borderless and session titles on a single line', () => {
  const style=document.createElement('style');style.textContent=css;document.head.append(style)
  document.body.innerHTML='<main class="hermes-web"><div class="web-session"><strong>긴 질문</strong></div><div data-slot="composer-fade"><div contenteditable="true"></div></div></main>'
  const label=getComputedStyle(document.querySelector('strong')!)
- expect(label.wordBreak).toBe('keep-all')
- expect(label.overflowWrap).toBe('break-word')
- expect(label.getPropertyValue('-webkit-line-clamp')).toBe('2')
+ expect(label.whiteSpace).toBe('nowrap')
+ expect(label.textOverflow).toBe('ellipsis')
+ expect(label.overflow).toBe('hidden')
  expect(getComputedStyle(document.querySelector('[contenteditable]')!).outline).toBe('none')
 })
 

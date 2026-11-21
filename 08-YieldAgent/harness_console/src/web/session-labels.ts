@@ -13,12 +13,9 @@ export async function readFirstQuestion(session: SessionInfo, read = getSessionM
  }
 }
 export const matchesSessionLabel = (label: string | null | undefined, query: string) => !query.trim() || Boolean(label?.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
-export function relativeSessionTime(session: {last_active?:number|null;started_at?:number|null}, now=Date.now()) {
+export function sessionDayGroup(session: {last_active?:number|null;started_at?:number|null}, now=Date.now()) {
  const timestamp=session.last_active ?? session.started_at
- if(timestamp==null || !Number.isFinite(timestamp)) return ''
- const seconds=(timestamp*1000-now)/1000
- const [divisor,unit]:[number,Intl.RelativeTimeFormatUnit]=Math.abs(seconds)<60 ? [1,'second'] : Math.abs(seconds)<3600 ? [60,'minute'] : Math.abs(seconds)<86400 ? [3600,'hour'] : [86400,'day']
- return new Intl.RelativeTimeFormat('ko',{numeric:'auto'}).format(Math.round(seconds/divisor),unit)
+ return timestamp!=null && new Date(timestamp*1000).toDateString()===new Date(now).toDateString() ? '오늘' : '이전 대화'
 }
 
 export function displaySessionLabel(session: {title?:string|null}, question?:string|null) {

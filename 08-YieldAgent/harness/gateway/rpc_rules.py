@@ -7,7 +7,7 @@ exactly one rule; new upstream methods fail closed at generation time.
 
 # mode, finite name patterns, classification, rationale, evidence
 RPC_RULES = (
-    ('authority', ['session.title'], 'implemented', '세션 제목 조회·저장; 자동 LLM 제목 생성은 미포함', 'm1_plan_codex.log:6191'),
+    ('authority', ['session.title'], 'implemented', 'Hermes가 생성한 제목 조회 및 사용자 지정 제목 저장', 'm1_plan_codex.log:6191'),
     ('authority', ['session.delete', 'session.archive', 'session.set_hidden'], 'implemented', '소유자 세션 soft flag 관리; 제목·메시지 보존', 'harness/gateway/session_rpc.py'),
     # PR-8c: session.resume stays implemented in both modes. H/contracts/
     # sessions.py:185-195 and canonical_sessions.py:62-74 already declare source,
@@ -85,7 +85,7 @@ RPC_RULES = (
     ('legacy', ['session.set_hidden'], 'stub', '목록 관리 확장 유예', 'm1_plan_codex.log:6188'),
     ('legacy', ['session.status'], 'implemented', '실행 상태', 'm1_plan_codex.log:6189'),
     ('legacy', ['session.steer'], 'unsupported', '동일 실행 steer 비활성', 'm1_plan_codex.log:6190'),
-    ('legacy', ['session.title'], 'implemented', '세션 제목 조회·저장; 자동 LLM 제목 생성은 미포함', 'm1_plan_codex.log:6191'),
+    ('legacy', ['session.title'], 'implemented', 'Hermes가 생성한 제목 조회 및 사용자 지정 제목 저장', 'm1_plan_codex.log:6191'),
     ('legacy', ['session.undo'], 'stub', '대화 되감기 유예', 'm1_plan_codex.log:6192'),
     ('legacy', ['session.usage'], 'implemented', '실제 사용량·예약 상한 구별', 'm1_plan_codex.log:6193'),
     ('legacy', ['session.workspace.move'], 'unsupported', '서버 CWD 변경 금지', 'm1_plan_codex.log:6194'),

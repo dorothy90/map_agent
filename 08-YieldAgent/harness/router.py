@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import nullcontext
 import json
+import os
+from pathlib import Path
+import subprocess
+import sys
 import uuid
 from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, Query
 from fastapi.responses import Response, StreamingResponse
-from pydantic import Field
+from pydantic import Field, StrictBool
 
 from .store import Conflict
 from .types import Contract
@@ -95,6 +100,61 @@ async def start_run(body: StartRequest, request: Request):
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str, request: Request):
     return public_run(await owned_run(request, run_id))
+
+
+@router.get("/harness/products")
+def product_catalog():
+    from oracledb import Error as OracleError
+    from .tools.yield_report_data import fetch_product_codes
+
+    try:
+        return {"products": fetch_product_codes()}
+    except OracleError:
+        raise HTTPException(503, "Product catalog unavailable") from None
+
+
+class SkillToggle(Contract):
+    enabled: StrictBool
+
+
+def profile_skills(request, name=None, enabled=None):
+    from .native_hermes import profile_path, profile_write_lock
+
+    user = getattr(request.state, 'principal_id', None)
+    if not user:
+        raise HTTPException(401, 'Authenticated profile required')
+    profile = profile_path(user)
+    if profile.is_symlink():
+        raise HTTPException(503, 'Skill profile unavailable')
+    if not (profile / 'skills').is_dir():
+        if name is not None:
+            raise HTTPException(404, 'Skill not found')
+        return {'skills': []}
+    command = [sys.executable, '-I', str(Path(__file__).with_name('skill_catalog_worker.py'))]
+    if name is not None:
+        command.extend((name, json.dumps(enabled)))
+    env = {'HERMES_HOME': str(profile), 'HOME': str(profile), 'PATH': os.defpath}
+    try:
+        with profile_write_lock(profile) if name is not None else nullcontext():
+            result = subprocess.run(command, cwd=profile, env=env, capture_output=True, check=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        raise HTTPException(503, 'Skill profile unavailable') from None
+    response = json.loads(result.stdout)
+    if response.get('error') == 404:
+        raise HTTPException(404, 'Skill not found')
+    if response.get('error') == 409:
+        raise HTTPException(409, 'This skill has a shared or required activation setting')
+    return response
+
+
+@router.get('/harness/skills')
+def skill_catalog(request: Request):
+    return profile_skills(request)
+
+
+@router.put('/harness/skills/{name:path}/enabled')
+def toggle_profile_skill(name: str, body: SkillToggle, request: Request):
+    return profile_skills(request, name, body.enabled)
 
 
 @router.get("/harness/sessions/{session_id}")

@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import time
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -252,6 +253,10 @@ def _public_message(row):
     if row.get('_compressed_summary'):
         result['_compressed_summary'] = True
     return result
+
+
+class TitleInUse(ValueError):
+    pass
 
 
 class MongoSessionStore:
@@ -572,7 +577,9 @@ class MongoSessionStore:
         row = await self.get_session(session_id)
         return row['title_source'] if row and row['title'] is not None else None
 
-    async def set_session_title(self, session_id, title):
+    async def set_session_title(self, session_id, title, *, source='user', on_saved=None):
+        if source not in ('user', 'derived', 'llm'):
+            raise ValueError('Invalid title source')
         # Pinned sanitize_title semantics: controls/invisibles removed, whitespace collapsed.
         title = ''.join('\ufffd' if 0xd800 <= ord(c) <= 0xdfff else c for c in (title or '')
                         if not (0 <= ord(c) <= 8 or ord(c) in (11, 12, 127, 0xfeff, 0xfffc)
@@ -588,7 +595,12 @@ class MongoSessionStore:
             if row is None:
                 return False
             if row['hidden'] and row['title'] == 'Bot Chat' and title != 'Bot Chat':
+                if source != 'user':
+                    return False
                 raise ValueError('Canonical Bot Chat cannot be renamed')
+            if source != 'user' and (not title or row['title'] is not None and
+                    (source == 'derived' or row['title_source'] in ('user', 'llm', None))):
+                return False
             other = await self.sessions.find_one(self._scope(title=title, id={'$ne': session_id}, deleted={'$ne': True})) if title else None
             if other:
                 await stack.enter_async_context(self._lock(other['id']))
@@ -598,14 +610,32 @@ class MongoSessionStore:
                     ghost = other['ended_at'] is not None and not other['message_count']
                     if other['id'] not in ancestors and not (ghost and not other['hidden']) and not (
                         title == 'Bot Chat' and other['archived'] and other['hidden']):
-                        raise ValueError('Title is already in use')
+                        raise TitleInUse('Title is already in use')
                     await self.sessions.update_one(self._session(other['id']), {'$set': {'title': None, 'title_source': None}})
             try:
                 result = await self.sessions.update_one(self._session(session_id),
-                    {'$set': {'title': title, 'title_source': 'user' if title else None}})
+                    {'$set': {'title': title, 'title_source': source if title else None}})
             except DuplicateKeyError:
-                raise ValueError('Title is already in use') from None
+                raise TitleInUse('Title is already in use') from None
+            if result.matched_count and on_saved:
+                await on_saved(title)
             return bool(result.matched_count)
+
+    async def apply_native_title(self, session_id, title, source, *, on_saved=None):
+        """Mirror a Hermes title and resolve names reserved only in the web gateway."""
+        if source not in ('derived', 'llm') or not isinstance(title, str) or not title.strip():
+            return None
+        try:
+            written = await self.set_session_title(session_id, title, source=source, on_saved=on_saved)
+        except TitleInUse:
+            if source == 'derived':
+                return None
+            base = re.sub(r' #\d+$', '', title)
+            names = self.sessions.find(self._scope(title={'$regex': '^' + re.escape(base) + r' #\d+$'}), {'title': 1})
+            numbers = [int(row['title'].rsplit(' #', 1)[1]) async for row in names]
+            title = f"{base} #{max([1, *numbers]) + 1}"
+            written = await self.set_session_title(session_id, title, source=source, on_saved=on_saved)
+        return title if written else None
 
     async def _set_session_flag(self, session_id, field, value):
         async with self._lock(session_id):

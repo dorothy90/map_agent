@@ -241,14 +241,14 @@ def test_native_controller_pins_engine_and_restores_history(monkeypatch):
         store = HarnessStore(database='harness_test_' + uuid.uuid4().hex)
         controller = RunController(store, Settings(engine='hermes'))
         calls = []
-        async def synthetic(context, registry, *, history):
+        async def synthetic(context, *, history):
             calls.append(history)
             messages = history + [{'role': 'user', 'content': context.run['query']},
                 {'role': 'assistant', 'content': 'synthetic answer'}]
             return {'status': 'completed', 'stop_reason': 'completed', 'answer': 'synthetic answer',
                 'native_messages': messages, 'native_usage': {'total_tokens': 12, 'api_calls': 1},
                 'native_engine': {'commit': native.UPSTREAM_COMMIT}, 'observations': [], 'result_ids': []}
-        monkeypatch.setattr(native, 'run_native', synthetic)
+        monkeypatch.setattr('harness.hermes_chat.run_chat', synthetic)
         try:
             await store.setup()
             first = await controller.start('test', 's', 'r1', 'synthetic one')
@@ -267,7 +267,7 @@ def test_native_controller_pins_engine_and_restores_history(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_bundled_source_matches_recorded_upstream_and_local_patches():
+def test_bundled_source_matches_unmodified_upstream():
     import hashlib
     import json
     from pathlib import Path
@@ -276,11 +276,10 @@ def test_bundled_source_matches_recorded_upstream_and_local_patches():
     manifest = json.loads((source / 'UPSTREAM.json').read_text())
     assert manifest['commit'] == native.UPSTREAM_COMMIT
     assert 'MIT License' in (source / 'LICENSE').read_text()
+    assert not manifest['local_files'] and not manifest['adaptations']
+    assert not (source / 'PATCHES.diff').read_bytes()
     for path, upstream_hash in manifest['files'].items():
-        expected = manifest['local_files'].get(path, upstream_hash)
-        assert hashlib.sha256((source / path).read_bytes()).hexdigest() == expected, path
-    patch = (source / 'PATCHES.diff').read_text()
-    assert all('+++ b/' + path in patch for path in manifest['local_files'])
+        assert hashlib.sha256((source / path).read_bytes()).hexdigest() == upstream_hash, path
 
 
 def test_embedded_profile_disables_host_package_probe_without_losing_settings(monkeypatch, tmp_path):
@@ -297,7 +296,31 @@ def test_embedded_profile_disables_host_package_probe_without_losing_settings(mo
     assert saved['skills']['auto_load'] == ['custom-skill']
     assert saved['agent'] == {'environment_probe': False, 'stall_guards': False}
     assert saved['delegation'] == {'orchestrator_enabled': False, 'max_spawn_depth': 1}
-    assert saved['auxiliary']['title_generation']['model_upgrade_enabled'] is False
+    assert 'model_upgrade_enabled' not in saved.get('auxiliary', {}).get('title_generation', {})
+
+
+@pytest.mark.parametrize('managed', [True, False])
+def test_profile_migrates_only_managed_title_disable_once(monkeypatch, tmp_path, managed):
+    import yaml
+    import harness.native_hermes as native
+    monkeypatch.setattr(native, 'ROOT', tmp_path)
+    profile = tmp_path / '.runtime/hermes/profiles' / native.principal_hash('p')
+    profile.mkdir(parents=True)
+    config = profile / 'config.yaml'
+    config.write_text(yaml.safe_dump({
+        'agent': {'environment_probe': not managed},
+        'delegation': {'orchestrator_enabled': False},
+        'auxiliary': {'title_generation': {'model_upgrade_enabled': False, 'language': 'ko'}},
+        'tools': {'tool_search': {'enabled': 'off', 'defer': []}},
+    }))
+    native.prepare_profile('p')
+    migrated = yaml.safe_load(config.read_text())
+    expected = {'language': 'ko'} if managed else {'language': 'ko', 'model_upgrade_enabled': False}
+    assert migrated['auxiliary']['title_generation'] == expected
+    migrated['auxiliary']['title_generation']['model_upgrade_enabled'] = False
+    config.write_text(yaml.safe_dump(migrated))
+    native.prepare_profile('p')
+    assert yaml.safe_load(config.read_text()) == migrated
 
 
 @pytest.mark.parametrize('requested,expected', [

@@ -76,7 +76,7 @@ def test_two_principals_ws_runs_rest_verified_history():
                 assert after.status_code == 200
                 assert after.json()['messages'] == [
                     {'role': 'user', 'content': owner + ' question'},
-                    {'role': 'assistant', 'content': 'VERIFIED-FINAL'}]
+                    {'role': 'assistant', 'content': 'VERIFIED-FINAL', 'interim': False}]
                 assert 'UNVERIFIED-CANDIDATE' not in after.text
 
         for owner, other in (('alice', 'bob'), ('bob', 'alice')):

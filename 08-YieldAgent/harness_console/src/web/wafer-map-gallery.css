@@ -1,0 +1,39 @@
+.hermes-web .wafer-map-gallery {
+  display: block;
+  margin: 22px 0;
+  overflow: hidden;
+  border: 1px solid #dfe4df;
+  border-radius: 14px;
+  color: #202322;
+  background: #fff;
+}
+.wafer-map-heading, .wafer-map-scale, .wafer-map-loading, .wafer-map-original {
+  display: flex;
+  align-items: center;
+}
+.wafer-map-heading { justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; padding: 15px 18px 8px; }
+.wafer-map-heading strong { font-size: 14px; font-weight: 650; }
+.wafer-map-scale { gap: 5px; color: #626c64; font-size: 10px; font-variant-numeric: tabular-nums; }
+.wafer-map-scale i { width: 48px; height: 5px; border-radius: 5px; background: linear-gradient(to right, #e8f4ee, #91ccc3, #4684a3, #4d457e); }
+.wafer-map-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, max(145px, 31%)), 1fr)); gap: 4px; padding: 0 8px; }
+.wafer-map-tile { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; padding: 6px; border-radius: 8px; cursor: zoom-in; }
+.wafer-map-tile:hover, .wafer-map-close:hover { background: #f4f7f4; }
+.wafer-map-tile:focus-visible, .wafer-map-close:focus-visible { outline: 2px solid #387a78; outline-offset: -2px; }
+.wafer-map-tile canvas { display: block; width: min(100%, 140px); height: auto; aspect-ratio: 1; }
+.wafer-map-tile strong, .wafer-map-zoom strong { overflow-wrap: anywhere; font-size: 13px; line-height: 1.4; }
+.wafer-map-tile small, .wafer-map-zoom small { color: #626a63; font-size: 12px; line-height: 1.4; }
+.wafer-map-original { justify-content: flex-end; padding: 2px 15px 9px; }
+.wafer-map-loading { justify-content: space-between; gap: 10px; padding: 14px; color: #626a63; font-size: 12px; }
+.wafer-map-zoom {
+  width: min(450px, 92vw); max-height: 90dvh; max-width: none; padding: 0;
+  margin: auto; background: #fff; color: #202322; border: 1px solid #d9dfda; border-radius: 16px;
+}
+.wafer-map-zoom::backdrop { background: #1a251e55; }
+.wafer-map-zoom-body { display: grid; justify-items: center; gap: 4px; padding: 15px 20px 24px; }
+.wafer-map-close { display: grid; place-items: center; justify-self: end; width: 32px; height: 32px; border-radius: 8px; cursor: pointer; }
+.wafer-map-zoom canvas { display: block; width: min(100%, 55dvh); height: auto; aspect-ratio: 1; }
+@media (max-width: 650px) {
+  .wafer-map-heading { padding: 12px 12px 6px; }
+  .wafer-map-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, max(90px, 31%)), 1fr)); }
+  .wafer-map-tile strong, .wafer-map-tile small { font-size: 10px; }
+}

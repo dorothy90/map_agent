@@ -7,6 +7,7 @@ import math
 import os
 import random
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, replace, field
@@ -126,6 +127,10 @@ class ExecutionContext:
     protected_models: int = 0
     protected_seconds: float = 0
     parent_invocation_id: str = ""
+    request_choice: Callable[[list[dict]], Awaitable[dict]] | None = None
+    map_scope_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    map_scope_history: list = field(default_factory=list)
+    map_memory_entries: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.active_at_start is None:
@@ -270,7 +275,11 @@ class ToolExecutor:
             observation = await store.observation(run["principal_id"], run["session_id"], existing["result_id"])
             await self.publish(observation, run)
             return observation
-        fingerprint = hashlib.sha256(json.dumps([name, args], sort_keys=True).encode()).hexdigest()
+        fingerprint_input = [name, args]
+        if name == 'load_wafer_maps' and ctx.map_scope_history:
+            # An answered clarification can change the query behind the same lot/page arguments.
+            fingerprint_input.append(ctx.map_scope_history)
+        fingerprint = hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True).encode()).hexdigest()
         repeated = await store.calls.count_documents({"run_id": run["run_id"], "fingerprint": fingerprint})
         if not existing and repeated >= 3:
             raise BudgetExceeded("repeated_action_without_progress")
@@ -292,14 +301,16 @@ class ToolExecutor:
         try:
             if spec is None:
                 raise ValueError("Unknown tool")
+            call_args = await spec.prepare_arguments(args, ctx) if spec.prepare_arguments else args
+            observation["validated_arguments"] = call_args
             for attempt in range(3):
                 try:
                     async def invoke():
                         if name == "delegate_readonly":
-                            return await self.registry.invoke(name, args, replace(ctx, invocation_id=call_id))
+                            return await self.registry.invoke(name, call_args, replace(ctx, invocation_id=call_id))
                         async with ctx.io_gate:
                             await ctx.check()
-                            return await self.registry.invoke(name, args, replace(ctx, invocation_id=call_id))
+                            return await self.registry.invoke(name, call_args, replace(ctx, invocation_id=call_id))
                     remaining = ctx.remaining_seconds() - ctx.protected_seconds
                     if remaining <= 0:
                         raise BudgetExceeded("active_time_reserve")

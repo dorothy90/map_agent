@@ -246,10 +246,11 @@ describe('web controls', () => {
  it.each([
    [false, false, '보내기'], [false, true, '보내기'],
    [true, false, '중지'], [true, true, '보내기'],
- ] as const)('shows a labeled SVG pill: busy=%s, payload=%s', (busy,hasComposerPayload,label) => {
+ ] as const)('shows an accessible icon-only action: busy=%s, payload=%s', (busy,hasComposerPayload,label) => {
    renderControls({busy,hasComposerPayload},true)
    const button=screen.getByRole('button',{name:label})
-   expect(button.textContent).toBe(label)
+   expect(button.textContent).toBe('')
+   expect(button.title).toBe(label)
    expect(button.querySelector('svg')).toBeTruthy()
    expect(screen.getAllByRole('button')).toHaveLength(1)
    expect(button.getAttribute('type')).toBe('submit')

@@ -94,7 +94,26 @@ def test_python_tool_persists_names_and_reports_normalization(monkeypatch):
     assert result.tables[0].rows == tables['table_1']
     assert 'table_1' in result.summary and 'wafer_map_manifest' in result.summary
 
+    # Only one of four source measurements belongs to this binmap, including
+    # one other retest of the same wafer in the source.
+    manifest = dict(tables['table_1'][1], member_count=1, map_type='binmap')
+    tables = {'wafer_map_manifest': [manifest], 'wafer_map_members': [tables['table_2'][2]]}
+    result = asyncio.run(python_tools.run_python(
+        python_tools.PythonInput(code='emit_table(...)', input_result_ids=['source']), ctx))
+    evidence = result.scope['map_measurements']
+    assert evidence['measurement_count'] == 1
+    row, = evidence['preview_rows']
+    assert (row['measurement_id'], row['lot_id'], row['wf_id'], row['source_result_id']) == ('m3', 'L2', 7, 'source')
+    assert (row['pass_die_count'], row['die_count'], row['map_pass_fraction']) == (2, 3, 2/3)
+
+    # A real measurement identifier combined with a different wafer has no matching source row.
+    tables['wafer_map_members'][0]['wf_id'] = 99
+    result = asyncio.run(python_tools.run_python(
+        python_tools.PythonInput(code='emit_table(...)', input_result_ids=['source']), ctx))
+    assert result.scope['map_measurements'] == {'selection_status': 'unverified', 'preview_rows': []}
+
     source.tool_name = 'query_db'
     result = asyncio.run(python_tools.run_python(
         python_tools.PythonInput(code='emit_table(...)', input_result_ids=['source']), ctx))
     assert [table.table_id for table in result.tables] == list(tables)
+    assert 'map_measurements' not in result.scope

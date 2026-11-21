@@ -138,6 +138,11 @@ def test_approved_split_and_reuse(setup_report, population_data):
     period = call(lot_cd='4SS', period={'kind': 'recent', 'weeks': 4})
     assert period.status == 'success'
     assert len(table_rows(period, 'lot_population')) == 57
+    projections = period.scope['table_projections']
+    assert projections['lot_population'] == {'group_by': ['lot_id'], 'aggregations': {'pt1h_mean': 'mean'},
+                                            'units': {'pt1h_mean': 'fraction'}, 'preview_policy': 'read_result'}
+    captured, _ = store.saved[period.scope['lot_population']['source_result_id']]
+    assert captured.scope['table_projections'] == projections
     scores = [r['pt1h_mean'] for r in population_data.lot_population]
     q1 = np.quantile(scores, .25, method='linear')
     assert q1 == .732337

@@ -2,6 +2,7 @@ import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useEffect, useMemo, useState } from 'react'
 
+import { useWebPresentation } from '../../../../web/presentation'
 import { useSessionView } from '@/app/chat/session-view'
 import { activitySignature, toolNarratesWait, TURN_QUIET_S } from '@/components/assistant-ui/thread/turn-activity'
 import { toolPresentVerb } from '@/components/assistant-ui/tool/run-summary'
@@ -249,7 +250,8 @@ export const CenteredThreadSpinner: FC = () => {
 export const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
   const { compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
-  const elapsed = useElapsedSeconds(true, undefined, turnStartedAt)
+  const web = useWebPresentation()
+  const elapsed = useElapsedSeconds(!web, undefined, turnStartedAt)
   const hint = useStatusHint(compacting, drafting, providerWait)
   // Renderer-synthesized load bar: covers loads the backend's wait loop
   // can't narrate (gateway still initializing, or an auxiliary call — not
@@ -257,18 +259,18 @@ export const ResponseLoadingIndicator: FC = () => {
   const localLoad = useLocalModelLoad(!hint)
 
   return (
-    <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>
-      <StatusPulse
-        aria-hidden="true"
-        className="dither inline-block size-3 rounded-[2px] text-midground/80"
-        kind="opacity"
-      />
+    <StatusRow data-slot="aui_response-loading" label={hint || (web ? '응답 준비 중' : t.assistant.thread.loadingResponse)}>
+      {web ? (
+        <span className="web-typing-bubble" aria-hidden="true"><i/><i/><i/></span>
+      ) : (
+        <StatusPulse aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80" kind="opacity" />
+      )}
       {hint ? (
         <WaitHint hint={hint} />
       ) : localLoad ? (
         <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
       ) : null}
-      <ActivityTimerText aria-hidden={true} seconds={elapsed} />
+      {!web && <ActivityTimerText aria-hidden={true} seconds={elapsed} />}
     </StatusRow>
   )
 }
@@ -325,6 +327,9 @@ interface TurnActivityRowProps {
 const TurnActivityRow: FC<TurnActivityRowProps> = ({ active, elapsed, hint, localLoad }) => {
   const { t } = useI18n()
 
+  const web = useWebPresentation()
+  if (web && !hint && !localLoad) return null
+
   return (
     <StatusRow
       className={cn(!active && 'sr-only')}
@@ -334,17 +339,13 @@ const TurnActivityRow: FC<TurnActivityRowProps> = ({ active, elapsed, hint, loca
     >
       {active && (
         <>
-          <StatusPulse
-            aria-hidden="true"
-            className="dither inline-block size-3 rounded-[2px] text-midground/80"
-            kind="opacity"
-          />
+          {!web && <StatusPulse aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80" kind="opacity" />}
           {hint ? (
             <WaitHint hint={hint} />
           ) : localLoad ? (
             <ProgressHint label={t.assistant.thread.loadingLocalModel(localLoad.model)} percent={localLoad.percent} />
           ) : null}
-          <ActivityTimerText aria-hidden={true} seconds={elapsed} />
+          {!web && <ActivityTimerText aria-hidden={true} seconds={elapsed} />}
         </>
       )}
     </StatusRow>

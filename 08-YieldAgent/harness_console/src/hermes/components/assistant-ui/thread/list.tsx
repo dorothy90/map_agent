@@ -1,3 +1,6 @@
+import { CompletedAnswerScroll } from '../../../../web/completed-answer-scroll'
+import { useWebPresentation } from '../../../../web/presentation'
+import { WebTraceScope } from '../../../../web/execution-trace'
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
@@ -458,7 +461,7 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
             <ResponseMessages components={components} indices={group.indices} />
           </div>
         ) : (
-          <ThreadPrimitive.MessageByIndex components={components} index={group.index} />
+          <WebTraceScope indices={[group.index]}><ThreadPrimitive.MessageByIndex components={components} index={group.index} /></WebTraceScope>
         )}
       </MessageRenderBoundary>
     </div>
@@ -503,7 +506,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // spring can't tell live-token growth from a session-switch bulk relayout, and
   // chasing the latter reads as the view scrolling to random spots before
   // settling. Its refs hang off our own DOM so the sticky human bubbles survive.
-  const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll } = useStickToBottom({
+  const web = useWebPresentation()
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom, stopScroll, state: follow } = useStickToBottom({
     initial: 'instant',
     resize: 'instant',
     targetScrollTop: resolveThreadScrollTarget
@@ -827,13 +831,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => onThreadEditOpen(beginEditHold), [beginEditHold])
   useEffect(() => onThreadEditClose(endEditHold), [endEditHold])
   useEffect(() => () => endEditHold(), [endEditHold])
+  const parkedAnswer = useRef<{ key: typeof sessionKey; top: number } | null>(null)
   // New run → snap to the latest turn only when already near the bottom.
   useAuiEvent('thread.runStart', () => {
     cancelRestoreRef.current?.()
     const el = scrollRef.current
 
-    if (el && shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
-      scrollToBottomUnlessSelecting()
+    const parked = parkedAnswer.current
+    parkedAnswer.current = null
+    if (!el) return
+    const stillAtAnswer = parked && parked.key === sessionKey &&
+      Math.abs(el.scrollTop - parked.top) <= SCROLL_TARGET_EPSILON_PX
+    if (stillAtAnswer || shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
+      scrollToBottomUnlessSelecting(stillAtAnswer ? 'instant' : undefined)
     }
   })
 
@@ -887,6 +897,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     let previousResizeMetrics = resizeMetrics()
 
     const update = () => {
+      if (parkedAnswer.current && Math.abs(el.scrollTop - parkedAnswer.current.top) > SCROLL_TARGET_EPSILON_PX) {
+        parkedAnswer.current = null
+      }
       previousResizeMetrics = resizeMetrics()
       liveScrollStateRef.current = threadScrollStateFromMetrics(el)
     }
@@ -1559,6 +1572,15 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     [visibleGroups, components, structuralSignature, tailStart]
   )
 
+  const parkAnswer = useCallback((viewport: HTMLElement, top: number) => {
+    cancelRestoreRef.current?.()
+    applyRestoreRef.current = null
+    restoreFromBottomRef.current = null
+    stopScroll()
+    viewport.scrollTop = top
+    parkedAnswer.current = { key: sessionKey, top: viewport.scrollTop }
+  }, [sessionKey, stopScroll])
+
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId: scrollSessionId })
   useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows })
 
@@ -1572,6 +1594,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         } as CSSProperties
       }
     >
+      {web && paneVisible && !isHistorical && !sessionLoading && (
+        <CompletedAnswerScroll key={sessionKey} running={isRunning} viewportRef={scrollRef}
+          follow={follow} parkAnswer={parkAnswer} hasSelection={hasTranscriptTextSelection} />
+      )}
       {secondaryWindow && (
         // Secondary windows hide the titlebar chrome, so the scroller runs to
         // the window's top edge and streamed text slides up under the OS

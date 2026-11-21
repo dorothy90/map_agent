@@ -214,6 +214,32 @@ def test_concurrent_submit_gets_exactly_one_active_run_per_principal():
     asyncio.run(scenario())
 
 
+def test_native_titles_upgrade_once_and_respect_saved_names():
+    async def scenario():
+        async with database() as (a, b, harness):
+            for sid in ('current', 'manual', 'legacy', 'deleted', 'repeat'):
+                await a.create_session(sid, 'cli')
+            assert await a.apply_native_title('current', 'Initial', 'derived') == 'Initial'
+            assert await a.apply_native_title('current', 'Replacement', 'derived') is None
+            assert await a.apply_native_title('current', 'Yield trend', 'llm') == 'Yield trend'
+            assert await a.apply_native_title('current', 'Replacement', 'llm') is None
+            assert await a.get_session_title_source('current') == 'llm'
+            assert await a.set_session_title('manual', 'Yield trend #3')
+            assert await a.apply_native_title('manual', 'Replacement', 'llm') is None
+            assert await a.set_session_title('legacy', 'Pre-provenance')
+            await a.sessions.update_one(a._session('legacy'), {'$unset': {'title_source': ''}})
+            assert await a.apply_native_title('legacy', 'Replacement', 'llm') is None
+            assert await a.apply_native_title('repeat', 'Yield trend', 'derived') is None
+            assert await a.apply_native_title('repeat', 'Yield trend', 'llm') == 'Yield trend #4'
+            assert await a.get_session_title('current') == 'Yield trend'
+            assert await a.delete_session('deleted')
+            assert await a.apply_native_title('deleted', 'Replacement', 'llm') is None
+            assert await b.apply_native_title('current', 'Replacement', 'llm') is None
+            await b.create_session('current', 'cli')
+            assert await b.apply_native_title('current', 'Yield trend', 'llm') == 'Yield trend'
+    asyncio.run(scenario())
+
+
 def test_titles_end_delete_and_tombstone():
     async def scenario():
         async with database() as (a, b, harness):

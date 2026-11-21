@@ -4,6 +4,8 @@ Hermes는 유일한 웹 UI 및 harness 실행 경로입니다. `src/main.tsx`는
 
 ## 준비 사항 및 실행
 
+macOS에서 실제 모델 및 DB에 연결하는 새 채팅은 [로컬 게이트웨이와 콘솔 실행 절차](../harness/README.md#macos에서-웹-채팅-실행)를 따른다.
+
 - Node.js 22.12 이상(또는 20.19 이상), npm
 - 인증된 Hermes 게이트웨이와 세션·결과·아티팩트 API
 - 배포 환경에 맞는 `window.hermesWebOptions.resolver` 연결 설정

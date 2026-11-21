@@ -16,10 +16,12 @@ class NativeBudgetExceeded(RuntimeError):
 
 
 class NativeBudget:
-    def __init__(self, *, model_limit, token_limit, max_output_tokens, base_url=None, on_usage=None, call_timeout=None):
+    def __init__(self, *, model_limit, token_limit, max_output_tokens, base_url=None, on_usage=None, call_timeout=None,
+                 is_optional_call=None):
         self.model_limit, self.token_limit = model_limit, token_limit
         self.max_output_tokens, self.on_usage = max_output_tokens, on_usage
         self.call_timeout = call_timeout
+        self.is_optional_call = is_optional_call
         self.base_url = urlsplit(base_url) if base_url else None
         self.lock = threading.RLock()
         self.totals = dict(models=0, tokens=0, input_tokens=0, output_tokens=0)
@@ -37,7 +39,8 @@ class NativeBudget:
 
     def _deny(self, reason):
         with self.lock:
-            self.exhausted_reason = reason
+            if self.is_optional_call is None or not self.is_optional_call():
+                self.exhausted_reason = reason
             self._notify()
         raise NativeBudgetExceeded(reason)
 

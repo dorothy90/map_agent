@@ -5,6 +5,7 @@ from typing import Any, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .artifact_delivery import artifact_links
+from .tools.report_policy import legacy_report_projections
 
 
 EMPTY_RESULT_SUMMARY = "결과 0건"
@@ -64,6 +65,10 @@ class ResultPage(Contract):
         payload["truncated"] = bool(payload.get("truncated")) or self.offset > 0 or next_offset < self.source_total_rows
 
 
+def _preview_limit(total_rows: int) -> int:
+    return 25 if total_rows <= 25 else 10
+
+
 class TableRef(Contract):
     table_id: str
     title: str
@@ -117,15 +122,30 @@ class ToolObservation(Contract):
         """Keep audit identifiers and repeated tool inputs out of model context."""
         payload = self.model_dump(mode="json", include={"result_id", "tool_name", "status", "summary", "columns", "preview_rows", "total_rows", "truncated", "artifact_refs", "source_result_ids", "scope", "error"})
         single_page = self.page is not None and len(self.tables) == 1 and self.tables[0].table_id == self.page.table_id
-        row_limit = self.page.limit if single_page else 10
+        row_limit = self.page.limit if single_page else _preview_limit(self.total_rows)
         payload["preview_rows"] = payload["preview_rows"][:row_limit]
         payload["truncated"] = self.truncated or len(self.preview_rows) > row_limit
+        projections = payload["scope"].pop("table_projections", None)
+        if projections is None:
+            projections = legacy_report_projections(self.scope)
         payload["tables"] = []
         for table in self.tables:
-            limit = self.page.limit if self.page and table.table_id == self.page.table_id else 10
-            payload["tables"].append({**table.model_dump(mode="json", exclude={"data_ref"}),
+            is_page = self.page is not None and table.table_id == self.page.table_id
+            limit = self.page.limit if is_page else _preview_limit(table.total_rows)
+            entry = {**table.model_dump(mode="json", exclude={"data_ref"}),
                 "preview_rows": [] if self.status == "error" else table.preview_rows[:limit],
-                "truncated": table.total_rows > min(len(table.preview_rows), limit)})
+                "truncated": table.total_rows > min(len(table.preview_rows), limit)}
+            if contract := projections.get(table.table_id):
+                entry["group_by"] = contract["group_by"]
+                entry["aggregations"] = {k: v for k, v in contract["aggregations"].items() if k in table.columns}
+                units = {**table.units, **contract["units"]}
+                entry["units"] = {k: v for k, v in units.items() if k in table.columns}
+                if contract.get("preview_policy") == "read_result" and not is_page:
+                    entry.update(preview_policy="read_result", preview_rows=[], truncated=table.total_rows > 0)
+                    if len(self.tables) == 1:
+                        payload["preview_rows"] = []
+            payload["truncated"] |= entry["truncated"]
+            payload["tables"].append(entry)
         # A single table is already represented by the legacy preview fields.
         if len(self.tables) == 1:
             payload["tables"][0].pop("preview_rows")

@@ -12,7 +12,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from harness.store import Conflict
-from .events import SessionEvents, verified_answer
+from .events import SessionEvents, published_answer
 from .pending_controls import PendingControls
 from .pending_wire import PendingControlError
 
@@ -180,7 +180,7 @@ class Execution:
             raise RpcError('not_found')
         value = await self._receipt_for_run(session_id, run)
         # include_result remains optional. No raw native_messages/answer/usage dump.
-        if params.get('include_result') is True and (answer := verified_answer(run)) is not None:
+        if params.get('include_result') is True and run.get('status') == 'completed' and (answer := published_answer(run)) is not None:
             value['result'] = {'final_response': answer}
         return value
 

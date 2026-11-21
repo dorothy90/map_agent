@@ -4,7 +4,7 @@ import time
 import pytest
 
 
-def test_new_runtime_pins_skills_and_rejects_active_old_checkpoint():
+def test_new_runtime_records_skills_on_use_and_rejects_active_old_checkpoint():
     from harness.store import HarnessStore, Conflict
     from harness.control import RunController
     from harness.config import Settings
@@ -16,7 +16,7 @@ def test_new_runtime_pins_skills_and_rejects_active_old_checkpoint():
             run = await store.start_run('p', 's', 'r', 'fixture')
             assert run['runtime_version'] == 'harness/v2'
             assert run['contract_version'] == 'harness-observation/v2'
-            assert run['skill_versions'] and run['skill_snapshot']
+            assert run['skill_reads'] == [] and 'skill_snapshot' not in run
             await store.runs.update_one({'_id': run['run_id']}, {'$set': {'runtime_version': 'harness/v1'}})
             with pytest.raises(Conflict, match='version'):
                 await controller.launch(run['run_id'])

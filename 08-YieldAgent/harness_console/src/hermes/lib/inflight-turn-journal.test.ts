@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
   clearInFlightTurnJournal,
   type JournalableSessionState,
@@ -60,6 +60,18 @@ afterEach(() => {
   vi.restoreAllMocks()
   clearInFlightTurnJournal('stored-1')
   vi.useRealTimers()
+})
+
+it('retires a pre-clarify journal when a projected run publishes its final without a numeric row id', () => {
+  const completed = toChatMessages([
+    { role: 'user', content: 'report' },
+    { role: 'tool', name: 'lookup', tool_call_id: 'data', content: 'found' },
+    { role: 'assistant', content: 'Complete report', interim: false }
+  ])
+  const journal = [user('u', 'report'), assistantWithTool('assistant-stream-2', 'Selecting a product')]
+  const recovery = mergeInFlightMessages(completed, journal)
+  expect(recovery.caughtUp).toBe(true)
+  expect(recovery.messages).toBe(completed)
 })
 
 describe('persistInFlightTurnState', () => {

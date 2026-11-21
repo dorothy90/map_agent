@@ -56,7 +56,7 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
   // flaky network doesn't block drafting; only submit/backend actions stay
   // disabled until the gateway is open again.
   if (web) {
-    return '추가로 요청할 내용을 입력하세요…'
+    return sessionId ? '수율에 대해 물어보세요' : '수율이나 웨이퍼에 대해 질문하세요'
   }
   return disabled
     ? reconnecting

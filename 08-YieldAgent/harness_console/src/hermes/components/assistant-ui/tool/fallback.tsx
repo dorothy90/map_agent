@@ -18,7 +18,8 @@ import {
 } from 'react'
 
 import { useWebPresentation } from '../../../../web/presentation'
-import { toolArgumentSummary } from '../../../../web/tool-summary'
+import { WebTraceStep, type TraceState } from '../../../../web/execution-trace'
+import { toolStepLabel, toolArgumentSummary } from '../../../../web/tool-summary'
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
@@ -430,7 +431,8 @@ function ToolEntry({ part }: ToolEntryProps) {
   const inlineDiff = inlineDiffFromResult(toolResultRecord(stablePart))
   const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff) && !hideCodeDiffs
-  const disclosureOpen = useDisclosureOpen(disclosureId, defaultOpen)
+  const rowDisclosureId = web && isPending ? disclosureId + ':running' : disclosureId
+  const disclosureOpen = useDisclosureOpen(rowDisclosureId, web ? isPending : defaultOpen)
   const canDismiss = !isPending && !embedded
   // Only animate entries that mount while their message is actively
   // streaming — historical sessions mount with `messageRunning === false`,
@@ -607,7 +609,9 @@ function ToolEntry({ part }: ToolEntryProps) {
     return null
   }
 
-  return (
+  const state: TraceState = isPending ? 'running' : view.status === 'error' ? 'error'
+    : interrupted || result === undefined ? 'stopped' : 'done'
+  const row = (
     <div
       className={cn(
         'group/tool-block min-w-0 max-w-full overflow-hidden text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)',
@@ -620,10 +624,15 @@ function ToolEntry({ part }: ToolEntryProps) {
       data-tool-row=""
       ref={enterRef}
     >
-      {web && <button type="button" className="web-tool-row" aria-expanded={open} disabled={!hasExpandableContent} onClick={() => {
-        if (!open && runDisclosureId) setToolDisclosureOpen(runDisclosureId,true)
-        setToolDisclosureOpen(disclosureId,!open)
-      }}><span aria-hidden="true">{isPending ? '◌' : view.status==='error' ? '!' : result===undefined ? '–' : '✓'}</span><strong>{toolName}</strong><span className="web-tool-args" title={toolArgumentSummary(webArgs)}>{toolArgumentSummary(webArgs)}</span><span className="web-tool-state">{isPending ? '실행 중' : view.status==='error' ? '오류' : result===undefined ? '중지됨' : '완료'}{isPending ? ` · ${Math.floor(elapsed)}s` : view.durationLabel ? ` · ${view.durationLabel}` : ''}</span><span aria-hidden="true">{open ? '⌄' : '›'}</span></button>}
+      {web && <button type="button" className="web-tool-row" data-tool-state={state}
+        aria-expanded={open} disabled={!isPending && !hasExpandableContent && !Object.keys(webArgs).length}
+        onClick={() => setToolDisclosureOpen(rowDisclosureId, !open)}>
+        <span className="web-trace-icon" aria-hidden="true">{isPending ? '' : state === 'error' ? '!' : state === 'stopped' ? '–' : '✓'}</span>
+        <strong>{toolStepLabel(toolName)}</strong><code>{toolName}</code>
+        <span className="web-tool-state">{isPending ? '실행 중' : state === 'error' ? '오류' : state === 'stopped' ? '중지됨' : '완료'}
+          {isPending ? ` · ${Math.floor(elapsed)}s` : view.durationLabel ? ` · ${view.durationLabel}` : ''}</span>
+        <span aria-hidden="true">{open ? '⌄' : '›'}</span>
+      </button>}
       <div className={cn(web && 'web-tool-legacy-header', open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
           action={dismissAction}
@@ -681,6 +690,9 @@ function ToolEntry({ part }: ToolEntryProps) {
       </div>
       {open && (
         <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
+          {web && !showPayload && <div className="web-trace-input">
+            {toolArgumentSummary(webArgs) || (Object.keys(webArgs).length ? clampForDisplay(JSON.stringify(webArgs)) : '입력 인자 없음')}
+          </div>}
           {copyAction.text && (
             <CopyButton
               appearance="inline"
@@ -792,6 +804,7 @@ function ToolEntry({ part }: ToolEntryProps) {
       )}
     </div>
   )
+  return web ? <WebTraceStep id={disclosureId} state={state}>{row}</WebTraceStep> : row
 }
 
 interface TerminalTranscriptProps {

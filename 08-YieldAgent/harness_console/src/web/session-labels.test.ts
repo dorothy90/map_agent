@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { displaySessionLabel, readFirstQuestion, relativeSessionTime, matchesSessionLabel, sessionLabelKey } from './session-labels'
+import { displaySessionLabel, readFirstQuestion, sessionDayGroup, matchesSessionLabel, sessionLabelKey } from './session-labels'
 import type { SessionInfo } from '@/types/hermes'
 it('reads oldest pages until the first user, preserving original text and owner', async () => {
  const read=vi.fn().mockResolvedValueOnce({messages:[{role:'system',content:'system'}],pagination:{limit:1}}).mockResolvedValueOnce({messages:[{role:'user',content:'Original question\nsecond line'}]})
@@ -18,10 +18,13 @@ it('prefers trimmed server titles, then trimmed first questions without inventin
  expect(await readFirstQuestion({id:'s',title:'Generated title'} as SessionInfo,vi.fn().mockResolvedValue({messages:[]}))).toBeNull()
  await expect(readFirstQuestion({id:'s'} as SessionInfo,vi.fn().mockRejectedValue(new Error('offline')))).rejects.toThrow('offline')
 })
-it('filters only loaded labels and formats real epoch timestamps', () => {
+it('filters only loaded labels and groups real epoch timestamps at local midnight', () => {
  expect(matchesSessionLabel(undefined,'query')).toBe(false)
  expect(matchesSessionLabel('Original QUERY','query')).toBe(true)
  expect(matchesSessionLabel(undefined,'')).toBe(true)
- expect(relativeSessionTime({last_active:67,started_at:1},100000)).toBe('33초 전')
- expect(relativeSessionTime({started_at:67},100000)).toBe('33초 전')
+ const midnight=new Date(2026,10,20).getTime()
+ const now=midnight+60000
+ expect(sessionDayGroup({last_active:midnight/1000,started_at:1},now)).toBe('오늘')
+ expect(sessionDayGroup({started_at:midnight/1000-1},now)).toBe('이전 대화')
+ expect(sessionDayGroup({},now)).toBe('이전 대화')
 })

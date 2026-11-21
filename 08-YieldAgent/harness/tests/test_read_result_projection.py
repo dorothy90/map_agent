@@ -40,6 +40,61 @@ def shown(view):
     return view['preview_rows']
 
 
+def test_wafer_report_uses_full_precision_and_exact_source_identifiers():
+    from html.parser import HTMLParser
+    from harness.tools.wafer_group_report import wafer_group_report
+
+    rows = [dict(LOT_ID='X&Y', PARAM_NM='Yield', WFID=wf, VALUE=value)
+            for wf, value in [('15', 0.702), ('14', 0.6999), ('13', 0.7)]]
+    caption, report = wafer_group_report(rows, 70.0)
+
+    class Text(HTMLParser):
+        def handle_data(self, value):
+            parts.append(value)
+
+    parts = []
+    Text().feed(report['data'])
+    assert report['title'] == 'X&Y · Yield 수율'
+    assert caption == '70% 미만 1장 (평균 70.0%) · 70% 이상 2장 (평균 70.1%)'
+    assert caption in ''.join(parts)
+    assert '<strong>70% 미만 1장</strong>' in report['data']
+    assert parts.index('70.0% 미만') < parts.index('70.0% 이상')
+    assert '13, 15' in parts and '14' in parts
+    assert '13~15' not in parts
+    with pytest.raises(ValueError):
+        wafer_group_report(rows + rows[:1], 70)
+
+
+def test_only_explicitly_selected_standalone_report_supplies_the_answer():
+    from harness.hermes_chat_worker import selected_report_answer
+
+    href = '/harness/artifacts/report?session_id=session'
+    report = f'[원본 표]({href})'
+    selected = {href: report}
+    answer = f'모델이 다시 쓴 요약\n\n[표]({href})'
+    assert selected_report_answer(answer, selected) == report
+    assert selected_report_answer(answer, {}) is None
+    assert selected_report_answer('표를 만들지 못했습니다.', selected) is None
+    assert selected_report_answer(answer + '\n[맵](/harness/artifacts/map)', selected) is None
+
+
+def test_read_result_renders_only_a_complete_wafer_table():
+    async def scenario():
+        rows = [dict(LOT_ID='LOT-B', PARAM_NM='Y', WFID=str(wf), VALUE=0.6) for wf in (2, 5)]
+        async with reading(rows) as (store, source, bridge, args):
+            report = {'threshold_pct': 65, 'delivery': 'complete_answer'}
+            response = await bridge.invoke({'id': 'report', 'name': 'read_result',
+                                            'args': {**args, 'wafer_report': report}})
+            assert response['source_result_ids'] == [source.result_id]
+            assert response['artifact_refs'][0]['title'] == 'LOT-B · Y 수율'
+            assert response['scope']['rendered_summary'] == '65% 미만 2장 (평균 60.0%) · 65% 이상 0장 (평균 —)'
+            assert len(response['artifact_refs']) == 1
+            partial = await bridge.invoke({'id': 'partial', 'name': 'read_result',
+                                           'args': {**args, 'limit': 1, 'wafer_report': report}})
+            assert partial['status'] == 'error' and not partial['artifact_refs']
+    asyncio.run(scenario())
+
+
 def test_requested_rows_survive_store_bridge_and_replay():
     async def scenario():
         rows = [{'n': n} for n in range(158)]

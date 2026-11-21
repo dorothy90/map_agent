@@ -15,7 +15,7 @@ from harness.tools.registry import ToolRegistry
     (None, None, 'Asia/Seoul'), ('Europe/London', None, 'Europe/London'),
     ('Europe/London', 'Pacific/Honolulu', 'Pacific/Honolulu'),
 ])
-def test_native_settings_and_profile_skill_snapshot(monkeypatch, tmp_path, profile_zone, explicit, expected):
+def test_native_settings_use_persistent_profile(monkeypatch, tmp_path, profile_zone, explicit, expected):
     import harness.native_hermes as native
     monkeypatch.setattr(native, 'ROOT', tmp_path)
     profile = native.prepare_profile('alice')
@@ -24,9 +24,8 @@ def test_native_settings_and_profile_skill_snapshot(monkeypatch, tmp_path, profi
     if profile_zone:
         config['timezone'] = profile_zone
         config_path.write_text(yaml.safe_dump(config))
-    skill = profile / 'skills/yield-analysis/SKILL.md'
-    skill.write_text(skill.read_text() + '\nCustomized profile instruction.\n')
-    expected_content = skill.read_text()
+    assert not list((profile / 'skills').glob('*/SKILL.md'))
+    assert not config.get('skills', {}).get('auto_load')
     updates = []
     captured = {}
     class Runs:
@@ -35,10 +34,7 @@ def test_native_settings_and_profile_skill_snapshot(monkeypatch, tmp_path, profi
     class Stdin:
         def write(self, data):
             captured['startup'] = json.loads(data)
-            snapshot = Path(captured['startup']['skills_path'])
-            assert snapshot != profile / 'skills'
-            skill.write_text('Changed while the run is active')
-            assert (snapshot / 'yield-analysis/SKILL.md').read_text() == expected_content
+            assert 'skills_path' not in captured['startup']
         async def drain(self): pass
     class Stdout:
         async def readline(self):
@@ -54,7 +50,7 @@ def test_native_settings_and_profile_skill_snapshot(monkeypatch, tmp_path, profi
     monkeypatch.setattr(native.asyncio, 'create_subprocess_exec', spawn)
     settings = Settings(engine='hermes', temperature=.73, reasoning_effort='high', call_timeout=17, timezone=explicit)
     run = {'principal_id': 'alice', 'session_id': 's', 'run_id': 'r', 'epoch': 1, 'query': 'synthetic'}
-    context = SimpleNamespace(settings=settings, run=run, store=SimpleNamespace(runs=Runs()),
+    context = SimpleNamespace(settings=settings, run=run, store=SimpleNamespace(db=SimpleNamespace(gateway_event_logs=None), runs=Runs()),
                               remaining_seconds=lambda: 60, check=check)
     with pytest.raises(RuntimeError, match='synthetic-stop'):
         asyncio.run(native.run_native(context, ToolRegistry()))
@@ -64,15 +60,12 @@ def test_native_settings_and_profile_skill_snapshot(monkeypatch, tmp_path, profi
     assert startup['allowed_tools'] == []
     from harness.tests.test_no_yield_tools import worker_module
     worker = worker_module()
-    assert worker.enabled_toolsets(startup) == ['yield_backend', 'yield_evidence']
+    assert worker.enabled_toolsets(startup) == ['yield_backend', 'yield_evidence', 'skills']
     assert worker.enabled_toolsets({**startup, 'no_yield_tools': True}) == [
-        'yield_backend', 'yield_evidence', 'clarify']
+        'yield_backend', 'yield_evidence', 'skills', 'clarify']
     assert captured['env']['HERMES_TIMEZONE'] == expected
     assert captured['env']['HERMES_HOME'] == str(profile)
-    recorded = next(update['$set'] for update in updates if 'skill_versions' in update.get('$set', {}))
-    assert recorded['skill_versions']['yield-analysis'] == hashlib.sha256(expected_content.encode()).hexdigest()
-    assert recorded['skill_snapshot']['yield-analysis']['resources']['SKILL.md']['content'] == expected_content
-    assert not Path(startup['skills_path']).exists()
+    assert all('skill_snapshot' not in update.get('$set', {}) for update in updates)
 
 
 def test_timezone_env_alias(monkeypatch, isolated_settings_env):
@@ -83,17 +76,17 @@ def test_timezone_env_alias(monkeypatch, isolated_settings_env):
     assert Settings.from_env().timezone == 'Asia/Seoul'
 
 
-@pytest.mark.parametrize('key,value', [('external_dirs', ['/some/skill/directory']), ('create_dir', '/some/skill/directory')])
-def test_untracked_external_skill_roots_are_rejected(monkeypatch, tmp_path, key, value):
+@pytest.mark.parametrize('key,value', [('external_dirs', ['/some/skill/directory']), ('create_dir', '/some/skill/directory'), ('inline_shell', True)])
+def test_unsupported_profile_skill_settings_are_rejected(monkeypatch, tmp_path, key, value):
     import harness.native_hermes as native
     monkeypatch.setattr(native, 'ROOT', tmp_path)
     profile = native.prepare_profile('alice')
     config_path = profile / 'config.yaml'
     config = yaml.safe_load(config_path.read_text())
-    config['skills'][key] = value
+    config.setdefault('skills', {})[key] = value
     config_path.write_text(yaml.safe_dump(config))
     context = SimpleNamespace(settings=Settings(engine='hermes'), run={'principal_id': 'alice'})
-    with pytest.raises(ValueError, match='external.*skill|skill.*external'):
+    with pytest.raises(ValueError, match='external skill|inline_shell'):
         asyncio.run(native.run_native(context, ToolRegistry()))
 
 
@@ -121,29 +114,27 @@ def test_native_usage_replaces_reservation_with_actual_usage(monkeypatch, tmp_pa
     context = SimpleNamespace(settings=Settings(engine='hermes'),
         run={'principal_id': 'alice', 'session_id': 's', 'run_id': 'r', 'epoch': 1, 'query': 'synthetic',
              'usage': {'tokens': 10, 'models': 2}},
-        store=SimpleNamespace(runs=Runs(), event=noop), remaining_seconds=lambda: 60, check=noop)
+        store=SimpleNamespace(db=SimpleNamespace(gateway_event_logs=None), runs=Runs(), event=noop), remaining_seconds=lambda: 60, check=noop)
     asyncio.run(native.run_native(context, ToolRegistry()))
     usage_updates = [u for u in updates if any('usage.tokens' in fields for fields in u.values())]
     assert [u.get('$set', {}).get('usage.tokens') for u in usage_updates] == [1010, 60, 60]
     assert all(u['$set']['usage.models'] == 3 for u in usage_updates)
 
 
-def test_worker_uses_snapshot_for_skill_tools_and_prompt_imports(tmp_path):
+def test_worker_reads_and_audits_persistent_skill_for_view_and_auto_load(tmp_path):
     """Exercise real worker bootstrap/import order without making an LLM request."""
     import os
     import subprocess
     import sys
     import harness.native_hermes as native
-    profile, snapshot = tmp_path / 'profile', tmp_path / 'snapshot'
-    profile.mkdir()
+    profile = tmp_path / 'profile'
+    skill = profile / 'skills/audit-skill/SKILL.md'
+    skill.parent.mkdir(parents=True)
+    skill.write_text('---\nname: audit-skill\ndescription: Audit reference\n---\nPROFILE_ONLY')
     (profile / 'config.yaml').write_text('agent:\n  environment_probe: false\n')
-    for root, content in [(profile / 'skills', 'PROFILE_ONLY'), (snapshot, 'SNAPSHOT_ONLY')]:
-        skill = root / 'audit-skill'
-        skill.mkdir(parents=True)
-        (skill / 'SKILL.md').write_text('---\nname: audit-skill\ndescription: Audit reference\n---\n' + content)
     startup = dict(model='synthetic', base_url='http://127.0.0.1:1/v1', api_key='synthetic',
         max_iterations=5, token_limit=120000, max_tokens=8192, run_budget_seconds=30,
-        call_timeout=17, temperature=.73, reasoning_effort='high', skills_path=str(snapshot),
+        call_timeout=17, temperature=.73, reasoning_effort='high',
         session_id='synthetic', tools=[])
     script = tmp_path / 'probe.py'
     script.write_text('''import io, json, runpy, sys, types
@@ -154,11 +145,12 @@ class AIAgent:
     def __init__(self, **kwargs):
         import hermes_constants
         from tools import skills_tool
-        from agent import skill_utils, prompt_builder
+        from agent import skill_utils, prompt_builder, title_generator
         from agent.skill_commands import build_auto_load_prompt
         evidence = dict(type='audit', roots=[str(getter()) for getter in
             (hermes_constants.get_skills_dir, skill_utils.get_skills_dir,
              prompt_builder.get_skills_dir, skills_tool._skills_dir)],
+            title_upgrade=title_generator._model_title_upgrade_enabled(),
             skill=skills_tool.skill_view('audit-skill', task_id='view-test'),
             auto_load=build_auto_load_prompt(user_config={'skills': {'auto_load': ['audit-skill']}},
                 task_id='auto-test', home_override=hermes_constants.get_hermes_home())[0],
@@ -176,9 +168,13 @@ runpy.run_path(worker, run_name='__main__')
     messages = [json.loads(line) for line in result.stdout.splitlines()]
     evidence = next((item for item in messages if item.get('type') == 'audit'), None)
     assert evidence is not None, messages
-    assert evidence['roots'] == [str(snapshot)] * 4
-    assert 'SNAPSHOT_ONLY' in evidence['skill'] and 'PROFILE_ONLY' not in evidence['skill']
-    assert 'SNAPSHOT_ONLY' in evidence['auto_load'] and 'PROFILE_ONLY' not in evidence['auto_load']
+    assert evidence['title_upgrade'] is False
+    assert evidence['roots'] == [str(profile / 'skills')] * 4
+    assert 'PROFILE_ONLY' in evidence['skill'] and 'PROFILE_ONLY' in evidence['auto_load']
+    reads = [m for m in messages if m.get('type') == 'skill_read']
+    assert len(reads) == 2
+    assert all(m['name'] == 'audit-skill' and m['resource'] == 'SKILL.md'
+               and m['sha256'] == hashlib.sha256(skill.read_bytes()).hexdigest() for m in reads)
     assert evidence['reasoning_config'] == {'enabled': True, 'effort': 'high'}
     assert evidence['request_overrides']['temperature'] == .73
 
@@ -213,7 +209,7 @@ def test_request_context_is_identical_for_planner_verifier_and_saved_run(monkeyp
     monkeypatch.setattr(native.asyncio, 'create_subprocess_exec', spawn)
     run = {'principal_id': 'alice', 'session_id': 's', 'run_id': 'r', 'epoch': 1, 'query': 'synthetic', 'created_at': created_at}
     context = SimpleNamespace(settings=Settings(engine='hermes', timezone='Asia/Seoul'), run=run,
-        store=SimpleNamespace(runs=Runs(), event=noop), remaining_seconds=lambda: 60, check=noop)
+        store=SimpleNamespace(db=SimpleNamespace(gateway_event_logs=None), runs=Runs(), event=noop), remaining_seconds=lambda: 60, check=noop)
     before = datetime.now(timezone.utc)
     with pytest.raises(RuntimeError, match='synthetic-stop'):
         asyncio.run(native.run_native(context, ToolRegistry()))

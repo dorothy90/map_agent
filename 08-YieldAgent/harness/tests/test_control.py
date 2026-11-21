@@ -52,7 +52,7 @@ def test_stored_non_native_run_is_failed_without_execution(monkeypatch, operatio
                 yield item
         runs.find = Mock(side_effect=[cursor([run]), cursor([]), cursor([]), cursor([])])
         native = AsyncMock(side_effect=AssertionError("unsupported run executed"))
-        monkeypatch.setattr("harness.native_hermes.run_native", native)
+        monkeypatch.setattr("harness.hermes_chat.run_chat", native)
         controller = RunController(store, Settings())
         if operation == "launch":
             await controller.launch("old")
@@ -137,7 +137,7 @@ def test_terminal_non_native_launch_is_explicitly_rejected_without_rewriting_his
     runs = SimpleNamespace(find_one=AsyncMock(return_value=run), update_one=AsyncMock())
     store = SimpleNamespace(runs=runs, acquire=AsyncMock(), finish=AsyncMock())
     native = AsyncMock(side_effect=AssertionError("historical run executed"))
-    monkeypatch.setattr("harness.native_hermes.run_native", native)
+    monkeypatch.setattr("harness.hermes_chat.run_chat", native)
     controller = RunController(store, Settings())
     with pytest.raises(Conflict, match="only hermes"):
         asyncio.run(controller.launch("old"))

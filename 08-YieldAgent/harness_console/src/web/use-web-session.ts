@@ -14,7 +14,7 @@ import { $activeSessionId, $selectedStoredSessionId, $busy, $gatewayState, $fres
 import type { WebHostAdapter } from '../platform/web-host'
 const idle = async () => {}
 /** H app/contrib/wiring.tsx:380-558,680-714; single primary web route only. */
-export function useWebSession(host: WebHostAdapter) {
+export function useWebSession(host: WebHostAdapter, showingSkills = false) {
   const activeSessionId = useStore($activeSessionId), selectedStoredSessionId = useStore($selectedStoredSessionId), busy = useStore($busy)
   const busyRef = useRef(busy); busyRef.current = busy
   const creatingSessionRef = useRef(false)
@@ -24,10 +24,10 @@ export function useWebSession(host: WebHostAdapter) {
   const getRouteToken = useCallback(() => locationRef.current, [])
   const getRoutedStoredSessionId = useCallback(() => routeSessionId(locationRef.current), [])
   const requestGateway = useCallback(<T,>(method:string, params?:Record<string,unknown>, timeoutMs?:number) => host.gateway.request<T>(method,params,timeoutMs), [host])
-  const {refreshSessions,loadMoreSessions} = useWebSessionList()
+  const {refreshSessions,loadMoreSessions,hasMoreSessions} = useWebSessionList()
   const sessions = useSessionActions({...cache, activeSessionId, selectedStoredSessionId, busyRef, creatingSessionRef, getRouteToken, getRoutedStoredSessionId, navigate, requestGateway, routedSessionId:routeSessionId(location.pathname)})
   // H wiring.tsx:784-801: cache supplies activeSessionIdRef, selectedStoredSessionIdRef and runtimeIdByStoredSessionIdRef.
-  useRouteResume({...cache,activeSessionId,creatingSessionRef,currentView:'chat',freshDraftReady:useStore($freshDraftReady),gatewayState:useStore($gatewayState),locationPathname:location.pathname,
+  useRouteResume({...cache,activeSessionId,creatingSessionRef,currentView:showingSkills ? 'skills' : 'chat',freshDraftReady:useStore($freshDraftReady),gatewayState:useStore($gatewayState),locationPathname:location.pathname,
     resumeSession:sessions.resumeSession,resumeFailedSessionId:useStore($resumeFailedSessionId),resumeExhaustedSessionId:useStore($resumeExhaustedSessionId),sessionResumeRequest:useStore($sessionResumeRequest),routedSessionId:routeSessionId(location.pathname),selectedStoredSessionId,startFreshSessionDraft:sessions.startFreshSessionDraft})
   const actions = usePromptActions({...cache, activeSessionId,busyRef,requestGateway,getRouteToken,getRoutedStoredSessionId,refreshSessions,
     createBackendSessionForSend:sessions.createBackendSessionForSend, resumeStoredSession:sessions.resumeSession, startFreshSessionDraft:sessions.startFreshSessionDraft,
@@ -45,5 +45,5 @@ export function useWebSession(host: WebHostAdapter) {
     const offState = host.gateway.onState(reportPrimaryGatewayState)
     return () => {offEvent();offRequest();offState();configureGatewayRegistry({onEvent:() => {}});setPrimaryGateway(null);$gateway.set(null)}
   },[host,stream.handleGatewayEvent,stream.handleServerRequest])
-  return {...actions,...sessions,refreshSessions,loadMoreSessions,activeSessionId,selectedStoredSessionId,busy}
+  return {...actions,...sessions,refreshSessions,loadMoreSessions,hasMoreSessions,activeSessionId,selectedStoredSessionId,busy}
 }

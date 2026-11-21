@@ -1,10 +1,10 @@
 # 목표 기반 Yield Harness
 
-Hermes/native가 하네스의 유일한 실행 경로다. `native_hermes.py`는 `native.md`, `domain-notes.md`, `verifier.md`를 사용한다.
+웹 채팅은 고정된 Hermes 원본의 `AIAgent.run_conversation`으로 실행한다. [채팅 진입점](hermes_chat.py)이 사용자별 프로필과 실행을 연결하고 [도구 등록](native_tools.py)이 같은 프로세스의 Hermes 레지스트리에 업무 도구를 추가한다.
 
 [2026-10-31 이식 안내](INTERNAL_MIGRATION_2026_10_31.md)와 [기존 이식 문서](MIGRATION.md)는 과거 구성의 참고 기록이다. 현재 실행·도구·격리 계약은 이 README를 따른다.
 
-사용자 목표 → 필요한 도구 선택 → 실행 결과 관찰 → 추가 조사 → 근거 검증을 반복한다. Hermes 웹 UI(`harness_console/src`)와 로컬 MCP가 같은 여섯 도구를 사용한다.
+모델이 조회·분석 도구를 선택하고 결과를 읽어 다음 행동이나 최종 답변을 결정한다. 기존 웹 콘솔은 게이트웨이에서 세션 이벤트와 최종 답변을 받고, 사용자와 세션에 귀속된 URL로 표와 웨이퍼 맵을 표시한다.
 
 ## 실행
 
@@ -14,7 +14,28 @@ Hermes/native가 하네스의 유일한 실행 경로다. `native_hermes.py`는 
 ../.venv/bin/python -m uvicorn harness.app:app --port 8000
 ```
 
-이 명령은 `/runs`·결과·산출물 API를 제공한다. Hermes 웹 UI는 `harness.gateway`의 연결된 gateway host가 필요하며, `harness.app` 단독 실행은 gateway를 연결하지 않는다. 현재 로컬 개발 gateway host는 외부 `local_gateway_app.py`에서 이 둘을 구성한다. 해당 host의 기존 실행 절차와 `HARNESS_ISOLATION_*` 설정을 유지한다.
+이 명령은 `/runs`·결과·산출물 API를 제공한다. 웹 채팅에는 저장소에 포함된 `harness.dev.local_gateway_app`이 이 API와 Hermes 게이트웨이를 함께 연결한다.
+
+### macOS에서 웹 채팅 실행
+
+새 체크아웃에서 Python 3.11과 Node.js 22.12 이상을 사용한다. 개발 환경의 모델 공급자, Oracle, MongoDB, `HARNESS_PRINCIPAL` 설정을 환경 변수나 저장소 루트의 로컬 `.env`에 준비한다. 이 게이트웨이에는 [Seatbelt 설정](isolation/README.ko.md)이 필요하다. 별도 검증 환경을 띄우면 전용 `HARNESS_MONGO_DB`, principal, 격리 작업 디렉터리를 사용한다. 사용자 스킬과 메모리는 프로필 데이터로 별도 보관한다.
+
+저장소 루트에서 첫 번째 터미널로 게이트웨이를 실행한다.
+
+```bash
+uv sync --locked
+HARNESS_GATEWAY_PORT=61402 HARNESS_WEB_PORT=61413 \
+  uv run --locked bash 08-YieldAgent/harness/dev/launch_local_gateway.sh
+```
+
+두 번째 터미널에서 같은 체크아웃의 콘솔을 실행하고 [새 채팅](http://127.0.0.1:61413/)을 연다. 포트를 바꿀 때는 양쪽 명령에 같은 포트 쌍을 적용한다.
+
+```bash
+cd 08-YieldAgent/harness_console
+npm ci
+VITE_HARNESS_LOCAL_GATEWAY=1 HARNESS_GATEWAY_TARGET=http://127.0.0.1:61402 \
+  npm run dev -- --port 61413
+```
 
 2026-09-12 사용자가 크레딧을 추가한 뒤 지정한 공급자는 OpenRouter, 모델은 `z-ai/glm-5.3-flash`다.
 
@@ -50,9 +71,11 @@ Hermes/native가 유일한 실행 경로다. 이전 standalone supervisor 서버
 - `POST /runs/{run_id}/input`: `kind=input|steer`, `request_id`, `goal_revision`, `value`; 질문 답변에는 `interrupt_id`도 필요하다.
 - `/harness/results/{result_id}`와 `/harness/artifacts/{artifact_id}`: 같은 principal과 대화의 원본·산출물만 읽는다.
 
-`native_worker.py`의 Hermes 에이전트가 도구를 선택하고 `native_hermes.py`가 도구 실행, 저장 결과, 대화 이력과 취소를 연결한다. 기본 도구 범위는 `query_db`, `list_tables`, `read_result`, `render_yield_table`, `load_wafer_maps`, `run_python`이다. registry와 native 기본 allowlist는 이 여섯 이름으로 고정된다. worker의 `no_yield_tools` 설정 필드는 격리 실행을 위해 유지하며, 명시적 allowlist에는 별도의 `clarify`가 추가된다.
+웹 채팅의 `yield` 도구 묶음은 `query_db`, `list_tables`, `read_result`, `render_yield_table`, `load_wafer_maps`, `run_python`으로 구성된다. 각 핸들러는 현재 사용자의 세션과 실행에 연결된 `ToolExecutor`를 호출한다. 도구를 추가할 때는 `harness/tools/registry.py`의 `domain_registry()`에 정의를 등록한다. 기존 MCP 서버는 별도로 실행할 수 있다.
 
-도구 결과에는 전체 행 수, 범위, 출처, 원본 ID, 성공·부분·빈 결과·오류 구분이 있다. 작은 preview와 별개로 원본 전체를 저장한다. `read_result`는 원본 페이지를, `run_python`은 지정한 결과의 전체 데이터를 읽는다. 독립 검증은 저장된 근거를 읽고 답변의 완료 여부를 검토한다.
+일반 채팅에서는 Hermes의 스킬, 메모리, 같은 프로필의 대화 검색, 사용자 질문도 사용한다. 브라우저에 표시할 파일은 도구 응답의 `artifact_refs[].markdown`으로 전달한다. `yield_web` 채널은 Hermes의 로컬 파일 전송 지시를 제거해 임시 작업 경로가 깨진 첨부로 표시되는 것을 방지한다. 합성 데이터를 주입하는 평가용 레지스트리는 기존 평가 경로를 유지한다.
+
+도구 결과에는 전체 행 수, 범위, 출처, 원본 ID, 성공·부분·빈 결과·오류 구분이 있다. 작은 preview와 별개로 원본 전체를 저장한다. `read_result`는 원본 페이지를, `run_python`은 지정한 결과의 전체 데이터를 읽는다. 신규 채팅은 Hermes가 반환한 최종 답변을 게시한다. 구버전 실행 이력은 당시 저장한 검증 판정과 산출물 정책을 사용한다.
 
 Mongo lease와 epoch가 실행 소유권을 정한다. 이전 서버의 늦은 저장이 새 서버의 상태를 덮지 않도록 실행·종료·결과 저장을 제한한다. Hermes 실행의 대화와 사용량은 저장소에 보존한다.
 
@@ -91,7 +114,7 @@ Only `HARNESS_ENGINE=hermes` is accepted. Historical run documents retain their 
 
 Install the ordinary libraries declared in the repository `requirements.txt`/`pyproject.toml` through your approved package process. `scripts/setup_hermes.sh` now only verifies imports; it does not install anything. Do not install from `engine/pyproject.toml`: that is retained upstream metadata, not this backend's dependency specification.
 
-`native_worker.py` invokes the bundled `AIAgent`; `native_hermes.py` connects backend tools, result storage, history and cancellation. The default backend allowlist contains only the six registry tools; the worker adds `clarify`. The request worker declares a stateless channel so delegated results return before final verification; environment probing stays disabled. Independent verification only exposes stored evidence reads. Upstream package activation, update handoff, lazy installation and external plugin discovery are disabled. The loop, tool discovery, retries, compression and skill/memory implementations remain upstream code. `engine/UPSTREAM.json` records original hashes; `engine/PATCHES.diff` records local adaptations and the MIT license is retained.
+The vendored engine matches the upstream hashes in `engine/UPSTREAM.json`. The web chat launches one Hermes process per run, with the authenticated user's persistent profile. The `yield` toolset uses Hermes' native registry and dispatch. The host persists sessions, results and artifact URLs for the existing web console.
 
 For integration into a diverged internal main branch, including existing/new agents and the chat UI, follow [the Luna porting guide](INTERNAL_PORTING_LUNA.md).
 

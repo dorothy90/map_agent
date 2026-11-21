@@ -97,7 +97,7 @@ def test_resume_finalized_history_and_principal_scope(mode, prefix, deferred):
             assert history.status_code == 200
             assert history.json()['messages'] == [
                 {'role': 'user', 'content': 'stored question'},
-                {'role': 'assistant', 'content': 'VERIFIED-FINAL'}]
+                {'role': 'assistant', 'content': 'VERIFIED-FINAL', 'interim': False}]
 
         async def row_after():
             scope = await state.gateway.open(Principal('alice'))

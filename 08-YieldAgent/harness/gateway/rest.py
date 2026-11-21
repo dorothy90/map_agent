@@ -133,6 +133,8 @@ async def messages(rpc, sid, query, profile):
         if 'row_id' in row:
             projected['id'] = row['row_id']
         if row['role'] == 'assistant':
+            if 'interim' in row:
+                projected['interim'] = row['interim']
             if 'usage' in row:
                 projected['usage'] = row['usage']
             if 'duration_s' in row:

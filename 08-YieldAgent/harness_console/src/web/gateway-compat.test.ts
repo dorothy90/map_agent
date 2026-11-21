@@ -108,10 +108,9 @@ it.each([{session_id:'never-opened',title:'Renamed'},{session_id:'never-opened'}
  expect(socket.sent.map(value => JSON.parse(value))).toEqual([{jsonrpc:'2.0',id:expect.any(Number),method:'session.title',params}])
 })
 
-it('keeps the rename field flexible and removes focus decoration', () => {
- const css=readFileSync(new URL('./web.css',import.meta.url),'utf8')
- const input=css.split('.hermes-web .web-session-content input {')[1].split('}')[0]
- for(const rule of ['flex:1','min-width:0','outline:none','box-shadow:none','border:1px solid #e6e6e6','color:#1a1c1f','background:#ffffff'])expect(input).toContain(rule)
- expect(css).toContain('.hermes-web .web-session-content { display:flex; width:100%;')
- expect(css).toContain('input:focus-visible { outline:none; box-shadow:none; }')
+it('keeps the rename field flexible with a visible focus border', () => {
+ const css=readFileSync(new URL('./sidebar.css',import.meta.url),'utf8')
+ const input=css.split('\n.hermes-web .web-session-content input {')[1].split('}')[0]
+ for(const rule of ['flex:1','min-width:0'])expect(input).toContain(rule)
+ expect(css).toContain('.hermes-web .web-session-content input:focus { border-color:')
 })

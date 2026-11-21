@@ -35,15 +35,15 @@ def registry():
     from harness.types import Contract
 
     value = ToolRegistry()
-    for name in ("read_result", "allowed", "blocked"):
+    for name in ("read_result", "query_db", "list_tables"):
         value.add(ToolSpec(name, name, Contract, lambda *args: None))
     return value
 
 
 @pytest.mark.parametrize(("configured", "expected"), [
-    (None, {"read_result", "allowed", "blocked"}),
+    (None, {"read_result", "query_db", "list_tables"}),
     ([], {"read_result"}),
-    (["allowed"], {"read_result", "allowed"}),
+    (["query_db"], {"read_result", "query_db"}),
 ])
 def test_bridge_policy_filters_schemas(configured, expected):
     from harness.native_hermes import NativeBridge
@@ -59,7 +59,7 @@ def test_minimal_context_preserves_existing_bridge_behavior():
     from harness.native_hermes import NativeBridge
 
     assert NativeBridge(registry(), SimpleNamespace()).allowed == {
-        "read_result", "allowed", "blocked",
+        "read_result", "query_db", "list_tables",
     }
 
 
@@ -78,28 +78,28 @@ def test_disallowed_direct_invocation_stops_before_executor():
 
     bridge = NativeBridge(
         registry(),
-        SimpleNamespace(settings=SimpleNamespace(native_allowed_tools=["allowed"])),
+        SimpleNamespace(settings=SimpleNamespace(native_allowed_tools=["query_db"])),
     )
     bridge.executor = SimpleNamespace(
         execute=lambda call: pytest.fail("executor must not run")
     )
 
     with pytest.raises(PermissionError):
-        asyncio.run(bridge.invoke({"name": "blocked", "id": "c", "args": {}}))
+        asyncio.run(bridge.invoke({"name": "list_tables", "id": "c", "args": {}}))
 
 
 def test_restricted_worker_toolsets_exclude_builtins_and_follow_prompt_flag():
     worker = worker_module()
 
     assert worker.enabled_toolsets({"allowed_tools": [], "no_yield_tools": False}) == [
-        "yield_backend", "yield_evidence",
+        "yield_backend", "yield_evidence", "skills",
     ]
     assert worker.enabled_toolsets({
         "allowed_tools": [], "no_yield_tools": True, "native_prompts": True,
-    }) == ["yield_backend", "yield_evidence", "clarify"]
+    }) == ["yield_backend", "yield_evidence", "skills", "clarify"]
     assert worker.enabled_toolsets({
         "allowed_tools": ["read_result"], "no_yield_tools": True,
-    }) == ["yield_backend", "yield_evidence", "clarify"]
+    }) == ["yield_backend", "yield_evidence", "skills", "clarify"]
 
 
 def test_unset_worker_policy_keeps_default_toolsets():
@@ -170,7 +170,7 @@ def test_restricted_startup_contains_effective_names(monkeypatch, tmp_path):
         settings=settings,
         run={"principal_id": "p", "session_id": "s", "run_id": "r",
              "epoch": 1, "query": "q"},
-        store=SimpleNamespace(runs=Runs(), event=noop),
+        store=SimpleNamespace(db=SimpleNamespace(gateway_event_logs=None), runs=Runs(), event=noop),
         remaining_seconds=lambda: 10,
         check=noop,
     )
@@ -257,7 +257,7 @@ class Agent:
             "session_id": kwargs["session_id"]}), file=sys.__stdout__, flush=True)
         raise RuntimeError("probe complete")
 tools = ModuleType("tools")
-tools.skills_tool = NS()
+tools.skills_tool = NS(skill_view=lambda *args: None)
 tools.delegate_tool = NS()
 tools.session_search_tool = NS()
 sys.modules.update({
@@ -269,7 +269,7 @@ sys.modules.update({
     "tools": tools,
     "tools.registry": NS(registry=registry),
     "run_agent": NS(AIAgent=Agent),
-    "agent": NS(tool_executor=NS(_MAX_TOOL_WORKERS=8)),
+    "agent": NS(tool_executor=NS(_MAX_TOOL_WORKERS=8), title_generator=NS()),
     "gateway.session_context": NS(declare_stateless_channel=lambda: None),
     "hermes_state_registry": NS(acquire=lambda path: db, release_or_close=lambda value: None),
 })
@@ -279,7 +279,7 @@ runpy.run_path(sys.argv[1], run_name="__main__")
     startup = {
         "run_budget_seconds": 10, "max_iterations": 1, "token_limit": 100,
         "max_tokens": 10, "base_url": "https://unused.invalid",
-        "call_timeout": 1, "skills_path": str(tmp_path), "model": "synthetic",
+        "call_timeout": 1, "model": "synthetic",
         "api_key": "synthetic", "session_id": "restricted", "temperature": 0,
         "query": "q", "instructions": "", "history": [],
         "allowed_tools": ["read_result", "allowed"],
@@ -305,7 +305,7 @@ runpy.run_path(sys.argv[1], run_name="__main__")
     )
 
     assert audit == {
-        "type": "audit", "toolsets": ["yield_backend", "yield_evidence"],
+        "type": "audit", "toolsets": ["yield_backend", "yield_evidence", "skills"],
         "registered": ["read_result", "allowed"], "session_db": True,
         "session_id": "restricted",
     }

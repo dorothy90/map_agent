@@ -41,6 +41,7 @@ class ToolSpec:
     eager: bool = False
     group: str | None = None
     replaces: tuple[str, ...] = ()
+    prepare_arguments: Callable | None = None
 
     def __post_init__(self):
         if self.effect is None:

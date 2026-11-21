@@ -2659,16 +2659,6 @@
     "tui_gateway/theme_bridge.py": "1e7a3251e454f27e6c2a4a6786d8afb8677bc367562e517bc384207921f37369",
     "tui_gateway/ws_legacy_fallback.py": "7811a371f2d1d6251cd16105005675de4760e1a670816cf983f3169a83480fd4"
   },
-  "adaptations": [
-    "hermes_bootstrap.py: remove automatic package activation/update/relaunch startup",
-    "run_agent.py: remove standalone interrupted-update recovery",
-    "pm/extras.py: missing optional dependencies fail without installation",
-    "model_tools.py: disable automatic external plugin discovery"
-  ],
-  "local_files": {
-    "hermes_bootstrap.py": "12758c08a73a66ba3471f05a48affda40ade77b38980f2714bd294297f9450d2",
-    "model_tools.py": "a2a6d08d82c39ebb4d75b0062506ef419977fcbdc21a2403054476bc091d4c32",
-    "pm/extras.py": "730e399e03509567707532025106ff837b7d68fed16379de785ef40eb3df2b47",
-    "run_agent.py": "82b02a8e3906e0009321b92317b29d29a669a740d9d5cb2ab9df442818837c1c"
-  }
+  "adaptations": [],
+  "local_files": {}
 }

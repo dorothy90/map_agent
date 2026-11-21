@@ -258,3 +258,14 @@ image.png
 # Legacy external Hermes files and current per-user runtime profiles
 /.venv-hermes/
 /.runtime/hermes/
+
+# Pinned upstream distribution files listed in harness/engine/UPSTREAM.json.
+!/08-YieldAgent/harness/engine/plugins/hermes-achievements/dashboard/dist/
+/08-YieldAgent/harness/engine/plugins/hermes-achievements/dashboard/dist/*
+!/08-YieldAgent/harness/engine/plugins/hermes-achievements/dashboard/dist/index.js
+!/08-YieldAgent/harness/engine/plugins/hermes-achievements/dashboard/dist/style.css
+!/08-YieldAgent/harness/engine/plugins/kanban/dashboard/dist/
+/08-YieldAgent/harness/engine/plugins/kanban/dashboard/dist/*
+!/08-YieldAgent/harness/engine/plugins/kanban/dashboard/dist/index.js
+!/08-YieldAgent/harness/engine/plugins/kanban/dashboard/dist/style.css
+!/08-YieldAgent/harness/engine/plugins/platforms/photon/sidecar/.gitignore

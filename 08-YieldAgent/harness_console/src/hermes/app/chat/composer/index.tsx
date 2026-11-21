@@ -121,6 +121,7 @@ import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
   busy,
+  contextControl,
   cwd,
   disabled,
   focusKey,
@@ -1507,6 +1508,7 @@ export function ChatBar({
                       <ContribSlot area={COMPOSER_AREAS.leading} />
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>
+                    {contextControl && <div data-slot="composer-context">{contextControl}</div>}
                     {/* `justify-end` packs contributed actions and the send cluster
                       together on the right. The cluster must not carry its own
                       `ml-auto`: in the stacked layout the auto margin absorbs the

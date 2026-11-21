@@ -52,6 +52,17 @@ def test_unmarked_history_keeps_legacy_artifacts():
     assert verified_answer_with_artifacts(completed('Answer')) == 'Answer\n\n![Draft](/harness/artifacts/draft?session_id=s)'
 
 
+def test_stock_chat_publishes_settled_answer_on_finish_and_replay():
+    answer = '[수율 표](/harness/artifacts/table?session_id=s)'
+    run = {**completed(answer, 'answer_refs'), 'observations': [],
+           'native_engine': {'entrypoint': 'stock_chat'}}
+    assert project_run_event(run, {'type': 'run_finished'})['payload']['text'] == answer
+    assert verified_answer_with_artifacts(run) == answer
+    assert verified_answer_with_artifacts({**run, 'active': True}) is None
+    assert verified_answer_with_artifacts({**run, 'status': 'failed'}) is None
+    assert verified_answer_with_artifacts({**run, 'native_engine': {}}) is None
+
+
 @pytest.mark.parametrize('engine,expected', [('hermes', 'answer_refs'), ('langgraph', None)])
 def test_admission_pins_new_policy_without_upgrading_receipts(engine, expected):
     class Runs:

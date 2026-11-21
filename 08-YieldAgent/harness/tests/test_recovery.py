@@ -49,14 +49,12 @@ def test_heartbeat_failure_stops_work_and_records_the_failure(monkeypatch):
     from harness.config import Settings
     from harness.control import RunController
     from harness.store import HarnessStore
-    from harness.tools.registry import domain_registry
 
     async def scenario():
         store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
         entered, cancelled = asyncio.Event(), asyncio.Event()
-        registry = domain_registry()
 
-        async def slow(ctx, registry, *, history):
+        async def slow(ctx, *, history):
             entered.set()
             try:
                 await asyncio.sleep(30)
@@ -67,8 +65,8 @@ def test_heartbeat_failure_stops_work_and_records_the_failure(monkeypatch):
             raise ConnectionError("fixture renewal failure")
 
         monkeypatch.setattr(store, "renew", fail_renew)
-        monkeypatch.setattr("harness.native_hermes.run_native", slow)
-        service = RunController(store, Settings(), registry_factory=lambda: registry)
+        monkeypatch.setattr("harness.hermes_chat.run_chat", slow)
+        service = RunController(store, Settings())
         try:
             await store.setup()
             run = await service.start("p", "s", "r", "fixture")
@@ -145,21 +143,19 @@ def test_cancel_rejects_late_result_and_emits_one_terminal_event(monkeypatch):
     from harness.config import Settings
     from harness.control import RunController
     from harness.store import HarnessStore
-    from harness.tools.registry import domain_registry
 
     async def scenario():
         store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
         entered, cancelled = asyncio.Event(), asyncio.Event()
-        registry = domain_registry()
-        async def slow(ctx, registry, *, history):
+        async def slow(ctx, *, history):
             entered.set()
             try:
                 await asyncio.sleep(30)
             finally:
                 cancelled.set()
             return {"status": "completed", "answer": "late", "stop_reason": "completed"}
-        monkeypatch.setattr("harness.native_hermes.run_native", slow)
-        service = RunController(store, Settings(), registry_factory=lambda: registry)
+        monkeypatch.setattr("harness.hermes_chat.run_chat", slow)
+        service = RunController(store, Settings())
         try:
             await store.setup()
             run = await service.start("p", "s", "r", "조회")
