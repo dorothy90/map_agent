@@ -40,16 +40,16 @@ YIELD_TEST_ANALYSIS_VENV="$ANALYSIS_VENV_PATH" PYTHONDONTWRITEBYTECODE=1 \
 
 ## Linux Pod에 연결하기
 
-기존 Linux 경로는 localhost SSH의 전용 `yieldrun` 계정과 root가 설치한 `harness/isolation/launcher.py`를 사용한다. 새 사내 실행 방식을 자동 생성하지 않는다. `HARNESS_ISOLATION_BACKEND`를 `seatbelt`로 지정하지 않는다.
+Ubuntu에서는 `HARNESS_ISOLATION_BACKEND=local`로 NAS에 마운트한 전용 HOME/work 경로를 지정한다. 서비스 계정이 해당 경로를 소유해야 하며 분석 프로세스는 같은 호스트의 `bwrap`에서 실행된다. [기본 실행 및 확인](README.ko.md)을 따른다.
 
-앱의 `HARNESS_ISOLATION_HOME`과 `HARNESS_ISOLATION_WORK_ROOT`를 `/etc/yieldrun-isolation.json`의 `home`과 `work_root`에 맞춘다. launcher 설정, 분석 venv, SSH key와 known_hosts는 기존 설치 계약에 맞춰 준비한다. `setup_ubuntu.sh`는 기본 로컬 경로용 설치 스크립트이며 NAS 경로를 자동 인식하지 않는다. 기존 Pod에 그대로 실행하지 말고 배포 담당자가 설정을 맞춘다.
+과거 SSH 배포를 명시적으로 유지하는 경우에만 앱의 `HARNESS_ISOLATION_HOME`과 `HARNESS_ISOLATION_WORK_ROOT`를 `/etc/yieldrun-isolation.json`의 `home`과 `work_root`에 맞춘다. launcher 설정, 분석 venv, SSH key와 known_hosts는 기존 설치 계약에 맞춰 준비한다. `setup_ubuntu.sh`는 기본 로컬 경로용 설치 스크립트이며 NAS 경로를 자동 인식하지 않는다. 기존 Pod에 그대로 실행하지 말고 배포 담당자가 설정을 맞춘다.
 
 Linux launcher는 `bwrap`으로 전체 home을 가리고 현재 profile과 현재 작업 폴더만 bind한다. NAS 전체를 분석 프로세스에 별도로 bind하지 않는다. namespace 생성이나 sandbox 시작에 실패하면 실행을 거부한다. `privileged`나 전역 보안 해제로 우회하지 않는다.
 
 사내에서 다음 항목을 직접 검증한다.
 
 - `bwrap` 설치와 Pod의 user, mount, PID, network namespace 허용 여부.
-- NAS의 UID/GID 매핑, ACL, root squash와 `yieldrun` 소유권.
+- NAS의 UID/GID 매핑, ACL, root squash와 실제 서비스 계정의 작업 폴더 소유권.
 - `chmod`, `O_EXCL`, `O_NOFOLLOW`, hard link, fsync 및 동시 요청 동작.
 - 사용자 A와 B 사이의 파일 읽기·쓰기 거부와 같은 사용자의 다른 작업 폴더 접근 거부.
 - 같은 요청 재시도, 실패 시 임시 파일 정리, 기존 CSV 재읽기.

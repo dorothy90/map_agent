@@ -34,7 +34,7 @@ def test_process_runtime_uses_only_isolated_backend(monkeypatch, tmp_path):
         return {"status": "success", "tables": [], "plots": [], "stdout": "remote",
                 "stderr": "", "error": None}
 
-    monkeypatch.setattr("harness.runtime.process.IsolatedSSHBackend.execute_python", remote)
+    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.execute_python", remote)
     monkeypatch.setattr("harness.runtime.process.asyncio.create_subprocess_exec",
                         lambda *args, **kwargs: pytest.fail("local process attempted"))
 
@@ -52,7 +52,7 @@ def test_isolated_runtime_failure_does_not_retry_locally(monkeypatch, tmp_path):
     async def failed(*args, **kwargs):
         raise IsolationError("backend lost")
 
-    monkeypatch.setattr("harness.runtime.process.IsolatedSSHBackend.execute_python", failed)
+    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.execute_python", failed)
     monkeypatch.setattr("harness.runtime.process.asyncio.create_subprocess_exec",
                         lambda *args, **kwargs: pytest.fail("local retry attempted"))
 

@@ -1,4 +1,4 @@
-"""Loopback-only browser gateway for the existing Seatbelt harness controller.
+"""Loopback-only browser gateway for the local harness controller.
 
 Login is handled upstream by the company platform. This local gateway does no
 login of its own: every local request runs as the fixed HARNESS_PRINCIPAL user,
@@ -95,29 +95,19 @@ def create_app(*, base_app=None, user=None, services_factory=None):
 
     @asynccontextmanager
     async def lifespan(app):
-        if production:
-            from dotenv import load_dotenv
-            from harness.config import Settings, SeatbeltIsolationSettings
-            if os.getenv('HARNESS_LOAD_DOTENV', 'true').lower() == 'true':
-                load_dotenv()
-            configured = Settings.from_env()
-            if (not configured.no_yield_tools
-                    or not isinstance(configured.isolation, SeatbeltIsolationSettings)
-                    or configured.isolation.sandbox != 'required'):
-                raise RuntimeError('Existing required Seatbelt isolation must remain enabled')
-        principal_user = user or os.environ.get('HARNESS_PRINCIPAL')
-        if not principal_user or not principal_user.strip():
-            raise RuntimeError('HARNESS_PRINCIPAL must be configured')
-        app.state.principal_user = principal_user
         async with base_app.router.lifespan_context(base_app):
+            principal_user = user or os.environ.get('HARNESS_PRINCIPAL')
+            if not principal_user or not principal_user.strip():
+                raise RuntimeError('HARNESS_PRINCIPAL must be configured')
+            app.state.principal_user = principal_user
             ctrl = getattr(base_app.state, 'harness', None)
             if production:
-                from harness.config import SeatbeltIsolationSettings
+                from harness.config import LocalIsolationSettings, SeatbeltIsolationSettings
                 if (ctrl is None or not ctrl.settings.no_yield_tools
-                        or not isinstance(ctrl.settings.isolation, SeatbeltIsolationSettings)
+                        or not isinstance(ctrl.settings.isolation, (LocalIsolationSettings, SeatbeltIsolationSettings))
                         or ctrl.settings.isolation.sandbox != 'required'
                         or ctrl.settings.principal != principal_user):
-                    raise RuntimeError('Existing required Seatbelt isolation must remain enabled')
+                    raise RuntimeError('Local gateway requires local isolation and the configured principal')
             app.state.harness = ctrl
             app.state.gateway = services_factory(ctrl)
             yield

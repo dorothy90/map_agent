@@ -25,7 +25,8 @@ def seatbelt_paths(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def test_seatbelt_requires_explicit_backend_and_keeps_ssh_default(monkeypatch, tmp_path):
+def test_macos_defaults_to_seatbelt_without_ssh(monkeypatch, tmp_path):
+    monkeypatch.setattr("harness.config.sys.platform", "darwin")
     paths = seatbelt_paths(tmp_path)
     monkeypatch.setenv("HARNESS_ISOLATION_BACKEND", "seatbelt")
     monkeypatch.setenv("HARNESS_ISOLATION_SANDBOX", "required")
@@ -45,8 +46,7 @@ def test_seatbelt_requires_explicit_backend_and_keeps_ssh_default(monkeypatch, t
         "HARNESS_ISOLATION_SSH_KEY", "HARNESS_ISOLATION_KNOWN_HOSTS",
     ):
         monkeypatch.delenv(name, raising=False)
-    with pytest.raises(ValueError, match="HARNESS_ISOLATION_SSH_HOST"):
-        Settings.from_env()
+    assert isinstance(Settings.from_env().isolation, SeatbeltIsolationSettings)
 
 
 def test_seatbelt_rejects_non_macos_and_symlinked_scope(monkeypatch, tmp_path):

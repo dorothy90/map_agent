@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import Field, field_validator
 
-from ..isolation.backend import IsolatedSSHBackend, isolation_backend
+from ..isolation.backend import isolation_backend
 from ..types import Contract, EMPTY_RESULT_SUMMARY, ResultTable
 from .registry import ToolResult, ToolSpec
 
@@ -294,8 +294,7 @@ async def query_db(args, ctx):
     isolation = getattr(ctx.settings, "isolation", None)
     if isolation is None:
         raise RuntimeError("isolated backend is not configured")
-    constructor = isolation_backend if getattr(isolation, "backend", None) == "seatbelt" else IsolatedSSHBackend
-    backend = constructor(isolation, ctx.run["run_id"], ctx.run["principal_id"])
+    backend = isolation_backend(isolation, ctx.run["run_id"], ctx.run["principal_id"])
     path = await backend.upload_bytes(_csv_bytes(columns, rows), timeout=60)
     row_count = len(rows)
     summary = EMPTY_RESULT_SUMMARY if row_count == 0 else f"결과 {row_count}건"

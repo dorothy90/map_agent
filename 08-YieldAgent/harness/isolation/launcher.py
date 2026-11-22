@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Root-installed forced-command launcher for the yieldrun SSH key."""
+"""Run a scoped analysis command in the OS sandbox."""
 from __future__ import annotations
 
+import argparse
 import base64
 from dataclasses import dataclass
 import json
@@ -13,6 +14,7 @@ import signal
 import stat
 import subprocess
 import sys
+import sysconfig
 import time
 
 
@@ -133,6 +135,22 @@ def ensure_scope(config, scope):
         _private_directory(directory)
 
 
+def local_read_paths(venv):
+    # The launcher itself uses the analysis venv. Its base interpreter may be a
+    # uv-managed installation outside /usr. Mount Python, not its user's home.
+    paths = ["/usr/bin", "/usr/lib", "/usr/lib64", "/usr/share/locale", "/usr/share/zoneinfo",
+             "/bin", "/lib", "/lib64", "/etc/passwd", "/etc/group", "/etc/localtime",
+             str(Path(venv, "bin/python3").resolve(strict=True)), sysconfig.get_path("stdlib")]
+    libdir = sysconfig.get_config_var("LIBDIR")
+    if libdir:
+        for variable in ("LDLIBRARY", "INSTSONAME"):
+            filename = sysconfig.get_config_var(variable)
+            if filename:
+                paths.append(str(Path(libdir, filename)))
+    paths.append(str(venv))
+    return list(dict.fromkeys(paths))
+
+
 def sandbox_command(config, scope, shell_command, clean_env):
     if config.get("sandbox") not in {"auto", "required"}:
         fail("OS sandbox is required")
@@ -149,6 +167,14 @@ def sandbox_command(config, scope, shell_command, clean_env):
         binary = Path(config.get("sandbox_binary", "/usr/bin/bwrap"))
         if binary.is_file():
             root_owned_readonly(binary, executable=True, parents=True)
+            if config.get("backend") == "local":
+                read_paths = local_read_paths(config["analysis_venv"])
+                protected = (Path(config["home"]), Path(__file__).resolve().parents[2])
+                if any(path.is_relative_to(Path(mount).resolve()) for mount in read_paths for path in protected):
+                    fail("app sources or private workspace overlap a read-only runtime mount")
+            else:
+                read_paths = ("/usr", "/bin", "/lib", "/lib64", "/etc/ssl", "/etc/passwd", "/etc/group",
+                              "/etc/localtime", config["analysis_venv"])
             flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
             profile_fd = None
             try:
@@ -167,8 +193,7 @@ def sandbox_command(config, scope, shell_command, clean_env):
                        "--tmpfs", home, "--dir", work_root,
                        "--dir", str(scope.profile.parent), "--dir", str(scope.workdir.parent),
                        "--dir", str(scope.profile), "--dir", str(scope.workdir)]
-            for item in ("/usr", "/bin", "/lib", "/lib64", "/etc/ssl", "/etc/passwd",
-                         "/etc/group", "/etc/localtime", config["analysis_venv"]):
+            for item in read_paths:
                 if Path(item).exists():
                     command.extend(("--ro-bind", item, item))
             command.extend(("--bind", f"/proc/self/fd/{profile_fd}", str(scope.profile),
@@ -217,7 +242,7 @@ def run_supervised(command, clean_env):
     return 128 + signal.SIGTERM if stopping and returncode == 0 else returncode
 
 
-def main():
+def ssh_settings():
     config = load_config()
     if os.geteuid() == 0 or pwd.getpwuid(os.geteuid()).pw_name != "yieldrun":
         fail("launcher must run as the unprivileged yieldrun account")
@@ -241,6 +266,35 @@ def main():
     if info.st_uid != os.geteuid() or info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
         fail("work root must be a private yieldrun directory")
     request = parse_request(os.environ.get("SSH_ORIGINAL_COMMAND"))
+    return config, request
+
+
+def local_settings(argv):
+    if not sys.platform.startswith("linux") or os.geteuid() == 0:
+        fail("local analysis requires an unprivileged Linux process")
+    parser = argparse.ArgumentParser()
+    for option in ("--home", "--work-root", "--venv"):
+        parser.add_argument(option, required=True, type=Path)
+    parser.add_argument("request")
+    args = parser.parse_args(argv)
+    for path in (args.home, args.work_root, args.venv):
+        if not path.is_absolute() or not path.is_dir() or str(path) != resolve_without_symlinks(path):
+            fail("local analysis requires canonical directories")
+    if args.work_root.parent != args.home or args.home == args.venv or args.home in args.venv.parents:
+        fail("invalid private workspace")
+    for path in (args.home, args.work_root):
+        info = path.stat()
+        if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            fail("local workspace must be private to the service account")
+    config = {"backend": "local", "home": str(args.home), "work_root": str(args.work_root), "analysis_venv": str(args.venv),
+              "launcher": str(Path(__file__).resolve()), "sandbox": "required"}
+    return config, parse_request(args.request)
+
+
+def main():
+    config, request = local_settings(sys.argv[1:]) if len(sys.argv) > 1 else ssh_settings()
+    venv = Path(config["analysis_venv"])
+    launcher = Path(config["launcher"])
     scope = scope_paths(config, request)
     ensure_scope(config, scope)
     clean_env = {
@@ -255,6 +309,11 @@ def main():
     command = sandbox_command(config, scope, shell_command, clean_env)
     os.chdir(scope.workdir)
     os.umask(0o077)
+    if config.get("backend") == "local":
+        # Keep bwrap the process owned by the server, including on cancellation.
+        for fd in clean_env.pop("_YIELD_PASS_FDS").split(","):
+            os.set_inheritable(int(fd), True)
+        os.execve(command[0], command, clean_env)
     raise SystemExit(run_supervised(command, clean_env))
 
 

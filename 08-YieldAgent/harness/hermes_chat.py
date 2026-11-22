@@ -62,14 +62,17 @@ async def run_chat(context, *, history=None):
     prior = run.get('usage', {})
     audit = None
     process = None
+    prepared = False
     try:
         if settings.isolation:
             prepare = asyncio.create_task(asyncio.to_thread(
                 prepare_isolated_run, settings.isolation, run_id, principal))
             try:
                 await asyncio.shield(prepare)
+                prepared = True
             except asyncio.CancelledError:
                 await asyncio.gather(prepare, return_exceptions=True)
+                prepared = not prepare.cancelled() and prepare.exception() is None
                 raise
             await asyncio.to_thread(cleanup_profile_results, settings.isolation, principal)
         with tempfile.TemporaryDirectory(prefix='yield-chat-') as work, (log_dir / f'stock-chat-{run_id}.log').open('ab') as log:
@@ -135,5 +138,11 @@ async def run_chat(context, *, history=None):
         try:
             await cancel_run_prompts(store, principal, run_id, 'turn_ended')
         finally:
-            if settings.isolation:
-                await asyncio.to_thread(cleanup_isolated_run, settings.isolation, run_id, principal)
+            if prepared:
+                active_error = sys.exc_info()[0] is not None
+                try:
+                    await asyncio.to_thread(cleanup_isolated_run, settings.isolation, run_id, principal)
+                except Exception:
+                    if not active_error:
+                        raise
+                    logging.getLogger(__name__).warning("Could not clean up the failed chat run", exc_info=True)

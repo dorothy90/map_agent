@@ -16,7 +16,7 @@ import tarfile
 import time
 import uuid
 
-from ..config import IsolationSettings, SeatbeltIsolationSettings
+from ..config import IsolationSettings, LocalIsolationSettings, SeatbeltIsolationSettings
 
 
 class IsolationError(RuntimeError):
@@ -54,8 +54,8 @@ def _secure_directory_function():
     )
 
 
-class IsolatedSSHBackend:
-    def __init__(self, config: IsolationSettings, run_id: str, principal_id: str | None = None):
+class ScopedProcessBackend:
+    def __init__(self, config: IsolationSettings | SeatbeltIsolationSettings | LocalIsolationSettings, run_id: str, principal_id: str | None = None):
         self.config = config
         self.run_id = run_id
         self.run_hash = hashlib.sha256(json.dumps([principal_id, run_id], ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
@@ -88,66 +88,6 @@ class IsolatedSSHBackend:
         payload = json.dumps(request, separators=(",", ":"), ensure_ascii=True).encode()
         return "yieldrun-v1 " + base64.urlsafe_b64encode(payload).rstrip(b"=").decode()
 
-    def ssh_command(self, remote_command: str | None = None):
-        command = [
-            "ssh", "-F", "/dev/null",
-            "-o", "BatchMode=yes",
-            "-o", "IdentitiesOnly=yes",
-            "-o", "ForwardAgent=no",
-            "-o", "PasswordAuthentication=no",
-            "-o", "KbdInteractiveAuthentication=no",
-            "-o", "StrictHostKeyChecking=yes",
-            "-o", f"UserKnownHostsFile={self.config.known_hosts}",
-            "-o", "ConnectTimeout=10",
-            "-p", str(self.config.ssh_port),
-            "-i", str(self.config.ssh_key),
-            f"{self.config.ssh_user}@{self.config.ssh_host}",
-        ]
-        if remote_command is not None:
-            command.append(self._request(remote_command))
-        return command
-
-    def install_engine_adapter(self):
-        try:
-            backends = importlib.import_module("tools.terminal_tool_backends")
-        except ImportError as exc:
-            raise IsolationError("Hermes SSH backend is unavailable") from exc
-        original = backends._SSHEnvironment
-        if getattr(original, "_yield_isolated", False):
-            return
-        boundary = self
-
-        class HarnessSSHEnvironment(original):
-            _yield_isolated = True
-
-            def __init__(self, *args, **kwargs):
-                host = kwargs.get("host", args[0] if args else None)
-                user = kwargs.get("user", args[1] if len(args) > 1 else None)
-                port = kwargs.get("port", 22)
-                key_path = kwargs.get("key_path", "")
-                if (host != boundary.config.ssh_host or user != boundary.config.ssh_user
-                        or port != boundary.config.ssh_port or Path(key_path) != boundary.config.ssh_key):
-                    raise IsolationError("Hermes attempted to replace the isolated SSH target")
-                kwargs["sync_files"] = False
-                super().__init__(*args, **kwargs)
-
-            def _build_ssh_command(self, extra_args=None, send_env=()):
-                raise IsolationError("unscoped SSH argv execution is disabled")
-
-            def _run_ssh(self, remote_cmd, timeout):
-                from tools.environments.remote_common import run_capture
-                return run_capture(boundary.ssh_command(remote_cmd), timeout=timeout)
-
-            def get_temp_dir(self):
-                return str(boundary.workdir / "tmp")
-
-            def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
-                from tools.environments.base_output import _popen_bash
-                command = boundary.ssh_command(cmd_string)
-                return _popen_bash(command, stdin_data, env=boundary.client_environment())
-
-        backends._SSHEnvironment = HarnessSSHEnvironment
-
     def _terminate(self, process):
         process.kill()
 
@@ -172,11 +112,11 @@ class IsolatedSSHBackend:
                    f"cat output/result.json")
         try:
             process = await asyncio.create_subprocess_exec(
-                *self.ssh_command(command), stdin=asyncio.subprocess.PIPE,
+                *self.command(command), stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=self.client_environment(), start_new_session=True)
         except OSError as exc:
-            raise IsolationError("isolated SSH backend unavailable") from exc
+            raise IsolationError("isolated process backend unavailable") from exc
         try:
             stdout, _stderr = await asyncio.wait_for(process.communicate(archive.getvalue()), timeout)
         except TimeoutError:
@@ -248,7 +188,7 @@ class IsolatedSSHBackend:
         command = "python3 -I -B -c " + shlex.quote(script)
         try:
             process = await asyncio.create_subprocess_exec(
-                *self.ssh_command(command), stdin=asyncio.subprocess.PIPE,
+                *self.command(command), stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=self.client_environment(), start_new_session=True,
             )
@@ -309,7 +249,7 @@ class IsolatedSSHBackend:
         )
         command = "python3 -I -B -c " + shlex.quote(script)
         process = await asyncio.create_subprocess_exec(
-            *self.ssh_command(command), stdin=asyncio.subprocess.PIPE,
+            *self.command(command), stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             env=self.client_environment(), start_new_session=True,
         )
@@ -347,7 +287,7 @@ class IsolatedSSHBackend:
         command = "python3 -I -B -c " + shlex.quote(script)
         try:
             result = subprocess.run(
-                self.ssh_command(command), input="", text=True, capture_output=True,
+                self.command(command), input="", text=True, capture_output=True,
                 timeout=20, check=False, env=self.client_environment(),
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -357,6 +297,69 @@ class IsolatedSSHBackend:
             LOGGER.warning("CSV retention cleanup failed: %s", result.stderr.strip())
         elif result.stderr.strip():
             LOGGER.warning("CSV retention deletion failed: %s", result.stderr.strip())
+
+class IsolatedSSHBackend(ScopedProcessBackend):
+    def ssh_command(self, remote_command: str | None = None):
+        command = [
+            "ssh", "-F", "/dev/null",
+            "-o", "BatchMode=yes",
+            "-o", "IdentitiesOnly=yes",
+            "-o", "ForwardAgent=no",
+            "-o", "PasswordAuthentication=no",
+            "-o", "KbdInteractiveAuthentication=no",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={self.config.known_hosts}",
+            "-o", "ConnectTimeout=10",
+            "-p", str(self.config.ssh_port),
+            "-i", str(self.config.ssh_key),
+            f"{self.config.ssh_user}@{self.config.ssh_host}",
+        ]
+        if remote_command is not None:
+            command.append(self._request(remote_command))
+        return command
+
+    command = ssh_command
+
+    def install_engine_adapter(self):
+        try:
+            backends = importlib.import_module("tools.terminal_tool_backends")
+        except ImportError as exc:
+            raise IsolationError("Hermes SSH backend is unavailable") from exc
+        original = backends._SSHEnvironment
+        if getattr(original, "_yield_isolated", False):
+            return
+        boundary = self
+
+        class HarnessSSHEnvironment(original):
+            _yield_isolated = True
+
+            def __init__(self, *args, **kwargs):
+                host = kwargs.get("host", args[0] if args else None)
+                user = kwargs.get("user", args[1] if len(args) > 1 else None)
+                port = kwargs.get("port", 22)
+                key_path = kwargs.get("key_path", "")
+                if (host != boundary.config.ssh_host or user != boundary.config.ssh_user
+                        or port != boundary.config.ssh_port or Path(key_path) != boundary.config.ssh_key):
+                    raise IsolationError("Hermes attempted to replace the isolated SSH target")
+                kwargs["sync_files"] = False
+                super().__init__(*args, **kwargs)
+
+            def _build_ssh_command(self, extra_args=None, send_env=()):
+                raise IsolationError("unscoped SSH argv execution is disabled")
+
+            def _run_ssh(self, remote_cmd, timeout):
+                from tools.environments.remote_common import run_capture
+                return run_capture(boundary.ssh_command(remote_cmd), timeout=timeout)
+
+            def get_temp_dir(self):
+                return str(boundary.workdir / "tmp")
+
+            def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+                from tools.environments.base_output import _popen_bash
+                command = boundary.ssh_command(cmd_string)
+                return _popen_bash(command, stdin_data, env=boundary.client_environment())
+
+        backends._SSHEnvironment = HarnessSSHEnvironment
 
     def cleanup(self):
         if getattr(self.config, "retain_python_files", False):
@@ -373,22 +376,24 @@ class IsolatedSSHBackend:
             raise IsolationError("isolated run cleanup failed")
 
 
-class SeatbeltIsolationBackend(IsolatedSSHBackend):
-    """Local macOS transport whose every tool command enters sandbox-exec."""
+class LocalIsolationBackend(ScopedProcessBackend):
+    """Run the authenticated command directly using the local OS sandbox launcher."""
 
-    config: SeatbeltIsolationSettings
+    def _results_directory_script(self, create):
+        profile = self._require_results_dir().parent
+        return ("flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW\n"
+                f"profile=os.open({str(profile)!r},flags)\n"
+                "try:\n"
+                + (" try: os.mkdir('results',0o700,dir_fd=profile)\n"
+                   " except FileExistsError: pass\n" if create else "")
+                + " directory=os.open('results',flags,dir_fd=profile)\n"
+                  "finally: os.close(profile)\n")
 
     def _terminate(self, process):
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-
-    def _results_directory_script(self, create):
-        return ("import stat\n"
-                "directory=os.dup(int(os.environ['YIELD_RESULTS_FD']))\n"
-                "info=os.fstat(directory)\n"
-                "if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode & 0o077: raise PermissionError('invalid results directory')\n")
 
     def client_environment(self):
         return {
@@ -398,12 +403,12 @@ class SeatbeltIsolationBackend(IsolatedSSHBackend):
             "PYTHONDONTWRITEBYTECODE": "1",
         }
 
-    def ssh_command(self, remote_command: str | None = None):
+    def command(self, remote_command: str | None = None):
         if remote_command is None:
-            raise IsolationError("unscoped Seatbelt execution is disabled")
+            raise IsolationError("unscoped local execution is disabled")
         return [
             str(self.config.analysis_venv / "bin" / "python3"),
-            str(self.config.launcher), "--home", str(self.config.home),
+            "-I", "-B", str(self.config.launcher), "--home", str(self.config.home),
             "--work-root", str(self.config.work_root), "--venv", str(self.config.analysis_venv),
             self._request(remote_command),
         ]
@@ -414,12 +419,13 @@ class SeatbeltIsolationBackend(IsolatedSSHBackend):
         except ImportError as exc:
             raise IsolationError("Hermes local backend is unavailable") from exc
         original = backends._LocalEnvironment
-        if getattr(original, "_yield_seatbelt_isolated", False):
+        if getattr(original, "_yield_local_isolated", False):
             return
         boundary = self
 
-        class HarnessSeatbeltEnvironment(original):
-            _yield_seatbelt_isolated = True
+        class HarnessLocalEnvironment(original):
+            _yield_local_isolated = True
+            _yield_seatbelt_isolated = isinstance(boundary.config, SeatbeltIsolationSettings)
             uses_host_filesystem = False
             is_local = False
 
@@ -431,30 +437,48 @@ class SeatbeltIsolationBackend(IsolatedSSHBackend):
                 if login:
                     login = False
                 from tools.environments.base_output import _popen_bash
-                return _popen_bash(boundary.ssh_command(cmd_string), stdin_data,
+                return _popen_bash(boundary.command(cmd_string), stdin_data,
                                    env=boundary.client_environment())
 
             def get_temp_dir(self):
                 return str(boundary.workdir / "tmp")
 
-        backends._LocalEnvironment = HarnessSeatbeltEnvironment
+        backends._LocalEnvironment = HarnessLocalEnvironment
+
+    def cleanup(self):
+        if self.config.retain_python_files:
+            return
+        # The generated command can touch only the run and profile bind mounts.
+        result = subprocess.run(self.command("find . -mindepth 1 -delete"), stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=20, env=self.client_environment())
+        if result.returncode != 0:
+            raise IsolationError("isolated run cleanup failed")
+
+
+class SeatbeltIsolationBackend(LocalIsolationBackend):
+    ssh_command = LocalIsolationBackend.command
+
+    def _results_directory_script(self, create):
+        return ("import stat\n"
+                "directory=os.dup(int(os.environ['YIELD_RESULTS_FD']))\n"
+                "info=os.fstat(directory)\n"
+                "if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode & 0o077: raise PermissionError('invalid results directory')\n")
 
     def cleanup(self):
         return None
-
-    def cleanup_results(self, *, now=None):
-        return super().cleanup_results(now=now)
 
 
 def isolation_backend(config, run_id: str, principal_id: str | None = None):
     if isinstance(config, SeatbeltIsolationSettings):
         return SeatbeltIsolationBackend(config, run_id, principal_id)
+    if isinstance(config, LocalIsolationSettings):
+        return LocalIsolationBackend(config, run_id, principal_id)
     if isinstance(config, IsolationSettings):
         return IsolatedSSHBackend(config, run_id, principal_id)
     raise TypeError("unsupported isolation backend configuration")
 
 
-def prepare_isolated_run(config: IsolationSettings | SeatbeltIsolationSettings,
+def prepare_isolated_run(config: IsolationSettings | LocalIsolationSettings | SeatbeltIsolationSettings,
                          run_id: str, principal_id: str | None = None):
     backend = isolation_backend(config, run_id, principal_id)
     probe = (
@@ -467,22 +491,31 @@ def prepare_isolated_run(config: IsolationSettings | SeatbeltIsolationSettings,
         "'home':os.environ.get('HOME'),'python':sys.executable}))"
     )
     remote_command = "python3 -I -B -c " + shlex.quote(probe)
-    if isinstance(config, SeatbeltIsolationSettings):
+    if isinstance(backend, LocalIsolationBackend):
         from .seatbelt_local import file_read_probe
         # This existing, non-secret source file is outside the sandbox read roots.
-        read_probe = file_read_probe(Path(__file__).resolve())
+        linux_local = isinstance(config, LocalIsolationSettings)
+        read_probe = file_read_probe(Path(__file__).resolve(), absent_ok=linux_local)
+        network_check = (
+            f"denied['network']=os.readlink('/proc/self/ns/net') != {os.readlink('/proc/self/ns/net')!r};"
+            if linux_local else
+            "s=socket.socket();s.settimeout(.2);"
+            "exec(\"try: s.connect(('127.0.0.1',27017));denied['network']=False\\nexcept OSError: denied['network']=True\");"
+        )
+        repo_target = Path(__file__).resolve().parents[2]
+        # An in-tree venv makes its ancestors visible as empty mountpoint shells.
+        if linux_local:
+            repo_target = Path(__file__).resolve().parent
         probe = (
             "import json,os,pathlib,socket,sys;"
             f"p=pathlib.Path({str(backend.workdir)!r});p.mkdir(parents=True,exist_ok=True);"
             "q=p/'.probe';q.write_text('ok');q.unlink();"
             "denied={};"
-            f"targets={{'repo':pathlib.Path({str(Path(__file__).resolve().parents[2])!r}),"
+            f"targets={{'repo':pathlib.Path({str(repo_target)!r}),"
             f"'other_run':pathlib.Path({str(config.work_root / 'runs' / ('0' * 64))!r}),"
             f"'other_principal':pathlib.Path({str(config.work_root / 'profiles' / ('0' * 64))!r})}};"
             "exec(\"for k,v in targets.items():\\n try: list(v.iterdir());denied[k]=False\\n except OSError: denied[k]=True\");"
-            f"exec({read_probe!r});"
-            "s=socket.socket();s.settimeout(.2);"
-            "exec(\"try: s.connect(('127.0.0.1',27017));denied['network']=False\\nexcept OSError: denied['network']=True\");"
+            f"exec({read_probe!r});{network_check}"
             "print(json.dumps({'marker':os.environ.get('YIELD_ISOLATED'),"
             "'launcher':os.environ.get('YIELD_LAUNCHER'),'sandbox':os.environ.get('YIELD_SANDBOX'),"
             "'uid':os.getuid(),'home':os.environ.get('HOME'),'python':sys.executable,"
@@ -490,23 +523,25 @@ def prepare_isolated_run(config: IsolationSettings | SeatbeltIsolationSettings,
         )
         remote_command = "python3 -I -B -c " + shlex.quote(probe)
     try:
-        result = subprocess.run(backend.ssh_command(remote_command), input="", text=True,
+        result = subprocess.run(backend.command(remote_command), input="", text=True,
                                 capture_output=True, timeout=20, check=False,
                                 env=backend.client_environment())
     except (OSError, subprocess.SubprocessError) as exc:
         raise IsolationError("isolated backend unavailable") from exc
     if result.returncode != 0:
+        if isinstance(config, LocalIsolationSettings):
+            raise IsolationError("local analysis probe failed; check /usr/bin/bwrap, Linux user namespaces and the analysis venv")
         raise IsolationError("isolated backend unavailable or misconfigured")
     try:
         evidence = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise IsolationError("isolated backend verification failed") from exc
     expected_python = str(config.analysis_venv / "bin" / "python3")
-    if isinstance(config, SeatbeltIsolationSettings):
+    if isinstance(backend, LocalIsolationBackend):
         verified = (
             evidence.get("marker") == "1"
             and evidence.get("launcher") == str(config.launcher)
-            and evidence.get("sandbox") == "sandbox-exec"
+            and evidence.get("sandbox") == ("bwrap" if linux_local else "sandbox-exec")
             and evidence.get("uid") == os.geteuid()
             and evidence.get("home") == str(backend.results_dir.parent)
             and evidence.get("python") == expected_python
@@ -540,11 +575,11 @@ def prepare_isolated_run(config: IsolationSettings | SeatbeltIsolationSettings,
     }
 
 
-def cleanup_isolated_run(config: IsolationSettings | SeatbeltIsolationSettings,
+def cleanup_isolated_run(config: IsolationSettings | LocalIsolationSettings | SeatbeltIsolationSettings,
                          run_id: str, principal_id: str):
     isolation_backend(config, run_id, principal_id).cleanup()
 
 
-def cleanup_profile_results(config: IsolationSettings | SeatbeltIsolationSettings,
+def cleanup_profile_results(config: IsolationSettings | LocalIsolationSettings | SeatbeltIsolationSettings,
                             principal_id: str, *, now=None):
     isolation_backend(config, "retention", principal_id).cleanup_results(now=now)

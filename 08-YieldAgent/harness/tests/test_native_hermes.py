@@ -299,6 +299,33 @@ def test_embedded_profile_disables_host_package_probe_without_losing_settings(mo
     assert 'model_upgrade_enabled' not in saved.get('auxiliary', {}).get('title_generation', {})
 
 
+@pytest.mark.parametrize('custom', [False, True])
+def test_stock_profile_migrates_only_harness_managed_ssh_terminal(monkeypatch, tmp_path, custom):
+    import yaml
+    import harness.native_hermes as native
+
+    monkeypatch.setattr(native, 'ROOT', tmp_path)
+    profile = native.prepare_profile('alice')
+    config = profile / 'config.yaml'
+    content = yaml.safe_load(config.read_text())
+    content['terminal'] = {
+        'backend': 'ssh', 'cwd': '/old/runs/test', 'ssh_host': 'localhost',
+        'ssh_user': 'yieldrun', 'ssh_port': 22, 'ssh_key': '/old/key',
+        'env_passthrough': [], 'persistent_shell': False,
+    }
+    if custom:
+        content['terminal']['timeout'] = 150
+    content['timezone'] = 'Asia/Seoul'
+    config.write_text(yaml.safe_dump(content))
+    native.prepare_profile('alice')
+    saved = yaml.safe_load(config.read_text())
+    if custom:
+        assert saved['terminal'] == content['terminal']
+    else:
+        assert 'terminal' not in saved
+    assert saved['timezone'] == 'Asia/Seoul'
+
+
 @pytest.mark.parametrize('managed', [True, False])
 def test_profile_migrates_only_managed_title_disable_once(monkeypatch, tmp_path, managed):
     import yaml

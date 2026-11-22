@@ -60,9 +60,9 @@ class IsolationSettings(BaseModel):
         return self
 
 
-class SeatbeltIsolationSettings(BaseModel):
+class _LocalBoundarySettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    backend: Literal["seatbelt"] = "seatbelt"
+    backend: Literal["local", "seatbelt"]
     home: Path
     work_root: Path
     analysis_venv: Path
@@ -72,7 +72,10 @@ class SeatbeltIsolationSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_boundary(self):
-        if sys.platform != "darwin":
+        linux_local = self.backend == "local"
+        if linux_local and sys.platform != "linux":
+            raise ValueError("local bubblewrap isolation requires Linux")
+        if not linux_local and sys.platform != "darwin":
             raise ValueError("Seatbelt isolation is supported only on macOS")
         for name in ("home", "work_root", "analysis_venv", "launcher"):
             path = getattr(self, name).expanduser()
@@ -84,10 +87,11 @@ class SeatbeltIsolationSettings(BaseModel):
                 resolved = path.resolve(strict=True)
             except OSError as exc:
                 raise ValueError(f"isolation {name.replace('_', ' ')} must exist") from exc
-            if resolved == REPOSITORY_ROOT or REPOSITORY_ROOT in resolved.parents:
+            if (not linux_local or name in ("home", "work_root")) and resolved.is_relative_to(REPOSITORY_ROOT):
                 raise ValueError(f"isolation {name.replace('_', ' ')} must be outside the repository")
             info = resolved.stat()
-            if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            owners = {os.geteuid(), 0} if linux_local and name in ("launcher", "analysis_venv") else {os.geteuid()}
+            if info.st_uid not in owners or info.st_mode & 0o022:
                 raise ValueError(f"isolation {name.replace('_', ' ')} is writable by another user")
             setattr(self, name, resolved)
         if not self.home.is_dir() or not self.work_root.is_dir() or not self.analysis_venv.is_dir():
@@ -99,6 +103,51 @@ class SeatbeltIsolationSettings(BaseModel):
         if self.analysis_venv == self.home or self.home in self.analysis_venv.parents:
             raise ValueError("analysis venv must be outside the dedicated sandbox home")
         return self
+
+
+class SeatbeltIsolationSettings(_LocalBoundarySettings):
+    backend: Literal["seatbelt"] = "seatbelt"
+
+
+class LocalIsolationSettings(_LocalBoundarySettings):
+    backend: Literal["local"] = "local"
+    launcher: Path = Path(__file__).resolve().parent / "isolation/launcher.py"
+
+    @model_validator(mode="after")
+    def validate_linux(self):
+        if self.launcher != Path(__file__).resolve().parent / "isolation/launcher.py":
+            raise ValueError("local isolation must use the bundled launcher")
+        if (not (self.analysis_venv / "pyvenv.cfg").is_file()
+                or REPOSITORY_ROOT.is_relative_to(self.analysis_venv)
+                or self.home.is_relative_to(self.analysis_venv)):
+            raise ValueError("local analysis requires a Python virtual environment separate from app data")
+        for name in ("home", "work_root"):
+            if getattr(self, name).stat().st_mode & 0o077:
+                raise ValueError(f"isolation {name.replace('_', ' ')} must be private (0700)")
+        return self
+
+    @classmethod
+    def from_env(cls):
+        if sys.platform != "linux":
+            raise ValueError("local bubblewrap isolation requires Linux")
+        home = Path(os.environ.get("HARNESS_ISOLATION_HOME", Path.home() / ".local/share/yield-harness"))
+        work = Path(os.environ.get("HARNESS_ISOLATION_WORK_ROOT", home / "work"))
+        for path in (home, work):
+            if not path.is_absolute() or path != path.resolve() or path.is_relative_to(REPOSITORY_ROOT):
+                raise ValueError("local isolation workspace must be an absolute canonical path outside the repository")
+        if work.parent != home:
+            raise ValueError("isolation work root must be directly inside the dedicated home")
+        home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = home.stat()
+        if info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            raise ValueError("isolation home must be private (0700) and owned by the current user")
+        work.mkdir(mode=0o700, exist_ok=True)
+        sandbox = os.getenv("HARNESS_ISOLATION_SANDBOX", "required")
+        return cls(
+            home=home, work_root=work, analysis_venv=os.getenv("HARNESS_ISOLATION_ANALYSIS_VENV", sys.prefix),
+            sandbox="required" if sandbox == "auto" else sandbox,
+            retain_python_files=os.getenv("HARNESS_RETAIN_PYTHON_FILES") == "1",
+        )
 
 
 class Settings(BaseModel):
@@ -130,7 +179,7 @@ class Settings(BaseModel):
     python_image: str = "yield-harness-python:2"
     no_yield_tools: bool = False
     native_allowed_tools: list[str] | None = None
-    isolation: IsolationSettings | SeatbeltIsolationSettings | None = None
+    isolation: LocalIsolationSettings | SeatbeltIsolationSettings | IsolationSettings | None = None
     principal: str = "local"
     enabled: bool = False
 
@@ -152,9 +201,11 @@ class Settings(BaseModel):
             key = os.getenv("GROQ_API_KEY") or os.getenv("groq_api_key", "")
         elif not key and host == "openrouter.ai":
             key = os.getenv("OPENROUTER_API_KEY", "")
-        isolation = None
-        backend = os.getenv("HARNESS_ISOLATION_BACKEND", "ssh")
-        if backend == "seatbelt":
+        default_backend = "seatbelt" if sys.platform == "darwin" else "local"
+        backend = os.getenv("HARNESS_ISOLATION_BACKEND", default_backend)
+        if backend == "local":
+            isolation = LocalIsolationSettings.from_env()
+        elif backend == "seatbelt":
             names = {
                 "home": "HARNESS_ISOLATION_HOME",
                 "work_root": "HARNESS_ISOLATION_WORK_ROOT",
@@ -173,9 +224,7 @@ class Settings(BaseModel):
                 sandbox=os.getenv(names["sandbox"], "required"),
                 retain_python_files=os.getenv("HARNESS_RETAIN_PYTHON_FILES") == "1",
             )
-        elif backend != "ssh":
-            raise ValueError("HARNESS_ISOLATION_BACKEND must be ssh or seatbelt")
-        if isolation is None:
+        elif backend == "ssh":
             names = {
                 "ssh_host": "HARNESS_ISOLATION_SSH_HOST",
                 "ssh_user": "HARNESS_ISOLATION_SSH_USER",
@@ -200,6 +249,8 @@ class Settings(BaseModel):
                 analysis_venv=os.environ[names["analysis_venv"]], launcher=os.environ[names["launcher"]],
                 sandbox=os.getenv(names["sandbox"], "auto"),
                 retain_python_files=os.getenv("HARNESS_RETAIN_PYTHON_FILES") == "1")
+        else:
+            raise ValueError("HARNESS_ISOLATION_BACKEND must be local, seatbelt or ssh")
         return cls(
             engine=engine,
             model=os.getenv("HARNESS_MODEL", cls.model_fields["model"].default),

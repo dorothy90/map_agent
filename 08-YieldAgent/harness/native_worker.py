@@ -190,19 +190,19 @@ def configure_agent_environment(isolation):
     backend = isolation.get('backend', 'ssh')
     if backend == 'ssh' and isolation.get('ssh_user') != 'yieldrun':
         raise RuntimeError('verified yieldrun isolation configuration is required')
-    if backend not in {'ssh', 'seatbelt'}:
+    if backend not in {'local', 'ssh', 'seatbelt'}:
         raise RuntimeError('verified isolation configuration is required')
     workdir = Path(isolation['workdir'])
     for name in list(os.environ):
         upper = name.upper()
         if (upper in {'PYTHONPATH', 'PYTHONHOME', 'BASH_ENV', 'ENV', 'SSH_AUTH_SOCK', 'SSH_AGENT_PID'}
                 or upper.endswith(('_PASSWORD', '_SECRET', '_TOKEN', '_API_KEY'))
-                or upper.startswith(('ORACLE_', 'MONGO_', 'DATABASE_', 'HARNESS_MONGO_',
+                or upper.startswith(('TERMINAL_SSH_', 'ORACLE_', 'MONGO_', 'DATABASE_', 'HARNESS_MONGO_',
                                      'AWS_', 'AZURE_', 'GOOGLE_'))):
             os.environ.pop(name, None)
     venv = Path(isolation['analysis_venv'])
     os.environ.update({
-        'TERMINAL_ENV': 'local' if backend == 'seatbelt' else 'ssh', 'TERMINAL_CWD': str(workdir),
+        'TERMINAL_ENV': 'ssh' if backend == 'ssh' else 'local', 'TERMINAL_CWD': str(workdir),
         'VIRTUAL_ENV': str(venv), 'PATH': str(venv / 'bin') + os.pathsep + os.defpath,
         'HERMES_WRITE_SAFE_ROOT': str(workdir),
     })
@@ -218,9 +218,10 @@ def configure_agent_environment(isolation):
     if engine_dir not in sys.path:
         sys.path.insert(0, engine_dir)
     from harness.isolation.backend import isolation_backend
-    from harness.config import IsolationSettings, SeatbeltIsolationSettings
-    if backend == 'seatbelt':
-        config = SeatbeltIsolationSettings.model_validate({key: isolation[key] for key in (
+    from harness.config import IsolationSettings, LocalIsolationSettings, SeatbeltIsolationSettings
+    if backend in {'local', 'seatbelt'}:
+        cls = LocalIsolationSettings if backend == 'local' else SeatbeltIsolationSettings
+        config = cls.model_validate({key: isolation[key] for key in (
             'backend', 'home', 'work_root', 'analysis_venv', 'launcher', 'sandbox')})
     else:
         config = IsolationSettings.model_validate({key: isolation[key] for key in (
@@ -244,7 +245,9 @@ def verify_isolated_engine(startup):
     backend = isolation.get('backend', 'ssh')
     verified = (
         config.get('cwd') == isolation['workdir']
-        and ((backend == 'seatbelt' and config.get('env_type') == 'local'
+        and ((backend == 'local' and config.get('env_type') == 'local'
+              and getattr(terminal_tool_backends._LocalEnvironment, '_yield_local_isolated', False))
+             or (backend == 'seatbelt' and config.get('env_type') == 'local'
               and getattr(terminal_tool_backends._LocalEnvironment, '_yield_seatbelt_isolated', False))
              or (backend == 'ssh' and config.get('env_type') == 'ssh'
                  and getattr(terminal_tool_backends._SSHEnvironment, '_yield_isolated', False)))

@@ -552,7 +552,7 @@ def _prepare_profile_config(profile, isolation):
     content['agent']['environment_probe'] = False
     content['delegation']['orchestrator_enabled'] = False
     if isolation is not None:
-        if isolation.get('backend') == 'seatbelt':
+        if isolation.get('backend') in {'local', 'seatbelt'}:
             terminal = {
                 'backend': 'local', 'cwd': isolation['workdir'],
                 'env_passthrough': [], 'persistent_shell': False,
@@ -566,6 +566,16 @@ def _prepare_profile_config(profile, isolation):
             }
         changed = changed or content.get('terminal') != terminal
         content['terminal'] = terminal
+    else:
+        terminal = content.get('terminal') or {}
+        managed_fields = {'backend', 'cwd', 'ssh_host', 'ssh_user', 'ssh_port', 'ssh_key',
+                          'env_passthrough', 'persistent_shell'}
+        if (isinstance(terminal, dict) and terminal.keys() == managed_fields
+                and terminal['backend'] == 'ssh' and terminal['ssh_user'] == 'yieldrun'
+                and terminal['ssh_host'] in {'localhost', '127.0.0.1', '::1'}
+                and terminal['persistent_shell'] is False and terminal['env_passthrough'] == []):
+            del content['terminal']
+            changed = True
     content.setdefault('tools', {}).setdefault('tool_search', {})
     changed = changed or content['tools']['tool_search'].get('enabled') != 'off'
     content['tools']['tool_search']['enabled'] = 'off'

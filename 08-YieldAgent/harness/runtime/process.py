@@ -1,4 +1,4 @@
-"""Execute analysis locally, or through the required yieldrun SSH boundary."""
+"""Execute analysis in the configured runtime."""
 import asyncio
 import json
 import os
@@ -7,7 +7,7 @@ import signal
 import sys
 import tempfile
 
-from ..isolation.backend import IsolatedSSHBackend, isolation_backend
+from ..isolation.backend import isolation_backend
 
 
 class ProcessRuntime:
@@ -15,8 +15,7 @@ class ProcessRuntime:
         self.executable = executable or sys.executable
         self.isolated = None
         if isolation is not None:
-            constructor = isolation_backend if getattr(isolation, "backend", None) == "seatbelt" else IsolatedSSHBackend
-            self.isolated = constructor(isolation, run_id, principal_id)
+            self.isolated = isolation_backend(isolation, run_id, principal_id)
 
     async def execute(self, code, datasets, timeout=60):
         if self.isolated is not None:

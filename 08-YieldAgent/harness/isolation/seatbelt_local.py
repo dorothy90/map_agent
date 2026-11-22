@@ -16,11 +16,12 @@ FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 HASH = re.compile(r'[0-9a-f]{64}\Z')
 
 
-def file_read_probe(sentinel):
-    """Probe data reads and inherited sandbox policy; only permission denial passes."""
+def file_read_probe(sentinel, *, absent_ok=False):
+    """Probe file reads in parent and child; a Linux mount namespace can hide the path."""
+    denied_exceptions = "(PermissionError,FileNotFoundError)" if absent_ok else "PermissionError"
     attempt = (
         f"try:\n with open({str(sentinel)!r}, 'rb') as f: f.read(1)\n"
-        "except PermissionError:\n denied=True\n"
+        f"except {denied_exceptions}:\n denied=True\n"
         "else:\n denied=False\n"
     )
     child = attempt + "raise SystemExit(0 if denied else 1)\n"

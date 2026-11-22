@@ -6,9 +6,8 @@ import uuid
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 
-from .config import Settings
+from .config import LocalIsolationSettings, SeatbeltIsolationSettings, Settings
 from .control import RunController
-from .config import SeatbeltIsolationSettings
 from .isolation.backend import prepare_isolated_run
 from .runtime.process import ProcessRuntime
 from .router import router
@@ -46,8 +45,8 @@ async def isolation_health(request: Request):
     if request.client is None or request.client.host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(403, "local health check only")
     settings = request.app.state.harness.settings
-    if not isinstance(settings.isolation, SeatbeltIsolationSettings):
-        raise HTTPException(404, "Seatbelt isolation is not enabled")
+    if not isinstance(settings.isolation, (LocalIsolationSettings, SeatbeltIsolationSettings)):
+        raise HTTPException(404, "Local isolation is not enabled")
     run_id = "health-" + uuid.uuid4().hex
     principal_id = settings.principal
     evidence = await asyncio.to_thread(
@@ -59,6 +58,6 @@ async def isolation_health(request: Request):
     if result.get("status") != "success":
         raise HTTPException(503, "isolated worker failed")
     return {
-        "status": "ok", "backend": "seatbelt", "verified_uid": evidence["verified_uid"],
+        "status": "ok", "backend": settings.isolation.backend, "verified_uid": evidence["verified_uid"],
         "sandbox": evidence["selected_sandbox"], "worker_stdout": result.get("stdout", ""),
     }

@@ -1,8 +1,17 @@
-# yieldrun 격리 설치
+# 수율 분석 실행 환경
 
-`Settings.from_env()`는 항상 격리 설정을 요구합니다. `run_python`은 설정된 격리 backend에서 실행되며, 기본 SSH backend는 localhost의 전용 계정 `yieldrun`을 사용합니다. macOS에서는 `HARNESS_ISOLATION_BACKEND=seatbelt`와 `HARNESS_ISOLATION_SANDBOX=required`를 지정하고 HOME, WORK_ROOT, ANALYSIS_VENV, LAUNCHER 경로를 설정할 수 있습니다. SSH 또는 launcher 검증이 실패하면 도구가 거부되며 local 실행으로 돌아가지 않습니다.
+Ubuntu에서 하네스는 Hermes의 `local` 터미널을 사용한다. 분석 요청마다 웹 서버가 현재 사용자와 실행에 해당하는 폴더를 골라 `bwrap`으로 분석 프로세스를 직접 실행한다. 이 경로에는 SSH 서버, 로그인 계정, 키, Docker, WSL이 필요하지 않다. macOS의 로컬 실행에는 Seatbelt를 사용한다.
 
-## 설치
+## Ubuntu 로컬 실행
+
+1. 일반 서비스 계정으로 서버의 Python 가상환경에서 앱을 시작한다. 분석에 사용할 가상환경에는 pandas, numpy, plotly 및 그 의존성이 있어야 한다.
+2. Ubuntu 서버에서 `/usr/bin/bwrap`과 사용자 네임스페이스를 사용할 수 있는지 확인한다. 설치만으로 실행 권한까지 확인되지는 않는다. 실제 검사는 현재 서비스 계정으로 수행한다. Windows 개발 PC에서는 이 준비가 필요하지 않다.
+3. `HARNESS_ISOLATION_BACKEND=local`을 명시할 수 있다. 기존 배포 설정이 명시적으로 `ssh`를 지정했다면 `local`로 바꾸고 SSH 배포에서 쓰던 경로 설정은 검토한다. 기본 작업 위치는 서비스 계정의 `~/.local/share/yield-harness/work`이고, 분석 가상환경은 현재 서버의 Python 가상환경이다. 기본 로컬 실행기는 저장소의 `harness/isolation/launcher.py`이다.
+4. 서버의 루프백 주소에서 `/health/isolation`을 조회한다. 성공 응답에 `backend=local`, `sandbox=bwrap`, Python 워커 출력이 있는지 확인한다. 이어서 채팅에서 수율을 조회해 CSV와 표가 생성되는지 검증한다.
+
+## 기존 SSH 배포에서 명시적으로 SSH를 선택하는 경우
+
+아래 절은 과거 SSH 배포를 유지하는 경우에만 적용한다. 이 방식은 `HARNESS_ISOLATION_BACKEND=ssh`로 선택한다.
 
 1. 운영자가 별도 SSH 키 쌍을 만들고 공개키 경로를 준비합니다. 개인키와 localhost host key를 harness 프로세스만 읽게 합니다. 실제 `.env`를 복사하지 마십시오.
 2. macOS는 `setup_macos.sh /absolute/repo/path /path/to/yieldrun.pub`, Ubuntu는 `setup_ubuntu.sh /absolute/repo/path /path/to/yieldrun.pub`를 root shell에서 실행합니다. 스크립트는 내부에서 `sudo`를 호출하지 않습니다.
@@ -32,7 +41,7 @@ HARNESS_ISOLATION_SANDBOX=required
 
 `none`은 허용되지 않고 `auto`도 샌드박스 없는 실행으로 fallback하지 않습니다. background terminal/process_manage와 persistent remote kernel은 거부되며 `execute_code`는 격리된 per-call 경로를 사용합니다.
 
-## 설치 후 우회 점검
+## 기존 SSH 배포의 설치 후 점검
 
 DB나 secret fixture 없이 synthetic A/B scope를 만들고 양방향 침범을 검사합니다.
 

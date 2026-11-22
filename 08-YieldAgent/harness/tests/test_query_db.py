@@ -100,7 +100,7 @@ def run_query(
         return str(self.results_dir / "query-fixture.csv")
 
     monkeypatch.setattr(query_db, "_connection", lambda: connection)
-    monkeypatch.setattr(query_db.IsolatedSSHBackend, "upload_bytes", upload)
+    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_bytes", upload)
     args = query_db.QueryDBInput.model_validate(payload)
     result = asyncio.run(query_db.query_db(args, context(tmp_path)))
     return connection, uploaded, result
@@ -402,7 +402,7 @@ def test_lob_is_read_before_connection_closes(monkeypatch, tmp_path):
         return str(self.results_dir / "query-lob.csv")
 
     monkeypatch.setattr(query_db, "_connection", lambda: connection)
-    monkeypatch.setattr(query_db.IsolatedSSHBackend, "upload_bytes", upload)
+    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_bytes", upload)
     result = asyncio.run(query_db.query_db(
         query_db.QueryDBInput(table="people"), context(tmp_path)
     ))
@@ -458,7 +458,7 @@ def test_transfer_failure_has_no_successful_path(monkeypatch, tmp_path):
         raise IsolationError("upload failed")
 
     monkeypatch.setattr(query_db, "_connection", lambda: connection)
-    monkeypatch.setattr(query_db.IsolatedSSHBackend, "upload_bytes", failed)
+    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_bytes", failed)
 
     with pytest.raises(IsolationError, match="upload failed"):
         asyncio.run(query_db.query_db(query_db.QueryDBInput(table="people"), context(tmp_path)))
@@ -651,7 +651,7 @@ def test_executor_stores_capped_evidence_and_projects_store_result_id(monkeypatc
         return str(self.results_dir / "query-stored.csv")
 
     monkeypatch.setattr(query_db, "_connection", lambda: connection)
-    monkeypatch.setattr(query_db.IsolatedSSHBackend, "upload_bytes", upload)
+    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_bytes", upload)
     registry = ToolRegistry()
     query_db.register(registry)
     store = Store()
