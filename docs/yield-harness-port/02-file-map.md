@@ -1,6 +1,6 @@
 # 기능을 기준으로 이식 파일 찾기
 
-기준 커밋의 기존 프로그램이 어떤 파일을 통해 동작하는지 정리했다. 아래에서 `H`는 `08-YieldAgent/harness/`, `F`는 `08-YieldAgent/harness_console/`이다. **실제 복사 대상은 FILES.tsv의 원래 전체 경로를 따른다.** CHECKPOINT-144.tsv는 마지막 체크포인트에서 손댄 파일의 이력이다.
+기준 커밋의 기존 프로그램이 어떤 파일을 통해 동작하는지 정리했다. 아래에서 `H`는 `08-YieldAgent/harness/`, `F`는 `08-YieldAgent/harness_console/`이다. **실제 복사 대상은 FILES.tsv의 원래 전체 경로를 따른다.** CHECKPOINT-144.tsv는 기존 앱 체크포인트 `58ad8ee7`에서 손댄 파일의 이력이다.
 
 ## 1. 어느 쪽 코드인지 구분한다
 
