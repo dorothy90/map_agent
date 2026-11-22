@@ -151,3 +151,24 @@ def test_local_mounts_cannot_expose_private_workspaces(tmp_path, monkeypatch):
                            config['work_root'] / 'runs' / ('b' * 64))
     with pytest.raises(SystemExit):
         launcher.sandbox_command(config, scope, "true", {})
+
+
+def test_only_shared_library_alternatives_in_system_library_roots_are_mounted(tmp_path):
+    from harness.isolation.launcher import shared_library_alternatives
+
+    libs = tmp_path / 'usr/lib'
+    libs.mkdir(parents=True)
+    blas = libs / 'libblas.so.3.11'
+    blas.touch()
+    alternatives = tmp_path / 'etc/alternatives'
+    alternatives.mkdir(parents=True)
+    selected = alternatives / 'libblas.so.3-aarch64-linux-gnu'
+    selected.symlink_to(blas)
+    outside = tmp_path / 'outside'
+    outside.touch()
+    (alternatives / 'libother.so.1').symlink_to(outside)
+    (alternatives / 'libbroken.so.2').symlink_to(libs / 'absent')
+    (alternatives / 'libdir.so.2').symlink_to(libs)
+    (alternatives / 'editor').symlink_to(blas)
+
+    assert list(shared_library_alternatives(alternatives, {libs})) == [str(selected)]

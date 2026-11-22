@@ -135,12 +135,23 @@ def ensure_scope(config, scope):
         _private_directory(directory)
 
 
+def shared_library_alternatives(directory, library_dirs):
+    for entry in sorted(directory.glob("lib*.so*")):
+        if entry.is_symlink() and entry.is_file():
+            target = entry.resolve()
+            if any(target.is_relative_to(root) for root in library_dirs):
+                yield str(entry)
+
+
 def local_read_paths(venv):
     # The launcher itself uses the analysis venv. Its base interpreter may be a
     # uv-managed installation outside /usr. Mount Python, not its user's home.
     paths = ["/usr/bin", "/usr/lib", "/usr/lib64", "/usr/share/locale", "/usr/share/zoneinfo",
-             "/bin", "/lib", "/lib64", "/etc/passwd", "/etc/group", "/etc/localtime",
+             "/bin", "/lib", "/lib64", "/etc/passwd", "/etc/group", "/etc/localtime", "/etc/ld.so.cache",
              str(Path(venv, "bin/python3").resolve(strict=True)), sysconfig.get_path("stdlib")]
+    # Ubuntu selects BLAS and other system libraries through /etc/alternatives.
+    library_dirs = {Path(p).resolve() for p in ("/lib", "/lib64", "/usr/lib", "/usr/lib64")}
+    paths.extend(shared_library_alternatives(Path("/etc/alternatives"), library_dirs))
     libdir = sysconfig.get_config_var("LIBDIR")
     if libdir:
         for variable in ("LDLIBRARY", "INSTSONAME"):
