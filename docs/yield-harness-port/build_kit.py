@@ -10,7 +10,7 @@ import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
 
-COMMIT = "77c9c75f60abdac549754902eda018aef3936d56"
+COMMIT = "cdcc284fd74ca16607022c25ea3e0d8a1c4340f7"
 Y = "08-YieldAgent/"
 H = Y + "harness/"
 ENGINE = H + "engine/"
@@ -54,7 +54,6 @@ APP_MODULES = {
     "hermes_chat": "현재 웹 채팅 실행과 프로필 생성", "hermes_chat_worker": "Hermes 모델·도구·스트림을 한 채팅에 연결",
     "native_tools": "수율 도구 6개를 Hermes의 yield 도구 묶음에 등록", "executor": "인증된 도구 실행과 결과 저장",
     "instructions": "모델에 제공할 지침 파일 로드", "store": "Mongo 세션·실행·테이블·산출물 저장",
-    "map_intent": "사용자가 요청한 측정·기간·LOT별 웨이퍼 선택을 근거와 연결",
     "skill_catalog_worker": "현재 사용자 프로필의 스킬 검색·목록",
     "types": "저장 결과·도구 입력·출력 계약", "native_hermes": "Hermes 프로필·공통 상태 및 기존 실행 호환",
     "native_worker": "기존 실행 경로의 Hermes 격리 프로세스", "native_ipc": "프로세스 간 실행 메시지",
@@ -68,7 +67,7 @@ TOOLS = {
     "registry":"도구 공개 스키마·실행 명세 묶음", "list_tables":"Oracle 테이블·컬럼 정보",
     "query_db":"조회 전용 SQL과 원본 행/스키마 보존", "python_tools":"read_result·run_python 결과 읽기와 분석",
     "table_artifact":"render_yield_table 수율표 및 결과 링크",
-    "load_wafer_maps":"load_wafer_maps 개별 맵·누적 맵 조회", "map_scope":"제품·검사·기간·메모 그룹을 실제 조회조건에 결합",
+    "load_wafer_maps":"load_wafer_maps 개별 맵·누적 맵 조회",
     "map_aggregate":"원본 MAP에서 그룹별 좌표 집계", "map_aggregate_plot":"누적 맵 Plotly 시각화",
     "map_bin_plot":"기억한 그룹별 개별 측정의 좌표·BIN 표시", "report_analysis":"수율일보 요청 계약",
     "report_scatter":"웨이퍼 단위 열화·개선 산점도", "report_bin_maps":"주차별 BIN 누적·델타맵",

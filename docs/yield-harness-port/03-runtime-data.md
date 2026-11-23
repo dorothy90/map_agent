@@ -2,7 +2,7 @@
 
 **선택 부록.** 기존 소스만 옮길 때는 이 장을 건너뛴다. 기존 업무 스킬까지 보존하려면 2절을 먼저 읽는다. 개인 이력까지 옮기는 경우에만 해당 백업 절차를 사용한다.
 
-기준 앱은 `77c9c75f60abdac549754902eda018aef3936d56`이다. 앱 소스만 반입하면 새 프로필과 빈 채팅 목록으로 시작한다. Luna/Terra에 설치하는 개발 스킬과 앱 사용자가 만드는 Hermes 스킬은 저장 위치가 다르다.
+기준 앱은 `cdcc284fd74ca16607022c25ea3e0d8a1c4340f7`이다. 앱 소스만 반입하면 새 프로필과 빈 채팅 목록으로 시작한다. Luna/Terra에 설치하는 개발 스킬과 앱 사용자가 만드는 Hermes 스킬은 저장 위치가 다르다.
 
 |원하는 결과|진행할 단계|필요한 반입물 또는 사내 자원|
 |---|---|---|
@@ -33,7 +33,7 @@ umask 077
 |---|---|
 |`profile-seed/skills/yield-daily-report/SKILL.md`|수율일보. 월 3개월·주 4주·일 3일 표, 최근 2주 열화/개선 각 최대 3개 웨이퍼 산점도, 최대 10개 BIN의 직전주·최근주·델타 3행. 표본 부족 시 적격 항목 수와 이유 표시|
 |`profile-seed/skills/yield-summary/SKILL.md`|수율 요약. 월·주·일 표 앞에 같은 조회 결과에 근거한 결론 표시|
-|`profile-seed/skills/wafer-map-cummap/SKILL.md`|웨이퍼 개별·누적 맵. 원문에 개발 당시 좌표·검사 사례와 직접 SQL 대안이 있다. 사내 좌표 범위나 제품 기본값으로 고정하지 않는다. 저장 그룹 조회에서는 현재 전용 도구 스키마의 memory_refs와 harness/instructions/native.md 규칙을 우선한다.|
+|`profile-seed/skills/wafer-map-cummap/SKILL.md`|웨이퍼 개별·누적 맵. 원문에 개발 당시 좌표·검사 사례와 직접 SQL 대안이 있다. 사내 좌표 범위나 제품 기본값으로 고정하지 않는다. 저장 그룹 조회 시 Hermes가 메모에서 읽은 LOT·웨이퍼 쌍을 전용 도구의 `wafer_groups` 인자로 전달한다.|
 |`profile-seed/skills/wafer-handoff-note/SKILL.md`|현장 메모만으로 3줄 교대 인수인계. 실데이터 없이 스킬 로딩을 확인할 때도 사용 가능|
 |`profile-seed/optional-demo/MEMORY.md`|외부 더미 DB의 회오리·환형 예제 메모 두 항목. 기본 설치 제외. 동일 더미 식별자가 있는 검증 DB에서만 설치|
 |`install_profile_seed.py`|대상 프로필 경로 계산, 충돌 점검, 누락된 파일 설치|
@@ -163,6 +163,6 @@ harness.store.HarnessStore는 harness_runs, harness_invocations, harness_results
 ## 5. 기능별 사내 합격 기준
 
 - 새 대화에 “수율일보 작성해줘”만 입력하고 실제 제품 하나를 고른다. yield-daily-report가 로드되는지 보고 제품 범위, 검사 둘 다, 기간별 실제 표, 적격 산점도와 3행 BIN 맵을 확인한다. 표본/메타 부족이면 실제 개수와 미생성 이유를 DB로 확인한다.
-- 같은 사용자의 다른 대화에서 그룹명과 검사만 입력한다. 전용 load_wafer_maps에 선택된 memory_refs가 들어가고, 결과의 wafer_groups와 DB의 (LOT_ID, WF_ID) 쌍이 같은지 확인한다. 다른 LOT의 같은 웨이퍼 번호가 섞이면 실패다. 사내 데이터에는 사내 사용자 지정 그룹으로 시험한다.
+- 같은 사용자의 다른 대화에서 그룹명과 검사만 입력한다. 전용 `load_wafer_maps`에 전달된 `wafer_groups`의 (LOT_ID, WF_ID) 쌍을 메모 원문 및 DB와 대조한다. 다른 LOT의 같은 웨이퍼 번호가 섞이면 실패다. 사내 데이터에는 사내 사용자 지정 그룹으로 시험한다.
 - 권한이 다른 두 계정으로 스킬·메모리·과거 링크 분리를 검증한다. 모두 같은 로컬 개발 principal을 쓰는 환경으로는 이 검증을 대신할 수 없다.
 - 이 반입 자료의 검증 범위는 원본 스킬 4개 바이트 일치 및 실제 카탈로그 읽기, 선택 메모·충돌·재실행, 하위 스킬 리소스·SQLite WAL 백업, 임시 Mongo의 GridFS 주소/원본 바이트 복원, 개발 Oracle 9개 계약 0행 조회다. 사내 계정·프록시·업무 정의와 기존 실제 사용자 전체 자료는 사내에서 별도로 검증한다.

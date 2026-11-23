@@ -7,10 +7,10 @@
 | 범위 | 파일 또는 폴더 | 역할과 이식 시 판단 |
 |---|---|---|
 | Hermes 원본 | H/engine/ 및 UPSTREAM.json, LICENSE, PATCHES.diff | 고정 Hermes 배포를 원형으로 가져온 부분. UPSTREAM.json에 실린 2,656개 원본 파일을 바이트 단위로 검사한다. 사내에 다른 버전이 있으면 소스 경로를 분리하고 핀을 선택한다. 엔진 내부에 업무 도구를 직접 끼워 넣을 필요가 없다. |
-| 업무 채팅 연결 | H/hermes_chat.py, hermes_chat_worker.py, native_tools.py | 사용자별 프로필과 worker 생명주기, 모델에 제공할 스킬/메모리, 업무 도구 등록. worker가 Hermes 네이티브 레지스트리에 yield 도구를 연결한다. 새 채팅이 구형 실행기로 들어가지 않는지 참조한다. |
+| 업무 채팅 연결 | H/hermes_chat.py, hermes_chat_worker.py, native_tools.py | worker가 직원 프로필의 state.db에서 Hermes 세션을 재개하고 전용 도구 6개를 등록한다. Hermes가 선택 응답과 도구 이력을 모델에 전달하고 최종 답변을 작성한다. |
 | 앱 공통 상태 | H/control.py, executor.py, types.py, store.py | 세션·실행·결과 식별자, 취소와 소유권, 결과 저장, 산출물 URL의 연결. 소유자를 특정하는 사내 계층이 이미 있으면 그 계약과 맞춘다. |
 | 웹 API 및 세션 | H/app.py, router.py, gateway/{routes,services,auth,session_rpc,session_store,events,execution}.py, gateway/manifest.json | HTTP·WebSocket 연결, 세션 목록·제목·이력, 사용자 선택에 대한 응답, 진행 상태 및 최종 답변. 사내 인증과 외부 개발용 고정 사용자 설정을 구분한다. |
-| 스킬·기억 | H/skill_catalog_worker.py, hermes_chat_worker.py, map_intent.py, tools/map_scope.py, instructions/native.md | 실제 프로필 스킬을 읽어 목록에 표시하고 선택 메모 항목을 전용 맵 도구가 읽을 수 있게 연결. H/skills.py와 옛 고정 스킬은 현재 커밋에서 제거됨. 사용자 정의 스킬 내용은 별도 반입 대상으로 03에 수록. |
+| 스킬·기억 | H/skill_catalog_worker.py, hermes_chat_worker.py, tools/load_wafer_maps.py | 실제 프로필 스킬을 읽어 목록에 표시한다. 기억한 웨이퍼 그룹은 모델이 LOT·웨이퍼 쌍으로 만들어 맵 도구에 전달한다. H/skills.py와 옛 고정 스킬은 현재 커밋에서 제거됨. 사용자 정의 스킬 내용은 별도 반입 대상으로 03에 수록. |
 | 구버전 실행 지원/공용 검증 | H/native_hermes.py, native_worker.py, native_verification.py, native_budget.py 및 FILES.tsv에 표시한 관련 모듈 | 구버전 이력·실행 호환 및 현재 경로에서도 재사용하는 유틸리티가 있다. 이름이 비슷한 worker를 하나로 합치거나 일괄 삭제하지 않는다. |
 | 실행 경계 | H/isolation/, H/runtime/, H/config.py, H/dev/ | 전용 도구가 생성 코드를 실행하는 경계, 기존 프로그램의 환경설정, 검증용 게이트웨이. 우선 소스를 같은 경로에 대응시키고 사내 OS·인증 설정은 사내에서 병합한다. |
 
@@ -25,7 +25,7 @@
 | read_result | H/tools/python_tools.py | H/store.py와 결과 페이지. preview와 전체 표 구분 |
 | run_python | H/tools/python_tools.py | H/runtime/, H/isolation/. 허용된 입력 결과를 읽고 표·차트를 저장하는 권한과 세션 범위 |
 | render_yield_table | H/tools/table_artifact.py | yield_report_data.py, yield_report_scope.py, report_policy.py, wafer_group_report.py 및 폴더 밖 yield_viz.py·yield_table_renderer.py. 사내 파라미터명·단위·분모와 맞춰야 함 |
-| load_wafer_maps | H/tools/load_wafer_maps.py | map_scope.py, H/map_intent.py, map_aggregate.py, map_aggregate_plot.py, map_bin_plot.py, bin_mapping.py. 누적 맵과 저장된 LOT별 웨이퍼 개별 맵 각각의 계약을 보존 |
+| load_wafer_maps | H/tools/load_wafer_maps.py | map_aggregate.py, map_aggregate_plot.py, map_bin_plot.py, bin_mapping.py. 누적 맵과 저장된 LOT별 웨이퍼 개별 맵 각각의 계약을 보존 |
 
 수율일보는 별도의 일곱 번째 도구를 추가한 기능이 아니다. 사용자 프로필의 yield-daily-report/SKILL.md가 기존 도구의 보고서 입력을 사용한다. H/tools/report_analysis.py가 동일 제품과 기준일로 월·주·일 표를 만들고 report_scatter.py와 report_bin_maps.py가 산점도와 검사별 BIN 맵을 만든다. 스킬 파일만 옮기거나 표 렌더러만 가져가면 전 기능이 이어지지 않는다.
 

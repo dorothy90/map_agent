@@ -22,7 +22,7 @@ git -C "$DEST" rev-parse HEAD > "$AUDIT/company-base.txt"
 ```bash
 git clone -c core.autocrlf=false --single-branch --branch codex/goal-driven-harness \
   https://github.com/dorothy90/map_agent.git "$REF" &&
-git -C "$REF" merge-base --is-ancestor 77c9c75f60abdac549754902eda018aef3936d56 HEAD &&
+git -C "$REF" merge-base --is-ancestor cdcc284fd74ca16607022c25ea3e0d8a1c4340f7 HEAD &&
 test -f "$KIT/START_HERE.md" &&
 git -C "$REF" rev-parse HEAD > "$AUDIT/source-head.txt" &&
 python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.tsv"
@@ -30,7 +30,7 @@ python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.ts
 
 이미 해당 브랜치를 별도 폴더에 받았다면 `REF`를 그 폴더의 절대경로로, `KIT`를 `$REF/docs/yield-harness-port`로 지정하고 두 번째 명령인 `merge-base`부터 실행한다.
 
-예상 결과는 `tree OK: 4853 listed files`다. 설명서와 업무 스킬은 현재 브랜치의 `docs/yield-harness-port/`에 있고, FILES.tsv는 앱 기준 커밋의 소스를 가리킨다. 브랜치가 이후 바뀌어 파일 검증이 실패하면 설명서 버전과 목록의 기준 커밋을 대조한 후 진행한다. 사내 코드·비교표·로그는 내부 작업 위치에만 둔다.
+예상 결과는 `tree OK: 4848 listed files`다. 설명서와 업무 스킬은 현재 브랜치의 `docs/yield-harness-port/`에 있고, FILES.tsv는 앱 기준 커밋의 소스를 가리킨다. 브랜치가 이후 바뀌어 파일 검증이 실패하면 설명서 버전과 목록의 기준 커밋을 대조한 후 진행한다. 사내 코드·비교표·로그는 내부 작업 위치에만 둔다.
 
 ## 3. 파일별 대응표를 만든다
 
@@ -76,7 +76,7 @@ MERGE할 때는 예를 들어 `git diff --no-index -- "$DEST/08-YieldAgent/commo
 | 1. 실행 환경 | 루트 pyproject.toml, uv.lock, .python-version, requirements.txt, scripts/setup_hermes.sh | 프로젝트 범위와 잠금 파일을 짝지어 대응. 사내 루트에서 이미 쓰는 버전과의 차이는 MERGE에 기록 |
 | 2. 엔진 | harness/engine/UPSTREAM.json, engine/LICENSE, hermes_chat.py | 원본 파일 해시와 Python 경로 확인. 작업 폴더에 있는 다른 Hermes 설치를 import하지 않는지 확인 |
 | 3. 데이터·도구 | harness/tools/registry.py, native_tools.py, executor.py, tools/query_db.py, list_tables.py, python_tools.py, table_artifact.py, load_wafer_maps.py | 외부 계약의 도구명 6개와 JSON 입력, 소유권, 표·산출물 결과를 유지. 응답의 result_id가 가리키는 전체 자료에서 요약. 필수 공용 파일은 FILES.tsv 참조 |
-| 4. 실행과 상태 | control.py, hermes_chat.py, hermes_chat_worker.py, store.py, runtime/, isolation/, instructions/native.md | 새 채팅이 stock_chat 경로로 진입. 실제 사용자와 session/run에 결과 귀속, 모델 호출·취소·다중 턴 확인. 생성 Python은 격리 백엔드에서 실행 |
+| 4. 실행과 상태 | control.py, hermes_chat.py, hermes_chat_worker.py, store.py, runtime/, isolation/ | 새 채팅이 stock_chat 경로로 진입. 실제 사용자와 session/run에 결과 귀속, 모델 호출·취소·다중 턴 확인. 생성 Python은 격리 백엔드에서 실행 |
 | 5. API·인증 | app.py, router.py, gateway/auth.py, routes.py, services.py, manifest.json, dev/local_gateway_app.py | 사내 호스트가 신뢰하는 사용자 ID와 WS 연결 정책을 주입. 개인 개발용 고정 사용자 게이트웨이는 격리된 단일 사용자 테스트에 사용. 권한이 다른 두 실제 테스트 계정으로 세션·산출물 분리 확인 |
 | 6. UI | harness_console/src/main.tsx, src/web/entry.tsx, HermesWebApp.tsx, src/platform/, src/protocol/, src/hermes/, vite.config.ts | 운영 resolver, WebSocket 스트리밍, 세션 복구, 표·HTML 링크, 제품 선택, 스킬 목록. 서비스 라우트와 API 주소는 한 배포 대상으로 연결 |
 | 7. 업무 프로필과 데이터 | 03-runtime-data.md 및 profile-seed/ | 수율일보 등 선택 스킬 적용, 필요시 개인 메모/대화 복원. 회사 데이터로 표·산점도·맵을 DB와 대조 |

@@ -29,7 +29,7 @@ M	08-YieldAgent/harness/gateway/session_store.py	yes	HTTP·WebSocket 세션, 사
 A	08-YieldAgent/harness/hermes_chat.py	yes	현재 웹 채팅 실행과 프로필 생성	FILES.tsv 목적지와 plan.tsv를 대조
 A	08-YieldAgent/harness/hermes_chat_worker.py	yes	Hermes 모델·도구·스트림을 한 채팅에 연결	FILES.tsv 목적지와 plan.tsv를 대조
 M	08-YieldAgent/harness/instructions/native.md	yes	Hermes 모델에 실제 전달되는 지침 · native.md	FILES.tsv 목적지와 plan.tsv를 대조
-A	08-YieldAgent/harness/map_intent.py	yes	사용자가 요청한 측정·기간·LOT별 웨이퍼 선택을 근거와 연결	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/map_intent.py	no	사용자가 요청한 측정·기간·LOT별 웨이퍼 선택을 근거와 연결	현재 앱에서 제거됨. 이전 소스를 복사하지 않음
 M	08-YieldAgent/harness/native_budget.py	yes	실행 시간·모델 호출량 제한	FILES.tsv 목적지와 plan.tsv를 대조
 M	08-YieldAgent/harness/native_hermes.py	yes	Hermes 프로필·공통 상태 및 기존 실행 호환	FILES.tsv 목적지와 plan.tsv를 대조
 M	08-YieldAgent/harness/native_ipc.py	yes	프로세스 간 실행 메시지	FILES.tsv 목적지와 plan.tsv를 대조
@@ -60,10 +60,10 @@ M	08-YieldAgent/harness/tests/test_instructions.py	yes	백엔드 회귀·계약 
 M	08-YieldAgent/harness/tests/test_load_wafer_maps.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_load_wafer_maps.py	FILES.tsv 목적지와 plan.tsv를 대조
 A	08-YieldAgent/harness/tests/test_map_aggregate.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_aggregate.py	FILES.tsv 목적지와 plan.tsv를 대조
 A	08-YieldAgent/harness/tests/test_map_aggregate_plot.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_aggregate_plot.py	FILES.tsv 목적지와 plan.tsv를 대조
-A	08-YieldAgent/harness/tests/test_map_intent.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_intent.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_map_intent.py	no	백엔드 회귀·계약 테스트 및 fixture · test_map_intent.py	현재 앱에서 제거됨. 이전 소스를 복사하지 않음
 A	08-YieldAgent/harness/tests/test_map_loader_scope.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_loader_scope.py	FILES.tsv 목적지와 plan.tsv를 대조
-A	08-YieldAgent/harness/tests/test_map_scope.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_scope.py	FILES.tsv 목적지와 plan.tsv를 대조
-A	08-YieldAgent/harness/tests/test_map_scope_dialogue.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_map_scope_dialogue.py	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tests/test_map_scope.py	no	백엔드 회귀·계약 테스트 및 fixture · test_map_scope.py	현재 앱에서 제거됨. 이전 소스를 복사하지 않음
+A	08-YieldAgent/harness/tests/test_map_scope_dialogue.py	no	백엔드 회귀·계약 테스트 및 fixture · test_map_scope_dialogue.py	현재 앱에서 제거됨. 이전 소스를 복사하지 않음
 M	08-YieldAgent/harness/tests/test_native_budget.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_native_budget.py	FILES.tsv 목적지와 plan.tsv를 대조
 M	08-YieldAgent/harness/tests/test_native_config_contract.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_native_config_contract.py	FILES.tsv 목적지와 plan.tsv를 대조
 M	08-YieldAgent/harness/tests/test_native_hermes.py	yes	백엔드 회귀·계약 테스트 및 fixture · test_native_hermes.py	FILES.tsv 목적지와 plan.tsv를 대조
@@ -84,7 +84,7 @@ M	08-YieldAgent/harness/tools/load_wafer_maps.py	yes	load_wafer_maps 개별 맵�
 A	08-YieldAgent/harness/tools/map_aggregate.py	yes	원본 MAP에서 그룹별 좌표 집계	FILES.tsv 목적지와 plan.tsv를 대조
 A	08-YieldAgent/harness/tools/map_aggregate_plot.py	yes	누적 맵 Plotly 시각화	FILES.tsv 목적지와 plan.tsv를 대조
 A	08-YieldAgent/harness/tools/map_bin_plot.py	yes	기억한 그룹별 개별 측정의 좌표·BIN 표시	FILES.tsv 목적지와 plan.tsv를 대조
-A	08-YieldAgent/harness/tools/map_scope.py	yes	제품·검사·기간·메모 그룹을 실제 조회조건에 결합	FILES.tsv 목적지와 plan.tsv를 대조
+A	08-YieldAgent/harness/tools/map_scope.py	no	제품·검사·기간·메모 그룹을 실제 조회조건에 결합	현재 앱에서 제거됨. 이전 소스를 복사하지 않음
 M	08-YieldAgent/harness/tools/python_tools.py	yes	read_result·run_python 결과 읽기와 분석	FILES.tsv 목적지와 plan.tsv를 대조
 M	08-YieldAgent/harness/tools/registry.py	yes	도구 공개 스키마·실행 명세 묶음	FILES.tsv 목적지와 plan.tsv를 대조
 A	08-YieldAgent/harness/tools/report_analysis.py	yes	수율일보 요청 계약	FILES.tsv 목적지와 plan.tsv를 대조
