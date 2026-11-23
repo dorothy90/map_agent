@@ -11,6 +11,17 @@ import threading
 HERE = Path(__file__).resolve().parent
 
 
+def bind_provider_secret(provider, base_url, key):
+    from agent.secret_scope import set_secret_scope
+    from providers import get_provider_profile
+
+    # Native auxiliary tools check the profile's named credential even when the
+    # main agent received an explicit key. Keep it out of subprocess environments.
+    profile = get_provider_profile(provider)
+    if profile and profile.env_vars and key and base_url.rstrip('/') == (profile.base_url or '').rstrip('/'):
+        return set_secret_scope({profile.env_vars[0]: key}, profile_home=os.environ['HERMES_HOME'])
+
+
 async def resume_session(db, store, run):
     from agent.replay_cleanup import canonicalize_replay_history
     from harness.native_hermes import native_history
@@ -39,7 +50,7 @@ async def resume_session(db, store, run):
     return session, canonicalize_replay_history(raw)
 
 
-def refresh_web_tool_pin(db, session, saved, tools, yield_names):
+def refresh_web_tool_pin(db, session, saved, tools, web_schema_names):
     # Upstream resume carries old direct tools forward even after they become deferred.
     if not saved or not saved.get('tool_names'):
         return
@@ -49,8 +60,8 @@ def refresh_web_tool_pin(db, session, saved, tools, yield_names):
         return  # Hermes rebuilds an unreadable pin itself.
     visible = {tool['function']['name']: tool for tool in tools}
     if isinstance(pin, list):
-        # Old pins stored names only. Hermes can restore them unless a name left this surface.
-        if any(not isinstance(name, str) or name not in visible for name in pin):
+        # Names-only pins need rebuilding when the web catalog changes.
+        if any(not isinstance(name, str) for name in pin) or set(pin) != visible.keys():
             db.update_session_tool_names(session, None)
     elif isinstance(pin, dict) and isinstance(pin.get('tools'), list):
         # Keep the cached prefix/order except where the current web contracts changed.
@@ -64,10 +75,10 @@ def refresh_web_tool_pin(db, session, saved, tools, yield_names):
             schema = tool.get('function') if isinstance(tool, dict) else None
             name = schema.get('name') if isinstance(schema, dict) else None
             if isinstance(name, str) and name in visible:
-                refreshed.append(visible[name] if name in yield_names or name == 'tool_search' else tool)
+                refreshed.append(visible[name] if name in web_schema_names or name == 'tool_search' else tool)
+        retained = {tool['function']['name'] for tool in refreshed}
+        refreshed.extend(tool for name, tool in visible.items() if name not in retained)
         if refreshed != pin['tools']:
-            retained = {tool['function']['name'] for tool in refreshed}
-            refreshed.extend(tool for name, tool in visible.items() if name not in retained)
             db.update_session_tool_names(session, {**pin, 'tools': refreshed})
 
 
@@ -77,6 +88,8 @@ async def chat(request, emit):
     from harness.gateway.pending_controls import PendingControls
     from harness.native_hermes import NativePrompts, prompt_history, result_status
     from harness.native_tools import register_yield_tools
+    from harness.shared_file_tools import SHARED_FILE_TOOLS, install_shared_file_policy
+    from harness.web_delegation import configure_web_delegation
     from harness.native_budget import install_http_budget
     from harness.store import HarnessStore
     from harness.tools.registry import domain_registry
@@ -84,6 +97,7 @@ async def chat(request, emit):
     from tools import skills_tool, session_search_tool
     from tools.approval_context import _approval_tool_call_id
     from tools.registry import registry
+    from toolsets import create_custom_toolset
     from run_agent import AIAgent
     from agent.session_persistence import adopt_unanswered_turn
     from hermes_state_registry import acquire, release_or_close
@@ -91,11 +105,12 @@ async def chat(request, emit):
     from agent.auxiliary_client import _RELAY_AUX_CALL_CONTEXT, set_runtime_main
     from agent.title_generator import wait_for_title_upgrades
     from agent import tool_executor
+    from agent.secret_scope import reset_secret_scope
 
     settings = Settings.model_validate(request['settings'])
     tool_executor._MAX_TOOL_WORKERS = min(tool_executor._MAX_TOOL_WORKERS, settings.parallel_tool_limit)
     store = HarnessStore(settings.mongo_uri, settings.mongo_db)
-    db = budget = None
+    db = budget = secret_scope = None
     try:
         run = await store.fence(request['run_id'], request['epoch'])
         if any(run[key] != request[key] for key in ('principal_id', 'session_id')):
@@ -129,6 +144,10 @@ async def chat(request, emit):
         executor = ChatToolExecutor(domain_registry(), ctx)
         yield_names = register_yield_tools(registry, executor, loop,
             invocation_id=_approval_tool_call_id.get, allowed=settings.native_allowed_tools)
+        install_shared_file_policy(registry, settings.shared_yield_dir)
+        create_custom_toolset('web_shared_files', 'Read shared yield files and images',
+                              tools=list(SHARED_FILE_TOOLS))
+        configure_web_delegation()
         constrain_session_search(session_search_tool)
         observe_skill_reads(skills_tool, emit)
         pending = PendingControls(store, run['principal_id'])
@@ -172,6 +191,7 @@ async def chat(request, emit):
                 publish_title(saved['title'], saved['title_source'])
         provider = engine_provider(settings.base_url)
         api_key = settings.api_key.get_secret_value()
+        secret_scope = bind_provider_secret(provider, settings.base_url, api_key)
         set_runtime_main(provider, settings.model, base_url=settings.base_url, api_key=api_key,
                          api_mode='chat_completions', session_id=session)
         def web_text(text):
@@ -203,7 +223,8 @@ async def chat(request, emit):
             nonlocal agent
             agent = AIAgent(model=settings.model, base_url=settings.base_url, api_key=api_key,
                 provider=provider, session_id=session, session_db=db, platform='yield_web',
-                enabled_toolsets=['yield', 'skills', 'memory', 'session_search', 'clarify'],
+                enabled_toolsets=['yield', 'skills', 'memory', 'session_search', 'clarify',
+                                 'web_shared_files', 'todo', 'delegation'],
                 max_iterations=max(1, remaining_models), max_tokens=settings.max_output_tokens,
                 run_budget_seconds=ctx.remaining_seconds(), quiet_mode=True,
                 reasoning_config={'enabled': True, 'effort': settings.reasoning_effort} if settings.reasoning_effort else None,
@@ -212,7 +233,7 @@ async def chat(request, emit):
                 tool_complete_callback=tool_complete)
             agent._on_session_title = publish_title
             try:
-                refresh_web_tool_pin(db, session, saved, agent.tools, yield_names)
+                refresh_web_tool_pin(db, session, saved, agent.tools, (*yield_names, *SHARED_FILE_TOOLS))
                 if stopping:
                     return {'interrupted': True, 'turn_exit_reason': 'interrupted'}
                 query = run.get('goal_request', run['query'])
@@ -243,6 +264,8 @@ async def chat(request, emit):
                 'native_usage': {'api_calls': totals['models'], 'input_tokens': totals['input_tokens'],
                                  'output_tokens': totals['output_tokens'], 'total_tokens': totals['tokens']}}
     finally:
+        if secret_scope is not None:
+            reset_secret_scope(secret_scope)
         if db is not None:
             release_or_close(db)
         if budget is not None:

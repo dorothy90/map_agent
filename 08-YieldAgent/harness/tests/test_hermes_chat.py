@@ -126,6 +126,9 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                 await controller.tasks[run['run_id']]
                 saved = await store.get_run(principal, run['run_id'])
                 assert saved['status'] == 'completed', saved['stop_reason']
+                assert saved['engine'] == 'hermes'
+                assert saved['native_engine']['commit'] == native_hermes.UPSTREAM_COMMIT
+                assert saved['native_engine']['history_source'] == 'hermes_session_db'
                 assert saved['native_engine']['entrypoint'] == 'stock_chat'
                 assert saved['answer_text'].strip() == answer
                 assert local_media not in json.dumps(saved['native_messages'])
@@ -171,11 +174,14 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             assert any(event['type'] == 'message.delta' for event in live_messages)
             assert '/private/tmp/local.png' not in json.dumps(live_messages)
             expected = {'clarify', 'skills_list', 'skill_view', 'skill_manage', 'memory',
-                        'tool_search', 'tool_describe', 'tool_call'}
-            assert seen_tools and all(set(tools) == expected for tools in seen_tools)
+                        'tool_search', 'tool_describe', 'tool_call', 'read_file', 'search_files',
+                        'delegate_task'}
+            # The native vision schema is gated on the provider's image capability.
+            assert seen_tools and all(set(tools) - {'vision_analyze'} == expected for tools in seen_tools)
             catalogs = [tools['tool_search']['function']['description'] for tools in seen_tools]
             assert 'query_db' in catalogs[0] and 'query_db' not in catalogs[-1]
             assert 'read_result' in catalogs[-1]
+            assert all('todo_list' in catalog for catalog in catalogs)
             # Cancel while the host delivers text and its next pipe read is outstanding.
             streams = []
             def observe_reader(reader, remaining):

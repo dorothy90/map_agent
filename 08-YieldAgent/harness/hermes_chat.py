@@ -39,6 +39,10 @@ async def run_chat(context):
     await store.runs.update_one({'_id': run_id, 'epoch': epoch, 'status': 'running'},
                                 {'$set': {'request_context': request_context}})
     config = settings.model_dump(mode='json', exclude={'api_key'})
+    if settings.shared_yield_dir is None:
+        shared = ROOT / '.runtime/shared-yield'
+        shared.mkdir(mode=0o700, parents=True, exist_ok=True)
+        config['shared_yield_dir'] = str(shared)
     config.update(api_key=settings.api_key.get_secret_value(), mongo_db=store.db.name)
     request = {'run_id': run_id, 'epoch': epoch, 'principal_id': principal, 'session_id': session,
                'settings': config, 'request_context': request_context}

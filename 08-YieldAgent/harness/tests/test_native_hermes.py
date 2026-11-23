@@ -230,41 +230,33 @@ def test_recovered_native_run_cannot_exceed_consumed_budget(monkeypatch, kind):
     assert result['stop_reason'] == kind + '_limit'
 
 
-def test_native_controller_pins_engine_and_restores_history(monkeypatch):
-    import uuid
-    from harness.config import Settings
-    from harness.control import RunController
-    from harness.store import HarnessStore
-    import harness.native_hermes as native
+def test_stock_worker_resumes_only_requested_session_from_hermes_db(monkeypatch, tmp_path):
+    from harness import hermes_chat_worker
 
-    async def scenario():
-        store = HarnessStore(database='harness_test_' + uuid.uuid4().hex)
-        controller = RunController(store, Settings(engine='hermes'))
-        calls = []
-        async def synthetic(context, *, history):
-            calls.append(history)
-            messages = history + [{'role': 'user', 'content': context.run['query']},
-                {'role': 'assistant', 'content': 'synthetic answer'}]
-            return {'status': 'completed', 'stop_reason': 'completed', 'answer': 'synthetic answer',
-                'native_messages': messages, 'native_usage': {'total_tokens': 12, 'api_calls': 1},
-                'native_engine': {'commit': native.UPSTREAM_COMMIT}, 'observations': [], 'result_ids': []}
-        monkeypatch.setattr('harness.hermes_chat.run_chat', synthetic)
-        try:
-            await store.setup()
-            first = await controller.start('test', 's', 'r1', 'synthetic one')
-            await controller.tasks[first['run_id']]
-            saved = await store.get_run('test', first['run_id'])
-            assert saved['status'] == 'completed'
-            assert saved['engine'] == 'hermes'
-            assert saved['native_engine']['commit'] == native.UPSTREAM_COMMIT
-            second = await controller.start('test', 's', 'r2', 'synthetic two')
-            await controller.tasks[second['run_id']]
-            assert calls == [[], saved['native_messages']]
-        finally:
-            await controller.close()
-            await store.client.drop_database(store.db.name)
-            store.client.close()
-    asyncio.run(scenario())
+    monkeypatch.syspath_prepend(str(hermes_chat_worker.HERE / 'engine'))
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    from hermes_state import SessionDB
+
+    path = tmp_path / 'state.db'
+    db = SessionDB(path)
+    try:
+        for session in ('current', 'other'):
+            db.create_session(session, source='yield_web')
+        db.append_message('other', 'user', 'another conversation')
+        assert asyncio.run(hermes_chat_worker.resume_session(db, None, {'session_id': 'current'})) == ('current', [])
+        db.append_message('current', 'user', 'first request')
+        db.append_message('current', 'assistant', 'first answer')
+    finally:
+        db.close()
+
+    db = SessionDB(path)
+    try:
+        session, messages = asyncio.run(hermes_chat_worker.resume_session(db, None, {'session_id': 'current'}))
+        assert session == 'current'
+        assert [(m['role'], m['content']) for m in messages] == [
+            ('user', 'first request'), ('assistant', 'first answer')]
+    finally:
+        db.close()
 
 
 def test_bundled_source_matches_unmodified_upstream():

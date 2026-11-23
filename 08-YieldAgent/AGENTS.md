@@ -9,6 +9,7 @@ legacy engine retained for existing sessions and rollback.
 
 - The model selects tools via native calls and `load_tools`; do not add semantic keyword routing.
 - Use the configured OpenAI-compatible provider consistently. Current user selection is OpenRouter `z-ai/glm-5.3-flash` with `OPENROUTER_API_KEY`. Groq and lowercase `groq_api_key` remain supported when explicitly selected.
+- The repository owner has authorized sending this development environment’s yield-analysis inputs and results (including shared files, DB rows, tables, and wafer maps) to that OpenRouter model for repeat chat checks. Internal deployments use their own approved provider and data policy.
 - Preserve complete results and provenance in the harness store. Never calculate from a truncated preview.
 - A `finish` submission uses answer/result_ids and optional scope/limitations. Resolve owned stored evidence and lineage, then review semantic completion; do not reintroduce manual claims/coverage proof fields. Work notes are optional and replaceable, never authoritative user constraints. Preserve useful scoped tables under narrative failure and report partial outcomes honestly.
 - Runtime, principal, session, run and epoch boundaries apply to recovery and artifacts.

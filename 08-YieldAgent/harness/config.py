@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 from typing import Literal
 from urllib.parse import urlparse
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -179,9 +179,24 @@ class Settings(BaseModel):
     python_image: str = "yield-harness-python:2"
     no_yield_tools: bool = False
     native_allowed_tools: list[str] | None = None
+    shared_yield_dir: Path | None = None
     isolation: LocalIsolationSettings | SeatbeltIsolationSettings | IsolationSettings | None = None
     principal: str = "local"
     enabled: bool = False
+
+    @field_validator("shared_yield_dir")
+    @classmethod
+    def dedicated_shared_directory(cls, path):
+        if path is None:
+            return None
+        if not path.is_absolute() or path.is_symlink():
+            raise ValueError("HARNESS_SHARED_YIELD_DIR must be an absolute, dedicated directory")
+        root = path.resolve()
+        profiles = REPOSITORY_ROOT / ".runtime/hermes"
+        if (REPOSITORY_ROOT.is_relative_to(root) or profiles.is_relative_to(root)
+                or root.is_relative_to(profiles)):
+            raise ValueError("HARNESS_SHARED_YIELD_DIR must be separate from the server and Hermes profiles")
+        return root
 
     @model_validator(mode="after")
     def require_isolation(self):
@@ -269,6 +284,7 @@ class Settings(BaseModel):
             parallel_tool_limit=int(os.getenv("HARNESS_PARALLEL_TOOLS", "8")),
             publish_commentary=os.getenv("HARNESS_PUBLISH_COMMENTARY", "false").lower() == "true",
             native_prompts=os.getenv("HARNESS_NATIVE_PROMPTS", "false").lower() == "true",
+            shared_yield_dir=os.getenv("HARNESS_SHARED_YIELD_DIR") or None,
             model_limit=int(os.getenv("HARNESS_MODEL_LIMIT", "40")),
             token_limit=int(os.getenv("HARNESS_TOKEN_LIMIT", "120000")),
             context_tokens=int(os.getenv("HARNESS_CONTEXT_TOKENS", "24000")),

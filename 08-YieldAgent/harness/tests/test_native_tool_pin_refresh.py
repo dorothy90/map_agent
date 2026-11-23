@@ -136,7 +136,8 @@ def test_web_resume_updates_only_visible_yield_contract_and_deferred_catalog():
 
 @pytest.mark.parametrize('old, should_clear', [
     (['read_result'], True),
-    (['memory'], False),
+    (['memory'], True),
+    (['memory', 'tool_search'], False),
 ])
 def test_web_resume_handles_legacy_name_pins(old, should_clear):
     from harness.hermes_chat_worker import refresh_web_tool_pin
