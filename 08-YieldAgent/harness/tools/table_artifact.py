@@ -248,37 +248,19 @@ def _html(args: _ReportInput, report_data: _ReportRenderData,
     )
 
 
-async def select_analysis_product(arguments, ctx):
-    if not isinstance(arguments, dict) or not arguments.get("analysis") or arguments.get("lot_cd"):
-        return arguments
-    from pydantic import ValidationError
-    from .yield_report_data import fetch_product_codes
-
-    try:
-        YieldTableInput.model_validate(arguments)
-    except ValidationError:
-        return arguments
-    if ctx.request_choice is None:
-        return arguments
-    products = await asyncio.to_thread(fetch_product_codes)
-    if not products:
-        raise ValueError("조회 가능한 제품이 없습니다.")
-    question = {"qid": "lot_cd", "question": "수율일보를 작성할 제품을 선택해 주세요.",
-                "choices": products, "multi_select": False}
-    reply = await ctx.request_choice([question])
-    selected = (reply.get("answers") or {}).get("lot_cd")
-    if reply.get("outcome") != "submitted" or selected not in products:
-        raise ValueError("제품 선택이 완료되지 않아 리포트 조회를 종료했습니다.")
-    return {**arguments, "lot_cd": selected}
-
-
 async def render_yield_table(args: YieldTableInput, ctx) -> ToolResult:
     from .report_policy import ReportContractError
     from .yield_report_scope import load_scope, save_scope, attach_population
 
     if args.analysis is not None:
         if not args.lot_cd:
-            raise ReportContractError("REPORT_PRODUCT_REQUIRED", "Select a product before running the report.")
+            from .yield_report_data import fetch_product_codes
+
+            products = await asyncio.to_thread(fetch_product_codes)
+            raise ReportContractError("REPORT_PRODUCT_REQUIRED", {
+                "message": "Ask the user to select a product with clarify, then call again with the selected lot_cd.",
+                "choices": products,
+            })
         from ..runtime.domain_process import run_blocking
         from .report_analysis import build_report_analysis
         return await run_blocking(build_report_analysis, args.lot_cd, args.analysis)
@@ -645,7 +627,7 @@ def register(registry):
     registry.add(ToolSpec(
         "render_yield_table",
         "표·리포트를 요청한 경우 사용하는 표준 수율 리포트다. lot_cd+period 또는 이전 report_scope_id 중 하나를 전달한다. "
-        "월·주·일 표와 산점도·BIN 비교맵은 analysis로 한 번에 조회한다. 제품 미지정이면 lot_cd를 생략한다. 도구가 DB 제품 선택창을 직접 연다. "
+        "월·주·일 표와 산점도·BIN 비교맵은 analysis로 한 번에 조회한다. 제품 미지정이면 lot_cd를 생략한다. 반환된 DB 제품 목록에서 clarify로 선택을 받아 lot_cd와 함께 다시 호출한다. "
         "공식 수율표는 artifact_refs의 해당 HTML markdown을 최종 답변에 그대로 한 번 넣으면 표 전체가 표시되므로 본문에 표를 다시 작성하지 않으며, displayed_yield_table은 수치 확인과 비교 계산에만 사용한다. "
         "period는 recent(weeks/months/days 중 하나의 count, 선택적 grains) 또는 명시적 weeks/months/days 목록이다. "
         "최근 기간은 PT1H TEST 최신 DB 측정일 기준이며 오늘 날짜를 계산하지 않는다. ISO 주차와 빈 버킷을 보존한다. "
@@ -665,5 +647,5 @@ def register(registry):
         "PT1H 다음 PT1C PARAM_SEQNO 순서와 ×100 소수 1자리(% 없음)를 계산한다. 수율 셀이나 열 매핑을 만들지 않는다. "
         "기간 합계는 report_totals이며 버킷 수를 더하지 않는다. 그룹 GMS는 적용 불가로 '-'이다. "
         "반환 report_scope_id는 저장된 범위/집계/모집단을 재사용하며 recent를 다시 계산하지 않는다.",
-        YieldTableInput, render_yield_table, read_only=True, effect="artifact", eager=True, prepare_arguments=select_analysis_product,
+        YieldTableInput, render_yield_table, read_only=True, effect="artifact", eager=True,
     ))

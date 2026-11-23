@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture
 def native_result(monkeypatch):
-    async def run_chat(context, *, history):
+    async def run_chat(context):
         await context.check()
         return {"status": "completed", "answer": "안녕하세요", "stop_reason": "completed",
                 "native_messages": [], "native_usage": {}, "native_engine": {}}

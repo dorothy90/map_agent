@@ -21,9 +21,13 @@ _LEGEND_COLUMNS = {
 
 class CummapAggregation(Contract):
     group_by: Literal['all', 'lot', 'wafer', 'product', 'test', 'day', 'week', 'month',
-                      'recipe', 'equipment', 'chamber', 'stepper_recipe'] = 'all'
+                      'recipe', 'equipment', 'chamber', 'stepper_recipe'] = Field(default='all', description=(
+        'One cumulative map per distinct value of this dimension. For process history select recipe '
+        '(RCP, DF_WF_LEGEND.RECIPE_ID), equipment (EQP_ID), chamber (EQP_CH), or stepper_recipe '
+        '(STEPPER_RECIPE_ID) and supply group_oper. Other dimensions use MAP rows directly; '
+        'all produces one combined map.'))
     group_oper: str | None = Field(default=None, min_length=1, max_length=500,
-        description='Manufacturing operation (exact DF_WF_LEGEND OPER_DET_DESC or OPER_ID) for a process group.')
+        description='Manufacturing operation whose process history supplies the grouping column. Use the exact DF_WF_LEGEND.OPER_DET_DESC or OPER_ID for recipe, equipment, chamber or stepper_recipe.')
     selected_bins: list[str] = Field(default_factory=list,
         description='Optional exact combined MAP bin strings (left_bin + right_bin) to count. Empty counts all defined failures.')
 

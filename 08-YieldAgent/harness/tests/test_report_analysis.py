@@ -56,24 +56,15 @@ def test_each_section_uses_same_product_tests_and_shared_calendar(monkeypatch):
     assert result.scope["comparison"]["current_week"] == "2025-W01"
 
 
-def test_missing_product_uses_catalog_selection_before_execution(monkeypatch):
+def test_missing_product_returns_database_choices_to_the_model(monkeypatch):
     import asyncio
     from harness.tools import yield_report_data
+    from harness.tools.registry import domain_registry
+
     options = ["Product X", "Product Y"]
     monkeypatch.setattr(yield_report_data, "fetch_product_codes", lambda: options)
-    received = []
-
-    async def choose(questions):
-        received.extend(questions)
-        return {"outcome": "submitted", "answers": {"lot_cd": options[1]}}
-
-    raw = {"analysis": RECIPE}
-    effective = asyncio.run(table_artifact.select_analysis_product(raw, SimpleNamespace(request_choice=choose)))
-    assert raw == {"analysis": RECIPE} and effective == {**raw, "lot_cd": options[1]}
-    assert [q["choices"] for q in received] == [options]
-
-    async def cancelled(questions):
-        return {"outcome": "cancelled", "answers": {}}
-
-    with pytest.raises(ValueError, match="제품 선택"):
-        asyncio.run(table_artifact.select_analysis_product(raw, SimpleNamespace(request_choice=cancelled)))
+    arguments = {"analysis": RECIPE}
+    result = asyncio.run(domain_registry().invoke("render_yield_table", arguments, None))
+    assert result.scope["code"] == "REPORT_PRODUCT_REQUIRED"
+    assert result.scope["details"]["choices"] == options
+    assert arguments == {"analysis": RECIPE}

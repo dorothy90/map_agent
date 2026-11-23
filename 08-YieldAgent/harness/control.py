@@ -115,18 +115,16 @@ class RunController:
         heartbeat.add_done_callback(stop_on_heartbeat_failure)
         try:
             context = ExecutionContext(self.store, self.settings, run)
-            previous = await self.store.runs.find({"principal_id": run["principal_id"],
-                "session_id": run["session_id"], "active": False}).sort("created_at", -1).limit(10).to_list(length=10)
-            from .native_hermes import native_history
             await self.store.event(run["run_id"], "run_started", {"query": run["query"],
                 "goal_revision": run["goal_revision"], "engine": "hermes"})
-            history = native_history(previous)
             if run.get('chat_entrypoint') == 'stock_chat':
                 from .hermes_chat import run_chat
-                result = await run_chat(context, history=history)
+                result = await run_chat(context)
             else:
-                from .native_hermes import run_native
-                result = await run_native(context, self.registry_factory(), history=history)
+                from .native_hermes import native_history, run_native
+                previous = await self.store.runs.find({"principal_id": run["principal_id"],
+                    "session_id": run["session_id"], "active": False}).sort("created_at", -1).limit(10).to_list(length=10)
+                result = await run_native(context, self.registry_factory(), history=native_history(previous))
             await context.check()
             stop_heartbeat()
             await self._save_context(run, result)

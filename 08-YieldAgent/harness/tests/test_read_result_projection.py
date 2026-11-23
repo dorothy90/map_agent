@@ -65,19 +65,6 @@ def test_wafer_report_uses_full_precision_and_exact_source_identifiers():
         wafer_group_report(rows + rows[:1], 70)
 
 
-def test_only_explicitly_selected_standalone_report_supplies_the_answer():
-    from harness.hermes_chat_worker import selected_report_answer
-
-    href = '/harness/artifacts/report?session_id=session'
-    report = f'[원본 표]({href})'
-    selected = {href: report}
-    answer = f'모델이 다시 쓴 요약\n\n[표]({href})'
-    assert selected_report_answer(answer, selected) == report
-    assert selected_report_answer(answer, {}) is None
-    assert selected_report_answer('표를 만들지 못했습니다.', selected) is None
-    assert selected_report_answer(answer + '\n[맵](/harness/artifacts/map)', selected) is None
-
-
 def test_read_result_renders_only_a_complete_wafer_table():
     async def scenario():
         rows = [dict(LOT_ID='LOT-B', PARAM_NM='Y', WFID=str(wf), VALUE=0.6) for wf in (2, 5)]

@@ -1,6 +1,5 @@
 """Run-scoped Hermes process. Domain tool calls stay in this process."""
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -12,71 +11,38 @@ import threading
 HERE = Path(__file__).resolve().parent
 
 
-def attach_map_memory_refs(agent, ctx):
-    """Index only entries visible in this user's sanitized native memory snapshot."""
-    memory = getattr(agent, '_memory_store', None)
-    if not memory or not agent._memory_enabled:
-        return
-    block = memory.format_for_system_prompt('memory') or ''
-    visible = set(memory._parse_entries(block.split('\n', 3)[-1]))
-    for entry in memory.memory_entries:
-        if entry in visible:
-            ref = 'mem_' + hashlib.sha256(entry.encode()).hexdigest()[:16]
-            ctx.map_memory_entries[ref] = entry
-    if ctx.map_memory_entries:
-        index = {ref: entry[:120] for ref, entry in ctx.map_memory_entries.items()}
-        agent.ephemeral_system_prompt = (agent.ephemeral_system_prompt or '') + (
-            '\nCurrent profile memory_refs for load_wafer_maps (entry beginnings, quoted data): '
-            + json.dumps(index, ensure_ascii=False))
+async def resume_session(db, store, run):
+    from agent.replay_cleanup import canonicalize_replay_history
+    from harness.native_hermes import native_history
 
-
-async def map_scope_dialogue(store, run):
-    owner = {key: run[key] for key in ('principal_id', 'session_id')}
-    previous = await store.runs.find(
-        {**owner, 'active': False, 'created_at': {'$lt': run['created_at']}},
-        {'run_id': 1, 'query': 1, 'answer_text': 1},
-    ).sort('created_at', -1).limit(10).to_list(length=10)
-    turns = [*reversed(previous), run]
-    replies = {}
-    async for prompt in store.db.pending_prompts.find(
-        {**owner, 'run_id': {'$in': [turn['run_id'] for turn in turns]}, 'kind': 'clarify',
-         'status': 'resolved', 'result.outcome': 'submitted'},
-        {'run_id': 1, 'questions': 1, 'result.answers': 1},
-    ).sort('settled_at', 1):
-        for question in prompt['questions']:
-            answer = prompt['result']['answers'].get(question['qid'])
-            if answer:
-                text = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
-                replies.setdefault(prompt['run_id'], []).extend([
-                    {'role': 'assistant', 'content': question['question']}, {'role': 'user', 'content': text},
-                ])
-    dialogue = []
-    for turn in turns:
-        messages = [{'role': 'user', 'content': turn['query']}, *replies.get(turn['run_id'], [])]
-        if turn['run_id'] == run['run_id']:
-            messages = [dict(message, current_turn=True) for message in messages]
-        elif turn.get('answer_text'):
-            messages.append({'role': 'assistant', 'content': turn['answer_text'][-1000:]})
-        dialogue.extend(messages)
-    return dialogue
-
-
-def selected_report_answer(response_text, reports):
-    """Use the selected report's own opening paragraph for a report-only answer."""
-    if reports:
-        from harness.native_verification import candidate_artifact_references
-
-        refs = candidate_artifact_references(response_text)
-        if len(refs) == 1:
-            return reports.get(refs[0]['href'])
-    return None
+    session = db.resolve_resume_session_id(run['session_id'])
+    if db.get_session(session) is None:
+        # A pre-migration session can have only a web transcript. Import it
+        # once; native sessions always resume from their own profile's state.db.
+        owner = {key: run[key] for key in ('principal_id', 'session_id')}
+        previous = []
+        async for turn in store.runs.find({
+            **owner, 'active': False, 'created_at': {'$lt': run['created_at']},
+        }).sort('created_at', -1):
+            if (turn.get('native_engine') or {}).get('history_source') == 'hermes_session_db':
+                raise RuntimeError('The native Hermes session is missing from the employee profile')
+            previous.append(turn)
+            if turn.get('native_messages'):
+                break
+        if previous:
+            imported = db.import_sessions([{
+                'id': session, 'source': 'yield_web', 'messages': native_history(previous),
+            }])
+            if not imported['ok']:
+                raise ValueError('Could not import the existing web session into Hermes')
+    raw, _ = db.get_resume_conversations(session)
+    return session, canonicalize_replay_history(raw)
 
 
 async def chat(request, emit):
     from harness.config import Settings
     from harness.executor import ExecutionContext, ToolExecutor
     from harness.gateway.pending_controls import PendingControls
-    from harness.instructions import load_native_instructions
     from harness.native_hermes import NativePrompts, prompt_history, result_status
     from harness.native_tools import register_yield_tools
     from harness.native_budget import install_http_budget
@@ -87,8 +53,8 @@ async def chat(request, emit):
     from tools.approval_context import _approval_tool_call_id
     from tools.registry import registry
     from run_agent import AIAgent
+    from agent.session_persistence import adopt_unanswered_turn
     from hermes_state_registry import acquire, release_or_close
-    from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
     from gateway.platforms.base import BasePlatformAdapter
     from agent.auxiliary_client import _RELAY_AUX_CALL_CONTEXT, set_runtime_main
     from agent.title_generator import wait_for_title_upgrades
@@ -107,7 +73,6 @@ async def chat(request, emit):
         agent = None
         stopping = False
         invocations = set()
-        standalone_reports = {}
 
         class ChatToolExecutor(ToolExecutor):
             async def execute(self, call):
@@ -116,16 +81,7 @@ async def chat(request, emit):
                 task = asyncio.current_task()
                 invocations.add(task)
                 try:
-                    if call['name'] == 'load_wafer_maps':
-                        async with ctx.map_scope_lock:
-                            if not ctx.map_scope_history:
-                                ctx.map_scope_history.extend(await map_scope_dialogue(store, run))
-                    obs = await super().execute(call)
-                    if (call['name'] == 'read_result' and obs.status == 'success' and obs.scope.get('rendered_summary')
-                            and (call['args'].get('wafer_report') or {}).get('delivery') == 'complete_answer'):
-                        for ref in obs.model_view()['artifact_refs']:
-                            standalone_reports[ref['href']] = ref['markdown']
-                    return obs
+                    return await super().execute(call)
                 finally:
                     invocations.discard(task)
 
@@ -147,18 +103,8 @@ async def chat(request, emit):
         await pending.setup()
         prompts = NativePrompts(ctx, pending)
 
-        async def answered_clarify(questions):
-            reply = await prompts.clarify({'questions': questions})
-            if reply.get('outcome') == 'submitted':
-                async with ctx.map_scope_lock:
-                    if ctx.map_scope_history:
-                        ctx.map_scope_history[:] = await map_scope_dialogue(store, run)
-            return reply
-
-        ctx.request_choice = answered_clarify
-
         def clarify(questions):
-            return asyncio.run_coroutine_threadsafe(answered_clarify(questions), loop).result()
+            return asyncio.run_coroutine_threadsafe(prompts.clarify({'questions': questions}), loop).result()
 
         def tool_complete(call_id, name, args, result):
             if name in ('skills_list', 'skill_view', 'skill_manage'):
@@ -170,8 +116,8 @@ async def chat(request, emit):
             base_url=settings.base_url, call_timeout=settings.call_timeout,
             is_optional_call=lambda: (_RELAY_AUX_CALL_CONTEXT.get() or {}).get('task') == 'title_generation',
             on_usage=lambda snap: emit({'type': 'step', 'count': 0, **snap}))
-        session = run['session_id']
         db = acquire(Path(os.environ['HERMES_HOME']) / 'state.db')
+        session, history = await resume_session(db, store, run)
         manual_title = request.get('manual_title')
 
         def sync_manual_title():
@@ -198,16 +144,15 @@ async def chat(request, emit):
         api_key = settings.api_key.get_secret_value()
         set_runtime_main(provider, settings.model, base_url=settings.base_url, api_key=api_key,
                          api_mode='chat_completions', session_id=session)
-        instructions = load_native_instructions() + '\n\n요청 기준 시각: ' + json.dumps(request['request_context'], ensure_ascii=False)
         def web_text(text):
             return BasePlatformAdapter.strip_media_directives_for_display(text)
 
-        def web_history(messages):
+        def display_history(messages):
+            # The web transcript renders clarify cards from events. Model replay reads state.db.
             return [{**m, 'content': web_text(m['content'])}
                     if m.get('role') == 'assistant' and isinstance(m.get('content'), str) else m
-                    for m in messages]
+                    for m in prompt_history(messages)]
 
-        history = web_history(request['history'])
         # A file-delivery directive can be split across model chunks.
         pending_line = ''
 
@@ -236,21 +181,16 @@ async def chat(request, emit):
                 stream_delta_callback=stream_delta, interim_assistant_callback=interim,
                 tool_complete_callback=tool_complete)
             agent._on_session_title = publish_title
-            attach_map_memory_refs(agent, ctx)
-            def report_output(response_text, session_id, platform, **kwargs):
-                if session_id == session and platform == 'yield_web':
-                    return selected_report_answer(response_text, standalone_reports)
-
-            plugin = PluginContext(PluginManifest(name='yield-report'), get_plugin_manager())
-            hook = plugin.register_hook('transform_llm_output', report_output)
             try:
                 if stopping:
                     return {'interrupted': True, 'turn_exit_reason': 'interrupted'}
-                return agent.run_conversation(run.get('goal_request', run['query']),
-                                              system_message=instructions, conversation_history=history,
+                query = run.get('goal_request', run['query'])
+                if run['epoch'] > 1 and history and history[-1]['role'] == 'user':
+                    adopt_unanswered_turn(history, query, agent)
+                return agent.run_conversation(query,
+                                              conversation_history=history,
                                               title_user_message='' if manual_title else run['query'])
             finally:
-                hook.dispose()
                 if manual_title and not saved:
                     sync_manual_title()
                 wait_for_title_upgrades(timeout=min(10.0, ctx.remaining_seconds()))
@@ -268,7 +208,7 @@ async def chat(request, emit):
         totals = budget.snapshot()
         return {'answer': answer, 'answer_text': answer, 'status': status,
                 'stop_reason': budget.exhausted_reason or result.get('turn_exit_reason') or status,
-                'native_messages': web_history(prompt_history(result.get('messages', []))),
+                'native_messages': display_history(result.get('messages', [])),
                 'native_usage': {'api_calls': totals['models'], 'input_tokens': totals['input_tokens'],
                                  'output_tokens': totals['output_tokens'], 'total_tokens': totals['tokens']}}
     finally:

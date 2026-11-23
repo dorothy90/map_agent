@@ -67,9 +67,9 @@ LEGAL_SHAPES = [
 
 
 
-def _contract_feedback(received, arguments, details):
-    received_keys = sorted(received) if isinstance(received, dict) else []
+def _contract_feedback(arguments, details):
     arguments = arguments if isinstance(arguments, dict) else {}
+    received_keys = sorted(arguments)
     missing = []
     if 'analysis' in arguments:
         feedback = dict(details) if isinstance(details, dict) else {'message': details}
@@ -185,35 +185,20 @@ async def _invoke_report(spec, arguments, context, state):
                         'The five-failure report repair budget is exhausted for this run.', record=False)
     if state.invalid_arguments.get(fingerprint, 0) >= 2:
         return _failure(state, fingerprint, 'repeated_invalid_report', 'Unchanged invalid arguments were repeated; change the request shape before retrying.')
-    received = arguments
-    autofilled_scope = None
-    if (isinstance(arguments, dict) and arguments.get('grouping')
-            and not any(arguments.get(key) for key in ('report_scope_id', 'lot_cd', 'period'))):
-        autofilled_scope = next((report['report_scope_id'] for report in reversed(state.successful_reports)
-                                 if report.get('report_scope_id')), None)
-        if autofilled_scope:
-            arguments = {**arguments, 'report_scope_id': autofilled_scope}
-            # Empty scope selectors are absent, including empty strings/dicts.
-            arguments.pop('lot_cd', None)
-            arguments.pop('period', None)
     try:
         args = spec.schema.model_validate(arguments)
     except ValidationError as exc:
         details = [{'location': list(error['loc']), 'type': error['type'], 'msg': error['msg']} for error in exc.errors(include_input=False, include_context=False, include_url=False)]
         return _failure(state, fingerprint, 'invalid_report_schema',
-                        _contract_feedback(received, arguments, {'errors': details}))
+                        _contract_feedback(arguments, {'errors': details}))
     try:
         result = await spec.handler(args, context)
     except ReportContractError as exc:
-        return _failure(state, fingerprint, exc.code, _contract_feedback(received, arguments, exc.details))
+        return _failure(state, fingerprint, exc.code, _contract_feedback(arguments, exc.details))
     if result.status == 'error' and result.scope.get('code'):
         return _failure(state, fingerprint, result.scope['code'],
-                        _contract_feedback(received, arguments, result.scope.get('details', result.summary)))
+                        _contract_feedback(arguments, result.scope.get('details', result.summary)))
     if result.status != 'error':
-        if autofilled_scope:
-            result.scope['report_scope_autofilled'] = True
-            result.scope['report_scope_autofilled_from'] = autofilled_scope
-            result.summary += f'; report_scope_id auto-filled from latest scope in this session: {autofilled_scope}'
         reference = {key: result.scope[key] for key in ('report_scope_id', 'membership_result_id', 'membership_table_id') if key in result.scope}
         membership = result.scope.get('membership')
         if isinstance(membership, dict):

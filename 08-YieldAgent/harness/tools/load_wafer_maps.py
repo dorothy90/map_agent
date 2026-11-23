@@ -9,7 +9,8 @@ from itertools import groupby
 import json
 from operator import itemgetter
 import re
-from typing import Literal
+from typing import Annotated, Literal
+from zoneinfo import ZoneInfo
 import uuid
 
 from pydantic import Field, model_validator
@@ -70,22 +71,33 @@ class RawMapPage(Contract):
     max_dies: int = Field(default=500_000, ge=1, le=5_000_000)
 
 
+class WaferGroup(Contract):
+    label: str = Field(min_length=1, max_length=100)
+    lot_id: str = Field(min_length=1, max_length=100)
+    wf_ids: list[Annotated[int, Field(strict=True, ge=0)]] = Field(min_length=1, max_length=100)
+
+
 class LoadWaferMapsInput(Contract):
-    memory_refs: list[str] = Field(default_factory=list, description=(
-        "For individual maps of remembered wafer selections, send the exact memory reference IDs "
-        "from the current context together in one call. Each reference preserves its own LOT/wafer pairs."
+    wafer_groups: list[WaferGroup] = Field(default_factory=list, max_length=100, description=(
+        "For individual maps of named or remembered groups, send each label and its exact LOT/wafer pairs. "
+        "Repeat the label for different lots in the same group."
     ))
     aggregate: CummapAggregation | None = Field(default=None, description=(
         "For a cumulative map supply the requested grouping. Scans all matching MAP measurements "
         "and returns the finished chart and per-coordinate counts in one call."
     ))
     lot_ids: list[str] = Field(default_factory=list, max_length=100, description=(
-        "For raw binmaps supply lot_ids or memory_refs. For cumulative maps, omit for the whole selected population; "
+        "For raw binmaps supply lot_ids or wafer_groups. For cumulative maps, omit for the whole selected population; "
         "pass lot IDs only for an explicitly selected subset."
     ))
     lot_cd: str | None = Field(default=None, min_length=1, max_length=100)
     wf_ids: list[int] = Field(default_factory=list, max_length=100)
-    oper: str | None = Field(default=None, min_length=1, max_length=100)
+    oper: str | None = Field(default=None, min_length=1, max_length=100, description=(
+        "The measured test on the source wafer maps, exact MAP.OPER_DET_DESC for this lot_cd. "
+        "For manufacturing-process groupings, put the named manufacturing operation in aggregate.group_oper."))
+    recent_weeks: int | None = Field(default=None, strict=True, gt=0, description=(
+        "Count of calendar weeks ending at the latest MAP measurement for this product and test."))
+    all_time: bool = Field(default=False, strict=True, description="True only for an explicitly unbounded period.")
     time_column: Literal["start_tm", "end_tm"] = "end_tm"
     start_time: datetime | None = None
     end_time: datetime | None = None
@@ -109,14 +121,26 @@ class LoadWaferMapsInput(Contract):
 
     @model_validator(mode="after")
     def valid_range(self):
-        if self.aggregate is None and not (self.lot_ids or self.memory_refs):
-            raise ValueError("lot_ids or memory_refs is required for raw wafer maps; use aggregate for a cumulative map.")
-        if self.aggregate is not None and self.memory_refs:
-            raise ValueError("memory_refs selects individual maps; omit aggregate.")
+        if self.aggregate is None and not (self.lot_ids or self.wafer_groups):
+            raise ValueError("lot_ids or wafer_groups is required for raw wafer maps; use aggregate for a cumulative map.")
+        if self.wafer_groups and (self.aggregate is not None or self.lot_ids or self.wf_ids):
+            raise ValueError("Use wafer_groups alone to select individual LOT/wafer pairs.")
+        dated = self.start_time is not None or self.end_time is not None
+        if sum((self.recent_weeks is not None, self.all_time, dated)) > 1:
+            raise ValueError("Choose one period: recent_weeks, start_time/end_time, or all_time.")
+        if self.recent_weeks is not None and (not self.lot_cd or not self.oper or self.time_column != "end_tm"):
+            raise ValueError("recent_weeks requires lot_cd, oper and time_column=end_tm.")
+        if self.aggregate is not None and not self.lot_ids:
+            if not self.lot_cd or not self.oper or not (self.recent_weeks or dated or self.all_time):
+                raise ValueError("For a population cummap supply lot_cd, oper and its requested period "
+                                 "(recent_weeks, start_time/end_time, or explicit all_time).")
         if self.aggregate is not None and self.raw_page is not None:
             raise ValueError("raw_page cannot be supplied for an aggregate")
-        if self.start_time and self.end_time and self.end_time <= self.start_time:
-            raise ValueError("end_time must be after start_time")
+        if self.start_time and self.end_time:
+            if (self.start_time.utcoffset() is None) != (self.end_time.utcoffset() is None):
+                raise ValueError("Use the same timezone convention for both time bounds.")
+            if self.end_time <= self.start_time:
+                raise ValueError("end_time must be after start_time")
         if len(set(self.lot_ids)) != len(self.lot_ids):
             raise ValueError("lot_ids must not contain duplicates")
         if len(set(self.wf_ids)) != len(self.wf_ids):
@@ -279,44 +303,25 @@ def _connection():
     return connection
 
 
-def _map_dimensions():
-    with _connection() as connection, connection.cursor() as cursor:
-        cursor.execute("SELECT DISTINCT LOT_CD, OPER_DET_DESC FROM MAP "
-                       "WHERE LOT_CD IS NOT NULL AND OPER_DET_DESC IS NOT NULL ORDER BY 1, 2")
-        return cursor.fetchall()
-
-
-async def get_map_dimensions(ctx):
-    await ctx.check()
-    return await run_blocking(_map_dimensions)
-
-
-def resolve_map_window(lot_cd: str, oper: str, period: dict) -> tuple[datetime | None, datetime | None]:
-    """Resolve the measurement END_TM interval once for the selected product and test."""
-    kind = period["kind"]
-    if kind == "all":
-        return None, None
-    if kind == "range":
-        start = datetime.fromisoformat(str(period["start_time"]))
-        end = datetime.fromisoformat(str(period["end_time"]))
-        if start >= end:
-            raise ValueError("Map end_time must be after start_time")
-        return start, end
-    if kind != "recent_weeks":
-        raise ValueError(f"Unsupported map period: {kind}")
-    count = period["count"]
-    if type(count) is not int or count < 1:
-        raise ValueError("Recent weeks requires a positive week count")
-
+def recent_map_window(lot_cd: str, oper: str, weeks: int) -> tuple[datetime, datetime]:
+    """Anchor the requested week count at this product and test's latest MAP measurement."""
     with _connection() as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT TRUNC(MAX(END_TM)) FROM MAP WHERE LOT_CD = :lot_cd AND OPER_DET_DESC = :oper",
             {"lot_cd": lot_cd, "oper": oper},
         )
         anchor, = cursor.fetchone()
-    if anchor is None:
-        raise ValueError(f"No MAP measurement date for product {lot_cd} and test {oper}")
-    return anchor - timedelta(weeks=count - 1, days=anchor.weekday()), anchor + timedelta(days=1)
+        if anchor is None:
+            cursor.execute(
+                "SELECT DISTINCT OPER_DET_DESC FROM MAP WHERE LOT_CD = :lot_cd AND END_TM IS NOT NULL "
+                "AND OPER_DET_DESC IS NOT NULL ORDER BY OPER_DET_DESC FETCH FIRST 12 ROWS ONLY",
+                {"lot_cd": lot_cd},
+            )
+            options = [name for (name,) in cursor.fetchall()]
+            raise ValueError(f"No MAP measurement date for product {lot_cd} and test {oper}. "
+                             f"Available MAP.OPER_DET_DESC for this product (up to 12): "
+                             f"{json.dumps(options, ensure_ascii=False)}")
+    return anchor - timedelta(weeks=weeks - 1, days=anchor.weekday()), anchor + timedelta(days=1)
 
 
 def _configure_cursor(cursor):
@@ -334,14 +339,14 @@ def _configure_cursor(cursor):
     cursor.outputtypehandler = output_type_handler
 
 
-def _filters(args: LoadWaferMapsInput, wafer_groups=()):
+def _filters(args: LoadWaferMapsInput):
     binds, predicates = {}, []
-    if wafer_groups:
+    if args.wafer_groups:
         pair_predicates = []
-        for i, group in enumerate(wafer_groups):
-            binds[f"group_lot_{i}"] = group["lot_id"]
+        for i, group in enumerate(args.wafer_groups):
+            binds[f"group_lot_{i}"] = group.lot_id
             slots = []
-            for j, wf_id in enumerate(group["wf_ids"]):
+            for j, wf_id in enumerate(group.wf_ids):
                 name = f"group_wf_{i}_{j}"
                 binds[name] = wf_id
                 slots.append(f":{name}")
@@ -411,8 +416,8 @@ def _load_symbol_patterns(cursor, rows: list[dict]) -> dict:
     return result
 
 
-def _load_rows_and_patterns(args: LoadWaferMapsInput, wafer_groups=()):
-    where, binds = _filters(args, wafer_groups)
+def _load_rows_and_patterns(args: LoadWaferMapsInput):
+    where, binds = _filters(args)
     binds.update(stop_row=args.measurement_offset + args.max_measurements + 1, offset=args.measurement_offset)
     inner = (
         "SELECT LOT_ID, WF_ID, LOT_CD, OPER_DET_DESC AS OPER, START_TM, END_TM, MAP_VAL_JSON "
@@ -456,10 +461,8 @@ def _load_rows_and_patterns(args: LoadWaferMapsInput, wafer_groups=()):
             connection.close()
 
 
-def _load(args: LoadWaferMapsInput, wafer_groups=(), source_id="oracle:MAP") -> ToolResult:
-    if args.memory_refs and not wafer_groups:
-        raise ValueError("MAP_SCOPE_UNRESOLVED: memory references require resolved lot/wafer pairs.")
-    rows, patterns, has_more, found = _load_rows_and_patterns(args, wafer_groups)
+def _load(args: LoadWaferMapsInput, source_id="oracle:MAP") -> ToolResult:
+    rows, patterns, has_more, found = _load_rows_and_patterns(args)
     normalized = normalize_map_rows(
         rows,
         symbol_patterns=patterns,
@@ -474,8 +477,8 @@ def _load(args: LoadWaferMapsInput, wafer_groups=(), source_id="oracle:MAP") -> 
     }
     filters = args.model_dump(mode="json")
     artifacts, evidence_tables = [], []
-    if wafer_groups:
-        filters["wafer_groups"] = wafer_groups
+    if args.wafer_groups:
+        wafer_groups = filters["wafer_groups"]
         selected = {(g["lot_id"], wf) for g in wafer_groups for wf in g["wf_ids"]}
         observed = {(row["lot_id"], row["wf_id"]) for row in normalized.die_rows}
         missing["lot_wafers"] = [list(pair) for pair in sorted(selected - observed)]
@@ -512,38 +515,45 @@ def _load(args: LoadWaferMapsInput, wafer_groups=(), source_id="oracle:MAP") -> 
     )
 
 
-async def load_wafer_maps(args, ctx):
-    from .map_scope import effective_map_args
+def _query_maps(args, source_id, timezone):
+    if args.recent_weeks is not None:
+        start, end = recent_map_window(args.lot_cd, args.oper, args.recent_weeks)
+        args = args.model_copy(update={"start_time": start, "end_time": end})
+    else:
+        # Oracle DATE uses local wall time; convert explicit offsets before binding.
+        local_bounds = {name: value.astimezone(ZoneInfo(timezone)).replace(tzinfo=None)
+                        for name in ("start_time", "end_time")
+                        if (value := getattr(args, name)) is not None and value.tzinfo is not None}
+        if local_bounds:
+            args = args.model_copy(update=local_bounds)
+    if args.aggregate is not None:
+        from .map_aggregate import aggregate_wafer_maps
 
-    effective_args, scope = await effective_map_args(args, ctx)
+        return aggregate_wafer_maps(args, source_id)
+    return _load(args, source_id)
+
+
+async def load_wafer_maps(args, ctx):
     source_id = "oracle:MAP"
     if getattr(ctx, "invocation_id", None):
         source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, ctx.run["run_id"] + ":" + ctx.invocation_id))
-    if effective_args.aggregate is not None:
-        from .map_aggregate import aggregate_wafer_maps
-
-        if scope and scope["kind"] == "targeted" and not effective_args.lot_ids:
-            effective_args = effective_args.model_copy(update={"lot_ids": scope["target_lot_ids"]})
-        result = await run_blocking(aggregate_wafer_maps, effective_args, source_id)
-    elif scope and scope.get("wafer_groups"):
-        result = await run_blocking(_load, effective_args, scope["wafer_groups"], source_id)
-    else:
-        result = await run_blocking(_load, effective_args)
-    if scope is not None:
-        result.scope["map_scope"] = scope
-    return result
+    timezone = getattr(getattr(ctx, "settings", None), "timezone", None) or "Asia/Seoul"
+    return await run_blocking(_query_maps, args, source_id, timezone)
 
 
 def register(registry):
     registry.add(ToolSpec(
         "load_wafer_maps",
         "누적 맵(cummap)은 aggregate에 요청한 집계 그룹을 지정해 한 번 호출한다. 공정 이력별 그룹은 "
-        "aggregate.group_oper에 해당 공정명 또는 공정 ID를 넣는다. oper는 맵 측정 검사다. 도구가 전체 원본을 "
+        "aggregate.group_by에 이력 열(recipe=RCP/RECIPE_ID, equipment=EQP_ID, chamber=EQP_CH, "
+        "stepper_recipe=STEPPER_RECIPE_ID)을 선택하고 aggregate.group_oper에 DF_WF_LEGEND 공정명 또는 공정 ID를 넣는다. "
+        "oper는 원본 웨이퍼 맵을 측정한 검사(MAP.OPER_DET_DESC)다. 도구가 전체 원본을 "
         "조회해 좌표별 불량·관측 횟수와 완성된 맵을 반환하므로 lot 목록 사전 조회, 페이지 순회, Python 재집계가 필요 없다. "
-        "제품·검사·기간은 웹 채팅의 확정 조건을 자동 적용한다. MAP_SCOPE_INCOMPLETE면 누락된 조건을 사용자에게 확인한다. "
+        "모집단 누적 맵에는 확정된 lot_cd, MAP의 정확한 OPER_DET_DESC(oper), 기간을 직접 전달한다. "
+        "최근 N주는 recent_weeks=N, 명시한 범위는 start_time/end_time, 전체 기간은 all_time=true다. "
         "lot_ids/wf_ids는 특정 웨이퍼를 지정할 때의 선택 필터다. 개별 binmap은 aggregate를 생략하고 lot_ids로 "
-        "원본 die 표와 측정별 MAP 통과 비율을 읽는다. 기억한 웨이퍼 그룹의 개별 맵은 해당 memory_refs를 "
-        "한 번에 전달하면 저장된 LOT·웨이퍼 조합과 이름으로 완성된 맵을 반환한다. "
+        "원본 die 표와 측정별 MAP 통과 비율을 읽는다. 명명한 개별 맵은 wafer_groups에 "
+        "각 label, lot_id, wf_ids를 함께 전달하면 해당 조합의 완성된 맵을 반환한다. "
         "독립적인 wafer 수율은 DF_WF_ALL_PRB_V2에서 조회한다.",
         LoadWaferMapsInput,
         load_wafer_maps,

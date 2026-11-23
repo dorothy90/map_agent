@@ -144,7 +144,7 @@ def test_load_wafer_maps_returns_only_fact_summary_and_stored_die_table(monkeypa
     monkeypatch.setattr(
         tool,
         "_load_rows_and_patterns",
-        lambda args, selection: (rows, {}, False, {"lot_ids": ["LOT1"], "wf_ids": [1]}),
+        lambda args: (rows, {}, False, {"lot_ids": ["LOT1"], "wf_ids": [1]}),
     )
     async def immediate(function, *args):
         return function(*args)
@@ -266,9 +266,9 @@ def test_memory_selection_filters_the_lot_and_wafer_as_a_pair():
     import sqlite3
     import harness.tools.load_wafer_maps as tool
 
-    args = tool.LoadWaferMapsInput(memory_refs=["one", "two"], oper="op")
     groups = [dict(label="one", lot_id="A", wf_ids=[1, 3]), dict(label="two", lot_id="B", wf_ids=[2])]
-    where, binds = tool._filters(args, groups)
+    args = tool.LoadWaferMapsInput(wafer_groups=groups, oper="op")
+    where, binds = tool._filters(args)
     with sqlite3.connect(":memory:") as db:
         db.execute("CREATE TABLE map(lot_id, wf_id, oper_det_desc)")
         db.executemany("INSERT INTO map VALUES (?, ?, ?)",
@@ -282,17 +282,17 @@ def test_remembered_raw_maps_render_original_coordinates_and_report_missing_pair
     from harness.native_verification import validate_wafer_map_contract
     from plotly.basedatatypes import BaseFigure
 
-    args = tool.LoadWaferMapsInput(memory_refs=["one", "two"])
     groups = [dict(label="one", lot_id="A", wf_ids=[1, 2]), dict(label="two", lot_id="B", wf_ids=[2])]
     rows = [map_row("A", 1), map_row("B", 2)]
     found = dict(lot_ids=["A", "B"], wf_ids=[1, 2])
-    monkeypatch.setattr(tool, "_load_rows_and_patterns", lambda args, selection: (rows, {}, False, found))
+    monkeypatch.setattr(tool, "_load_rows_and_patterns", lambda args: (rows, {}, False, found))
     figures = []
     def capture(figure, **kwargs):
         figures.append(figure)
         return "<html></html>"
     monkeypatch.setattr(BaseFigure, "to_html", capture)
-    result = tool._load(args, groups, "result")
+    args = tool.LoadWaferMapsInput(wafer_groups=groups)
+    result = tool._load(args, "result")
     assert result.status == "partial"
     assert result.scope["wafer_maps"]["missing_requests"]["lot_wafers"] == [["A", 2]]
     assert result.scope["filters"]["wafer_groups"] == groups

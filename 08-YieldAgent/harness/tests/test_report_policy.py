@@ -317,7 +317,7 @@ def setup_scope_registry(handler):
 @pytest.mark.parametrize('empty_fields', [{}, {
     'report_scope_id': None, 'lot_cd': None, 'period': None,
 }, {'report_scope_id': '', 'lot_cd': '', 'period': {}}])
-def test_grouping_autofills_latest_scope_without_mutating_arguments(empty_fields):
+def test_grouping_reports_available_scopes_without_choosing_for_model(empty_fields):
     import copy
     from harness.tools.report_policy import ReportPolicyState, invoke_report
     from harness.tools.table_artifact import YieldTableInput
@@ -336,11 +336,11 @@ def test_grouping_autofills_latest_scope_without_mutating_arguments(empty_fields
     result = asyncio.run(invoke_report(
         ToolSpec('render_yield_table', 'report', YieldTableInput, handler),
         arguments, None, state=state))
-    assert received[0].report_scope_id == 'yield-report:latest'
-    assert result.scope['report_scope_autofilled'] is True
-    assert result.scope['report_scope_autofilled_from'] == 'yield-report:latest'
-    assert '; report_scope_id auto-filled from latest scope in this session: yield-report:latest' in result.summary
-    assert state.failures == 0
+    assert not received
+    assert result.scope['code'] == 'invalid_report_schema'
+    assert result.scope['successful_reports'] == state.successful_reports
+    assert result.scope['details']['missing'] == ['report_scope_id (or lot_cd+period)']
+    assert state.failures == 1
     assert arguments == original
 
 
@@ -361,7 +361,7 @@ def test_missing_scope_still_rejected(arguments):
     {'report_scope_id': 'yield-report:explicit'},
     {'lot_cd': '4SS', 'period': {'kind': 'recent', 'weeks': 4}},
 ])
-def test_explicit_scope_is_not_autofilled(explicit):
+def test_explicit_scope_reaches_handler(explicit):
     from harness.tools.report_policy import ReportPolicyState, invoke_report
     from harness.tools.table_artifact import YieldTableInput
     async def handler(args, context):
@@ -372,13 +372,12 @@ def test_explicit_scope_is_not_autofilled(explicit):
         ToolSpec('render_yield_table', 'report', YieldTableInput, handler),
         {**grouping_arguments(), **explicit}, None, state=state))
     assert result.status != 'error'
-    assert 'report_scope_autofilled' not in result.scope
     assert result.summary == 'rendered'
 
 
 @pytest.mark.parametrize('changed_key', ['session_id', 'principal_id', 'run_id'])
 @pytest.mark.parametrize('persisted', [False, True])
-def test_autofill_scope_isolated_and_restored(changed_key, persisted):
+def test_available_scope_hints_isolated_and_restored(changed_key, persisted):
     runs_a, runs_b = PersistentRuns(), PersistentRuns()
     runs_b.record['_id' if changed_key == 'run_id' else changed_key] = 'other'
 
@@ -408,8 +407,12 @@ def test_autofill_scope_isolated_and_restored(changed_key, persisted):
         result_b = await registry.invoke('render_yield_table', grouping_arguments(), context_b)
         assert result_b.scope['code'] == 'invalid_report_schema'
         assert result_b.scope['count'] == 1
+        assert result_b.scope['successful_reports'] == []
         result_a = await registry.invoke('render_yield_table', grouping_arguments(), context_a)
-        assert result_a.scope['report_scope_autofilled_from'] == 'yield-report:A'
+        assert result_a.scope['code'] == 'invalid_report_schema'
+        assert result_a.scope['successful_reports'] == [{'report_scope_id': 'yield-report:A'}]
+        corrected = {**grouping_arguments(), 'report_scope_id': 'yield-report:A'}
+        assert (await registry.invoke('render_yield_table', corrected, context_a)).summary == 'rendered'
         comparison_only = await registry.invoke(
             'render_yield_table', {'comparison': {'current': 'A', 'baseline': 'B'}}, context_a)
         assert comparison_only.scope['code'] == 'invalid_report_schema'
@@ -418,27 +421,6 @@ def test_autofill_scope_isolated_and_restored(changed_key, persisted):
     assert received[-1].report_scope_id == 'yield-report:A'
     if persisted:
         assert runs_b.record['report_contract_policy']['successful_reports'] == []
-
-
-def test_autofill_handler_error_uses_original_fingerprint_without_success_markers():
-    import hashlib
-    import json
-    from harness.tools.report_policy import ReportPolicyState, invoke_report
-    from harness.tools.table_artifact import YieldTableInput
-    arguments = grouping_arguments()
-    fingerprint = hashlib.sha256(json.dumps(
-        arguments, sort_keys=True, default=str, ensure_ascii=False).encode()).hexdigest()
-    async def handler(args, context):
-        assert args.report_scope_id == 'yield-report:prior'
-        return ToolResult(status='error', scope={'code': 'invalid_membership'})
-    state = ReportPolicyState(successful_reports=[{'report_scope_id': 'yield-report:prior'}])
-    result = asyncio.run(invoke_report(
-        ToolSpec('render_yield_table', 'report', YieldTableInput, handler),
-        arguments, None, state=state))
-    assert state.invalid_arguments == {fingerprint: 1}
-    assert state.failures == 1
-    assert 'report_scope_autofilled' not in result.scope
-    assert 'auto-filled' not in result.summary
 
 
 @pytest.mark.parametrize('arguments,missing,misplaced', [

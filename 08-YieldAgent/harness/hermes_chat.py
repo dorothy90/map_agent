@@ -22,7 +22,7 @@ from .native_hermes import (
 )
 
 
-async def run_chat(context, *, history=None):
+async def run_chat(context):
     settings, run, store = context.settings, context.run, context.store
     principal, session, epoch = run['principal_id'], run['session_id'], run['epoch']
     run_id = run['run_id']
@@ -41,7 +41,7 @@ async def run_chat(context, *, history=None):
     config = settings.model_dump(mode='json', exclude={'api_key'})
     config.update(api_key=settings.api_key.get_secret_value(), mongo_db=store.db.name)
     request = {'run_id': run_id, 'epoch': epoch, 'principal_id': principal, 'session_id': session,
-               'history': history or [], 'settings': config, 'request_context': request_context}
+               'settings': config, 'request_context': request_context}
     env = {k: os.environ[k] for k in ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
            'ORACLE_USER', 'ORACLE_PASSWORD', 'ORACLE_DSN', 'ORACLE_CALL_TIMEOUT_MS') if k in os.environ}
     env.update(HOME=str(profile), HERMES_HOME=str(profile), HERMES_DISABLE_LAZY_INSTALLS='1',
@@ -123,7 +123,7 @@ async def run_chat(context, *, history=None):
         return {**result, 'observations': observations,
                 'result_ids': [o['result_id'] for o in observations],
                 'native_engine': {'name': 'NousResearch/hermes-agent', 'commit': UPSTREAM_COMMIT,
-                                  'entrypoint': 'stock_chat'}}
+                                  'entrypoint': 'stock_chat', 'history_source': 'hermes_session_db'}}
     finally:
         if process is not None and process.returncode is None:
             try:

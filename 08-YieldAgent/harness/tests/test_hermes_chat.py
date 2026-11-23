@@ -2,11 +2,14 @@ import asyncio
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
+from types import SimpleNamespace
 from uuid import uuid4
 
 from harness import hermes_chat, native_hermes
 from harness.config import Settings
 from harness.control import RunController
+from harness.gateway.pending_controls import PendingControls
+from harness.gateway.session_rpc import SessionRPC
 from harness.gateway.session_store import MongoSessionStore
 from harness.store import HarnessStore
 from harness.tools.registry import domain_registry
@@ -36,7 +39,7 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                 return
             messages = request['messages']
             if messages[-1].get('content') == second_prompt:
-                answered_history.append([m.get('content') for m in messages if m['role'] == 'assistant'])
+                answered_history.append(messages)
             if messages[-1].get('content') == 'cancel this turn':
                 entered.set()
                 release.wait(35)
@@ -49,6 +52,11 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             elif any(m.get('role') == 'tool' and '7921' in str(m['content']) for m in messages):
                 message = {'role': 'assistant', 'content': local_media + '\n\n' + answer}
                 reason = 'stop'
+            elif not any(m.get('role') == 'tool' and m.get('tool_call_id') == 'scope-call' for m in messages):
+                message = {'role': 'assistant', 'content': None, 'tool_calls': [
+                    {'index': 0, 'id': 'scope-call', 'type': 'function', 'function': {
+                        'name': 'clarify', 'arguments': json.dumps({'questions': [{'question': 'Product?'}]})}}]}
+                reason = 'tool_calls'
             else:
                 message = {'role': 'assistant', 'content': None, 'tool_calls': [
                     {'index': 0, 'id': 'stock-call', 'type': 'function', 'function': {
@@ -97,6 +105,14 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             source_id = source.result_id
             for query in ('read the stored result', second_prompt):
                 run = await controller.start(principal, session, str(uuid4()), query)
+                if query != second_prompt:
+                    pending = PendingControls(store, principal)
+                    async with asyncio.timeout(40):
+                        while not (row := await pending.pending_prompts.find_one({
+                            'run_id': run['run_id'], 'status': 'pending'})):
+                            await asyncio.sleep(.05)
+                    await pending.respond(session, row['execution_generation'], row['authority_ids'][0],
+                                          {'answer': '4SA'}, 'clarify')
                 await controller.tasks[run['run_id']]
                 saved = await store.get_run(principal, run['run_id'])
                 assert saved['status'] == 'completed', saved['stop_reason']
@@ -121,8 +137,17 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                     assert await sessions.get_session_title(session) == 'My chosen title'
                     assert await sessions.get_session_title_source(session) == 'user'
             assert title_requests == ['read the stored result']
-            assert answered_history and any(str(m).strip() == answer for m in answered_history[0])
-            assert local_media not in json.dumps(answered_history)
+            assert len(answered_history) == 1
+            prior = answered_history[0]
+            assert any(answer in str(m['content']) for m in prior if m['role'] == 'assistant')
+            selected = [m for m in prior if m['role'] == 'tool' and m['tool_call_id'] == 'scope-call']
+            assert len(selected) == 1
+            assert json.loads(selected[0]['content'])['responses'][0]['user_response'] == '4SA'
+            assert all('_row_id' not in m for m in prior)
+            scope = SimpleNamespace(sessions=sessions, execution=SimpleNamespace(store=store, principal_id=principal))
+            transcript = await SessionRPC(scope, SimpleNamespace(mode='authority')).history(session)
+            cards = [m for m in transcript if m.get('name') == 'clarify']
+            assert len(cards) == 1 and '4SA' in cards[0]['content']
             journal = await store.db.gateway_event_logs.find_one({'principal_id': principal, 'session_id': session})
             live_messages = [json.loads(item['frozen']) for item in journal['ring']]
             assert any(event['type'] == 'message.delta' for event in live_messages)
@@ -151,7 +176,7 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
 def test_pre_migration_admission_keeps_legacy_entry_on_retry_and_recovery(monkeypatch):
     routes = []
 
-    async def fake_stock(context, *, history):
+    async def fake_stock(context):
         routes.append(('stock', context.run['run_id']))
         return {'status': 'completed', 'stop_reason': 'completed', 'answer': 'done'}
 

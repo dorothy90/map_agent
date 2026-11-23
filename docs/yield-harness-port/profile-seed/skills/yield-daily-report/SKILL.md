@@ -13,7 +13,7 @@ metadata:
 
 기존 yield-summary(수율 요약) 스킬과는 별개의 일보 절차다.
 
-첫 도구 호출은 render_yield_table에 analysis={months:3,weeks:4,days:3,parameters_per_direction:3,bins_per_test:10}을 전달하는 것이다. 이 도구에 제품 선택창이 내장되어 있다. 제품이 주어지지 않았으면 lot_cd 필드를 생략하고 바로 호출한다. 도구가 DB 제품 목록을 표시하고 사용자의 선택을 받아 같은 호출에서 조회를 끝낸다.
+첫 도구 호출은 render_yield_table에 analysis={months:3,weeks:4,days:3,parameters_per_direction:3,bins_per_test:10}을 전달하는 것이다. 제품이 주어지지 않았으면 lot_cd를 생략해 DB 제품 목록을 받고, clarify로 사용자에게 물은 뒤 선택된 lot_cd로 다시 호출한다.
 사용자가 지정한 제품은 lot_cd, 명시적으로 좁힌 검사만 analysis.tests, 지정한 기준일만 analysis.as_of에 전달한다. 기본은 해당 제품의 PT1H TEST와 PT1C TEST이며 기준일은 DB 최신 측정일이다.
 산점도와 BIN 맵 비교 주차는 결과의 comparison.previous_week와 current_week를 사용한다. 반환된 범위와 순위로 결론을 먼저 쓰고 artifact_refs의 markdown을 순서대로 모두 한 번씩 표시한다.
 기준일은 지정일 또는 해당 제품의 최신 측정일이고 실제 날짜와 주 경계를 표시한다.
