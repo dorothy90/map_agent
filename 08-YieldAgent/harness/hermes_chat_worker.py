@@ -39,6 +39,38 @@ async def resume_session(db, store, run):
     return session, canonicalize_replay_history(raw)
 
 
+def refresh_web_tool_pin(db, session, saved, tools, yield_names):
+    # Upstream resume carries old direct tools forward even after they become deferred.
+    if not saved or not saved.get('tool_names'):
+        return
+    try:
+        pin = json.loads(saved['tool_names'])
+    except (TypeError, ValueError):
+        return  # Hermes rebuilds an unreadable pin itself.
+    visible = {tool['function']['name']: tool for tool in tools}
+    if isinstance(pin, list):
+        # Old pins stored names only. Hermes can restore them unless a name left this surface.
+        if any(not isinstance(name, str) or name not in visible for name in pin):
+            db.update_session_tool_names(session, None)
+    elif isinstance(pin, dict) and isinstance(pin.get('tools'), list):
+        # Keep the cached prefix/order except where the current web contracts changed.
+        # tool_search's description contains this employee's deferred catalog.
+        refreshed = []
+        for tool in pin['tools']:
+            if isinstance(tool, str):
+                if tool in visible:
+                    refreshed.append(visible[tool])
+                continue
+            schema = tool.get('function') if isinstance(tool, dict) else None
+            name = schema.get('name') if isinstance(schema, dict) else None
+            if isinstance(name, str) and name in visible:
+                refreshed.append(visible[name] if name in yield_names or name == 'tool_search' else tool)
+        if refreshed != pin['tools']:
+            retained = {tool['function']['name'] for tool in refreshed}
+            refreshed.extend(tool for name, tool in visible.items() if name not in retained)
+            db.update_session_tool_names(session, {**pin, 'tools': refreshed})
+
+
 async def chat(request, emit):
     from harness.config import Settings
     from harness.executor import ExecutionContext, ToolExecutor
@@ -48,7 +80,7 @@ async def chat(request, emit):
     from harness.native_budget import install_http_budget
     from harness.store import HarnessStore
     from harness.tools.registry import domain_registry
-    from harness.native_worker import constrain_session_search, engine_provider, observe_skill_reads, refresh_backend_tool_pin
+    from harness.native_worker import constrain_session_search, engine_provider, observe_skill_reads
     from tools import skills_tool, session_search_tool
     from tools.approval_context import _approval_tool_call_id
     from tools.registry import registry
@@ -95,7 +127,7 @@ async def chat(request, emit):
 
         loop.add_signal_handler(signal.SIGTERM, interrupt)
         executor = ChatToolExecutor(domain_registry(), ctx)
-        register_yield_tools(registry, executor, loop,
+        yield_names = register_yield_tools(registry, executor, loop,
             invocation_id=_approval_tool_call_id.get, allowed=settings.native_allowed_tools)
         constrain_session_search(session_search_tool)
         observe_skill_reads(skills_tool, emit)
@@ -133,8 +165,6 @@ async def chat(request, emit):
         saved = db.get_session(session)
         if saved:
             db.reopen_session(session)
-            refresh_backend_tool_pin(db, {'session_id': session, 'tools': executor.registry.model_tools(),
-                                          'allowed_tools': settings.native_allowed_tools})
             if manual_title:
                 if (saved['title'], saved['title_source']) != (manual_title, 'user'):
                     sync_manual_title()
@@ -182,6 +212,7 @@ async def chat(request, emit):
                 tool_complete_callback=tool_complete)
             agent._on_session_title = publish_title
             try:
+                refresh_web_tool_pin(db, session, saved, agent.tools, yield_names)
                 if stopping:
                     return {'interrupted': True, 'turn_exit_reason': 'interrupted'}
                 query = run.get('goal_request', run['query'])

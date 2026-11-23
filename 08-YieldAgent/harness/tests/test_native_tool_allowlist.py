@@ -253,12 +253,14 @@ db = DB()
 class Agent:
     def __init__(self, **kwargs):
         print(json.dumps({"type": "audit", "toolsets": kwargs["enabled_toolsets"],
-            "registered": registered, "session_db": kwargs["session_db"] is db,
+            "registered": registered, "search": tools.tool_search.load_config(),
+            "session_db": kwargs["session_db"] is db,
             "session_id": kwargs["session_id"]}), file=sys.__stdout__, flush=True)
         raise RuntimeError("probe complete")
 tools = ModuleType("tools")
 tools.skills_tool = NS(skill_view=lambda *args: None)
 tools.delegate_tool = NS()
+tools.tool_search = NS(ToolSearchConfig=NS(from_raw=lambda raw: raw))
 tools.session_search_tool = NS()
 sys.modules.update({
     "native_budget": NS(install_http_budget=lambda **kw: NS(
@@ -306,6 +308,7 @@ runpy.run_path(sys.argv[1], run_name="__main__")
 
     assert audit == {
         "type": "audit", "toolsets": ["yield_backend", "yield_evidence", "skills"],
-        "registered": ["read_result", "allowed"], "session_db": True,
+        "registered": ["read_result", "allowed"], "search": {"enabled": "off", "defer": []},
+        "session_db": True,
         "session_id": "restricted",
     }

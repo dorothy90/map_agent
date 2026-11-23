@@ -538,14 +538,16 @@ def _prepare_profile_config(profile, isolation):
     # This worker has no host terminal tool; probing its package manager is irrelevant.
     content.setdefault('agent', {})
     content.setdefault('delegation', {})
-    changed = (content['agent'].get('environment_probe') is not False
-        or content['delegation'].get('orchestrator_enabled') is not False)
+    managed_profile = (content['agent'].get('environment_probe') is False
+                       and content['delegation'].get('orchestrator_enabled') is False)
+    changed = not managed_profile
     # Old managed profiles forced the model upgrade off on every run. Restore the
     # native default once, leaving later user choices and other title options alone.
     title_migration = profile / '.native-title-default-v1'
     title_generation = content.get('auxiliary', {}).get('title_generation', {})
-    if (not title_migration.exists() and not changed
-            and content.get('tools', {}).get('tool_search', {}).get('enabled') == 'off'
+    search = content.get('tools', {}).get('tool_search')
+    if (not title_migration.exists() and managed_profile
+            and isinstance(search, dict) and search.get('enabled') == 'off'
             and title_generation.get('model_upgrade_enabled') is False):
         del title_generation['model_upgrade_enabled']
         changed = True
@@ -576,17 +578,21 @@ def _prepare_profile_config(profile, isolation):
                 and terminal['persistent_shell'] is False and terminal['env_passthrough'] == []):
             del content['terminal']
             changed = True
-    content.setdefault('tools', {}).setdefault('tool_search', {})
-    changed = changed or content['tools']['tool_search'].get('enabled') != 'off'
-    content['tools']['tool_search']['enabled'] = 'off'
-    changed = changed or content['tools']['tool_search'].get('defer') != []
-    content['tools']['tool_search']['defer'] = []
+    # Earlier web profiles set these two values together on every run.
+    # Remove that managed pair once; Hermes then supplies its native defaults.
+    search_migration = profile / '.native-tool-search-default-v1'
+    if (not search_migration.exists() and managed_profile and isinstance(search, dict)
+            and search.get('enabled') == 'off' and search.get('defer') == []):
+        del search['enabled'], search['defer']
+        changed = True
     if changed:
         with tempfile.NamedTemporaryFile(mode='w', dir=profile, delete=False) as pending:
             pending.write(yaml.safe_dump(content, allow_unicode=True))
         os.replace(pending.name, config)
     if not title_migration.exists():
         title_migration.touch()
+    if not search_migration.exists():
+        search_migration.touch()
 
 
 async def run_native(context, registry, *, history=None):

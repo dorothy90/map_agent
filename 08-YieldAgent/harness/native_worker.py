@@ -373,6 +373,10 @@ def main():
         configure_runtime_tool_availability(registry, startup)
         verify_isolated_engine(startup)
         register_backend_tools(startup, registry, handler)
+        # Keep the legacy verifier's direct tool protocol local to its worker.
+        from tools import tool_search
+        legacy_search = tool_search.ToolSearchConfig.from_raw({'enabled': 'off', 'defer': []})
+        tool_search.load_config = tool_search.load_config_readonly = lambda: legacy_search
         from run_agent import AIAgent
         from agent import title_generator, tool_executor
         # The legacy planner/verifier owns a fixed model budget and never projects

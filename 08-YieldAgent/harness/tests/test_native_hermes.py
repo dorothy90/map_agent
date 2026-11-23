@@ -338,12 +338,15 @@ def test_profile_migrates_only_managed_title_disable_once(monkeypatch, tmp_path,
         'agent': {'environment_probe': not managed},
         'delegation': {'orchestrator_enabled': False},
         'auxiliary': {'title_generation': {'model_upgrade_enabled': False, 'language': 'ko'}},
-        'tools': {'tool_search': {'enabled': 'off', 'defer': []}},
+        'tools': {'tool_search': {'enabled': 'off', 'defer': [], 'listing': 'off'}},
     }))
     native.prepare_profile('p')
     migrated = yaml.safe_load(config.read_text())
     expected = {'language': 'ko'} if managed else {'language': 'ko', 'model_upgrade_enabled': False}
     assert migrated['auxiliary']['title_generation'] == expected
+    original_search = {'enabled': 'off', 'defer': [], 'listing': 'off'}
+    assert migrated['tools']['tool_search'] == ({'listing': 'off'} if managed else original_search)
+    migrated['tools']['tool_search'] = original_search
     migrated['auxiliary']['title_generation']['model_upgrade_enabled'] = False
     config.write_text(yaml.safe_dump(migrated))
     native.prepare_profile('p')

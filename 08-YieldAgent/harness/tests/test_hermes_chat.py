@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 from types import SimpleNamespace
@@ -52,7 +53,7 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                 release.wait(35)
                 return
             if request.get('tools'):
-                seen_tools.append({tool['function']['name'] for tool in request['tools']})
+                seen_tools.append({tool['function']['name']: tool for tool in request['tools']})
             if request.get('response_format', {}).get('json_schema', {}).get('name') == 'session_title':
                 title_requests.append(messages[-1]['content'])
                 message = {'role': 'assistant', 'content': json.dumps({'title': generated_title})}
@@ -68,7 +69,8 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             else:
                 message = {'role': 'assistant', 'content': None, 'tool_calls': [
                     {'index': 0, 'id': 'stock-call', 'type': 'function', 'function': {
-                        'name': 'read_result', 'arguments': json.dumps({'result_id': source_id})}}]}
+                        'name': 'tool_call', 'arguments': json.dumps({'calls': [
+                            {'name': 'read_result', 'arguments': {'result_id': source_id}}]})}}]}
                 reason = 'tool_calls'
             payload = {'id': 'stock-test', 'object': 'chat.completion', 'model': 'test-model', 'created': 1,
                        'choices': [{'index': 0, 'message': message, 'finish_reason': reason}],
@@ -139,6 +141,14 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                         {'session_id': session, 'title': generated_title},
                     ]
                     await sessions.set_session_title(session, 'My chosen title')
+                    # Resume a pre-search pin with a narrower employee allowlist.
+                    with sqlite3.connect(native_hermes.profile_path(principal) / 'state.db') as db:
+                        old_direct = [tool for name, tool in seen_tools[0].items()
+                                      if name not in {'tool_search', 'tool_describe', 'tool_call'}]
+                        pin = {'version': 'previous', 'tools': old_direct + domain_registry().model_tools()}
+                        assert db.execute('UPDATE sessions SET tool_names = ? WHERE id = ?',
+                                          (json.dumps(pin), session)).rowcount == 1
+                    settings.native_allowed_tools = ['read_result']
                 else:
                     assert not title_events
                     assert any(m.get('role') == 'tool' for m in saved['native_messages'])
@@ -160,8 +170,12 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             live_messages = [json.loads(item['frozen']) for item in journal['ring']]
             assert any(event['type'] == 'message.delta' for event in live_messages)
             assert '/private/tmp/local.png' not in json.dumps(live_messages)
-            assert set(domain_registry().tools) <= seen_tools[0]
-            assert {'terminal', 'execute_code', 'read_file'}.isdisjoint(seen_tools[0])
+            expected = {'clarify', 'skills_list', 'skill_view', 'skill_manage', 'memory',
+                        'tool_search', 'tool_describe', 'tool_call'}
+            assert seen_tools and all(set(tools) == expected for tools in seen_tools)
+            catalogs = [tools['tool_search']['function']['description'] for tools in seen_tools]
+            assert 'query_db' in catalogs[0] and 'query_db' not in catalogs[-1]
+            assert 'read_result' in catalogs[-1]
             # Cancel while the host delivers text and its next pipe read is outstanding.
             streams = []
             def observe_reader(reader, remaining):

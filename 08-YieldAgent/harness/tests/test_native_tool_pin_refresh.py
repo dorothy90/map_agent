@@ -115,3 +115,33 @@ print('same-version restore: stale before, current after')
                             capture_output=True, text=True, timeout=40)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'stale before, current after' in result.stdout
+
+
+def test_web_resume_updates_only_visible_yield_contract_and_deferred_catalog():
+    from harness.hermes_chat_worker import refresh_web_tool_pin
+
+    old_memory = tool('memory', old={})
+    search = tool('tool_search', current_catalog={})
+    current_yield = tool('read_result', result_id={})
+    saved = {
+        'version': 'engine-revision', 'extra': 3,
+        'tools': [old_memory, tool('tool_search', stale_catalog={}), tool('query_db'), tool('read_result')],
+    }
+    store = Store(saved)
+    visible = [search, tool('tool_call'), current_yield, tool('memory', current={})]
+    for _ in range(2):
+        refresh_web_tool_pin(store, 'same-session', store.get_session('same-session'), visible, ['read_result'])
+    assert store.writes == [('same-session', {**saved, 'tools': [old_memory, search, current_yield, tool('tool_call')]})]
+
+
+@pytest.mark.parametrize('old, should_clear', [
+    (['read_result'], True),
+    (['memory'], False),
+])
+def test_web_resume_handles_legacy_name_pins(old, should_clear):
+    from harness.hermes_chat_worker import refresh_web_tool_pin
+
+    store = Store(old)
+    refresh_web_tool_pin(store, 'same-session', store.get_session('same-session'),
+                         [tool('memory'), tool('tool_search')], ['read_result'])
+    assert store.writes == ([('same-session', None)] if should_clear else [])

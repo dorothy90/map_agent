@@ -195,15 +195,14 @@ def test_isolated_profile_overrides_local_backend_and_passthrough(monkeypatch, t
 
     native.prepare_profile("alice", payload)
     terminal = yaml.safe_load(path.read_text())["terminal"]
-    tool_search = yaml.safe_load(path.read_text())["tools"]["tool_search"]
+    tool_search = yaml.safe_load(path.read_text()).get("tools", {}).get("tool_search", {})
 
     assert terminal == {
         "backend": "ssh", "cwd": payload["workdir"], "ssh_host": "localhost",
         "ssh_user": "yieldrun", "ssh_port": 22, "ssh_key": str(payload["ssh_key"]),
         "env_passthrough": [], "persistent_shell": False,
     }
-    assert tool_search["enabled"] == "off"
-    assert tool_search["defer"] == []
+    assert "enabled" not in tool_search and "defer" not in tool_search
 
 
 def test_native_run_refuses_to_spawn_worker_when_isolation_preflight_fails(monkeypatch, tmp_path):
