@@ -22,7 +22,7 @@ git -C "$DEST" rev-parse HEAD > "$AUDIT/company-base.txt"
 ```bash
 git clone -c core.autocrlf=false --single-branch --branch codex/goal-driven-harness \
   https://github.com/dorothy90/map_agent.git "$REF" &&
-git -C "$REF" merge-base --is-ancestor cdcc284fd74ca16607022c25ea3e0d8a1c4340f7 HEAD &&
+git -C "$REF" merge-base --is-ancestor b28862324779fc42086b89cfdc23c216f136fbc0 HEAD &&
 test -f "$KIT/START_HERE.md" &&
 git -C "$REF" rev-parse HEAD > "$AUDIT/source-head.txt" &&
 python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.tsv"

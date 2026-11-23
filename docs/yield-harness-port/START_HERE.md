@@ -1,8 +1,8 @@
 # 사내 레포에 기존 수율 분석 하네스 파일 옮기기
 
-[GitHub 작업 브랜치](https://github.com/dorothy90/map_agent/tree/codex/goal-driven-harness)에서 **소스와 이 설명서**를 함께 받는다. 앱 소스 기준은 GLM 웹 채팅과 Hermes 직접 실행을 대조한 `codex/goal-driven-harness`의 `cdcc284fd74ca16607022c25ea3e0d8a1c4340f7`다. 현재 화면은 `harness_console`, 일반 채팅 실행은 `stock_chat`, Hermes 원본은 `5894e750c3dba980d43b25aa29e3958149ba2c61`이다. 사내 레포 정보와 내부에서 만든 비교표·diff·로그는 사내에만 둔다.
+[GitHub 작업 브랜치](https://github.com/dorothy90/map_agent/tree/codex/goal-driven-harness)에서 **소스와 이 설명서**를 함께 받는다. 앱 소스 기준은 자동 도구 검색과 공정명 조회 설명을 반영한 `codex/goal-driven-harness`의 `b28862324779fc42086b89cfdc23c216f136fbc0`다. 현재 화면은 `harness_console`, 일반 채팅 실행은 `stock_chat`, Hermes 원본은 `5894e750c3dba980d43b25aa29e3958149ba2c61`이다. 사내 레포 정보와 내부에서 만든 비교표·diff·로그는 사내에만 둔다.
 
-일반 채팅에서 Hermes가 직원 프로필의 대화 이력을 복원하고 도구를 호출하며 최종 답변을 작성한다. 백엔드는 직원별 접근 권한을 확인하고 전용 수율 도구 6개를 등록한다. OpenRouter의 `z-ai/glm-5.3-flash`로 확인한 두 턴의 맵 결과와 화면은 [검증 기록](VERIFICATION.md#glm-map)에 있다.
+일반 채팅에서 Hermes가 직원 프로필의 대화 이력을 복원하고 도구를 호출하며 최종 답변을 작성한다. 백엔드는 직원별 접근 권한을 확인하고 전용 수율 도구 6개를 등록한다. 일반 웹 채팅에서는 Hermes 원본 자동 검색이 직원에게 허용된 도구를 불러온다. 스킬 생성·저장은 Hermes가 담당한다. [자동 검색과 공정명 처리 검증](VERIFICATION.md#native-discovery) · [GLM 후속 질문 화면](VERIFICATION.md#glm-map)
 
 ## 무엇을 열어야 하나
 
