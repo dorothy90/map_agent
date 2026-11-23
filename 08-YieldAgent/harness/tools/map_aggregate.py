@@ -27,7 +27,11 @@ class CummapAggregation(Contract):
         '(STEPPER_RECIPE_ID) and supply group_oper. Other dimensions use MAP rows directly; '
         'all produces one combined map.'))
     group_oper: str | None = Field(default=None, min_length=1, max_length=500,
-        description='Manufacturing operation whose process history supplies the grouping column. Use the exact DF_WF_LEGEND.OPER_DET_DESC or OPER_ID for recipe, equipment, chamber or stepper_recipe.')
+        description=('Manufacturing operation for recipe, equipment, chamber or stepper_recipe grouping. '
+                     'For the first call, copy the process name or ID verbatim from the user message, '
+                     'including any apparent misspelling. The tool matches DF_WF_LEGEND.OPER_DET_DESC '
+                     'case-insensitively or OPER_ID exactly within the selected product. Only if it reports '
+                     'no unique matching process, consult the product’s process list before retrying with a corrected value.'))
     selected_bins: list[str] = Field(default_factory=list,
         description='Optional exact combined MAP bin strings (left_bin + right_bin) to count. Empty counts all defined failures.')
 

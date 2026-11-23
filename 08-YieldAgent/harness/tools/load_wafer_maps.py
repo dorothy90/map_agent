@@ -544,7 +544,8 @@ async def load_wafer_maps(args, ctx):
 def register(registry):
     registry.add(ToolSpec(
         "load_wafer_maps",
-        "누적 맵(cummap)은 aggregate에 요청한 집계 그룹을 지정해 한 번 호출한다. 공정 이력별 그룹은 "
+        "공정별 누적 맵(cummap)은 공정명·ID의 오타까지 원문 그대로 먼저 조회하고, 공정이 하나로 식별되지 않을 때만 목록을 확인한다. "
+        "누적 맵은 aggregate에 요청한 집계 그룹을 지정해 한 번 호출한다. 공정 이력별 그룹은 "
         "aggregate.group_by에 이력 열(recipe=RCP/RECIPE_ID, equipment=EQP_ID, chamber=EQP_CH, "
         "stepper_recipe=STEPPER_RECIPE_ID)을 선택하고 aggregate.group_oper에 DF_WF_LEGEND 공정명 또는 공정 ID를 넣는다. "
         "oper는 원본 웨이퍼 맵을 측정한 검사(MAP.OPER_DET_DESC)다. 도구가 전체 원본을 "
