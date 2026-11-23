@@ -29,6 +29,22 @@
 
 수율일보는 별도의 일곱 번째 도구를 추가한 기능이 아니다. 사용자 프로필의 yield-daily-report/SKILL.md가 기존 도구의 보고서 입력을 사용한다. H/tools/report_analysis.py가 동일 제품과 기준일로 월·주·일 표를 만들고 report_scatter.py와 report_bin_maps.py가 산점도와 검사별 BIN 맵을 만든다. 스킬 파일만 옮기거나 표 렌더러만 가져가면 전 기능이 이어지지 않는다.
 
+<a id="shared-files"></a>
+
+### 공용 수율 폴더와 Hermes 도구 5개
+
+Ubuntu 백엔드에서 `HARNESS_SHARED_YIELD_DIR`에 공용 수율 자료 디렉터리의 절대 경로를 지정하고 서비스를 다시 시작한다. 예를 들어 `/srv/yield/shared-inputs`를 미리 만들고 서비스 계정에 디렉터리 탐색 및 파일 읽기 권한을 준다. 설정을 비워두면 서버가 체크아웃 루트 아래 `.runtime/shared-yield/`를 만든다. 채팅에는 그 안의 상대 경로를 전달한다.
+
+| 도구 | 웹 채팅에서의 동작 |
+|---|---|
+| `read_file` | 게시한 공용 파일을 읽는다. |
+| `search_files` | 공용 폴더 안에서 파일명과 내용을 검색한다. |
+| `vision_analyze` | 공용 폴더의 PNG·JPEG 등 래스터 이미지를 연다. 모델 공급자가 이미지 처리를 지원할 때 제공된다. |
+| `delegate_task` | 같은 프로필과 모델에서 작업을 위임한다. 자식은 허용된 수율·공용 파일 도구로 작업하고 결과는 부모 대화에 귀속된다. |
+| `todo_list` | Hermes 자동 검색으로 불러와 현재 대화의 할 일을 관리한다. |
+
+`H/hermes_chat_worker.py`가 원본 검색 방식을 적용한다. 파일 범위 검사는 `H/shared_file_tools.py`, 위임 권한은 `H/web_delegation.py`, 공용 경로 설정은 `H/config.py`와 `H/hermes_chat.py`에 있다. 파일 도구는 심볼릭 링크를 따라가지 않는다. 임시 복사량은 호출당 64 MiB, 디렉터리 검색은 하위 항목 10,000개까지다. 생성된 표·맵은 로그인 사용자와 세션에 귀속되는 기존 저장소에 보관한다.
+
 ### 일반 채팅에서 도구를 찾는 방식
 
 직원에게 허용된 수율 도구를 먼저 등록하면 Hermes가 `tool_search`, `tool_describe`, `tool_call`을 제공한다. 도구 이름을 이미 아는 모델은 `tool_describe`로 인자를 확인하고 `tool_call`로 실행할 수 있다. 이 세 도구를 사내 수율 레지스트리에 추가할 필요는 없다.

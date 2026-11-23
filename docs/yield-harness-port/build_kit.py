@@ -10,7 +10,7 @@ import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
 
-COMMIT = "b28862324779fc42086b89cfdc23c216f136fbc0"
+COMMIT = "40985fff61d238c0104661f3eb9c1937cee28816"
 Y = "08-YieldAgent/"
 H = Y + "harness/"
 ENGINE = H + "engine/"
@@ -52,6 +52,8 @@ APP_MODULES = {
     "app": "FastAPI 기동·종료와 라우터 연결", "config": "모델·DB·실행 제한·격리 설정",
     "router": "제품·스킬·결과·산출물 HTTP API", "control": "실행 접수·취소·복구",
     "hermes_chat": "현재 웹 채팅 실행과 프로필 생성", "hermes_chat_worker": "Hermes 모델·도구·스트림을 한 채팅에 연결",
+    "shared_file_tools": "공용 수율 폴더로 파일 읽기·검색·이미지 입력 제한",
+    "web_delegation": "위임 작업의 도구 권한·프로필·실행 수명 연결",
     "native_tools": "수율 도구 6개를 Hermes의 yield 도구 묶음에 등록", "executor": "인증된 도구 실행과 결과 저장",
     "instructions": "모델에 제공할 지침 파일 로드", "store": "Mongo 세션·실행·테이블·산출물 저장",
     "skill_catalog_worker": "현재 사용자 프로필의 스킬 검색·목록",
