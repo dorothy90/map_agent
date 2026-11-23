@@ -41,8 +41,16 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             if messages[-1].get('content') == second_prompt:
                 answered_history.append(messages)
             if messages[-1].get('content') == 'cancel this turn':
-                entered.set()
+                chunk = {'id': 'cancel-test', 'object': 'chat.completion.chunk', 'created': 1,
+                         'model': 'test-model', 'choices': [{'index': 0, 'finish_reason': None,
+                         'delta': {'role': 'assistant', 'content': 'stream before cancel\n'}}]}
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.end_headers()
+                self.wfile.write(('data: ' + json.dumps(chunk) + '\n\n').encode())
+                self.wfile.flush()
                 release.wait(35)
+                return
             if request.get('tools'):
                 seen_tools.append({tool['function']['name'] for tool in request['tools']})
             if request.get('response_format', {}).get('json_schema', {}).get('name') == 'session_title':
@@ -154,10 +162,26 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             assert '/private/tmp/local.png' not in json.dumps(live_messages)
             assert set(domain_registry().tools) <= seen_tools[0]
             assert {'terminal', 'execute_code', 'read_file'}.isdisjoint(seen_tools[0])
+            # Cancel while the host delivers text and its next pipe read is outstanding.
+            streams = []
+            def observe_reader(reader, remaining):
+                stream = native_hermes.coalesced_worker_messages(reader, remaining)
+                streams.append(stream)
+                return stream
+
+            async def hold_delta(self, session_id, typ, payload):
+                if typ == 'message.delta':
+                    entered.set()
+                    await asyncio.Event().wait()
+
+            monkeypatch.setattr(hermes_chat.SessionEvents, 'publish_live', hold_delta)
+            monkeypatch.setattr(hermes_chat, 'coalesced_worker_messages', observe_reader)
             run = await controller.start(principal, session, str(uuid4()), 'cancel this turn')
             assert await asyncio.to_thread(entered.wait, 40)
             stopped = await asyncio.wait_for(controller.cancel(principal, run['run_id']), 15)
             assert stopped['status'] == 'cancelled'
+            assert stopped['stop_reason'] == 'user_cancelled'
+            assert streams[0].ag_frame is None
             assert controller.tasks[run['run_id']].done()
         finally:
             release.set()

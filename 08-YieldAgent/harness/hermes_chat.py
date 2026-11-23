@@ -62,6 +62,7 @@ async def run_chat(context):
     prior = run.get('usage', {})
     audit = None
     process = None
+    messages = None
     prepared = False
     try:
         if settings.isolation:
@@ -84,7 +85,8 @@ async def run_chat(context):
             await process.stdin.drain()
             process.stdin.close()
             result = None
-            async for message in coalesced_worker_messages(process.stdout, context.remaining_seconds):
+            messages = coalesced_worker_messages(process.stdout, context.remaining_seconds)
+            async for message in messages:
                 await context.check()
                 kind = message['type']
                 if kind == 'result':
@@ -125,6 +127,8 @@ async def run_chat(context):
                 'native_engine': {'name': 'NousResearch/hermes-agent', 'commit': UPSTREAM_COMMIT,
                                   'entrypoint': 'stock_chat', 'history_source': 'hermes_session_db'}}
     finally:
+        if messages is not None:
+            await messages.aclose()
         if process is not None and process.returncode is None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
