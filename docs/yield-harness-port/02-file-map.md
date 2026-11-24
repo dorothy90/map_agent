@@ -11,7 +11,7 @@
 | 앱 공통 상태 | H/control.py, executor.py, types.py, store.py | 세션·실행·결과 식별자, 취소와 소유권, 결과 저장, 산출물 URL의 연결. 소유자를 특정하는 사내 계층이 이미 있으면 그 계약과 맞춘다. |
 | 웹 API 및 세션 | H/app.py, router.py, gateway/{routes,services,auth,session_rpc,session_store,events,execution}.py, gateway/manifest.json | HTTP·WebSocket 연결, 세션 목록·제목·이력, 사용자 선택에 대한 응답, 진행 상태 및 최종 답변. 사내 인증과 외부 개발용 고정 사용자 설정을 구분한다. |
 | 스킬·기억 | H/skill_catalog_worker.py, hermes_chat_worker.py, tools/load_wafer_maps.py | 실제 프로필 스킬을 읽어 목록에 표시한다. 기억한 웨이퍼 그룹은 모델이 LOT·웨이퍼 쌍으로 만들어 맵 도구에 전달한다. H/skills.py와 옛 고정 스킬은 현재 커밋에서 제거됨. 사용자 정의 스킬 내용은 별도 반입 대상으로 03에 수록. |
-| 구버전 실행 지원/공용 검증 | H/native_hermes.py, native_worker.py, native_verification.py, native_budget.py 및 FILES.tsv에 표시한 관련 모듈 | 구버전 이력·실행 호환 및 현재 경로에서도 재사용하는 유틸리티가 있다. 이름이 비슷한 worker를 하나로 합치거나 일괄 삭제하지 않는다. |
+| 프로필·저장 이력·공용 검증 | H/native_hermes.py, native_verification.py, native_budget.py | 프로필과 저장된 결과에 쓰이는 공용 코드다. 웹 채팅과 모델 평가는 H/hermes_chat.py를 통해 Hermes 원본으로 실행한다. |
 | 실행 경계 | H/isolation/, H/runtime/, H/config.py, H/dev/ | 전용 도구가 생성 코드를 실행하는 경계, 기존 프로그램의 환경설정, 검증용 게이트웨이. 우선 소스를 같은 경로에 대응시키고 사내 OS·인증 설정은 사내에서 병합한다. |
 
 ## 2. 전용 도구 여섯 개
@@ -55,7 +55,7 @@ Ubuntu 백엔드에서 `HARNESS_SHARED_YIELD_DIR`에 공용 수율 자료 디렉
 
 직원에게 허용된 수율 도구를 먼저 등록하면 Hermes가 `tool_search`, `tool_describe`, `tool_call`을 제공한다. 도구 이름을 이미 아는 모델은 `tool_describe`로 인자를 확인하고 `tool_call`로 실행할 수 있다. 이 세 도구를 사내 수율 레지스트리에 추가할 필요는 없다.
 
-기존 직원 프로필도 함께 이식할 때는 `H/native_hermes.py`의 프로필 준비 코드와 `H/hermes_chat_worker.py`의 세션 재개 코드를 함께 병합한다. 프로필 준비 코드는 예전 하네스가 설정한 `enabled: off`와 `defer: []` 조합을 한 번 해제한다. 세션 재개 코드는 예전 대화에 저장된 도구 목록을 현재 직원 권한에 맞춘다. `H/native_worker.py`의 직접 호출 설정은 구버전 검증기 전용이다.
+기존 직원 프로필도 함께 이식할 때는 `H/native_hermes.py`의 프로필 준비 코드와 `H/hermes_chat_worker.py`의 세션 재개 코드를 함께 병합한다. 프로필 준비 코드는 예전 하네스가 설정한 `enabled: off`와 `defer: []` 조합을 한 번 해제한다. 세션 재개 코드는 예전 대화에 저장된 도구 목록을 현재 직원 권한에 맞춘다.
 
 누적 맵 설명은 `H/tools/load_wafer_maps.py`의 도구 소개와 `H/tools/map_aggregate.py`의 `group_oper` 입력 설명에 있다. 모델은 사용자가 쓴 제조 공정명·ID로 먼저 조회하고, 공정 하나를 식별할 수 없을 때 해당 제품의 공정 목록을 확인하도록 안내받는다. 맵 도구는 공정명은 대소문자를 무시하고 ID는 정확히 대조한다. 맵 검사명은 별도 인자 `oper`로 전달한다.
 

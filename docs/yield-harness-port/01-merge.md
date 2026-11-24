@@ -22,7 +22,7 @@ git -C "$DEST" rev-parse HEAD > "$AUDIT/company-base.txt"
 ```bash
 git clone -c core.autocrlf=false --single-branch --branch codex/goal-driven-harness \
   https://github.com/dorothy90/map_agent.git "$REF" &&
-git -C "$REF" merge-base --is-ancestor 9733331f846049fef07fe30d5451ccb5c78b1e33 HEAD &&
+git -C "$REF" merge-base --is-ancestor 797dafba9ed528d3649d1e367755d453b65a7b1b HEAD &&
 test -f "$KIT/START_HERE.md" &&
 git -C "$REF" rev-parse HEAD > "$AUDIT/source-head.txt" &&
 python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.tsv"
@@ -30,7 +30,7 @@ python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.ts
 
 이미 해당 브랜치를 별도 폴더에 받았다면 `REF`를 그 폴더의 절대경로로, `KIT`를 `$REF/docs/yield-harness-port`로 지정하고 두 번째 명령인 `merge-base`부터 실행한다.
 
-예상 결과는 `tree OK: 4859 listed files`다. 설명서와 업무 스킬은 현재 브랜치의 `docs/yield-harness-port/`에 있고, FILES.tsv는 앱 기준 커밋의 소스를 가리킨다. 브랜치가 이후 바뀌어 파일 검증이 실패하면 설명서 버전과 목록의 기준 커밋을 대조한 후 진행한다. 사내 코드·비교표·로그는 내부 작업 위치에만 둔다.
+예상 결과는 `tree OK: 4847 listed files`다. 설명서와 업무 스킬은 현재 브랜치의 `docs/yield-harness-port/`에 있고, FILES.tsv는 앱 기준 커밋의 소스를 가리킨다. 브랜치가 이후 바뀌어 파일 검증이 실패하면 설명서 버전과 목록의 기준 커밋을 대조한 후 진행한다. 사내 코드·비교표·로그는 내부 작업 위치에만 둔다.
 
 ## 3. 파일별 대응표를 만든다
 
@@ -87,3 +87,7 @@ MERGE할 때는 예를 들어 `git diff --no-index -- "$DEST/08-YieldAgent/commo
 ## 6. 복구 기준을 먼저 기록한다
 
 단계마다 사내 기준 커밋과 변경 파일, 병합 근거를 내부에 기록한다. 선택한 파일만 검토 후 사내 브랜치에 커밋한다. 복구가 필요하면 해당 이식 커밋을 별도로 revert할 수 있도록 관련 없는 작업은 섞지 않는다.
+
+### 이미 이전 하네스를 이식한 경우
+
+이전 앱 기준 `9733331f`에서 현재 기준까지의 삭제 경로를 `git diff --name-status --diff-filter=D`로 확인한다. 삭제 목록에는 구형 워커·완료 검증기, 해당 지침과 전용 테스트가 있다. 사내 수정이 있는 경로는 사내 호출자를 먼저 확인한다. 웹 채팅·합성 평가·도구 없는 평가가 모두 `hermes_chat.run_chat`로 실행되도록 이관한 뒤 사용을 끝낸 구형 코드를 제거한다. 기존 대화·실행 기록은 보존한다.

@@ -10,7 +10,7 @@ import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
 
-COMMIT = "9733331f846049fef07fe30d5451ccb5c78b1e33"
+COMMIT = "797dafba9ed528d3649d1e367755d453b65a7b1b"
 Y = "08-YieldAgent/"
 H = Y + "harness/"
 ENGINE = H + "engine/"
@@ -57,9 +57,9 @@ APP_MODULES = {
     "native_tools": "수율 도구 6개를 Hermes의 yield 도구 묶음에 등록", "executor": "인증된 도구 실행과 결과 저장",
     "instructions": "모델에 제공할 지침 파일 로드", "store": "Mongo 세션·실행·테이블·산출물 저장",
     "skill_catalog_worker": "현재 사용자 프로필의 스킬 검색·목록",
-    "types": "저장 결과·도구 입력·출력 계약", "native_hermes": "Hermes 프로필·공통 상태 및 기존 실행 호환",
-    "native_worker": "기존 실행 경로의 Hermes 격리 프로세스", "native_ipc": "프로세스 간 실행 메시지",
-    "native_stop_gate": "실행 중단과 완료 조건", "native_budget": "실행 시간·모델 호출량 제한",
+    "types": "저장 결과·도구 입력·출력 계약", "native_hermes": "Hermes 프로필 및 공통 상태",
+    "chat_tool_helpers": "웹 채팅에서 쓰는 Hermes 도구 연결 함수", "native_ipc": "프로세스 간 실행 메시지",
+    "native_budget": "실행 시간·모델 호출량 제한",
     "native_verification": "답변 근거·맵 및 산출물 계약 검증", "context": "실행 시점의 사용자 문맥",
     "completion": "종료 상태 및 근거 평가", "artifact_delivery": "저장된 산출물의 답변 연결",
     "memory": "기존 메모리 연동", "model": "모델 클라이언트 구성", "mcp_server": "별도 선택형 MCP 진입점",
