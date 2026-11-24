@@ -10,7 +10,7 @@ import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
 
-COMMIT = "797dafba9ed528d3649d1e367755d453b65a7b1b"
+COMMIT = "a0ca3ffd126238dedd807f84838f733f8d4a2aee"
 Y = "08-YieldAgent/"
 H = Y + "harness/"
 ENGINE = H + "engine/"
