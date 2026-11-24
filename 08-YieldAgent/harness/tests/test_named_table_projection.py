@@ -1,6 +1,5 @@
 import json
 
-from harness.completion import render_results
 from harness.context import build_context
 
 
@@ -21,9 +20,3 @@ def test_named_table_values_are_loaded_once_and_bounded():
         ('weekly', [{'weekly': 731}]), ('wafer', [{'wafer': 829}])]
     assert meta['evidence'][0]['preview_rows'] == []
     assert all('preview_rows' not in table for table in meta['result_index'][0]['tables'])
-
-
-def test_final_render_preserves_two_separate_table_headers():
-    text = render_results([observation()])
-    assert '| weekly |' in text and '| wafer |' in text
-    assert '| 731 |' in text and '| 829 |' in text

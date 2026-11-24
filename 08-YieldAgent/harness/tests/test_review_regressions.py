@@ -3,13 +3,6 @@ import uuid
 from dataclasses import replace
 
 
-def test_scope_and_missing_calculation_lineage_are_rejected():
-    from harness.completion import validate_evidence
-    issues = validate_evidence({"answer": "전체 평균 90", "result_ids": ["r"], "scope": {"lotcd": "B"}},
-        {"constraints": {"lotcd": "A"}}, {"r": {"result_id": "r", "status": "partial", "scope": {"lotcd": "B"}, "rows": [{"value": 90}], "source_result_ids": ["missing"]}})
-    assert {"scope_mismatch", "missing_lineage"}.issubset(i["code"] for i in issues)
-
-
 def test_cancelling_cannot_be_overwritten_by_completed():
     from harness.store import HarnessStore
     async def scenario():

@@ -10,7 +10,6 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from harness.gateway.session_db import SessionDB
 from harness.gateway.session_store import MongoSessionStore
 from harness.store import Conflict, HarnessStore
 
@@ -284,35 +283,31 @@ def test_delete_compression_chain_and_active_guard():
     asyncio.run(scenario())
 
 
-def test_sqlite_forbidden_during_all_sync_adapter_operations():
+def test_session_lifecycle_uses_only_gateway_storage():
     async def scenario():
         async with database() as (a, _, harness):
-            facade = SessionDB(a, loop=asyncio.get_running_loop())
-            def original_caller():
-                facade.ensure_session('s')
-                facade.create_session('s', 'cli')
-                facade.append_message('s', 'user', 'hello')
-                assert facade.get_session('s')['message_count'] == 1
-                assert facade.session_count() == 1
-                assert facade.message_count('s') == 1
-                assert facade.get_session_list_row('s')['id'] == 's'
-                assert facade.resolve_session_id('s') == 's'
-                assert facade.list_sessions_rich()[0]['id'] == 's'
-                assert facade.get_messages('s')[0]['content'] == 'hello'
-                assert facade.set_session_title('s', 'title')
-                assert facade.get_session_title('s') == 'title'
-                assert facade.get_session_title_source('s') == 'user'
-                facade.end_session('s', 'compression')
-                facade.create_session('child', 'cli', parent_session_id='s')
-                facade.append_message('child', 'assistant', 'next')
-                assert facade.resolve_resume_session_id('s') == 'child'
-                assert facade.get_compression_chain('s') == ['s', 'child']
-                assert facade.get_compression_tip('s') == 'child'
-                assert facade.get_compression_lineage('child') == ['s', 'child']
-                assert len(facade.get_messages('child', include_ancestors=True)) == 2
-                assert facade.delete_session('s', include_compression_chain=True)
-                facade.close()
-            await asyncio.to_thread(original_caller)
+            await a.ensure_session('s')
+            await a.create_session('s', 'cli')
+            await a.append_message('s', 'user', 'hello')
+            assert (await a.get_session('s'))['message_count'] == 1
+            assert await a.session_count() == 1
+            assert await a.message_count('s') == 1
+            assert (await a.get_session_list_row('s'))['id'] == 's'
+            assert await a.resolve_session_id('s') == 's'
+            assert (await a.list_sessions_rich())[0]['id'] == 's'
+            assert (await a.get_messages('s'))[0]['content'] == 'hello'
+            assert await a.set_session_title('s', 'title')
+            assert await a.get_session_title('s') == 'title'
+            assert await a.get_session_title_source('s') == 'user'
+            await a.end_session('s', 'compression')
+            await a.create_session('child', 'cli', parent_session_id='s')
+            await a.append_message('child', 'assistant', 'next')
+            assert await a.resolve_resume_session_id('s') == 'child'
+            assert await a.get_compression_chain('s') == ['s', 'child']
+            assert await a.get_compression_tip('s') == 'child'
+            assert await a.get_compression_lineage('child') == ['s', 'child']
+            assert len(await a.get_messages('child', include_ancestors=True)) == 2
+            assert await a.delete_session('s', include_compression_chain=True)
     asyncio.run(scenario())
 
 

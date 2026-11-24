@@ -1,102 +1,23 @@
-"""Offline contract checks; parse original definitions without importing its DB runtime."""
+"""Offline contract checks for the principal-bound gateway session store."""
 import ast
-import asyncio
-import inspect
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from harness.tests.local_test_resources import hermes_checkout
-
-# Optional override for a read-only checkout of pinned Hermes 5894e750.
-ORIGIN = Path(os.environ.get('HERMES_SESSION_CONTRACT_SOURCE') or hermes_checkout())
-
-
-def original_classes():
-    assert (ORIGIN / 'hermes_state.py').is_file(), 'Set HERMES_SESSION_CONTRACT_SOURCE to the Hermes 5894e750 checkout'
-    classes = {}
-    for path in ORIGIN.glob('hermes_state*.py'):
-        for node in ast.parse(path.read_text()).body:
-            if isinstance(node, ast.ClassDef):
-                classes[node.name] = node
-    def hierarchy(name):
-        node = classes[name]
-        return [node, *(ancestor for base in node.bases if isinstance(base, ast.Name) and base.id in classes
-                        for ancestor in hierarchy(base.id))]
-    return hierarchy('SessionDB')
-
-
-def original_methods():
-    methods = {}
-    for cls in reversed(original_classes()):
-        for node in cls.body:
-            if isinstance(node, ast.FunctionDef) and not node.name.startswith('_'):
-                methods[node.name] = node
-    return methods
-
-
-def source_signature(node):
-    # Execute only a signature with a pass body, never Hermes imports or constructors.
-    node = ast.FunctionDef(name=node.name, args=node.args, body=[ast.Pass()],
-                           decorator_list=[], returns=node.returns, type_comment=None)
-    mod = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), node], type_ignores=[])
-    scope = {}
-    exec(compile(ast.fix_missing_locations(mod), '<original SessionDB signature>', 'exec'), scope)
-    return inspect.signature(scope[node.name])
-
-
-def parameter_contract(sig):
-    return [(p.name, p.kind, p.default) for p in sig.parameters.values()]
-
-
-def test_original_public_signatures_and_explicit_unsupported_inventory():
-    from harness.gateway.session_db import SessionDB, IMPLEMENTED_METHODS, UNSUPPORTED_METHODS
-    originals = original_methods()
-    assert set(IMPLEMENTED_METHODS).isdisjoint(UNSUPPORTED_METHODS)
-    assert set(IMPLEMENTED_METHODS) | set(UNSUPPORTED_METHODS) == set(originals)
-    for name in IMPLEMENTED_METHODS:
-        assert parameter_contract(inspect.signature(getattr(SessionDB, name))) == parameter_contract(source_signature(originals[name])), name
-        assert not inspect.iscoroutinefunction(getattr(SessionDB, name))
-    db = SessionDB.__new__(SessionDB)
-    for name in UNSUPPORTED_METHODS:
-        with pytest.raises(NotImplementedError, match=name):
-            getattr(db, name)()
 
 
 def test_no_sqlite_or_original_storage_imports():
-    import harness.gateway.session_db as adapter
     import harness.gateway.session_store as storage
-    for module in (adapter, storage):
-        tree = ast.parse(Path(module.__file__).read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names = [item.name for item in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                names = [node.module or '']
-            else:
-                continue
-            assert not any(name.startswith(('sqlite3', 'hermes_state')) for name in names)
-        assert 'state.db' not in Path(module.__file__).read_text()
-
-
-def test_sync_boundary_rejects_event_loop_and_offloads_successfully():
-    from harness.gateway.session_db import SessionDB
-
-    async def scenario():
-        loop = asyncio.get_running_loop()
-        async def get_session(session_id):
-            assert asyncio.get_running_loop() is loop
-            return {'id': session_id}
-        core = SimpleNamespace(get_session=get_session)
-        db = SessionDB(core, loop=loop)
-        with pytest.raises(RuntimeError, match='to_thread'):
-            db.get_session('s')
-        assert await asyncio.to_thread(db.get_session, 's') == {'id': 's'}
-        db.close()
-        with pytest.raises(RuntimeError, match='closed'):
-            await asyncio.to_thread(db.get_session, 's')
-    asyncio.run(scenario())
+    source = Path(storage.__file__).read_text()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names = [item.name for item in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or '']
+        else:
+            continue
+        assert not any(name.startswith(('sqlite3', 'hermes_state')) for name in names)
+    assert 'state.db' not in source
 
 
 def test_paging_and_message_display_pure_logic():
@@ -135,11 +56,6 @@ def test_stable_tool_call_identity_after_argument_rewrite():
            'compacted': 1, 'tool_calls': [{'id': 'call-1', 'function': {'arguments': 'large'}}]}
     new = {**old, 'id': 3, 'active': 1, 'tool_calls': [{'id': 'call-1', 'function': {'arguments': 'pruned'}}]}
     assert [r['id'] for r in _display_rows([old, new])] == [3]
-
-
-def test_contract_inventory_includes_nested_message_mixins():
-    from harness.gateway.session_db import UNSUPPORTED_METHODS
-    assert {'append_completion_note', 'append_delegation_delivery', 'get_latest_todo_result'} <= set(UNSUPPORTED_METHODS)
 
 
 def test_storage_public_scope_and_default_shapes():

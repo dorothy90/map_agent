@@ -13,11 +13,9 @@ use its lock; title transfers lock both the recipient and the previous owner. Mo
 standalone is supported: multi-document operations are not crash-atomic (no
 replica-set transaction requirement). Tombstones hide incomplete delete cleanup.
 
-Unsupported SessionDB methods are enumerated in session_db.UNSUPPORTED_METHODS.
 Filesystem deletion and worker leases passed to append are explicitly unsupported.
 Local runtime policies/worker persistence are outside this core.
-The host owns client/loop lifetime; create this store on that loop and use the
-SessionDB facade via to_thread for original synchronous callers.
+The gateway owns the Mongo client and its event loop.
 """
 from __future__ import annotations
 

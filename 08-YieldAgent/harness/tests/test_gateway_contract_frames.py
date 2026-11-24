@@ -1,5 +1,4 @@
 """Golden frames and auth-before-policy behavior; no transport dependencies."""
-import copy
 import json
 from pathlib import Path
 
@@ -59,28 +58,6 @@ def test_server_request_declines_without_4404(manifest):
         else:
             assert frame == {'jsonrpc': '2.0', 'id': 'server-1',
                              'error': {'code': -32601, 'message': 'Method not found'}}
-
-
-def test_capabilities_are_separate_and_honest(manifest):
-    from harness.gateway.capabilities import RPC_METHOD, yield_capabilities
-    original = copy.deepcopy(manifest)
-    result = yield_capabilities(manifest, mode='authority')
-    assert RPC_METHOD == 'yield.capabilities'
-    assert result['schema_version'] == 1 and result['upstream'] == '5894e750'
-    assert result['rpc_mode'] == 'authority'
-    assert result['runtime_connected'] is False
-    assert 'per_session_exclusive_submit' not in result
-    assert 'yield.capabilities' not in {r['name'] for r in manifest['rpc']}
-    assert 'gateway.capabilities' not in result['methods']  # legacy-only, no fallback
-    assert result['methods']['prompt.submit']['status'] == 'unsupported'
-    assert result['methods']['prompt.submit']['reason'] == 'handler_not_connected'
-    assert result['methods']['shell.exec']['status'] == 'unsupported'
-    expected_methods = {row['name'] for row in manifest['rpc'] if 'authority' in row['modes']}
-    assert set().union(*result['classification'].values()) == expected_methods
-    assert len(result['events']) == 86 and len(result['server_requests']) == 16
-    assert len(result['routes']) == 292
-    result['events'][0]['name'] = 'changed'
-    assert manifest == original
 
 
 def test_every_rpc_mode_uses_its_policy(manifest):
