@@ -10,7 +10,7 @@ import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
 
-COMMIT = "a0ca3ffd126238dedd807f84838f733f8d4a2aee"
+COMMIT = "2f36fcc2bb7b3418bc287b6b7d59050f0286b7f8"
 Y = "08-YieldAgent/"
 H = Y + "harness/"
 ENGINE = H + "engine/"
@@ -61,7 +61,7 @@ APP_MODULES = {
     "chat_tool_helpers": "웹 채팅에서 쓰는 Hermes 도구 연결 함수", "native_ipc": "프로세스 간 실행 메시지",
     "native_budget": "실행 시간·모델 호출량 제한",
     "native_verification": "답변 근거·맵 및 산출물 계약 검증", "context": "실행 시점의 사용자 문맥",
-    "completion": "종료 상태 및 근거 평가", "artifact_delivery": "저장된 산출물의 답변 연결",
+    "artifact_delivery": "저장된 산출물의 답변 연결",
     "memory": "기존 메모리 연동", "model": "모델 클라이언트 구성", "mcp_server": "별도 선택형 MCP 진입점",
     "__init__": "하네스 Python 패키지",
 }
