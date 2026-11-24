@@ -1,10 +1,12 @@
 """Offline PR-1 inventory checks; never import or execute upstream Python."""
 import json
-import os
 from collections import Counter
 from pathlib import Path
+import sys
 
 import pytest
+
+from harness.tests.local_test_resources import hermes_checkout
 
 ROOT = Path(__file__).resolve().parents[1] / 'gateway'
 
@@ -16,8 +18,10 @@ def manifest():
 
 @pytest.fixture
 def upstream():
-    path = Path(os.environ.get('HERMES_CONTRACT_ROOT', '/tmp/hermes-agent-ro'))
+    path = hermes_checkout()
     if not path.is_dir():
+        if sys.platform == 'darwin':
+            pytest.fail(f'Install the pinned Hermes checkout at {path} or set HERMES_CONTRACT_ROOT')
         pytest.skip('read-only Hermes checkout unavailable')
     return path
 

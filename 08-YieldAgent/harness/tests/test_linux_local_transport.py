@@ -61,10 +61,17 @@ def test_actual_local_analysis_scope(tmp_path):
     assert result['status'] == 'success'
     assert result['stdout'].strip() == '42'
     other = isolation_backend(config, 'run-a', 'bob')
-    read = subprocess.run(other.command(f"cat {shlex.quote(csv)}"), env=other.client_environment(),
-                          capture_output=True, timeout=20)
-    assert read.returncode != 0
-    assert not read.stdout
+    read = (
+        "from pathlib import Path\n"
+        "try:\n"
+        f"    Path({csv!r}).read_bytes()\n"
+        "except (FileNotFoundError, PermissionError):\n"
+        "    print('denied')\n"
+    )
+    result = subprocess.run(other.command("python3 -I -B -c " + shlex.quote(read)),
+                            env=other.client_environment(), capture_output=True,
+                            text=True, check=True, timeout=20)
+    assert result.stdout.strip() == 'denied'
     boundary.cleanup()
     assert Path(csv).read_bytes() == b'value\n42\n'
 

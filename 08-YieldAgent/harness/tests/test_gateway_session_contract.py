@@ -7,9 +7,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from harness.tests.local_test_resources import hermes_checkout
 
 # Optional override for a read-only checkout of pinned Hermes 5894e750.
-ORIGIN = Path(os.environ.get('HERMES_SESSION_CONTRACT_SOURCE', '/tmp/hermes-agent-ro'))
+ORIGIN = Path(os.environ.get('HERMES_SESSION_CONTRACT_SOURCE') or hermes_checkout())
 
 
 def original_classes():

@@ -31,11 +31,10 @@ export HARNESS_ISOLATION_ANALYSIS_VENV="$ANALYSIS_VENV_PATH"
 
 launcher는 backend가 전달한 home, work root, venv를 검사한다. 사용자 results 디렉터리를 안전하게 열고 그 FD만 Seatbelt 자식에게 전달한다. 상위 폴더의 읽기 권한이나 네트워크 권한을 추가하지 않는다. 기존 하드코딩 launcher와 새 backend를 혼합해서 실행하지 않는다.
 
-실제 Mac 회귀 검사는 다음과 같이 실행한다. `YIELD_TEST_ANALYSIS_VENV`에는 pandas, numpy, plotly가 있는 분석 venv를 지정한다.
+실제 Mac 회귀 검사는 [전체 테스트 준비 절차](../README.md#macos에서-전체-하네스-테스트-실행)의 분석 가상환경을 자동으로 사용한다. 다른 환경을 검사할 때는 `YIELD_TEST_ANALYSIS_VENV`로 지정한다. 아래 명령은 `08-YieldAgent`에서 실행한다.
 
 ```sh
-YIELD_TEST_ANALYSIS_VENV="$ANALYSIS_VENV_PATH" PYTHONDONTWRITEBYTECODE=1 \
-  python -m pytest harness/tests/test_local_seatbelt_files.py -q -p no:cacheprovider
+python -m pytest harness/tests/test_local_seatbelt_files.py -q
 ```
 
 ## Linux Pod에 연결하기

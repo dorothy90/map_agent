@@ -11,17 +11,18 @@ import pytest
 
 from harness.config import SeatbeltIsolationSettings
 from harness.isolation.backend import IsolationError, isolation_backend, prepare_isolated_run
+from harness.tests.local_test_resources import MAC_TEST_RESOURCES
 
 
 @pytest.fixture
 def boundary(tmp_path):
     if sys.platform != 'darwin':
         pytest.skip('Actual macOS Seatbelt test')
-    venv = Path(os.getenv('YIELD_TEST_ANALYSIS_VENV', '/nonexistent'))
-    if not os.getenv('YIELD_TEST_ANALYSIS_VENV'):
-        pytest.skip('Set YIELD_TEST_ANALYSIS_VENV to enable actual Seatbelt tests')
+    configured = os.getenv('YIELD_TEST_ANALYSIS_VENV') or os.getenv('HARNESS_ISOLATION_ANALYSIS_VENV')
+    venv = Path(configured) if configured else (MAC_TEST_RESOURCES / 'analysis-venv').resolve()
     if not venv.is_dir():
-        pytest.skip('Set YIELD_TEST_ANALYSIS_VENV to the analysis environment')
+        pytest.fail(f'Analysis environment missing at {venv}. Set YIELD_TEST_ANALYSIS_VENV or '
+                    f'link {MAC_TEST_RESOURCES / "analysis-venv"} to the macOS analysis environment')
     root = tmp_path.resolve()
     home = root / 'nas-home'
     work = home / 'work'

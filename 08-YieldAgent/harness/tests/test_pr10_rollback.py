@@ -1,8 +1,4 @@
-"""PR-10 characterization; Mongo tests are opt-in and never launch a worker.
-
-Author validation: py_compile only. HARNESS_MONGO_URI enables a UUID temporary
-DB; unavailable Mongo skips before setup, and every connected DB is dropped.
-"""
+"""Gateway history checks use a temporary Mongo database and never launch a worker."""
 import asyncio
 from contextlib import asynccontextmanager
 import os
@@ -37,7 +33,6 @@ assert any(r.path == '/runs' for r in app.routes)
                    capture_output=True, text=True, timeout=30)
 
 
-@pytest.mark.skipif(not os.getenv('HARNESS_MONGO_URI'), reason='HARNESS_MONGO_URI not configured')
 def test_gateway_history_is_readable_through_retained_router():
     import httpx
     from pymongo.errors import ConnectionFailure
@@ -46,6 +41,11 @@ def test_gateway_history_is_readable_through_retained_router():
     from harness.gateway.routes import build_gateway_router
     from harness.gateway.services import GatewayServices
     from harness.store import HarnessStore
+
+    mongo_uri = os.getenv('HARNESS_MONGO_URI')
+    if not mongo_uri and sys.platform != 'darwin':
+        pytest.skip('HARNESS_MONGO_URI not configured')
+    mongo_uri = mongo_uri or 'mongodb://localhost:27017'
 
     class OfflineController(RunController):
         async def launch(self, run_id):
@@ -66,7 +66,7 @@ def test_gateway_history_is_readable_through_retained_router():
         # TestClient owns its loop; never share its Motor client with scenario().
         @asynccontextmanager
         async def lifespan(app):
-            writer = HarnessStore(uri=os.environ['HARNESS_MONGO_URI'], database=database)
+            writer = HarnessStore(uri=mongo_uri, database=database)
             try:
                 controller = OfflineController(writer, SimpleNamespace(engine='hermes', principal='alice'))
                 services = GatewayServices(writer, controller)
@@ -90,13 +90,14 @@ def test_gateway_history_is_readable_through_retained_router():
                 pytest.fail('gateway did not acknowledge submission')
 
     async def scenario():
-        store = HarnessStore(uri=os.environ['HARNESS_MONGO_URI'],
-                             database='harness_pr10_test_' + uuid.uuid4().hex)
+        store = HarnessStore(uri=mongo_uri, database='harness_pr10_test_' + uuid.uuid4().hex)
         connected = False
         try:
             try:
                 await store.client.admin.command('ping')
             except ConnectionFailure:
+                if sys.platform == 'darwin':
+                    pytest.fail('Start the local test MongoDB or configure HARNESS_MONGO_URI')
                 pytest.skip('Mongo unavailable; no server is started by this test')
             connected = True
             await store.setup()

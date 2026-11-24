@@ -57,6 +57,27 @@ HARNESS_REASONING_EFFORT=high
 
 GLM 가상 데이터 시험에서 temperature=0의 반복 코드 생성이 관찰되어 temperature=1.0을 비교한 뒤 적용했다. 명시적으로 전달한 temperature는 환경 설정보다 우선한다. `Retry-After`가 있으면 이를 지켜 최대 3회 시도하고 실행 시간 한도와 취소는 계속 적용한다. 다른 모델로 자동 대체하지 않는다. 재시도 예산이 부족해도 앞선 공급자 오류를 보존하며, `model_usage`에는 오류 유형·HTTP 상태·경과 시간을 기록한다. 실패한 호출의 사용량을 받지 못하면 예약분을 유지하므로 `usage.tokens`에는 실제 확인량과 미확인 예약량이 함께 들어갈 수 있다.
 
+## macOS에서 전체 하네스 테스트 실행
+
+저장소 루트에서 로컬 MongoDB를 실행한 상태로 다음 명령을 사용한다. 직원별 파일 격리와 첨부파일, 대화 이력, Hermes 원본과의 게이트웨이 비교도 함께 실행한다. Linux 전용 직원 격리 검사는 Ubuntu 배포 전 실행한다.
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q -rs 08-YieldAgent/harness/tests
+```
+
+새 Mac 체크아웃에서는 비교에 쓸 Hermes 원본과 Seatbelt용 분석 환경을 한 번 준비한다. 이미 준비한 경로가 있으면 각각 `HERMES_CONTRACT_ROOT`, `YIELD_TEST_ANALYSIS_VENV`로 지정할 수 있다. 기본 위치를 준비해 두면 다음 실행부터 경로 지정이나 네트워크 접속 없이 원본을 비교한다.
+
+```bash
+resources=.runtime/hermes/test-resources
+mkdir -p "$resources"
+revision=$(.venv/bin/python -c 'import json; print(json.load(open("08-YieldAgent/harness/engine/UPSTREAM.json"))["commit"])')
+git init -q "$resources/upstream"
+git -C "$resources/upstream" fetch --depth=1 https://github.com/NousResearch/hermes-agent.git "$revision"
+git -C "$resources/upstream" checkout --detach FETCH_HEAD
+```
+
+같은 폴더의 `analysis-venv`는 개발 서버에서 검증한 Seatbelt 분석 가상환경을 가리키도록 연결한다. 예를 들어 서버 설정을 불러온 셸에서는 `ln -s "$HARNESS_ISOLATION_ANALYSIS_VENV" "$resources/analysis-venv"`를 한 번 실행한다. [macOS 분석 환경 준비](isolation/NAS.ko.md)
+
 ## 실행 경계
 
 Hermes/native가 유일한 실행 경로다. 이전 standalone supervisor 서버와 세션 선택 플래그에 의한 전환은 제거되었다.

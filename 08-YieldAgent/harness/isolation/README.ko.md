@@ -4,10 +4,10 @@ Ubuntu에서 하네스는 Hermes의 `local` 터미널을 사용한다. 분석 �
 
 ## Ubuntu 로컬 실행
 
-1. 일반 서비스 계정으로 서버의 Python 가상환경에서 앱을 시작한다. 분석에 사용할 가상환경에는 pandas, numpy, plotly 및 그 의존성이 있어야 한다.
+1. 일반 서비스 계정에서 서버의 Python 가상환경을 준비한다. 분석에 사용할 가상환경에는 pandas, numpy, plotly 및 그 의존성이 있어야 한다.
 2. Ubuntu 서버에서 `/usr/bin/bwrap`과 사용자 네임스페이스를 사용할 수 있는지 확인한다. 설치만으로 실행 권한까지 확인되지는 않는다. 실제 검사는 현재 서비스 계정으로 수행한다. Windows 개발 PC에서는 이 준비가 필요하지 않다.
 3. `HARNESS_ISOLATION_BACKEND=local`을 명시할 수 있다. 기존 배포 설정이 명시적으로 `ssh`를 지정했다면 `local`로 바꾸고 SSH 배포에서 쓰던 경로 설정은 검토한다. 기본 작업 위치는 서비스 계정의 `~/.local/share/yield-harness/work`이고, 분석 가상환경은 현재 서버의 Python 가상환경이다. 기본 로컬 실행기는 저장소의 `harness/isolation/launcher.py`이다.
-4. 서버의 루프백 주소에서 `/health/isolation`을 조회한다. 성공 응답에 `backend=local`, `sandbox=bwrap`, Python 워커 출력이 있는지 확인한다. 이어서 채팅에서 수율을 조회해 CSV와 표가 생성되는지 검증한다.
+4. 배포 전 서비스 계정에서 [직원별 파일 격리 검사](../../../docs/yield-harness-port/04-acceptance.md#ubuntu-배포-전-직원별-파일-격리)를 실행한다. 통과한 뒤 서버를 시작하고 루프백 주소에서 `/health/isolation`을 조회한다. 성공 응답에 `backend=local`, `sandbox=bwrap`, Python 워커 출력이 있는지 확인한다. 이어서 채팅에서 수율을 조회해 CSV와 표가 생성되는지 검증한다.
 
 ## 기존 SSH 배포에서 명시적으로 SSH를 선택하는 경우
 
