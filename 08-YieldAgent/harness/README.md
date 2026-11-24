@@ -1,6 +1,6 @@
 # 목표 기반 Yield Harness
 
-웹 채팅은 고정된 Hermes 원본의 `AIAgent.run_conversation`으로 실행한다. [채팅 진입점](hermes_chat.py)이 사용자별 프로필과 실행을 연결하고 [도구 등록](native_tools.py)이 같은 프로세스의 Hermes 레지스트리에 업무 도구를 추가한다.
+웹 채팅과 모델 평가는 고정된 Hermes 원본의 `AIAgent.run_conversation`으로 실행한다. [채팅 진입점](hermes_chat.py)이 사용자별 프로필과 실행을 연결하고 [도구 등록](native_tools.py)이 같은 프로세스의 Hermes 레지스트리에 업무 도구를 추가한다.
 
 [2026-10-31 이식 안내](INTERNAL_MIGRATION_2026_10_31.md)와 [기존 이식 문서](MIGRATION.md)는 과거 구성의 참고 기록이다. 현재 실행·도구·격리 계약은 이 README를 따른다.
 
@@ -94,7 +94,7 @@ Hermes/native가 유일한 실행 경로다. 이전 standalone supervisor 서버
 
 웹 채팅의 `yield` 도구 묶음은 `query_db`, `list_tables`, `read_result`, `render_yield_table`, `load_wafer_maps`, `run_python`으로 구성된다. 각 핸들러는 현재 사용자의 세션과 실행에 연결된 `ToolExecutor`를 호출한다. 도구를 추가할 때는 `harness/tools/registry.py`의 `domain_registry()`에 정의를 등록한다. 기존 MCP 서버는 별도로 실행할 수 있다.
 
-일반 채팅에서는 Hermes의 스킬, 메모리, 같은 프로필의 대화 검색, 사용자 질문도 사용한다. 브라우저에 표시할 파일은 도구 응답의 `artifact_refs[].markdown`으로 전달한다. `yield_web` 채널은 Hermes의 로컬 파일 전송 지시를 제거해 임시 작업 경로가 깨진 첨부로 표시되는 것을 방지한다. 합성 데이터를 주입하는 평가용 레지스트리는 기존 평가 경로를 유지한다.
+일반 채팅에서는 Hermes의 스킬, 메모리, 같은 프로필의 대화 검색, 사용자 질문도 사용한다. 완성한 파일을 `execute_code`의 `publish_directory`에 저장하면 현재 직원의 채팅에서 다운로드할 수 있다. 합성 평가도 같은 채팅 실행기를 사용하며, 입력 자료를 세션 결과에 저장하고 허용된 도구 범위를 실행에 지정한다.
 
 웹 채팅은 Hermes 기본 검색 설정에 따라 `todo_list`를 필요할 때 찾아 쓰고, `delegate_task`, `read_file`, `search_files`와 공급자가 지원하는 `vision_analyze`를 모델에 직접 제공한다. 위임한 수율 조회도 원래 대화의 실행에 결과를 저장한다.
 
@@ -102,7 +102,7 @@ Hermes/native가 유일한 실행 경로다. 이전 standalone supervisor 서버
 
 파일 도구는 요청마다 임시 폴더에 허용된 파일만 준비한다. 한 번에 복사하는 데이터는 최대 64 MiB이고, 디렉터리 검색은 하위 항목 10,000개까지 지원한다. 한도에 도달하면 오류를 반환하므로 하위 폴더를 지정해서 검색한다. 이미지 분석에는 PNG·JPEG 같은 래스터 파일을 사용한다. 이 한도는 DB 조회와 웨이퍼 맵 집계에 적용되지 않는다.
 
-도구 결과에는 전체 행 수, 범위, 출처, 원본 ID, 성공·부분·빈 결과·오류 구분이 있다. 작은 preview와 별개로 원본 전체를 저장한다. `read_result`는 원본 페이지를, `run_python`은 지정한 결과의 전체 데이터를 읽는다. 신규 채팅은 Hermes가 반환한 최종 답변을 게시한다. 구버전 실행 이력은 당시 저장한 검증 판정과 산출물 정책을 사용한다.
+도구 결과에는 전체 행 수, 범위, 출처, 원본 ID, 성공·부분·빈 결과·오류 구분이 있다. 작은 preview와 별개로 원본 전체를 저장한다. `read_result`는 원본 페이지를, `run_python`은 지정한 결과의 전체 데이터를 읽는다. 신규 채팅은 Hermes가 반환한 최종 답변을 게시한다. 이전 실행의 메시지와 당시 검증 결과는 계속 열람할 수 있다.
 
 Mongo lease와 epoch가 실행 소유권을 정한다. 이전 서버의 늦은 저장이 새 서버의 상태를 덮지 않도록 실행·종료·결과 저장을 제한한다. Hermes 실행의 대화와 사용량은 저장소에 보존한다.
 

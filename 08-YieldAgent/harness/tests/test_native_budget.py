@@ -209,3 +209,22 @@ def test_sdk_timeout_is_capped_at_http_boundary(budget, asynchronous, timeout, e
             http_client=httpx.Client(transport=transport)) as client:
             client.chat.completions.create(model='offline', messages=[{'role': 'user', 'content': 'value'}])
     assert seen == [expected]
+
+
+def test_unconfirmed_model_calls_keep_entire_budget_on_rpc_cancellation():
+    import httpx
+    from harness.native_budget import NativeBudget
+    from harness.native_ipc import Waiters, CANCELLED
+    budget = NativeBudget(model_limit=3, token_limit=10000, max_output_tokens=100)
+    request = httpx.Request('POST', 'https://fake.invalid/v1/chat/completions',
+        json={'model': 'fake', 'messages': [{'role': 'user', 'content': 'q'}]})
+    _, receipt = budget.admit(request, request.content)  # admission only; no send/network
+    before = budget.snapshot()
+    waiters = Waiters()
+    _, queue = waiters.register()
+    waiters.close(CANCELLED)
+    receipt.configure(httpx.Response(200, headers={'Content-Type': 'text/event-stream'}))
+    receipt.finish(complete=False)
+    assert queue.get_nowait() == CANCELLED
+    assert budget.snapshot() == before
+    assert before['tokens'] == len(request.content) + 100 and before['models'] == 1

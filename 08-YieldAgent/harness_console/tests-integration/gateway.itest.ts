@@ -114,7 +114,7 @@ test('a: matching modes work; mismatch fails without a mount or mode fallback', 
   }
 })
 
-test('b: real session and admission push a verified message into the installed store', async () => {
+test('b: real session and admission push a completed stock message into the installed store', async () => {
   const { h } = host(); await h.connect()
   const created = await create(h)
   await bindStores(h, created.session_id)
@@ -122,7 +122,7 @@ test('b: real session and admission push a verified message into the installed s
   expect(receipt).toMatchObject({ status: 'started', admission_id: receipt.run_id })
   const seen: Row[] = []; disposals.push(h.gateway.onEvent(event => seen.push(event)))
   await finish(created.session_id, receipt)
-  await waitFor(() => seen.find(event => event.type === 'message.complete'), 'verified push')
+  await waitFor(() => seen.find(event => event.type === 'message.complete'), 'completed push')
   await waitFor(() => JSON.stringify($messages.get()).includes('VERIFIED-FINAL') || undefined, 'message store hydration')
   expect((await state()).launches.filter((id: string) => id === receipt.run_id)).toHaveLength(1)
 })
@@ -254,7 +254,7 @@ test('i: implemented REST sessions, profiles, health and status use actual gatew
   const listing = await h.api<Row>({ path: '/api/sessions' })
   expect(listing.sessions.find((row: Row) => row.id === sid)).toMatchObject({ message_count: 2 })
   const messages = await h.api<Row>({ path: `/api/sessions/${sid}/messages` })
-  expect(messages.messages).toEqual([{ role: 'user', content: 'Synthetic question' }, { role: 'assistant', content: 'VERIFIED-FINAL' }])
+  expect(messages.messages).toEqual([{ role: 'user', content: 'Synthetic question' }, { role: 'assistant', content: 'VERIFIED-FINAL', interim: false }])
   expect(await h.api({ path: '/api/health' })).toEqual({ ok: true, auth_required: true })
   expect(await h.api({ path: '/api/status' })).toEqual({ auth_required: true })
   expect(await h.api({ path: '/api/profiles/active' })).toEqual({ active: 'default', current: 'default' })
@@ -286,7 +286,7 @@ for (const mode of ['legacy', 'authority'] as const) test(`k: ${mode} deferred r
   expect(sent.find(frame => frame.method === 'session.resume')?.params).toMatchObject({ defer_history: true, omit_messages: true })
   const history = await h.api<Row>({ path: `/api/sessions/${sid}/messages` })
   expect(history.messages).toEqual([
-    { role: 'user', content: 'Synthetic question' }, { role: 'assistant', content: 'DEFERRED-HISTORY' },
+    { role: 'user', content: 'Synthetic question' }, { role: 'assistant', content: 'DEFERRED-HISTORY', interim: false },
   ])
   expect(history.messages).toHaveLength(snapshot.message_count)
   const trace: Row[] = (await state()).trace.slice(before)

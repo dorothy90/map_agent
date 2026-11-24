@@ -4,37 +4,25 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from .run_live import evaluate
-from .run_synthetic import synthetic_registry
-from harness.tools.registry import ToolResult
 
 
 AVAILABLE_DAY = date.today() - timedelta(days=12)
 
 
-def registry():
-    tools = synthetic_registry()
-
-    async def daily(args, ctx):
-        rows = []
-        for offset in range(13, -1, -1):
-            day = date.today() - timedelta(days=offset)
-            row = {"week": day.isoformat(), "lotcount": "-", "wfCount": "-", "pt1c_PT1C": "-", "gms_fab": "-"}
-            if day == AVAILABLE_DAY:
-                row.update(lotcount=3, wfCount=75, pt1c_PT1C=.73, gms_fab=91.0)
-            rows.append(row)
-        html = "<h2>가상 평가용 수율표</h2><table><tr>" + "".join(f"<th>{c}</th>" for c in rows[0]) + "</tr>"
-        html += "".join("<tr>" + "".join(f"<td>{v}</td>" for v in row.values()) + "</tr>" for row in rows) + "</table>"
-        return ToolResult(rows=rows, summary=f"가상 평가용 DEMO 일별 {len(rows)}개 기간 조회. 실제 생산 자료가 아닙니다.",
-            scope={**args.model_dump(mode="json"), "value_units": {"PT1C": "source_value_unit_unspecified", "GMS": "percent"}},
-            artifacts=[{"title": "가상 수율표", "mime": "text/html", "data": html}], data_origin="fixture")
-
-    tools.tools["query_db"].handler = daily
-    return tools
+def daily_rows():
+    rows = []
+    for offset in range(13, -1, -1):
+        day = date.today() - timedelta(days=offset)
+        row = {"day": day.isoformat(), "lots": None, "wafers": None, "yield_pct": None}
+        if day == AVAILABLE_DAY:
+            row.update(lots=3, wafers=75, yield_pct=73.0)
+        rows.append(row)
+    return rows
 
 
 if __name__ == "__main__":
     report = asyncio.run(evaluate([
         "가상 제품 DEMO의 최근 14일 일별 수율을 조회해줘.",
         f"왜 {AVAILABLE_DAY.month}월 {AVAILABLE_DAY.day}일밖에 안 나오니",
-    ], Path("outputs/harness-followup-synthetic.json"), registry_factory=registry, data_origin="fixture"))
+    ], Path("outputs/harness-followup-synthetic.json"), fixture_rows=daily_rows()))
     raise SystemExit(0 if all(c["status"] == "completed" for c in report["cases"]) else 1)

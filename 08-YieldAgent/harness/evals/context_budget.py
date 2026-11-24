@@ -10,6 +10,7 @@ import time
 import uuid
 from pathlib import Path
 
+from bson import ObjectId
 from dotenv import load_dotenv
 
 from harness.config import Settings
@@ -34,48 +35,61 @@ async def evaluate(args):
             print(json.dumps(report, ensure_ascii=False), flush=True)
             return report
         await target.setup()
-        # Copy full owned results and their lineage, including artifact bytes.
-        pending = [o["result_id"] for r in previous for o in r.get("observations", [])]
-        copied = {}
+        # Use a new Hermes profile and session: its SQLite conversation survives
+        # independently of the source DB, even if the real employee keeps chatting.
+        eval_principal, eval_session = "context-eval-" + uuid.uuid4().hex, uuid.uuid4().hex
+        report.update(principal=eval_principal, session_id=eval_session)
+        scope = {"principal_id": principal, "session_id": session}
+        destination = {"principal_id": eval_principal, "session_id": eval_session}
+        pending = [o["result_id"] for turn in previous for o in turn.get("observations", [])]
+        copied = set()
         while pending:
             rid = pending.pop()
             if rid in copied:
                 continue
-            obs = await source.observation(principal, session, rid)
-            rows = await source.rows(principal, session, rid)
-            artifacts = []
-            for artifact in obs.artifact_refs:
-                ref, data = await source.artifact(principal, session, artifact["artifact_id"])
-                artifacts.append({"title": ref["title"], "mime": ref["mime"], "data": data})
-            supplied = obs.model_dump(exclude={"principal_id", "session_id", "result_id", "data_ref", "preview_rows", "columns", "total_rows", "truncated", "artifact_refs"})
-            clone = await target.put_result(principal, session, supplied, rows, artifacts)
-            assert clone.result_id == rid
-            copied[rid] = clone.model_dump(mode="json")
-            pending.extend(obs.source_result_ids)
+            record = await source.results.find_one({**scope, "result_id": rid})
+            if record is None:
+                raise LookupError(f"Source result {rid} is missing")
+            obs = record["observation"]
+            blob_ids = {t["data_ref"] for t in obs.get("tables", [])}
+            blob_ids.update(a["artifact_id"] for a in obs.get("artifact_refs", []))
+            if obs.get("data_ref"):
+                blob_ids.add(obs["data_ref"])
+            for blob in blob_ids:
+                identity = ObjectId(blob)
+                stream = await source.blobs.open_download_stream(identity)
+                async with target.blobs.open_upload_stream_with_id(identity, stream.filename) as output:
+                    while chunk := await stream.readchunk():
+                        await output.write(chunk)
+            await target.results.insert_one({**record, **destination, "observation": {**obs, **destination}})
+            copied.add(rid)
+            pending.extend(obs.get("source_result_ids", []))
         for old in previous:
-            old["observations"] = [copied[o["result_id"]] for o in old.get("observations", [])]
-            old["events"] = []
-            old["evaluation_seed"] = True
+            # These rows are replay snapshots. The new profile imports their
+            # transcript once, then every follow-up resumes its own state.db.
+            old["seed_native_engine"] = old.pop("native_engine", None)
+            old.update(destination, evaluation_seed=True, events=[])
+            old["observations"] = [{**o, **destination} for o in old.get("observations", [])]
             await target.runs.insert_one(old)
         report["copied_results"] = len(copied)
         controller = RunController(target, settings)
         try:
             for query in [failed["query"], *args.followup]:
                 started = time.monotonic()
-                run = await controller.start(principal, session, uuid.uuid4().hex, query)
+                run = await controller.start(eval_principal, eval_session, uuid.uuid4().hex, query)
                 await controller.tasks[run["run_id"]]
-                run = await target.get_run(principal, run["run_id"])
+                run = await target.get_run(eval_principal, run["run_id"])
                 calls = await target.calls.find({"run_id": run["run_id"]}, {"_id": 0}).to_list(None)
                 usage = [e["payload"] for e in run["events"] if e["type"] == "model_usage"]
                 case = {k: run.get(k) for k in ("run_id", "query", "status", "stop_reason", "answer", "answer_text", "result_ids", "usage", "observations", "question")}
-                case.update(elapsed=round(time.monotonic() - started, 2), calls=calls, model_usage=usage,
-                    input_tokens=sum(u.get("input_tokens") or 0 for u in usage), output_tokens=sum(u.get("output_tokens") or 0 for u in usage),
-                    compactions=sum(u["purpose"] == "compaction" for u in usage))
+                case.update(native_engine=run.get("native_engine"), elapsed=round(time.monotonic() - started, 2), calls=calls, model_usage=usage,
+                    input_tokens=(run.get("native_usage") or {}).get("input_tokens"), output_tokens=(run.get("native_usage") or {}).get("output_tokens"),
+                    compactions=sum(u.get("purpose") == "compaction" for u in usage) if usage else None)
                 report["cases"].append(case)
                 args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str))
                 print(json.dumps({k: case[k] for k in ("run_id", "query", "status", "stop_reason", "input_tokens", "output_tokens", "compactions", "elapsed", "answer_text")}, ensure_ascii=False), flush=True)
                 if run["active"]:
-                    await controller.cancel(principal, run["run_id"])
+                    await controller.cancel(eval_principal, run["run_id"])
                     break
         finally:
             await controller.close()
@@ -93,4 +107,4 @@ if __name__ == "__main__":
     parser.add_argument("--allow-external-data", action="store_true")
     args = parser.parse_args()
     report = asyncio.run(evaluate(args))
-    raise SystemExit(0 if all(c["stop_reason"] == "verified" for c in report["cases"]) else 1)
+    raise SystemExit(0 if all(c["status"] == "completed" and c["native_engine"]["entrypoint"] == "stock_chat" for c in report["cases"]) else 1)

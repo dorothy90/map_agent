@@ -5,7 +5,6 @@ import uuid
 from queue import Queue
 
 CANCELLED = {'error': 'Backend invocation cancelled', 'status': 'cancelled'}
-CALL_METHODS = frozenset({'tool_call', 'verification_start', 'verification_finished', 'server_request'})
 
 
 def correlation_id(kind):
@@ -38,13 +37,9 @@ def valid(message):
         if ('call_id' if kind == 'control' else 'control_id') in message:
             return False
     if kind == 'call':
-        method = message.get('method')
-        if not isinstance(method, str) or method not in CALL_METHODS:
+        if message.get('method') != 'tool_call':
             return False
-        required = {'tool_call': {'name': str, 'args': dict},
-            'server_request': {'request': str, 'params': dict},
-            'verification_start': {'review_id': str, 'candidate': str, 'attempt': int},
-            'verification_finished': {'review_id': str, 'report': dict, 'elapsed': (int, float)}}[method]
+        required = {'name': str, 'args': dict}
     elif kind == 'reply':
         return 'result' in message
     elif kind == 'control':

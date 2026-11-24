@@ -8,7 +8,7 @@ PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.preflight --require-l
 PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.mcp_smoke --require-live
 ```
 
-테스트 모음은 실제 Mongo와 Docker를 사용하지만 모델 응답과 장애는 제어된 대체 공급자로 검증한다. `mcp_smoke`는 여섯 도구의 노출, 실제 Oracle 테이블 목록과 저장 결과의 재열람·소유권을 확인하며 외부 모델 호출을 하지 않는다. `run_synthetic`는 실제 모델을 호출하지만 모든 생산 데이터 도구를 가상 자료로 교체하므로 실제 DB 통합 평가가 아니다.
+테스트 모음은 실제 Mongo와 Docker를 사용하지만 모델 응답과 장애는 제어된 대체 공급자로 검증한다. `mcp_smoke`는 여섯 도구의 노출, 실제 Oracle 테이블 목록과 저장 결과의 재열람·소유권을 확인하며 외부 모델 호출을 하지 않는다. `run_synthetic`는 실제 모델을 호출하지만 독립된 평가 DB에 저장한 가상 자료를 원본 채팅의 `read_result`와 `execute_code`로 읽고 검산한다. 실데이터 평가는 `run_live`를 사용한다.
 
 실제 데이터의 외부 모델 전송을 승인한 운영자가 사용하는 명령:
 
@@ -20,7 +20,7 @@ PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.run_live \
 
 `run_live`는 실제 모델·Mongo·도구를 사용한다. `--no-domain-tools`는 인사 등 모델만 확인할 때 사용한다. 모든 시나리오가 completed일 때만 종료 코드 0을 반환하며, partial·failed·입력 대기는 통과로 처리하지 않는다. 응답 상태·사용량·원본 ID·호출 인자를 JSON에 기록하며 평가별 Mongo DB에 원본과 체크포인트가 남는다. 원본에는 내부 자료가 포함될 수 있으므로 보고서를 공개 저장소에 올리지 않는다.
 
-실행 태스크가 종료됐는데 상태가 계속 created/running/cancelling이면 정리를 먼저 마치고 최종 상태와 `evaluation_error=nonterminal_worker_exit`를 보고서에 남긴다. 입력 대기 상태는 정상적인 중단 지점으로 구분한다. 모델 출력 길이·temperature·추론 옵션도 보고서에 기록한다.
+실행 태스크가 종료됐는데 상태가 계속 created/running/cancelling이면 정리를 먼저 마치고 최종 상태와 `evaluation_error=nonterminal_worker_exit`를 보고서에 남긴다. 다음 동작이 `input`이면 원본 Hermes가 띄운 질문을 기다렸다가 해당 실행에 응답한다. 모델 출력 길이·temperature·추론 옵션도 보고서에 기록한다.
 
 현재 기본 평가 공급자는 OpenRouter다. 실제 자료는 `HARNESS_BASE_URL`로 지정한 목적지에 대한 전송 승인 범위에서 사용한다. `run_synthetic`는 실제 생산 자료를 전달하지 않는 대안이다.
 

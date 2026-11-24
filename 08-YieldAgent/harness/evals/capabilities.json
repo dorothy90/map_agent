@@ -37,7 +37,7 @@
     {
       "id": "python",
       "tools": [
-        "run_python"
+        "execute_code"
       ],
       "required_services": [
         "isolation"
@@ -61,7 +61,7 @@
       "id": "maps",
       "tools": [
         "load_wafer_maps",
-        "run_python"
+        "execute_code"
       ],
       "required_services": [
         "oracle",

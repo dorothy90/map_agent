@@ -21,7 +21,6 @@ from fastapi import FastAPI, HTTPException, Request
 from harness.control import RunController
 from harness.gateway.auth import AuthenticationFailure, Principal
 from harness.gateway.events import SessionEvents
-from harness.gateway.publication import candidate_digest
 from harness.gateway.routes import build_gateway_router
 from harness.gateway.services import GatewayServices
 from harness.store import HarnessStore
@@ -139,8 +138,9 @@ def make_app(uri, database):
     @app.get('/__test/state')
     async def state(request: Request):
         await local(request)
+        calls = await app.state.store.calls.distinct('tool_name')
         return {**wire, 'launches': app.state.controller.launches,
-                'blocked': getattr(app.state.controller, 'blocked', [])}
+                'blocked': [name for name in calls if name not in {'read_result', 'skills_list', 'skill_view', 'skill_manage'}]}
 
     @app.post('/__test/control')
     async def control(request: Request):
@@ -177,8 +177,7 @@ def make_app(uri, database):
             else:
                 answer = body.get('answer', 'VERIFIED-FINAL')
                 await app.state.store.runs.update_one({'run_id': run['run_id']}, {'$set': {
-                    'answer_text': answer, 'observations': [{'tool_name': 'verify_answer',
-                    'scope': {'verdict': 'pass'}, 'validated_arguments': candidate_digest(answer)}]}})
+                    'answer_text': answer, 'native_engine': {'entrypoint': 'stock_chat'}}})
                 await app.state.store.finish(run['run_id'], receipt['execution_generation'],
                     'completed', answer, 'hermes_returned')
             return await events.ingest(sid)

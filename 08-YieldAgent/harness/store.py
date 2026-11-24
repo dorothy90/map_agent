@@ -260,7 +260,7 @@ class HarnessStore:
         blob = await self.blobs.open_download_stream(ObjectId(artifact_id))
         return {"result_id": record["observation"]["result_id"], **ref}, await blob.read()
 
-    async def start_run(self, principal_id, session_id, request_id, query, *, execution_kind="harness", ready=True, engine="hermes", chat_entrypoint="stock_chat"):
+    async def start_run(self, principal_id, session_id, request_id, query, *, execution_kind="harness", ready=True, engine="hermes"):
         key = {"principal_id": principal_id, "session_id": session_id, "request_id": request_id}
         old = await self.runs.find_one(key)
         if old:
@@ -276,7 +276,7 @@ class HarnessStore:
         if engine == "hermes":
             record["artifact_delivery"] = ARTIFACT_DELIVERY
             if execution_kind in ("harness", "gateway"):
-                record["chat_entrypoint"] = chat_entrypoint
+                record["chat_entrypoint"] = "stock_chat"
         try:
             await self.runs.insert_one(record)
         except DuplicateKeyError:

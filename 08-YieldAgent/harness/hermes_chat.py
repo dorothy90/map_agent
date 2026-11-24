@@ -25,6 +25,14 @@ from .native_hermes import (
 
 async def run_chat(context):
     settings, run, store = context.settings, context.run, context.store
+    usage = run.get('usage', {})
+    for resource, limit, label in (('models', settings.model_limit, '모델 호출'),
+                                   ('tokens', settings.token_limit, '토큰')):
+        if usage.get(resource, 0) >= limit:
+            observations = run.get('observations', [])
+            return {'status': 'partial', 'answer': f'{label} 한도에 도달해 실행을 종료했습니다.',
+                    'stop_reason': resource + '_limit', 'observations': observations,
+                    'result_ids': [o['result_id'] for o in observations]}
     principal, session, epoch = run['principal_id'], run['session_id'], run['epoch']
     run_id = run['run_id']
     profile = prepare_profile(principal)
@@ -64,7 +72,6 @@ async def run_chat(context):
     async def publish_title(title):
         await store.event(run_id, 'session.title', {'session_id': session, 'title': title}, epoch=epoch)
 
-    prior = run.get('usage', {})
     audit = None
     process = None
     messages = None
@@ -136,8 +143,8 @@ async def run_chat(context):
                     await record_skill_result(context, audit, message)
                 elif kind == 'step':
                     await store.runs.update_one({'_id': run_id, 'epoch': epoch, 'status': 'running'},
-                        {'$set': {'usage.models': prior.get('models', 0) + message['models'],
-                                  'usage.tokens': prior.get('tokens', 0) + message['tokens']}})
+                        {'$set': {'usage.models': usage.get('models', 0) + message['models'],
+                                  'usage.tokens': usage.get('tokens', 0) + message['tokens']}})
             process.stdin.close()
             if await process.wait() or result is None:
                 raise RuntimeError('Hermes chat worker exited without a completed response')

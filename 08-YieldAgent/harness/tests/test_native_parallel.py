@@ -9,24 +9,19 @@ import pytest
 
 @pytest.mark.parametrize('limit', [8, 3])
 def test_original_nine_tool_batch_respects_cap_and_barriers(tmp_path, limit):
-    worker = Path(__file__).parents[1] / 'native_worker.py'
+    harness = Path(__file__).parents[1]
     script = r'''
-import ast, json, runpy, sys, threading, time
+import ast, json, sys, threading, time
 from pathlib import Path
 from types import SimpleNamespace as NS
-worker = runpy.run_path(sys.argv[1])
+sys.path.insert(0, str(Path(sys.argv[1]) / 'engine'))
 from agent import tool_executor as executor
 from agent.tool_dispatch_helpers import _batch_admission, _plan_tool_batch_segments, _PARALLEL_SAFE_TOOLS
-from tools.registry import registry
-from tools import delegate_tool
-class Agent: pass
-worker['configure_engine'](registry, executor, int(sys.argv[2]), Agent)
-assert registry.get_tool_names_for_toolset('delegation') == ['delegate_task']
-assert executor._MAX_TOOL_WORKERS == int(sys.argv[2])
+executor._MAX_TOOL_WORKERS = int(sys.argv[2])
 
 def call(name): return NS(function=NS(name=name, arguments='{}'))
 yield_names = set()
-for source in Path(sys.argv[1]).with_name('tools').glob('*.py'):
+for source in (Path(sys.argv[1]) / 'tools').glob('*.py'):
     for node in ast.walk(ast.parse(source.read_text())):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'ToolSpec':
             yield_names.add(ast.literal_eval(node.args[0]))
@@ -61,7 +56,7 @@ batch.run()  # Original run, submit_all, await_completion, daemon pool and cap.
 assert state['maximum'] == limit, state
 assert state['completed'] == 9, state
 '''
-    result = subprocess.run([sys.executable, '-I', '-c', script, str(worker), str(limit)],
+    result = subprocess.run([sys.executable, '-I', '-c', script, str(harness), str(limit)],
         cwd=tmp_path, env={**os.environ, 'HERMES_HOME': str(tmp_path), 'PYTHONDONTWRITEBYTECODE': '1'},
         capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr

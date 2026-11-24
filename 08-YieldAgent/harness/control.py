@@ -10,17 +10,14 @@ from langsmith import tracing_context
 from .executor import ExecutionContext
 from .runtime.session_kernel import SessionKernels
 from .store import Conflict, LeaseLost
-from .tools.registry import domain_registry
 
 
 logger = logging.getLogger(__name__)
 
 
 class RunController:
-    def __init__(self, store, settings, *, registry_factory=domain_registry):
+    def __init__(self, store, settings):
         self.store, self.settings = store, settings
-        self.registry_factory = registry_factory
-        self.chat_entrypoint = "stock_chat" if registry_factory is domain_registry else "legacy_verified"
         self.kernels = SessionKernels()
         self.tasks = {}
         self.owner = str(uuid.uuid4())
@@ -31,8 +28,7 @@ class RunController:
         async with self.store.session_lock(principal_id, session_id):
             if await self.store.runs.find_one({"principal_id": principal_id, "session_id": session_id, "steer_pending": {"$exists": True}}):
                 raise Conflict("A goal change is being recovered")
-            run = await self.store.start_run(principal_id, session_id, request_id, query, engine=self.settings.engine,
-                                             chat_entrypoint=self.chat_entrypoint)
+            run = await self.store.start_run(principal_id, session_id, request_id, query, engine=self.settings.engine)
         await self.launch(run["run_id"])
         return run
 
@@ -119,14 +115,8 @@ class RunController:
             context = ExecutionContext(self.store, self.settings, run, session_kernels=self.kernels)
             await self.store.event(run["run_id"], "run_started", {"query": run["query"],
                 "goal_revision": run["goal_revision"], "engine": "hermes"})
-            if run.get('chat_entrypoint') == 'stock_chat':
-                from .hermes_chat import run_chat
-                result = await run_chat(context)
-            else:
-                from .native_hermes import native_history, run_native
-                previous = await self.store.runs.find({"principal_id": run["principal_id"],
-                    "session_id": run["session_id"], "active": False}).sort("created_at", -1).limit(10).to_list(length=10)
-                result = await run_native(context, self.registry_factory(), history=native_history(previous))
+            from .hermes_chat import run_chat
+            result = await run_chat(context)
             await context.check()
             stop_heartbeat()
             await self._save_context(run, result)
@@ -235,7 +225,7 @@ class RunController:
             raise Conflict("Unsupported stored run engine; only hermes can execute")
         await self.cancel(run["principal_id"], run["run_id"])
         next_run = await self.store.start_run(run["principal_id"], run["session_id"], payload["request_id"], str(payload["value"]),
-            ready=False, engine="hermes", chat_entrypoint=run.get("chat_entrypoint", "legacy_verified"))
+            ready=False, engine="hermes")
         await self.store.runs.update_one({"_id": next_run["run_id"]}, {"$set": {"parent_run_id": run["run_id"], "goal_revision": run["goal_revision"] + 1,
             "goal_request": run.get("goal_request", run["query"]) + "\n사용자의 최신 수정: " + str(payload["value"]), "ready": True}})
         await self.store.runs.update_one({"_id": run["run_id"]}, {"$unset": {"steer_pending": ""}})

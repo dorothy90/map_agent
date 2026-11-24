@@ -160,8 +160,6 @@ class Settings(BaseModel):
     mongo_db: str = "yield_agent"
     tool_limit: int = Field(default=24, ge=1)
     parallel_tool_limit: int = Field(default=8, ge=1, le=8)
-    publish_commentary: bool = False
-    native_prompts: bool = False
     model_limit: int = Field(default=40, ge=3)
     token_limit: int = Field(default=120_000, ge=4096)
     context_tokens: int = Field(default=24_000, ge=4096)
@@ -287,8 +285,6 @@ class Settings(BaseModel):
             isolation=isolation,
             tool_limit=int(os.getenv("HARNESS_TOOL_LIMIT", "24")),
             parallel_tool_limit=int(os.getenv("HARNESS_PARALLEL_TOOLS", "8")),
-            publish_commentary=os.getenv("HARNESS_PUBLISH_COMMENTARY", "false").lower() == "true",
-            native_prompts=os.getenv("HARNESS_NATIVE_PROMPTS", "false").lower() == "true",
             shared_yield_dir=os.getenv("HARNESS_SHARED_YIELD_DIR") or None,
             model_limit=int(os.getenv("HARNESS_MODEL_LIMIT", "40")),
             token_limit=int(os.getenv("HARNESS_TOKEN_LIMIT", "120000")),

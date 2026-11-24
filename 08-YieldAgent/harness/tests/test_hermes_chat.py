@@ -1,10 +1,13 @@
 import asyncio
 import json
 import sqlite3
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 from types import SimpleNamespace
 from uuid import uuid4
+
+import pytest
 
 from harness import hermes_chat, native_hermes
 from harness.config import Settings
@@ -12,6 +15,7 @@ from harness.control import RunController
 from harness.gateway.pending_controls import PendingControls
 from harness.gateway.session_rpc import SessionRPC
 from harness.gateway.session_store import MongoSessionStore
+from harness.instructions import load_domain_notes
 from harness.store import HarnessStore
 from harness.tools.registry import domain_registry
 
@@ -20,6 +24,7 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
     """Drive the real stock worker, its native tool and a real isolated Mongo DB."""
     principal, session = 'chat-test', str(uuid4())
     seen_tools = []
+    system_inputs = []
     title_requests = []
     generated_title = 'Read stored result'
     second_prompt = 'same session follow-up'
@@ -54,6 +59,8 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                 return
             if request.get('tools'):
                 seen_tools.append({tool['function']['name']: tool for tool in request['tools']})
+                content = next(m['content'] for m in messages if m['role'] == 'system')
+                system_inputs.append(content if isinstance(content, str) else ''.join(p['text'] for p in content))
             if request.get('response_format', {}).get('json_schema', {}).get('name') == 'session_title':
                 title_requests.append(messages[-1]['content'])
                 message = {'role': 'assistant', 'content': json.dumps({'title': generated_title})}
@@ -61,6 +68,11 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             elif any(m.get('role') == 'tool' and '7921' in str(m['content']) for m in messages):
                 message = {'role': 'assistant', 'content': local_media + '\n\n' + answer}
                 reason = 'stop'
+            elif not any(m.get('role') == 'tool' and 'USE_AUTHORIZED_RESULT' in str(m.get('content')) for m in messages):
+                message = {'role': 'assistant', 'content': None, 'tool_calls': [
+                    {'index': 0, 'id': 'skill-call', 'type': 'function', 'function': {
+                        'name': 'skill_view', 'arguments': json.dumps({'name': 'test-report'})}}]}
+                reason = 'tool_calls'
             elif not any(m.get('role') == 'tool' and m.get('tool_call_id') == 'scope-call' for m in messages):
                 message = {'role': 'assistant', 'content': None, 'tool_calls': [
                     {'index': 0, 'id': 'scope-call', 'type': 'function', 'function': {
@@ -98,6 +110,10 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
 
     monkeypatch.setattr(native_hermes, 'ROOT', tmp_path)
     monkeypatch.setattr(hermes_chat, 'ROOT', tmp_path)
+    directory = native_hermes.prepare_profile(principal) / 'skills' / 'test-report'
+    directory.mkdir(parents=True)
+    (directory / 'SKILL.md').write_text(
+        '---\nname: test-report\ndescription: Read the stored report.\n---\nUSE_AUTHORIZED_RESULT')
     server = ThreadingHTTPServer(('127.0.0.1', 0), Model)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -113,7 +129,9 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             source = await store.put_result(principal, session, {'run_id': 'fixture', 'invocation_id': 'data',
                 'tool_name': 'query_db', 'status': 'success'}, [{'value': 7921}], [])
             source_id = source.result_id
+            previous_request_time = None
             for query in ('read the stored result', second_prompt):
+                first_request = len(system_inputs)
                 run = await controller.start(principal, session, str(uuid4()), query)
                 if query != second_prompt:
                     pending = PendingControls(store, principal)
@@ -126,6 +144,17 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                 await controller.tasks[run['run_id']]
                 saved = await store.get_run(principal, run['run_id'])
                 assert saved['status'] == 'completed', saved['stop_reason']
+                clock = saved['request_context']
+                local_cutoff = datetime.fromisoformat(clock['requested_at']).replace(tzinfo=None)
+                assert system_inputs[first_request:]
+                for system in system_inputs[first_request:]:
+                    assert system.count(load_domain_notes()) == 1
+                    assert clock['requested_at'] in system and clock['timezone'] in system
+                    assert f">= {local_cutoff.date()}T00:00:00" in system
+                    assert f"<= {local_cutoff.isoformat()}" in system
+                    if previous_request_time is not None:
+                        assert previous_request_time not in system
+                previous_request_time = clock['requested_at']
                 assert saved['engine'] == 'hermes'
                 assert saved['native_engine']['commit'] == native_hermes.UPSTREAM_COMMIT
                 assert saved['native_engine']['history_source'] == 'hermes_session_db'
@@ -134,8 +163,10 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                 assert local_media not in json.dumps(saved['native_messages'])
                 title_events = [e['payload'] for e in saved['events'] if e['type'] == 'session.title']
                 if query != second_prompt:
-                    assert [o['tool_name'] for o in saved['observations']] == ['read_result']
-                    assert saved['observations'][0]['invocation_id'] == 'stock-call'
+                    assert [(o['tool_name'], o['invocation_id']) for o in saved['observations']] == [
+                        ('skill_view', 'skill-call'), ('read_result', 'stock-call')]
+                    assert any(read['name'] == 'test-report' and read['resource'] == 'SKILL.md'
+                               for read in saved['skill_reads'])
                     sessions = MongoSessionStore(store, principal)
                     assert await sessions.get_session_title(session) == generated_title
                     assert await sessions.get_session_title_source(session) == 'llm'
@@ -217,19 +248,15 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
         thread.join()
 
 
-def test_pre_migration_admission_keeps_legacy_entry_on_retry_and_recovery(monkeypatch):
+@pytest.mark.parametrize("stored_entrypoint", [None, "legacy_verified"])
+def test_stock_chat_recovers_an_existing_request(monkeypatch, stored_entrypoint):
     routes = []
 
     async def fake_stock(context):
         routes.append(('stock', context.run['run_id']))
         return {'status': 'completed', 'stop_reason': 'completed', 'answer': 'done'}
 
-    async def fake_legacy(context, registry, *, history):
-        routes.append(('legacy', context.run['run_id']))
-        return {'status': 'completed', 'stop_reason': 'completed', 'answer': 'done'}
-
     monkeypatch.setattr(hermes_chat, 'run_chat', fake_stock)
-    monkeypatch.setattr(native_hermes, 'run_native', fake_legacy)
 
     async def scenario():
         store = HarnessStore(database='test_chat_recovery_' + uuid4().hex)
@@ -237,18 +264,68 @@ def test_pre_migration_admission_keeps_legacy_entry_on_retry_and_recovery(monkey
         try:
             await store.setup()
             before = await store.start_run('owner', 'old-session', 'original-request', 'before upgrade')
-            await store.runs.update_one({'_id': before['run_id']}, {'$unset': {'chat_entrypoint': ''}})
+            update = ({'$unset': {'chat_entrypoint': ''}} if stored_entrypoint is None else
+                      {'$set': {'chat_entrypoint': stored_entrypoint}})
+            await store.runs.update_one({'_id': before['run_id']}, update)
             retry = await store.start_run('owner', 'old-session', 'original-request', 'before upgrade')
-            assert retry['run_id'] == before['run_id'] and 'chat_entrypoint' not in retry
+            assert retry['run_id'] == before['run_id']
+            assert retry.get('chat_entrypoint') == stored_entrypoint
             await controller.recover()
             await controller.tasks[before['run_id']]
             after = await controller.start('owner', 'old-session', 'new-request', 'after upgrade')
             await controller.tasks[after['run_id']]
             assert after['chat_entrypoint'] == 'stock_chat'
-            assert routes == [('legacy', before['run_id']), ('stock', after['run_id'])]
+            assert routes == [('stock', before['run_id']), ('stock', after['run_id'])]
         finally:
             await controller.close()
             await store.client.drop_database(store.db.name)
             store.client.close()
 
     asyncio.run(scenario())
+
+
+def test_recovered_stock_chat_does_not_spend_an_exhausted_model_or_token_budget(monkeypatch, tmp_path):
+    """Recover persisted usage through the stock worker and count actual HTTP attempts."""
+    posts = []
+
+    class Endpoint(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            posts.append(self.path)
+            self.send_error(503)
+
+    monkeypatch.setattr(native_hermes, 'ROOT', tmp_path)
+    monkeypatch.setattr(hermes_chat, 'ROOT', tmp_path)
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Endpoint)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    async def scenario():
+        store = HarnessStore(database='test_stock_budget_' + uuid4().hex)
+        settings = Settings(model='test-model', api_key='local', base_url=f'http://127.0.0.1:{server.server_port}/v1')
+        controller = RunController(store, settings)
+        try:
+            await store.setup()
+            for resource, limit in [('models', settings.model_limit), ('tokens', settings.token_limit)]:
+                run = await store.start_run('owner', resource, 'request', 'resume this turn')
+                await store.runs.update_one({'_id': run['run_id']}, {'$set': {'usage.' + resource: limit}})
+                await controller.recover()
+                await controller.tasks[run['run_id']]
+                saved = await store.get_run('owner', run['run_id'])
+                assert saved['status'] == 'partial', saved['stop_reason']
+                assert saved['stop_reason'] == resource + '_limit'
+                assert saved['usage'][resource] == limit
+        finally:
+            await controller.close()
+            await store.client.drop_database(store.db.name)
+            store.client.close()
+
+    try:
+        asyncio.run(scenario())
+        assert posts == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

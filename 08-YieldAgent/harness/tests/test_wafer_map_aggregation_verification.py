@@ -1,6 +1,4 @@
 import asyncio
-import re
-from pathlib import Path
 
 from harness.native_verification import (
     WAFER_MAP_REQUIRED_COLUMNS,
@@ -81,18 +79,10 @@ def test_normal_cummap_contract_passes_independent_reaggregation():
         "verdict": "pass", "issues": []}
 
 
-def test_documented_columns_are_the_verifier_contract_and_form_valid_tables():
-    instructions = (Path(__file__).parents[1] / "instructions" / "native.md").read_text()
-    documented = {}
-    for table_id in WAFER_MAP_REQUIRED_COLUMNS:
-        match = re.search(rf"`{table_id}` 필수 열: `([^`]+)`", instructions)
-        assert match, table_id
-        documented[table_id] = tuple(item.strip() for item in match.group(1).split(","))
-
-    assert documented == WAFER_MAP_REQUIRED_COLUMNS
+def test_minimum_required_columns_form_valid_evidence_tables():
     tables = valid_tables()
     example = {
-        table_id: [{column: row[column] for column in documented[table_id]} for row in rows]
+        table_id: [{column: row[column] for column in WAFER_MAP_REQUIRED_COLUMNS[table_id]} for row in rows]
         for table_id, rows in tables.items()
     }
     assert validate_wafer_map_contract(example, {"source": SOURCE_ROWS}) == {
@@ -211,29 +201,6 @@ def test_latest_corrected_map_for_same_source_replaces_rejected_draft():
     report = asyncio.run(inspect_wafer_map_contracts(MemoryStore(stored), "p", "s",
                                                      [source, draft, corrected]))
     assert report == {"verdict": "pass", "issues": [], "result_ids": ["corrected", "source"]}
-
-
-def test_contract_failure_feedback_allows_corrected_tool_evidence_to_pass():
-    from harness.native_stop_gate import NativeVerificationGate
-
-    current_tables = {
-        "wafer_map_manifest": [{"contract": "wafer-map-evidence/v1"}],
-        "wafer_map_members": [{"measurement_id": "m1"}],
-    }
-
-    def review(_candidate):
-        report = validate_wafer_map_contract(current_tables, {"source": SOURCE_ROWS})
-        return {**report, "result_ids": ["plot", "source"]}
-
-    gate = NativeVerificationGate(review)
-    feedback = gate.evaluate("draft")
-    assert "도구" in feedback and "근거 표를 다시 생성" in feedback
-
-    current_tables = valid_tables()  # corrected run_python result replaces the draft
-    assert gate.evaluate("corrected") is None
-    result = gate.finish({"completed": True, "final_response": "corrected"})
-    assert result["completed"]
-    assert [report["verdict"] for report in result["verification"]] == ["fail", "pass"]
 
 
 def test_non_map_question_has_no_aggregation_contract_requirement():

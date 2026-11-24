@@ -198,15 +198,3 @@ def test_report_rejects_explicit_column_mapping_without_result_id(column_field):
                 title="invalid mapping",
             **{column_field: {}},
         )
-
-
-def test_generated_report_html_posts_observed_height():
-    module = importlib.import_module("harness.tools.table_artifact")
-    html = report_html(module._ReportInput(
-        title="small", rows=[{"period": "2026-W45", "process": "pt1h", "param": "VTH", "value": 1}],
-    ))
-
-    assert "width: max-content" in html
-    assert "type: 'yield-table-height'" in html
-    assert "document.body.getBoundingClientRect().height" in html
-    assert "new ResizeObserver(sendHeight).observe(document.body)" in html

@@ -87,13 +87,13 @@
 - 한 wafer는 여러 OPER_ID 행을 가진다. 행은 공정 순서이며 OPER_DET_DESC는 공정 설명이다.
 - 식별 키는 LOT_ID, WF_ID, ALIAS_LOT_ID, LOT_CD, PROD_ID다. 수율 테이블 DF_WF_ALL_PRB_V2와는 LOT_ID와 WF_ID=WFID로 조인한다. WF_ID는 선행 0 없는 문자다(예: '7').
 - 레전드 열: EQP_ID(장비), EQP_CH(챔버), RECIPE_ID, RETICLE_ID·STEPPER_ID·STEPPER_RECIPE_ID·CHUCK_ID·START_CHUCK_ID(포토 공정에만 값), ZONE_ID, EQP_MODEL_CD, FLOW_ID, PORT_NO, BATCH_ID, WF_CNT, RWK_CNT(리워크 횟수), HOT_TYP, TRBL_LOT_YN, DELAY_TIME, END_TM(공정 종료 시각 'YYYY-MM-DD HH24:MI:SS').
-- 장비·챔버·레시피·레티클 등 레전드별 수율 비교는 이 테이블과 DF_WF_ALL_PRB_V2를 LOT_ID 및 WF_ID=WFID로 조인해 query_db/run_python으로 멤버십을 조회·구성한다. OPER_ID별 EQP_ID 그룹을 포함한 모든 공식 그룹 수율 표는 render_yield_table로 렌더링하며 직접 만들지 않는다. 같은 OPER_ID에서 한 wafer에 여러 EQP 행이 매칭되면 임의 중복 제거 없이 clarify로 분류 기준을 확인한다. 기간(최근 N주)은 기존 규칙대로 수율 측정일 기준이다. 사용자가 OPER_ID나 공정 설명을 주면 이 테이블에서 찾는다.
+- 장비·챔버·레시피·레티클 등 레전드별 수율 비교는 이 테이블과 DF_WF_ALL_PRB_V2를 LOT_ID 및 WF_ID=WFID로 조인해 query_db와 Python으로 멤버십을 조회·구성한다. OPER_ID별 EQP_ID 그룹을 포함한 모든 공식 그룹 수율 표는 render_yield_table로 렌더링하며 직접 만들지 않는다. 같은 OPER_ID에서 한 wafer에 여러 EQP 행이 매칭되면 임의 중복 제거 없이 clarify로 분류 기준을 확인한다. 기간(최근 N주)은 기존 규칙대로 수율 측정일 기준이다. 사용자가 OPER_ID나 공정 설명을 주면 이 테이블에서 찾는다.
 - 장비 이력 조회에는 DF_WF_LEGEND를 사용한다. DF_LEGEND_LONG과 DF_FDC_ALARM은 장비 이력 용도로 쓰지 않으며, DF_LEGEND_LONG을 대체로 쓰지 않는다.
 
 ## 계속 지식을 추가하는 방법과 사내 이식
 
 이 파일 `08-YieldAgent/harness/instructions/domain-notes.md`를 UTF-8 Markdown으로 편집한다. 새 지식에는 정의, 적용 제품/검사 범위, 출처·확인일을 함께 적고 미확인은 그대로 표시한다. 공개 일반 설명을 추가할 경우 별도 절에 출처와 적용 한계를 기록하며 사내 정의를 덮어쓰지 않는다. 현재 공개 일반 설명을 근거로 추가한 정의는 없다.
 
-기존 `load_native_instructions()`가 `native.md` 뒤에 이 파일 전체를 붙이고, Hermes의 새 실행 시작 시 worker 지침으로 전달한다. 스킬을 별도로 호출할 필요가 없다. 저장 후 다음 실행부터 반영되며 이미 실행 중인 요청에는 소급 반영되지 않는다. 이 MD만 수정할 때 서버 재시작은 필요 없다. 이 경로는 native Hermes용이며 legacy 분석 경로 전체에 적용된다고 가정하지 않는다.
+Hermes는 매 요청을 시작할 때 `web_turn_instructions()`를 통해 이 문서 전체와 해당 요청의 기준 시각을 함께 받는다. 파일을 수정하면 다음 요청부터 반영된다.
 
 사내 이식 시 app 아래 배포 레포의 같은 상대 경로에 이 파일을 함께 배포한다. 별도 NAS/MongoDB 지식 저장소나 profile 스킬 복사본을 만들 필요가 없다. 읽기 전용 이미지로 배포한다면 파일 수정 후 이미지를 재배포하거나 해당 파일을 배포 설정에서 마운트한다. 이 문서는 격리·인증·도구 권한을 변경하지 않는다.

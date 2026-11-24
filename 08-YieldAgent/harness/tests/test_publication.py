@@ -1,18 +1,14 @@
 from copy import deepcopy
 import hashlib
-from types import SimpleNamespace
 
 import pytest
 
 
-def test_digest_and_commentary():
-    from harness.gateway.publication import candidate_digest, commentary_event
+def test_candidate_digest():
+    from harness.gateway.publication import candidate_digest
     text = '검증할 답변 🐣'
     assert candidate_digest(text) == {'candidate_sha256': hashlib.sha256(text.encode('utf-8')).hexdigest(),
         'candidate_chars': len(text)}
-    for setting in (SimpleNamespace(), SimpleNamespace(publish_commentary=False)):
-        assert commentary_event(setting, text) is None
-    assert commentary_event(SimpleNamespace(publish_commentary=True), text) == {'content': text}
 
 
 @pytest.mark.parametrize('flags,verdicts,match,expected', [

@@ -1,16 +1,13 @@
 from harness.tests.report_table_fakes import fake_report_metadata, report_data, report_rows, report_html, COLUMNS
-import hashlib
 import importlib
 import re
 from html.parser import HTMLParser
 
 import pytest
+from bs4 import BeautifulSoup
 from pydantic import ValidationError
 
 from yield_viz import GMS_COLUMNS, PARA_COLUMNS, PT1C_COLUMNS, _build_html_table
-
-
-LEGACY_SHA256 = "a0bb53ebe57096e57569651c7d8ebedc6559047d473d1ba5a42c1a184ba545a1"
 
 
 def _legacy_rows():
@@ -84,8 +81,17 @@ def _classes(html):
     return parser.classes
 
 
-def test_legacy_builder_output_is_frozen_before_and_after_extraction():
-    assert hashlib.sha256(_legacy_html().encode()).hexdigest() == LEGACY_SHA256
+def test_report_preserves_original_headers_values_and_delta():
+    table = BeautifulSoup(_legacy_html(), "html.parser")
+    rows = [[cell.get_text(strip=True) for cell in row.find_all(["th", "td"])]
+            for row in table.select("table tr")]
+    assert rows == [
+        ["WEEK", "LOT", "WF", "pt1h", "pt1c", "gms"],
+        ["VTH↑", "IDSAT", "PT1C", "CFTA", "cum0", "cum2", "fab", "prb", "pnt"],
+        ["2026-W43", "7", "14", "1.2", "2.3", "-", "-", "-", "-", "-", "-", "-"],
+        ["2026-W44", "8", "16", "1.2", "-", "-", "-", "-", "-", "-", "-", "-"],
+        ["Δ", "—", "—", "0.0", "—", "—", "—", "—", "—", "—", "—", "—"],
+    ]
 
 
 def test_report_builder_uses_original_units_one_decimal_and_integer_counts():

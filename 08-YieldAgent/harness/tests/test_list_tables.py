@@ -207,7 +207,8 @@ def test_executor_store_bridge_returns_all_catalog_rows(monkeypatch):
     import harness.tools.list_tables as module
     from harness.config import Settings
     from harness.executor import ExecutionContext
-    from harness.native_hermes import NativeBridge
+    from harness.executor import ToolExecutor
+    from harness.native_tools import domain_model_result
     from harness.tools.registry import ToolRegistry
     from harness.types import TableRef, ToolObservation
 
@@ -264,9 +265,9 @@ def test_executor_store_bridge_returns_all_catalog_rows(monkeypatch):
     monkeypatch.setattr(module, "_connection", lambda: FakeConnection(tables=names))
     registry = ToolRegistry()
     module.register(registry)
-    bridge = NativeBridge(registry, ExecutionContext(Store(), Settings(), run))
+    executor = ToolExecutor(registry, ExecutionContext(Store(), Settings(), run))
 
-    view = asyncio.run(bridge.invoke({"name": "list_tables", "id": "c", "args": {}}))
+    view = domain_model_result(asyncio.run(executor.execute({"name": "list_tables", "id": "c", "args": {}})))
 
     assert view["result_id"] == "store-result"
     assert view["row_count"] == 25

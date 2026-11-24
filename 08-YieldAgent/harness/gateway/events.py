@@ -85,11 +85,7 @@ def replay(log, epoch, after_seq):
 
 
 def verified_answer(run):
-    """Reuse PR-5 settle, with host-saved verification evidence, never a raw completion.
-
-    native_hermes.py:485-500 saves candidate digest/verdict; control.py:193-203
-    saves answer_text separately from rendered tables. PB:639 requires this fence.
-    """
+    """Verify the saved answer and its recorded digest when reopening pre-migration runs."""
     if run.get('active') or run.get('status') != 'completed':
         return None
     reviews = [o for o in run.get('observations', []) if o.get('tool_name') == 'verify_answer']

@@ -118,8 +118,7 @@ class PendingControls:
                        tool_allowed=False, effect=None):
         """Register an approval for an already-authorized effectful synthetic/caller tool.
 
-        This library never discovers/enables tools. PR-6b must derive tool_allowed
-        from NativeBridge.allowed and keep its own invoke gate. Defaults fail closed.
+        Callers check their tool allowlist before registration and again at invocation time.
         """
         tool = data.get('tool_name')
         if (tool_allowed is not True or effect not in ('artifact', 'persistent_write')

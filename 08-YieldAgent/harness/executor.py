@@ -272,7 +272,7 @@ class ToolExecutor:
             await self.publish(observation, run)
             return observation
         fingerprint = hashlib.sha256(json.dumps([name, args], sort_keys=True).encode()).hexdigest()
-        if not existing and run.get("chat_entrypoint") != "stock_chat":
+        if not existing and run.get("execution_kind") == "mcp":
             repeated = await store.calls.count_documents({"run_id": run["run_id"], "fingerprint": fingerprint})
             if repeated >= 3:
                 raise BudgetExceeded("repeated_action_without_progress")

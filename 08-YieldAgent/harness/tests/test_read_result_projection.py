@@ -6,8 +6,8 @@ import pytest
 
 from harness.config import Settings
 from harness.context import descriptor, evidence_views
-from harness.executor import ExecutionContext
-from harness.native_hermes import NativeBridge
+from harness.executor import ExecutionContext, ToolExecutor
+from harness.native_tools import domain_model_result
 from harness.store import HarnessStore
 from harness.tools.python_tools import ReadInput, read_result
 from harness.tools.registry import ToolRegistry, ToolSpec
@@ -29,8 +29,12 @@ async def reading(rows, *, complete=True):
         registry = ToolRegistry()
         registry.add(ToolSpec('read_result', 'Read', ReadInput, read_result))
         args = {'result_id': source.result_id, 'table_id': 'facts'}
-        bridge = NativeBridge(registry, ExecutionContext(store, Settings(), run))
-        yield store, source, bridge, args
+        executor = ToolExecutor(registry, ExecutionContext(store, Settings(), run))
+
+        async def invoke(call):
+            return domain_model_result(await executor.execute(call))
+
+        yield store, source, invoke, args
     finally:
         await store.client.drop_database(store.db.name)
         store.client.close()
@@ -68,26 +72,26 @@ def test_wafer_report_uses_full_precision_and_exact_source_identifiers():
 def test_read_result_renders_only_a_complete_wafer_table():
     async def scenario():
         rows = [dict(LOT_ID='LOT-B', PARAM_NM='Y', WFID=str(wf), VALUE=0.6) for wf in (2, 5)]
-        async with reading(rows) as (store, source, bridge, args):
+        async with reading(rows) as (store, source, invoke, args):
             report = {'threshold_pct': 65, 'delivery': 'complete_answer'}
-            response = await bridge.invoke({'id': 'report', 'name': 'read_result',
+            response = await invoke({'id': 'report', 'name': 'read_result',
                                             'args': {**args, 'wafer_report': report}})
             assert response['source_result_ids'] == [source.result_id]
             assert response['artifact_refs'][0]['title'] == 'LOT-B · Y 수율'
             assert response['scope']['rendered_summary'] == '65% 미만 2장 (평균 60.0%) · 65% 이상 0장 (평균 —)'
             assert len(response['artifact_refs']) == 1
-            partial = await bridge.invoke({'id': 'partial', 'name': 'read_result',
+            partial = await invoke({'id': 'partial', 'name': 'read_result',
                                            'args': {**args, 'limit': 1, 'wafer_report': report}})
             assert partial['status'] == 'error' and not partial['artifact_refs']
     asyncio.run(scenario())
 
 
-def test_requested_rows_survive_store_bridge_and_replay():
+def test_requested_rows_survive_storage_model_projection_and_replay():
     async def scenario():
         rows = [{'n': n} for n in range(158)]
-        async with reading(rows) as (store, source, bridge, args):
+        async with reading(rows) as (store, source, invoke, args):
             call = {'id': 'read', 'name': 'read_result', 'args': {**args, 'limit': 158}}
-            view = await bridge.invoke(call)
+            view = await invoke(call)
             assert shown(view) == rows
             assert view['summary'] == '원본 158행 중 offset=0부터 158행 표시'
             assert view['page']['visible_rows'] == 158
@@ -100,7 +104,7 @@ def test_requested_rows_survive_store_bridge_and_replay():
             failed = reloaded.model_copy(update={'status': 'error', 'summary': 'failed'})
             assert not shown(failed.model_view())
             assert failed.model_view()['summary'] == 'failed'
-            assert await bridge.invoke(call) == view
+            assert await invoke(call) == view
             assert len(source.preview_rows) == 50
             assert len(source.model_view()['preview_rows']) == 10
             projected = evidence_views([reloaded.model_dump(mode='json')], token_budget=30)[0]
@@ -114,8 +118,8 @@ def test_requested_rows_survive_store_bridge_and_replay():
 @pytest.mark.parametrize('offset,limit,expected', [(10,20,20), (150,50,8), (158,50,0), (170,50,0), (0,1000,158)])
 def test_page_summary_tracks_offsets_and_empty_pages(offset, limit, expected):
     async def scenario():
-        async with reading([{'n': n} for n in range(158)]) as (_, _, bridge, args):
-            view = await bridge.invoke({'id': 'read', 'name': 'read_result',
+        async with reading([{'n': n} for n in range(158)]) as (_, _, invoke, args):
+            view = await invoke({'id': 'read', 'name': 'read_result',
                 'args': {**args, 'offset': offset, 'limit': limit}})
             assert len(shown(view)) == expected
             assert view['summary'] == f'원본 158행 중 offset={offset}부터 {expected}행 표시'
@@ -126,8 +130,8 @@ def test_page_summary_tracks_offsets_and_empty_pages(offset, limit, expected):
 def test_page_byte_limit_reports_visible_rows_without_changing_stored_rows():
     async def scenario():
         rows = [{'n': n, 'text': 'x' * 20000} for n in range(100)]
-        async with reading(rows) as (store, _, bridge, args):
-            view = await bridge.invoke({'id': 'read', 'name': 'read_result', 'args': {**args, 'limit': 100}})
+        async with reading(rows) as (store, _, invoke, args):
+            view = await invoke({'id': 'read', 'name': 'read_result', 'args': {**args, 'limit': 100}})
             count = len(shown(view))
             assert 10 < count < 100
             assert view['summary'] == f'원본 100행 중 offset=0부터 {count}행 표시'
@@ -141,10 +145,10 @@ def test_page_byte_limit_reports_visible_rows_without_changing_stored_rows():
 
 def test_maximum_page_and_invalid_limit():
     async def scenario():
-        async with reading([{'n': n} for n in range(1001)]) as (_, _, bridge, args):
-            view = await bridge.invoke({'id': 'read', 'name': 'read_result', 'args': {**args, 'limit': 1000}})
+        async with reading([{'n': n} for n in range(1001)]) as (_, _, invoke, args):
+            view = await invoke({'id': 'read', 'name': 'read_result', 'args': {**args, 'limit': 1000}})
             assert len(shown(view)) == 1000
-            invalid = await bridge.invoke({'id': 'invalid', 'name': 'read_result', 'args': {**args, 'limit': 1001}})
+            invalid = await invoke({'id': 'invalid', 'name': 'read_result', 'args': {**args, 'limit': 1001}})
             assert invalid['status'] == 'error'
             assert not invalid['preview_rows']
     asyncio.run(scenario())
@@ -152,8 +156,8 @@ def test_maximum_page_and_invalid_limit():
 
 def test_reading_all_rows_does_not_make_incomplete_source_complete():
     async def scenario():
-        async with reading([{'n': n} for n in range(20)], complete=False) as (_, _, bridge, args):
-            view = await bridge.invoke({'id': 'read', 'name': 'read_result', 'args': {**args, 'limit': 20}})
+        async with reading([{'n': n} for n in range(20)], complete=False) as (_, _, invoke, args):
+            view = await invoke({'id': 'read', 'name': 'read_result', 'args': {**args, 'limit': 20}})
             assert view['status'] == 'partial'
             assert len(shown(view)) == 20
             target = next(table for table in view['tables'] if table['table_id'] == ('facts'))

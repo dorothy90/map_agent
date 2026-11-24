@@ -94,7 +94,8 @@ async def chat(request, emit, waiters=None):
     from harness.native_budget import install_http_budget
     from harness.store import HarnessStore
     from harness.tools.registry import domain_registry
-    from harness.native_worker import constrain_session_search, engine_provider, observe_skill_reads
+    from harness.instructions import web_turn_instructions
+    from harness.chat_tool_helpers import constrain_session_search, engine_provider, observe_skill_reads
     from tools import skills_tool, session_search_tool
     from tools.approval_context import _approval_tool_call_id
     from tools.registry import registry
@@ -267,6 +268,7 @@ async def chat(request, emit, waiters=None):
             nonlocal agent
             agent = AIAgent(model=settings.model, base_url=settings.base_url, api_key=api_key,
                 provider=provider, session_id=session, session_db=db, platform='yield_web',
+                ephemeral_system_prompt=web_turn_instructions(request['request_context'], code_enabled=code_enabled),
                 enabled_toolsets=['yield', 'skills', 'memory', 'session_search', 'clarify',
                                  'web_shared_files', 'todo', 'delegation'] + (['code_execution'] if code_enabled else []),
                 max_iterations=max(1, remaining_models), max_tokens=settings.max_output_tokens,

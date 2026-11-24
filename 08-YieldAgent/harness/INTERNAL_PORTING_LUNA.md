@@ -2,7 +2,7 @@
 
 ## 0. 목표와 작업 범위
 
-사내 최신 main에는 외부 기준 저장소에 없는 수정과 신규 에이전트가 있다. 사내 코드를 정본으로 보존하면서 이 문서와 같은 커밋의 Hermes 하네스, 일반 위임, 독립 검증, 채팅 화면 기능을 병합한다. 사내 레포를 외부로 보내지 않고 사내에서 조사·구현·검증한다.
+사내 최신 main에는 외부 기준 저장소에 없는 수정과 신규 에이전트가 있다. 사내 코드를 정본으로 보존하면서 이 문서와 같은 커밋의 Hermes 하네스, 일반 위임, 채팅 화면 기능을 병합한다. 사내 레포를 외부로 보내지 않고 사내에서 조사·구현·검증한다.
 
 이 문서는 이번 이식의 실행 지침이다. MIGRATION.md의 과거 커밋 기준 및 1단계 후 별도 지시를 기다리는 절차 대신, 아래 단계별 검증을 통과하면 다음 단계로 진행한다. 실제로 부족한 권한·업무 정의·접속 정보만 질문한다. 사내 AGENTS.md와 조직 정책은 준수한다.
 
@@ -18,7 +18,7 @@
 
 아래 내용을 사내 Luna에게 전달한다. 참조 소스 위치와 사내 레포 위치는 실제 경로로 지정한다.
 
-> 사내 레포의 최신 main에 참조 소스의 Hermes 하네스와 채팅 화면 기능을 이식해라. 먼저 참조 소스의 harness/INTERNAL_PORTING_LUNA.md를 끝까지 읽어라. 참조 소스는 읽기 전용이고 사내 최신 코드를 정본으로 삼는다. 기존 서버·공통 코드·프런트 파일을 통째로 덮어쓰지 마라. 기존 및 새 에이전트 전체 목록과 원본→사내 파일 대응표를 작성한 뒤, 이 문서의 단계별 검증을 수행하며 진행해라. 일반 위임은 켜고 환경 탐색은 끈다. 독립 검증자 권한은 확대하지 마라. 사내 승인 LLM과 실제 DB로 최종 UI 시나리오까지 검증해라. 정상·실패·미검증을 구분해 기록하고, 사내 코드나 데이터는 외부 서비스·저장소에 전송하지 마라. 자연어 해석 실패를 키워드·정규식·예시 누적으로 우회하지 마라. 변경을 작은 단위로 유지하고 각 단계 종료 시 진행 기록을 갱신해라.
+> 사내 레포의 최신 main에 참조 소스의 Hermes 하네스와 채팅 화면 기능을 이식해라. 먼저 참조 소스의 harness/INTERNAL_PORTING_LUNA.md를 끝까지 읽어라. 참조 소스는 읽기 전용이고 사내 최신 코드를 정본으로 삼는다. 기존 서버·공통 코드·프런트 파일을 통째로 덮어쓰지 마라. 기존 및 새 에이전트 전체 목록과 원본→사내 파일 대응표를 작성한 뒤, 이 문서의 단계별 검증을 수행하며 진행해라. 일반 위임은 켜고 환경 탐색은 끈다. 사내 승인 LLM과 실제 DB로 최종 UI 시나리오까지 검증해라. 정상·실패·미검증을 구분해 기록하고, 사내 코드나 데이터는 외부 서비스·저장소에 전송하지 마라. 자연어 해석 실패를 키워드·정규식·예시 누적으로 우회하지 마라. 변경을 작은 단위로 유지하고 각 단계 종료 시 진행 기록을 갱신해라.
 
 ## 2. 시작 전에 만들 기록
 
@@ -60,8 +60,8 @@
 |---|---|
 | `engine/` | 내장 Hermes 원본 및 내부 의존 모듈. 사용하지 않아 보이는 모듈도 초기 이식에서 삭제하지 않는다. |
 | `engine/LICENSE`, `UPSTREAM.json`, `PATCHES.diff` | 라이선스, 고정 원본 버전, 기존 엔진 수정 기록 |
-| `native_hermes.py`, `native_worker.py` | 백엔드와 분리된 Hermes 프로세스, 도구 RPC, 프로필, 이력, 취소 |
-| `native_verification.py`, `instructions/verifier.md` | 최종 답변 독립 검증 및 실패 시 한 번 보완 |
+| `hermes_chat.py`, `hermes_chat_worker.py`, `native_hermes.py`, `chat_tool_helpers.py` | 웹 채팅과 평가의 공통 Hermes 실행, 프로필, 이력, 취소 |
+| `native_verification.py` | 웨이퍼 맵 결과 계약 및 저장된 결과 검증 |
 | `config.py`, `app.py`, `router.py`, `control.py`, `store.py` | 설정, 서버 연결, 실행·저장·복구 |
 | `executor.py`, `types.py`, `completion.py` 등 나머지 Python 파일 | 결과 계약과 예산·관측·기존 경로 의존성. 초기에는 함께 유지 |
 | `tools/`, `domain_metrics.py` | 업무 연결 어댑터와 지표 계산. 사내 업무 정의와 대조 |
@@ -148,15 +148,11 @@ Hermes를 별도 설치하거나 임의의 최신 upstream으로 교체하지 �
 
 자연어의 특정 문장을 if/regex로 가로채지 않는다. 잘못된 계획이면 먼저 대화 이력, 이전 답변, 저장 결과 envelope, 도구 계약·설명이 LLM에 전달되는지 확인한다. 도구 선택과 위임은 원본 Hermes 루프에 맡긴다.
 
-## 7. 단계 D — 위임과 독립 검증 유지
+## 7. 단계 D — Hermes 채팅과 위임 확인
 
-- 기본 채팅은 `yield_backend`, `yield_evidence`, `skills`, `clarify` 도구셋을 사용한다.
-- 프로필 `delegation.orchestrator_enabled=true`, `agent.environment_probe=false`를 유지한다. 기존 프로필에도 적용되는지 확인한다.
-- worker는 요청 후 종료된다. 원본 `declare_stateless_channel()`을 유지해 하위 결과를 기다린 뒤 최종 응답과 검증을 진행한다. 백그라운드 완료를 받을 별도 소비자가 없는데 이 선언을 지우지 않는다.
-- 하위 작업 깊이·개수 제한은 원본 설정을 존중한다. 이식 중 임의로 무제한으로 늘리지 않는다.
-- 메인 완료 뒤 독립 검증자는 저장된 근거를 `read_result`로만 읽는다. 일반 조회·코드 실행·메모리 쓰기·추가 위임을 허용하지 않는다.
-- 검증 실패 시 한 번 보완·재검증, 판단 불가·예산 소진은 성공 완료와 구분한다. verifier의 `pass`는 업무 정답의 절대 보증이 아니므로 직접 결과 대조도 수행한다.
-- 취소 시 worker와 하위 작업이 남지 않는지 확인한다. 최종 답변 문구만으로 위임 성공을 판정하지 않는다. 실제 `delegate_task` 호출, 하위 tool trace, 완료 결과, result_id, 검증 판정을 검사한다.
+- 웹 채팅과 모델 평가 모두 `hermes_chat_worker.py`에서 같은 Hermes 대화 실행을 사용한다. 직원 권한에 허용된 수율 도구와 프로필 스킬을 확인한다.
+- 위임 검증은 실제 `delegate_task` 호출과 하위 도구 실행 기록을 확인한다. 채팅 취소 시 하위 작업도 종료되는지 확인한다.
+- 새 채팅에서 스킬을 불러와 수율을 조회하고, 같은 채팅에서 LOT와 웨이퍼 번호를 생략해 다시 묻는다. 최종 수율을 원본 DB와 대조한다.
 
 ## 8. 단계 E — 화면 통합
 
@@ -180,7 +176,7 @@ Hermes를 별도 설치하거나 임의의 최신 upstream으로 교체하지 �
 
 ```bash
 BACKEND_PYTHON=.venv/bin/python bash scripts/setup_hermes.sh
-PYTHONPATH=08-YieldAgent .venv/bin/python -m pytest 08-YieldAgent/harness/tests/test_native_hermes.py 08-YieldAgent/harness/tests/test_native_transport.py 08-YieldAgent/harness/tests/test_native_verification.py -q
+PYTHONPATH=08-YieldAgent .venv/bin/python -m pytest 08-YieldAgent/harness/tests/test_hermes_chat.py 08-YieldAgent/harness/tests/test_web_delegation.py -q
 PYTHONPATH=08-YieldAgent .venv/bin/python -m pytest 08-YieldAgent/harness/tests -q
 ```
 
@@ -229,7 +225,7 @@ docker build -t yield-harness-python:2 08-YieldAgent/harness/runtime
 - 참조 SHA와 사내 기준 SHA, 변경 파일과 이유.
 - 전체 에이전트 목록 및 연결/기존 유지/미연결 사유.
 - 실제 실행한 명령과 결과, UI 확인 항목, run_id와 사내에서만 접근 가능한 증거 위치.
-- 위임 실행과 독립 검증 증거, 현재 환경 탐색 설정.
+- 위임 실행과 실제 수율 조회 검증 기록, 현재 환경 탐색 설정.
 - 실패·미검증·환경 의존 항목. lint/build/합성 테스트만으로 전체 완료를 선언하지 않는다.
 - 되돌릴 커밋과 설정, 기존 세션 처리 방법.
 

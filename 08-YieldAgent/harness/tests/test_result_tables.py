@@ -148,12 +148,13 @@ def test_run_python_process_reads_full_stored_table_and_saves_artifacts():
                 tables=[ResultTable(table_id='data', title='Fixture', rows=[{'n': i} for i in range(120)], complete=True)])
             ctx = SimpleNamespace(store=store, run={'principal_id': 'a', 'session_id': 's'}, settings=Settings())
             result = await run_python(PythonInput(input_result_ids=[source.result_id], code=
-                "emit_table(pd.DataFrame([{'count': len(df), 'total': int(df.n.sum())}]))\nemit_plot(px.bar(df, y='n'))"), ctx)
+                "emit_table(pd.DataFrame([{'count': len(df), 'total': int(df.n.sum())}]))\nemit_plot(px.bar(df, y='n'))\ndf.to_csv(publish_directory / 'rows.csv', index=False)"), ctx)
             assert result.status == 'success'
             saved = await store.put_result('a', 's', dict(run_id='r', invocation_id='output', tool_name='run_python'),
                 [], result.artifacts, tables=result.tables)
             assert await store.rows('a', 's', saved.result_id, table_id='table_1') == [{'count': 120, 'total': 7140}]
             assert len(saved.artifact_refs) == 2
+            assert any(a.get("output_path", "").endswith("/rows.csv") for a in saved.artifact_refs)
         finally:
             await store.client.drop_database(store.db.name)
             store.client.close()

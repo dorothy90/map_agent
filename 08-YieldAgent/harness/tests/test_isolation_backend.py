@@ -12,7 +12,6 @@ from types import ModuleType
 from types import SimpleNamespace
 
 import pytest
-import yaml
 
 from harness.config import IsolationSettings
 from harness.isolation import backend as isolation_backend
@@ -180,49 +179,27 @@ def test_engine_adapter_wraps_probes_commands_and_temp_dir_in_one_scope(monkeypa
         environment._build_ssh_command()
 
 
-def test_isolated_profile_overrides_local_backend_and_passthrough(monkeypatch, tmp_path):
-    import harness.native_hermes as native
-
-    monkeypatch.setattr(native, "ROOT", tmp_path)
-    profile = native.prepare_profile("alice")
-    path = profile / "config.yaml"
-    content = yaml.safe_load(path.read_text())
-    content["terminal"] = {"backend": "local", "env_passthrough": ["ORACLE_PASSWORD"]}
-    path.write_text(yaml.safe_dump(content))
-    boundary = isolation(tmp_path)
-    payload = {**boundary.model_dump(mode="json"),
-               "workdir": str(boundary.work_root / "run-1")}
-
-    native.prepare_profile("alice", payload)
-    terminal = yaml.safe_load(path.read_text())["terminal"]
-    tool_search = yaml.safe_load(path.read_text()).get("tools", {}).get("tool_search", {})
-
-    assert terminal == {
-        "backend": "ssh", "cwd": payload["workdir"], "ssh_host": "localhost",
-        "ssh_user": "yieldrun", "ssh_port": 22, "ssh_key": str(payload["ssh_key"]),
-        "env_passthrough": [], "persistent_shell": False,
-    }
-    assert "enabled" not in tool_search and "defer" not in tool_search
-
-
-def test_native_run_refuses_to_spawn_worker_when_isolation_preflight_fails(monkeypatch, tmp_path):
+def test_stock_chat_refuses_to_spawn_worker_when_isolation_preflight_fails(monkeypatch, tmp_path):
     import asyncio
-    import harness.native_hermes as native
+    from unittest.mock import AsyncMock
+    from harness import hermes_chat, native_hermes
     from harness.config import Settings
-    from harness.tools.registry import ToolRegistry
 
-    config = isolation(tmp_path)
-    settings = Settings(engine="hermes", no_yield_tools=True, isolation=config)
-    context = SimpleNamespace(settings=settings,
-        run={"principal_id": "alice", "session_id": "s", "run_id": "r", "epoch": 1, "query": "q"},
-        remaining_seconds=lambda: 60)
-    monkeypatch.setattr(native, "prepare_isolated_run",
-                        lambda *args: (_ for _ in ()).throw(IsolationError("preflight denied")), raising=False)
-    monkeypatch.setattr(native.asyncio, "create_subprocess_exec",
-                        lambda *args, **kwargs: pytest.fail("worker spawned after failed preflight"))
-
-    with pytest.raises(IsolationError, match="preflight denied"):
-        asyncio.run(native.run_native(context, ToolRegistry()))
+    monkeypatch.setattr(hermes_chat, 'ROOT', tmp_path)
+    monkeypatch.setattr(native_hermes, 'ROOT', tmp_path)
+    settings = Settings(isolation=isolation(tmp_path), api_key='fixture')
+    store = SimpleNamespace(runs=SimpleNamespace(update_one=AsyncMock()),
+        db=SimpleNamespace(name='test', gateway_sessions=SimpleNamespace(find_one=AsyncMock(return_value=None))))
+    context = SimpleNamespace(settings=settings, store=store,
+        run={'principal_id': 'alice', 'session_id': 's', 'run_id': 'r', 'epoch': 1,
+             'created_at': '2026-11-01T00:00:00Z'})
+    monkeypatch.setattr(hermes_chat, 'prepare_isolated_run',
+                        lambda *args: (_ for _ in ()).throw(IsolationError('preflight denied')))
+    monkeypatch.setattr(hermes_chat, 'cancel_run_prompts', AsyncMock())
+    monkeypatch.setattr(hermes_chat.asyncio, 'create_subprocess_exec',
+                        lambda *args, **kwargs: pytest.fail('worker spawned after failed preflight'))
+    with pytest.raises(IsolationError, match='preflight denied'):
+        asyncio.run(hermes_chat.run_chat(context))
 
 
 def test_required_sandbox_rejects_none_evidence(monkeypatch, tmp_path):

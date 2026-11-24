@@ -22,7 +22,6 @@ def make_real_app(uri, database):
         raise RuntimeError('Real-model fixture requires localhost Mongo')
     os.environ['HARNESS_MONGO_DB'] = database
     os.environ['HARNESS_ENGINE'] = 'hermes'
-    os.environ.pop('HARNESS_NATIVE_PROMPTS', None)
     from pr8_gateway_server import make_app, GatewayServices, HarnessStore
     from harness.app import app as harness_app
     fixture = make_app(uri, database)
@@ -34,7 +33,7 @@ def make_real_app(uri, database):
         subprocess_exec = asyncio.create_subprocess_exec
 
         async def tracked_exec(*args, **kwargs):
-            native = any(str(arg) == str(Path(__file__).resolve().parents[2] / 'harness/native_worker.py') for arg in args)
+            native = any(str(arg) == str(Path(__file__).resolve().parents[2] / 'harness/hermes_chat_worker.py') for arg in args)
             if native:
                 # Native stdout is IPC. Discard diagnostic stderr before it can
                 # reach the native worker log file or the test runner.
@@ -50,23 +49,8 @@ def make_real_app(uri, database):
             # Reuse the PR-7 real controller lifecycle, including close/recovery.
             async with harness_app.router.lifespan_context(harness_app):
                 ctrl = harness_app.state.harness
-                base = ctrl.registry_factory
-                ctrl.blocked, ctrl.launches = [], []
-
-                def guarded():
-                    reg = base()
-                    for spec in reg.tools.values():
-                        if spec.name == 'read_result':
-                            continue
-                        def make(name):
-                            async def handler(args, context):
-                                ctrl.blocked.append(name)
-                                raise RuntimeError('tool blocked by smoke guard')
-                            return handler
-                        spec.handler = make(spec.name)
-                    return reg
-
-                ctrl.registry_factory = guarded
+                ctrl.launches = []
+                ctrl.settings = ctrl.settings.model_copy(update={'native_allowed_tools': []})
                 execute = ctrl._run
 
                 async def one_execution(run):

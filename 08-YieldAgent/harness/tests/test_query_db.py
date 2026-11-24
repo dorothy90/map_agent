@@ -538,17 +538,10 @@ def test_cancellation_interrupts_active_oracle_call(monkeypatch, tmp_path):
     assert connection.cancelled and connection.closed
 
 
-def test_native_bridge_returns_only_query_facts_from_stored_observation():
-    from harness.native_hermes import NativeBridge
-    from harness.tools.registry import ToolRegistry, ToolSpec
-    from harness.tools.query_db import QueryDBInput
-    from harness.types import ToolObservation
+def test_native_tool_returns_only_query_facts_from_stored_observation():
+    from harness.native_tools import domain_model_result
+    from harness.types import ToolObservation, TableRef
 
-    registry = ToolRegistry()
-    registry.add(ToolSpec("query_db", "fixture", QueryDBInput, lambda *args: None,
-                          effect="artifact"))
-    bridge = NativeBridge(registry, SimpleNamespace())
-    bridge.executor = SimpleNamespace(execute=lambda call: None)
     observation = ToolObservation(
         principal_id="p", session_id="s", run_id="r", invocation_id="call",
         result_id="store-result-id", tool_name="query_db", status="success",
@@ -557,13 +550,11 @@ def test_native_bridge_returns_only_query_facts_from_stored_observation():
             "path": "/remote/query.csv",
         }}, columns=["ID"], preview_rows=[{"ID": 1}], total_rows=1,
         data_ref="stored-blob",
+        tables=[TableRef(table_id="default", title="Query", columns=["ID"], total_rows=1,
+                         preview_rows=[{"ID": 1}], complete=True, data_ref="stored-blob")],
     )
 
-    async def execute(call):
-        return observation
-
-    bridge.executor.execute = execute
-    view = asyncio.run(bridge.invoke({"name": "query_db", "id": "c", "args": {}}))
+    view = domain_model_result(observation)
 
     assert view == {
         "result_id": "store-result-id", "table_id": "default",
@@ -578,7 +569,8 @@ def test_executor_stores_capped_evidence_and_projects_store_result_id(monkeypatc
     import harness.tools.query_db as query_db
     from harness.config import Settings
     from harness.executor import ExecutionContext
-    from harness.native_hermes import NativeBridge
+    from harness.executor import ToolExecutor
+    from harness.native_tools import domain_model_result
     from harness.tools.registry import ToolRegistry
     from harness.types import TableRef, ToolObservation
 
@@ -660,9 +652,9 @@ def test_executor_stores_capped_evidence_and_projects_store_result_id(monkeypatc
         store, Settings(no_yield_tools=True, isolation=isolation), run
     )
 
-    view = asyncio.run(NativeBridge(registry, execution).invoke({
+    view = domain_model_result(asyncio.run(ToolExecutor(registry, execution).execute({
         "name": "query_db", "id": "call", "args": {"table": "people", "limit": 2},
-    }))
+    })))
 
     assert view["result_id"] == "store-supplied-id"
     assert view["table_id"] == "query_db"

@@ -54,7 +54,7 @@ def test_heartbeat_failure_stops_work_and_records_the_failure(monkeypatch):
         store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
         entered, cancelled = asyncio.Event(), asyncio.Event()
 
-        async def slow(ctx, *, history):
+        async def slow(ctx):
             entered.set()
             try:
                 await asyncio.sleep(30)
@@ -147,7 +147,7 @@ def test_cancel_rejects_late_result_and_emits_one_terminal_event(monkeypatch):
     async def scenario():
         store = HarnessStore(database="harness_test_" + uuid.uuid4().hex)
         entered, cancelled = asyncio.Event(), asyncio.Event()
-        async def slow(ctx, *, history):
+        async def slow(ctx):
             entered.set()
             try:
                 await asyncio.sleep(30)

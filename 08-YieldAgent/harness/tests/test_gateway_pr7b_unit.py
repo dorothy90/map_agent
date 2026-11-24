@@ -125,9 +125,19 @@ class MemorySessions:
     async def get_messages(self, sid, **kwargs):
         return (await self.get_session(sid)).get('rows', [])
 
-    async def list_sessions_rich(self, **kwargs):
-        return [row for (owner, _), row in self.shared.items() if owner == self.owner
-                and not any(row.get(flag) for flag in ('deleted', 'archived', 'hidden'))]
+    async def list_sessions_rich(self, *, include_archived=False, archived_only=False,
+                                 include_pinned=False, include_hidden=False, **kwargs):
+        rows = []
+        for (owner, _), row in self.shared.items():
+            if owner != self.owner or row.get('deleted'):
+                continue
+            if row.get('hidden') and not (include_hidden or archived_only):
+                continue
+            archived = bool(row.get('archived'))
+            archive_match = archived if archived_only else include_archived or not archived
+            if archive_match or (include_pinned and row.get('pinned')):
+                rows.append(row)
+        return rows
 
 
 class MemoryEvents:

@@ -93,7 +93,7 @@ def test_eval_reports_final_state_when_worker_exits_without_finishing(monkeypatc
         store = HarnessStore(Settings.from_env().mongo_uri, report["database"])
         try:
             case = report["cases"][0]
-            saved = await store.get_run("live-eval", case["run_id"])
+            saved = await store.get_run(report["principal"], case["run_id"])
             assert case["status"] == saved["status"] == "cancelled"
             assert case["evaluation_error"] == "nonterminal_worker_exit"
             assert json.loads(output.read_text())["cases"][0] == case

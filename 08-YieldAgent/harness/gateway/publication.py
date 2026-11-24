@@ -1,19 +1,11 @@
 """Pure host publication policy (PB:523–531 B, PB:662; no upstream equivalent)."""
 import hashlib
 
-try:
-    from ..native_verification import verification_failure_answer
-except ImportError:  # Standalone worker import.
-    from native_verification import verification_failure_answer
-
+from ..native_verification import verification_failure_answer
 
 def candidate_digest(text):
     return {'candidate_sha256': hashlib.sha256(text.encode('utf-8')).hexdigest(),
         'candidate_chars': len(text)}
-
-
-def commentary_event(settings, content):
-    return {'content': content} if getattr(settings, 'publish_commentary', False) is True else None
 
 
 def settle(result, reports, verified_candidates):

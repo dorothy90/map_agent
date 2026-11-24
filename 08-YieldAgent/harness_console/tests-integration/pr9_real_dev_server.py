@@ -25,11 +25,8 @@ def resolve_allowed_tools(registry, raw):
     return names
 
 
-def apply_allowed_tools(controller, raw, allowed):
-    if raw is not None:
-        controller.settings = controller.settings.model_copy(update={
-            'native_allowed_tools': allowed,
-        })
+def apply_allowed_tools(controller, allowed):
+    controller.settings = controller.settings.model_copy(update={'native_allowed_tools': allowed})
 
 
 def make_real_app(uri, database):
@@ -43,7 +40,6 @@ def make_real_app(uri, database):
         raise ValueError('PR9_MAX_RUNS must be between 1 and 10')
     os.environ['HARNESS_MONGO_DB'] = database
     os.environ['HARNESS_ENGINE'] = 'hermes'
-    os.environ.pop('HARNESS_NATIVE_PROMPTS', None)
     from pr9_dev_server import make_app, GatewayServices, HarnessStore
     from harness.tools.registry import domain_registry
 
@@ -68,7 +64,7 @@ def make_real_app(uri, database):
             subprocess_exec = asyncio.create_subprocess_exec
 
             async def tracked_exec(*args, **kwargs):
-                native = any(str(arg) == str(Path(__file__).resolve().parents[2] / 'harness/native_worker.py') for arg in args)
+                native = any(str(arg) == str(Path(__file__).resolve().parents[2] / 'harness/hermes_chat_worker.py') for arg in args)
                 if native:
                     # stdout remains the native IPC channel.
                     kwargs['stderr'] = asyncio.subprocess.DEVNULL
@@ -82,24 +78,8 @@ def make_real_app(uri, database):
             try:
                 async with harness_app.router.lifespan_context(harness_app):
                     ctrl = harness_app.state.harness
-                    apply_allowed_tools(ctrl, raw, allowed)
-                    base = ctrl.registry_factory
-                    ctrl.blocked, ctrl.launches = [], []
-
-                    def guarded():
-                        reg = base()
-                        for spec in reg.tools.values():
-                            if spec.name == 'read_result' or spec.name in allowed:
-                                continue
-                            def make(name):
-                                async def handler(args, context):
-                                    ctrl.blocked.append(name)
-                                    raise RuntimeError('tool blocked by smoke guard')
-                                return handler
-                            spec.handler = make(spec.name)
-                        return reg
-
-                    ctrl.registry_factory = guarded
+                    apply_allowed_tools(ctrl, allowed)
+                    ctrl.launches = []
                     execute = ctrl._run
 
                     async def bounded_execution(run):
@@ -140,7 +120,8 @@ def make_real_app(uri, database):
         if request.client is None or request.client.host not in ('127.0.0.1', '::1'):
             raise HTTPException(status_code=403, detail='Loopback only')
         ctrl = request.app.state.controller
-        return {'launches': ctrl.launches, 'blocked': ctrl.blocked, 'allowed': allowed,
+        return {'launches': ctrl.launches, 'blocked': [name for name in await ctrl.store.calls.distinct('tool_name')
+                        if name not in {*allowed, 'read_result', 'skills_list', 'skill_view', 'skill_manage'}], 'allowed': allowed,
                 'workers': [worker.pid for worker in request.app.state.workers]}
 
     return app

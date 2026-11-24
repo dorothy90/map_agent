@@ -1,29 +1,8 @@
-import ast
 import asyncio
-from pathlib import Path
 
 from harness.gateway.events import SessionEvents, project_run_event
 from harness.gateway.publication import candidate_digest
 from harness.tests.test_gateway_pr7a_unit import fixture
-
-
-def test_worker_callbacks():
-    tree = ast.parse(Path(__file__).parents[1].joinpath('native_worker.py').read_text())
-    call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Name) and n.func.id == 'AIAgent')
-    callbacks = {k.arg: k.value for k in call.keywords}
-    emitted = []
-    for name, text, kwargs in [
-        ('stream_delta_callback', 'chunk', {}),
-        ('interim_assistant_callback', 'whole', {'already_streamed': True}),
-        ('interim_assistant_callback', 'fallback', {}),
-    ]:
-        callback = eval(compile(ast.Expression(callbacks[name]), '<callback>', 'eval'), {'emit': emitted.append})
-        callback(text, **kwargs)
-    assert emitted == [
-        {'type': 'commentary', 'content': 'chunk', 'delta': True},
-        {'type': 'commentary', 'content': 'whole', 'already_streamed': True},
-        {'type': 'commentary', 'content': 'fallback', 'already_streamed': False}]
 
 
 def test_live_replay_then_verified_completion():

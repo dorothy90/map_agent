@@ -63,15 +63,15 @@ def test_yield_table_renderer_is_the_only_artifact_exception():
         resolve_allowed_tools(registry, 'query_db')
 
 
-@pytest.mark.parametrize(('raw', 'expected'), [(None, None), ('', []), (' , ', [])])
-def test_absent_and_explicitly_empty_policy_are_distinct(raw, expected):
+@pytest.mark.parametrize('raw', [None, '', ' , '])
+def test_empty_allowlist_leaves_external_tools_disabled(raw):
     from harness.config import Settings
 
     controller = type('Controller', (), {'settings': Settings()})()
 
     @asynccontextmanager
     async def fake_lifespan():
-        apply_allowed_tools(controller, raw, [])
+        apply_allowed_tools(controller, resolve_allowed_tools(domain_registry(), raw or ''))
         yield controller
 
     async def scenario():
@@ -80,4 +80,4 @@ def test_absent_and_explicitly_empty_policy_are_distinct(raw, expected):
 
     asyncio.run(scenario())
 
-    assert controller.settings.native_allowed_tools == expected
+    assert controller.settings.native_allowed_tools == []

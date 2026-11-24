@@ -68,14 +68,12 @@ def test_call_roundtrip():
     assert message['type'] == 'call' and message['method'] == 'tool_call'
 
 
-def test_parallel_and_commentary_settings(monkeypatch, isolated_settings_env):
+def test_parallel_tool_settings(monkeypatch, isolated_settings_env):
     from harness.config import Settings
     from pydantic import ValidationError
     assert Settings().parallel_tool_limit == 8
-    assert Settings().publish_commentary is False
     for value in (0, 9):
         with pytest.raises(ValidationError): Settings(parallel_tool_limit=value)
     monkeypatch.setenv('HARNESS_PARALLEL_TOOLS', '3')
-    monkeypatch.setenv('HARNESS_PUBLISH_COMMENTARY', 'true')
     settings = Settings.from_env()
-    assert settings.parallel_tool_limit == 3 and settings.publish_commentary
+    assert settings.parallel_tool_limit == 3
