@@ -11,6 +11,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
+import { $connectionRequests } from '@/store/connection-request'
 import { useSessionView } from '@/app/chat/session-view'
 import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
 import { ClarifyTool } from '@/components/assistant-ui/clarify'
@@ -120,8 +121,20 @@ const SetupBeatToolPart: FC<TimelineToolCallProps> = props => {
   return <SetupBeatTool {...props} />
 }
 
-const ConnectionsToolPart: FC<TimelineToolCallProps> = props =>
-  mcpTargets(props.toolName, props.args).length > 0 ? <McpSetupTool {...props} /> : <ConnectorTool {...props} />
+const ConnectionsToolPart: FC<TimelineToolCallProps> = props => {
+  const requests = useStore($connectionRequests)
+  let result: unknown = props.result
+  if (typeof result === 'string') {
+    try { result = JSON.parse(result) } catch { result = null }
+  }
+  const hasHostedCard = Object.values(requests).some(request =>
+    request.toolCallId === props.toolCallId && request.targets.some(target => target.kind === 'connector'))
+  if (!hasHostedCard && props.status.type !== 'running' && result && typeof result === 'object'
+      && 'local_mcp' in result && result.local_mcp === true) {
+    return <pre aria-label="Local MCP result" className="whitespace-pre-wrap break-words text-sm">{JSON.stringify(result, null, 2)}</pre>
+  }
+  return mcpTargets(props.toolName, props.args).length > 0 ? <McpSetupTool {...props} /> : <ConnectorTool {...props} />
+}
 
 const TOOL_CARDS: Record<CardToolName, FC<TimelineToolCallProps>> = {
   clarify: ClarifyToolPart,

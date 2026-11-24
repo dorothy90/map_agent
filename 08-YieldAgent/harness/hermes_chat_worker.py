@@ -91,6 +91,7 @@ async def chat(request, emit, waiters=None):
     from harness.native_tools import register_yield_tools
     from harness.shared_file_tools import SHARED_FILE_TOOLS, install_shared_file_policy
     from harness.web_delegation import configure_web_delegation
+    from harness.web_mcp_tools import attach_employee_mcp_toolsets, shutdown_employee_mcp_tools
     from harness.native_budget import install_http_budget
     from harness.store import HarnessStore
     from harness.tools.registry import domain_registry
@@ -192,6 +193,13 @@ async def chat(request, emit, waiters=None):
         install_shared_file_policy(registry, settings.shared_yield_dir)
         create_custom_toolset('web_shared_files', 'Read shared yield files and images',
                               tools=list(SHARED_FILE_TOOLS))
+        web_toolsets = ['yield', 'skills', 'memory', 'session_search', 'clarify',
+                        'web_shared_files', 'todo', 'delegation'] + (['code_execution'] if code_enabled else [])
+        from harness.web_connections import install_web_connections
+        install_web_connections(registry)
+        create_custom_toolset('web_connections', 'Manage employee-local MCP servers', tools=['manage_connections'])
+        web_toolsets.append('web_connections')
+        attach_employee_mcp_toolsets(web_toolsets, scheduled=False)
         configure_web_delegation()
         constrain_session_search(session_search_tool)
         observe_skill_reads(skills_tool, emit)
@@ -269,8 +277,7 @@ async def chat(request, emit, waiters=None):
             agent = AIAgent(model=settings.model, base_url=settings.base_url, api_key=api_key,
                 provider=provider, session_id=session, session_db=db, platform='yield_web',
                 ephemeral_system_prompt=web_turn_instructions(request['request_context'], code_enabled=code_enabled),
-                enabled_toolsets=['yield', 'skills', 'memory', 'session_search', 'clarify',
-                                 'web_shared_files', 'todo', 'delegation'] + (['code_execution'] if code_enabled else []),
+                enabled_toolsets=web_toolsets,
                 max_iterations=max(1, remaining_models), max_tokens=settings.max_output_tokens,
                 run_budget_seconds=ctx.remaining_seconds(), quiet_mode=True,
                 reasoning_config={'enabled': True, 'effort': settings.reasoning_effort} if settings.reasoning_effort else None,
@@ -314,6 +321,7 @@ async def chat(request, emit, waiters=None):
                 'native_usage': {'api_calls': totals['models'], 'input_tokens': totals['input_tokens'],
                                  'output_tokens': totals['output_tokens'], 'total_tokens': totals['tokens']}}
     finally:
+        shutdown_employee_mcp_tools()
         if secret_scope is not None:
             reset_secret_scope(secret_scope)
         if db is not None:

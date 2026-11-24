@@ -68,6 +68,11 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             elif any(m.get('role') == 'tool' and '7921' in str(m['content']) for m in messages):
                 message = {'role': 'assistant', 'content': local_media + '\n\n' + answer}
                 reason = 'stop'
+            elif not any(m.get('role') == 'tool' and m.get('tool_call_id') == 'mcp-status' for m in messages):
+                message = {'role': 'assistant', 'content': None, 'tool_calls': [
+                    {'index': 0, 'id': 'mcp-status', 'type': 'function', 'function': {
+                        'name': 'manage_connections', 'arguments': json.dumps({'action': 'status'})}}]}
+                reason = 'tool_calls'
             elif not any(m.get('role') == 'tool' and 'USE_AUTHORIZED_RESULT' in str(m.get('content')) for m in messages):
                 message = {'role': 'assistant', 'content': None, 'tool_calls': [
                     {'index': 0, 'id': 'skill-call', 'type': 'function', 'function': {
@@ -188,6 +193,9 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                     assert any(m.get('role') == 'tool' for m in saved['native_messages'])
                     assert await sessions.get_session_title(session) == 'My chosen title'
                     assert await sessions.get_session_title_source(session) == 'user'
+            local_receipts = [m for m in saved['native_messages']
+                              if m.get('role') == 'tool' and m.get('tool_call_id') == 'mcp-status']
+            assert local_receipts and json.loads(local_receipts[0]['content'])['local_mcp'] is True
             assert title_requests == ['read the stored result']
             assert len(answered_history) == 1
             prior = answered_history[0]
@@ -206,7 +214,7 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             assert '/private/tmp/local.png' not in json.dumps(live_messages)
             expected = {'clarify', 'skills_list', 'skill_view', 'skill_manage', 'memory',
                         'tool_search', 'tool_describe', 'tool_call', 'read_file', 'search_files',
-                        'delegate_task'}
+                        'delegate_task', 'manage_connections'}
             # The native vision schema is gated on the provider's image capability.
             assert seen_tools and all(set(tools) - {'vision_analyze'} == expected for tools in seen_tools)
             catalogs = [tools['tool_search']['function']['description'] for tools in seen_tools]

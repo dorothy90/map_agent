@@ -157,6 +157,77 @@ def toggle_profile_skill(name: str, body: SkillToggle, request: Request):
     return profile_skills(request, name, body.enabled)
 
 
+def profile_mcp(request, action, name=None, body=None):
+    from . import native_hermes
+    from .web_connections import guard_mcp_profile
+
+    user = getattr(request.state, 'principal_id', None)
+    if not user:
+        raise HTTPException(401, '인증된 프로필이 필요해요.')
+    profile = native_hermes.profile_path(user)
+    mutation = action in ('add', 'edit', 'delete', 'enabled')
+    try:
+        guard_mcp_profile(profile)
+        if mutation:
+            profile = native_hermes.prepare_profile(user)
+        elif not profile.exists():
+            if action == 'list':
+                return {'servers': []}
+            if body is None:
+                raise HTTPException(404, '서버를 찾을 수 없어요.')
+            profile = native_hermes.prepare_profile(user)
+        env = {k: os.environ[k] for k in ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR')
+               if k in os.environ}  # no DB credentials into user MCP commands
+        env.update(HOME=str(profile), HERMES_HOME=str(profile), HERMES_DISABLE_LAZY_INSTALLS='1',
+                   PYTHON_DOTENV_DISABLED='1', HERMES_WRITE_SAFE_ROOT=str(profile))
+        env.setdefault('PATH', os.defpath)
+        command = [sys.executable, '-I', str(Path(__file__).with_name('mcp_profile_worker.py')),
+                   action, json.dumps({'name': name, 'body': body})]
+        with native_hermes.profile_write_lock(profile) if mutation else nullcontext():
+            result = subprocess.run(command, cwd=profile, env=env, capture_output=True,
+                                    check=True, timeout=60 if action == 'test' else 15)
+        response = json.loads(result.stdout)
+    except subprocess.TimeoutExpired:
+        if action == 'test':
+            return {'ok': False, 'error': '연결 테스트 시간이 초과됐어요.', 'tools': [], 'elapsed_ms': 60000}
+        raise HTTPException(503, 'MCP 프로필 응답 시간이 초과됐어요.') from None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise HTTPException(503, 'MCP 프로필을 불러오지 못했어요.') from None
+    if isinstance(response.get('error'), int):
+        raise HTTPException(response['error'], response['detail'])
+    return response
+
+
+@router.get('/harness/mcp/servers')
+def mcp_servers(request: Request):
+    return profile_mcp(request, 'list')
+
+
+@router.post('/harness/mcp/servers')
+def add_mcp_server(body: dict, request: Request):
+    return profile_mcp(request, 'add', body.get('name'), body)
+
+
+@router.put('/harness/mcp/servers/{name}')
+def edit_mcp_server(name: str, body: dict, request: Request):
+    return profile_mcp(request, 'edit', name, body)
+
+
+@router.delete('/harness/mcp/servers/{name}')
+def delete_mcp_server(name: str, request: Request):
+    return profile_mcp(request, 'delete', name)
+
+
+@router.put('/harness/mcp/servers/{name}/enabled')
+def toggle_mcp_server(name: str, body: SkillToggle, request: Request):
+    return profile_mcp(request, 'enabled', name, body.model_dump())
+
+
+@router.post('/harness/mcp/servers/{name}/test')
+def test_mcp_server(name: str, request: Request, body: dict | None = None):
+    return profile_mcp(request, 'test', name, body)
+
+
 @router.get("/harness/sessions/{session_id}")
 async def session_runs(session_id: str, request: Request, limit: int = Query(50, ge=1, le=100), cursor: str | None = None):
     service = controller(request)

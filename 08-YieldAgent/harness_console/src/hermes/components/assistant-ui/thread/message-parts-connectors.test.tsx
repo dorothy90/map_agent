@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -101,7 +101,7 @@ afterEach(() => {
 })
 
 describe('manage_connections routing outside guided onboarding', () => {
-  it('renders the operation card for a plain chat session', async () => {
+  it('keeps hosted operation cards disabled', async () => {
     const Fallback = MESSAGE_PARTS_COMPONENTS.tools.Fallback
     setSessionOwnerHint(STORED_ID, OWNER)
     setConnectionRequest(REQUEST)
@@ -116,9 +116,53 @@ describe('manage_connections routing outside guided onboarding', () => {
       </I18nProvider>
     )
 
-    await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: 'Connect' })).toHaveLength(2)
-    })
+    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull()
     expect(screen.queryByText(/running manage connections/i)).toBeNull()
+  })
+})
+
+
+describe('local MCP receipts', () => {
+  it.each(['list', 'install', 'update', 'remove', 'enable', 'error'])('renders settled %s JSON', action => {
+    const Fallback = MESSAGE_PARTS_COMPONENTS.tools.Fallback
+    const result = action === 'error'
+      ? { local_mcp: true, error: 'Local MCP operation failed.' }
+      : { ok: true, local_mcp: true, action, servers: [{ name: 'sample', mcp: true }] }
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <SessionViewProvider value={view(SESSION_ID, STORED_ID)}>
+          <Fallback {...props()} status={{ type: 'complete' }} result={JSON.stringify(result)} />
+        </SessionViewProvider>
+      </I18nProvider>
+    )
+    expect(screen.getByLabelText('Local MCP result').textContent).toContain(action === 'error' ? 'Local MCP operation failed.' : 'sample')
+    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull()
+  })
+
+  it('suppresses local receipts while a hosted request owns the call', () => {
+    const Fallback = MESSAGE_PARTS_COMPONENTS.tools.Fallback
+    setConnectionRequest(REQUEST)
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <SessionViewProvider value={view(SESSION_ID, STORED_ID)}>
+          <Fallback {...props()} status={{ type: 'complete' }} result={{ local_mcp: true, ok: true }} />
+        </SessionViewProvider>
+      </I18nProvider>
+    )
+    expect(screen.queryByLabelText('Local MCP result')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull()
+  })
+
+  it('does not expose a hosted result as a local receipt', () => {
+    const Fallback = MESSAGE_PARTS_COMPONENTS.tools.Fallback
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <SessionViewProvider value={view(SESSION_ID, STORED_ID)}>
+          <Fallback {...props()} status={{ type: 'complete' }} result={{ ok: true, connect_url: 'https://example.invalid' }} />
+        </SessionViewProvider>
+      </I18nProvider>
+    )
+    expect(screen.queryByLabelText('Local MCP result')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Connect' })).toBeNull()
   })
 })

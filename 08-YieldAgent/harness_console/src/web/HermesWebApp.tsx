@@ -1,4 +1,4 @@
-import { ArrowDown, Layers, PanelLeft, SquarePen, Search } from 'lucide-react'
+import { ArrowDown, Layers, PanelLeft, Plug, SquarePen, Search } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@nanostores/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -26,6 +26,7 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import './sidebar.css'
 import { SkillsCatalog } from './SkillsCatalog'
 import { ProductPicker } from './ProductPicker'
+import { McpServersPage, McpComposerButton, useMcpServers } from './McpServers'
 import { WebSessionRow } from './WebSessionRow'
 import { useWebSession } from './use-web-session'
 export type ConnectionResolver = NonNullable<WebHostOptions['getWebSocketConnection']>
@@ -43,7 +44,10 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
  const navigate=useNavigate()
  const location=useLocation()
  const showingSkills=new URLSearchParams(location.search).get('view')==='skills'
- const actions=useWebSession(host,showingSkills), gatewayState=useStore($gatewayState), sessions=useStore($sessions)
+ const showingMcp=new URLSearchParams(location.search).get('view')==='mcp'
+ const showingSettings=showingSkills || showingMcp
+ const mcpServers=useMcpServers(fetcher).data ?? []
+ const actions=useWebSession(host,showingSettings), gatewayState=useStore($gatewayState), sessions=useStore($sessions)
  const visibleSessions=sessions.filter(session => !session.archived && !(session as SessionInfo & {deleted?:boolean}).deleted)
  const listError=useStore($sessionsLoadError), listLoading=useStore($sessionsLoading)
  const freshDraftKey=useStore($freshDraftKey)
@@ -97,8 +101,8 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
   if(matchesSessionLabel(label,query ?? ''))groups[sessionDayGroup(session,now)].push({session,label})
  }
  useEffect(() => {
-  document.title=(showingSkills ? '스킬' : title)+' · 수율 분석'
- },[showingSkills,title])
+  document.title=(showingMcp ? 'MCP 서버' : showingSkills ? '스킬' : title)+' · 수율 분석'
+ },[showingMcp,showingSkills,title])
  useEffect(() => {
   const onKey=(event:KeyboardEvent) => {
    if((event.metaKey || event.ctrlKey) && event.key.toLowerCase()==='k'){
@@ -132,6 +136,12 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
   params.set('view','skills')
   navigate({pathname:location.pathname,search:params.toString()})
  }
+ const openMcp=() => {
+  setDrawerOpen(false)
+  const params=new URLSearchParams(location.search)
+  params.set('view','mcp')
+  navigate({pathname:location.pathname,search:params.toString()})
+ }
  const jumpToQuestion=() => {
   const card=shell.current?.querySelector<HTMLElement>('[data-clarify-stepper], form:has([data-slot="clarify-inline"])')
   if(card){card.scrollIntoView({block:'center',behavior:'smooth'});card.querySelector<HTMLElement>('button:not(:disabled),textarea:not(:disabled)')?.focus({preventScroll:true})}
@@ -162,12 +172,13 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
     if(event.key==='Escape'){event.preventDefault();setQuery(null);searchToggle.current?.focus()}
    }}/>}
    <button className="web-sidebar-action" aria-current={showingSkills ? 'page' : undefined} onClick={openSkills}><Layers size={19} aria-hidden="true"/>스킬</button>
+   <button className="web-sidebar-action" aria-current={showingMcp ? 'page' : undefined} onClick={openMcp}><Plug size={19} aria-hidden="true"/>MCP 서버<span className="mcp-sidebar-count">{mcpServers.filter(server => server.enabled).length}/{mcpServers.length}</span></button>
    <div className="web-session-list">
     {listError && <p role="alert">세션 목록을 불러오지 못했습니다. <button onClick={() => void actions.refreshSessions()}>다시 시도</button></p>}
     {failed && <button onClick={retry}>대화 제목 다시 불러오기</button>}
     {Object.entries(groups).map(([group,rows]) => rows.length>0 && <section key={group} aria-label={group}>
      <h2 className="web-list-heading">{group}</h2>
-     {rows.map(({session,label}) => <WebSessionRow key={sessionLabelKey(session)} label={label} selected={!showingSkills && session.id===actions.selectedStoredSessionId} disabled={!ready}
+     {rows.map(({session,label}) => <WebSessionRow key={sessionLabelKey(session)} label={label} selected={!showingSettings && session.id===actions.selectedStoredSessionId} disabled={!ready}
       onSelect={() => {setDraftTitle(null);setDrawerOpen(false);navigate(sessionRoute(session.id))}}
       onArchive={async () => {
        await host.gateway.request('session.archive',{session_id:session.id})
@@ -189,21 +200,22 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
     {actions.hasMoreSessions && <button className="web-load-more" disabled={!ready || listLoading} onClick={() => void actions.loadMoreSessions()}>이전 대화 더 보기</button>}
    </div>
   </nav>
-  <div className="hermes-web-chat" data-new-chat={(!showingSkills && isNewChat) || undefined} inert={mobile && drawerOpen}>
-   <header className="web-header">{!sidebarOpen && <button ref={sidebarToggle} className="web-sidebar-toggle" aria-label="사이드바 열기" aria-controls="web-sidebar" aria-expanded={false} onClick={() => {setSidebarOpen(true);requestAnimationFrame(() => sidebarClose.current?.focus())}}><PanelLeft size={19} aria-hidden="true"/></button>}<h2 title={showingSkills ? '스킬' : title}>{showingSkills ? '스킬' : title}</h2>{!showingSkills && pending>0 && <button className="web-pending" onClick={jumpToQuestion}>답변할 질문 {pending}개 <ArrowDown size={16} aria-hidden="true"/></button>}</header>
+  <div className="hermes-web-chat" data-new-chat={(!showingSettings && isNewChat) || undefined} inert={mobile && drawerOpen}>
+   <header className="web-header">{!sidebarOpen && <button ref={sidebarToggle} className="web-sidebar-toggle" aria-label="사이드바 열기" aria-controls="web-sidebar" aria-expanded={false} onClick={() => {setSidebarOpen(true);requestAnimationFrame(() => sidebarClose.current?.focus())}}><PanelLeft size={19} aria-hidden="true"/></button>}<h2 title={showingMcp ? 'MCP 서버' : showingSkills ? '스킬' : title}>{showingMcp ? 'MCP 서버' : showingSkills ? '스킬' : title}</h2>{!showingSettings && pending>0 && <button className="web-pending" onClick={jumpToQuestion}>답변할 질문 {pending}개 <ArrowDown size={16} aria-hidden="true"/></button>}</header>
    {!ready && <p className="web-connection-notice" role={error ? 'alert' : 'status'}>{error || '게이트웨이 연결 중…'}</p>}
    {ready && gatewayState!=='open' && <p className="web-connection-notice" role="status">{gatewayState==='connecting' ? '게이트웨이 연결 중…' : '게이트웨이 연결이 끊겼습니다.'}</p>}
    <ConfirmHost/>
    {showingSkills && <SkillsCatalog fetcher={fetcher} onCreate={createSkill}/>}
+   {showingMcp && <McpServersPage fetcher={fetcher} container={shell}/>}
    <WebPresentationProvider>
    <SessionViewProvider value={PRIMARY_SESSION_VIEW}><ChatRuntimeBoundary busy={actions.busy} suppressMessages={false} onCancel={actions.cancelRun} onEdit={actions.editMessage} onReload={actions.reloadFromMessage} onThreadMessagesChange={actions.handleThreadMessagesChange}>
-    <div className="web-chat-stage" hidden={showingSkills}>
+    <div className="web-chat-stage" hidden={showingSettings}>
     {isNewChat && <section className="web-empty-state" aria-labelledby="web-welcome">
      <h2 id="web-welcome">어떤 분석을 시작할까요?</h2>
     </section>}
     <div className="hermes-web-thread" hidden={isNewChat}><Thread gateway={host.gateway} sessionId={actions.activeSessionId} sessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun}/></div>
     <div className="hermes-web-composer">{(pending>0 || actions.busy) && <div className="web-runline">{pending>0 && <span>● 추가 비교를 위해 답변을 기다리고 있어요.</span>}{actions.busy && <button className="web-extra-stop" onClick={actions.cancelRun}>중지</button>}</div>}<ChatBar freshDraftKey={freshDraftKey} gateway={host.gateway} busy={actions.busy} disabled={!ready || gatewayState!=='open'} sessionId={actions.activeSessionId} queueSessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun}
-      contextControl={isNewChat && <ProductPicker value={product} onChange={setProduct} fetcher={fetcher} container={shell}/>}
+      contextControl={<>{isNewChat && <ProductPicker value={product} onChange={setProduct} fetcher={fetcher} container={shell}/>}<McpComposerButton fetcher={fetcher} container={shell} onManage={openMcp}/></>}
       onSubmit={async (draft, ...rest) => {
        const text=isNewChat && product && !isSlashCommandText(draft) ? `${product} 제품 기준으로, ${draft}` : draft
        const fresh=!actions.selectedStoredSessionId

@@ -36,7 +36,7 @@ export default defineConfig({
     } },
     { resolve, test: {
       testNamePattern: supportedCases,
-      name: 'ui', environment: 'jsdom', server: { deps: { inline: [/radix-ui/] } }, include: [...uiTests, 'src/hermes/app/contrib/hooks/completed-reply-refresh.test.tsx', 'src/hermes/components/confirm-host.test.tsx', 'src/web/**/*.test.tsx', 'src/yield/**/*.test.tsx'],
+      name: 'ui', environment: 'jsdom', server: { deps: { inline: [/radix-ui/] } }, include: [...uiTests, 'src/hermes/components/assistant-ui/thread/message-parts-connectors.test.tsx', 'src/hermes/app/contrib/hooks/completed-reply-refresh.test.tsx', 'src/hermes/components/confirm-host.test.tsx', 'src/web/**/*.test.tsx', 'src/yield/**/*.test.tsx'],
       setupFiles: ['./src/hermes/vitest.setup.ts', './src/platform/pr9-ui-offline-setup.ts', './src/platform/pr9-upstream-ui-bridge-setup.ts'], globals: true,
       env: { NODE_ENV: 'development' }, testTimeout: 15_000, hookTimeout: 30_000,
       css: { include: [/status-stack\.css$/] },

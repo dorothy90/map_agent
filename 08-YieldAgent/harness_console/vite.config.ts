@@ -23,6 +23,7 @@ export default defineConfig({
     host: '127.0.0.1', port: 5175, strictPort: true,
     proxy: {
       '/api/auth/ws-ticket': { target: gatewayTarget, changeOrigin: true },
+      '/harness/mcp': { target: gatewayTarget, changeOrigin: true },
       '/harness/skills': { target: gatewayTarget, changeOrigin: true },
       '/harness/products': { target: gatewayTarget, changeOrigin: true },
       '/harness/sessions': { target: gatewayTarget, changeOrigin: true },

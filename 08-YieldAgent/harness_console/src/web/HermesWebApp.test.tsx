@@ -358,3 +358,15 @@ it.each(['archive','delete','cancel'])('session menu removes an open row after %
   expect($activeSessionId.get()).toBeNull()
  }
 })
+
+it('navigates to MCP settings from the sidebar and keeps the chat stage hidden', async () => {
+ const host=new WebHostAdapter({rpcMode:'authority',location:{href:'http://localhost/'},reconnect:false})
+ vi.spyOn(host,'connect').mockImplementation(() => new Promise(() => {}))
+ const fetcher=vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({servers:[]})))
+ render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host} fetcher={fetcher}/>)
+ fireEvent.click(screen.getByRole('button',{name:'MCP 서버0/0'}))
+ expect(await screen.findByRole('heading',{name:'내 MCP 서버'})).toBeTruthy()
+ expect(window.location.hash).toContain('view=mcp')
+ expect(document.title).toBe('MCP 서버 · 수율 분석')
+ expect(document.querySelector('.web-chat-stage')?.hasAttribute('hidden')).toBe(true)
+})
