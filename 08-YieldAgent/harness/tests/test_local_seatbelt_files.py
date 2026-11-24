@@ -170,3 +170,58 @@ def test_actual_seatbelt_cancellation_stops_descendant_writes(boundary):
                 except asyncio.CancelledError:
                     pass
     asyncio.run(exercise())
+
+
+def test_actual_seatbelt_transfers_published_files(boundary):
+    code = """
+(publish_directory / 'summary.pdf').write_bytes(b'%PDF-sample')
+(publish_directory / 'raw.bin').write_bytes(b'x' * (13 * 1024**2))
+"""
+    result = asyncio.run(boundary.execute_python(code, {}, 30))
+    assert result['status'] == 'success'
+    files = {item['title']: item['data'] for item in result['generated_files']}
+    try:
+        assert files['summary.pdf'].read() == b'%PDF-sample'
+        assert files['raw.bin'].read() == b'x' * (13 * 1024**2)
+    finally:
+        for stream in files.values():
+            stream.close()
+    assert not list(boundary.workdir.glob('python-*'))
+
+
+
+def test_web_kernel_persists_scoped_data_and_publishes_files(boundary):
+    from types import SimpleNamespace
+    from harness.runtime.session_kernel import CellInput, SessionKernels
+
+    async def exercise():
+        kernels = SessionKernels()
+        ctx = SimpleNamespace(settings=SimpleNamespace(isolation=boundary.config),
+                              run={'principal_id': 'employee-a', 'session_id': 'first'})
+        try:
+            csv = await boundary.upload_bytes(b'value\n10\n42\n')
+            first = await kernels.execute(CellInput(code=f"values = pd.read_csv({csv!r}); print(values.value.sum())"), ctx)
+            assert first.scope['execute_code']['output'].strip() == '52'
+            second = await kernels.execute(CellInput(code="emit_table(values); (publish_directory/'summary.csv').write_bytes(values.to_csv(index=False).encode())"), ctx)
+            assert second.scope['execute_code']['kernel'] == {'mode': 'session', 'reused': True, 'execution_count': 2, 'state_reset': False}
+            assert second.tables[0].rows == [{'value': 10}, {'value': 42}]
+            with second.artifacts[0]['data'] as report:
+                assert report.read() == b'value\n10\n42\n'
+            for principal, session in [('employee-a', 'second'), ('employee-b', 'first')]:
+                other = SimpleNamespace(settings=ctx.settings, run={'principal_id': principal, 'session_id': session})
+                result = await kernels.execute(CellInput(code="print('values' in globals())"), other)
+                assert result.scope['execute_code']['output'].strip() == 'False'
+            denied = await kernels.execute(CellInput(code=f"pd.read_csv({csv!r})"), other)
+            assert denied.status == 'error' and 'PermissionError' in denied.scope['execute_code']['output']
+            reset = await kernels.execute(CellInput(code="print('values' in globals())", reset=True), ctx)
+            assert reset.scope['execute_code']['kernel']['state_reset'] and reset.summary.strip() == 'False'
+            kernel = kernels.sessions['employee-a', 'first']
+            workdir = kernel.backend.workdir
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(kernels.execute(CellInput(code="import time; time.sleep(30)"), ctx), .3)
+            assert ('employee-a', 'first') not in kernels.sessions
+            assert kernel.process is None and not list(workdir.glob('cell-*'))
+        finally:
+            await kernels.close()
+
+    asyncio.run(exercise())

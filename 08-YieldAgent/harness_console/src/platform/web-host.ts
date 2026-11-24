@@ -1,4 +1,4 @@
-import { isGatewayWebSocketUrl, isStableOpen, reconnectBackoffDelayMs, type ReconnectBackoffOptions } from '@hermes/shared'
+import { LOCAL_CONNECTION_ID, isGatewayWebSocketUrl, isStableOpen, reconnectBackoffDelayMs, type ReconnectBackoffOptions } from '@hermes/shared'
 import { HermesGateway } from '@/api/client'
 import type { HermesApiRequest, HermesConnection } from '@/global'
 import { installWebApiBridge, installWebDesktopBridge } from '@/platform-bridge'
@@ -81,7 +81,34 @@ export class WebHostAdapter {
   installApiBridge(): () => void { return installWebApiBridge(this) }
 
   installDesktopBridge(): () => void {
-    return installWebDesktopBridge({ getConnection: () => this.getConnection(), supportsSecondaryGateways: false })
+    return installWebDesktopBridge({
+      getConnection: () => this.getConnection(),
+      supportsSecondaryGateways: false,
+      saveGatewayFile: async ({ path, sessionId, profile, connectionId, suggestedName }) => {
+        if (!path.startsWith('/outputs/') || !sessionId || (connectionId && connectionId !== LOCAL_CONNECTION_ID)) {
+          throw new Error('Expected a generated file from this session')
+        }
+        const query = { path, session_id: sessionId, profile: profile ?? this.profile }
+        const url = new URL(this.basePath + '/api/fs/download', this.location)
+        url.search = new URLSearchParams(query).toString()
+        const probe = await this.fetcher(url, { method: 'HEAD', credentials: 'same-origin' })
+        if (!probe.ok) throw new Error(`File download unavailable (${probe.status})`)
+        if (probe.headers.get('X-Hermes-File-Ticket') === 'required') {
+          const { ticket } = await this.api<{ ticket?: unknown }>({
+            path: '/api/files/ticket', profile: query.profile, body: { route: 'download', ...query },
+          })
+          if (typeof ticket !== 'string' || !ticket.trim()) throw new Error('Invalid file download ticket')
+          url.searchParams.set('ticket', ticket)
+        }
+        const link = document.createElement('a')
+        link.href = url.href
+        link.download = suggestedName ?? ''
+        document.body.append(link)
+        link.click()
+        link.remove()
+        return { saved: true }
+      },
+    })
   }
 
   connect(): Promise<void> {

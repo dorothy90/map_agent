@@ -6,6 +6,7 @@ import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { LruCache } from '@/lib/lru-cache'
 import { capitalize } from '@/lib/text'
+import { getWebDesktopBridge } from '@/platform-bridge'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
 
@@ -287,15 +288,44 @@ export interface GatewayFileOrigin {
   suggestedName?: string
 }
 
-// Replacement for opening gateway-local file paths with file://. The file lives
-// on the gateway, so ask the Electron main process to fetch the bytes through
-// the authenticated backend connection and save them locally. This avoids
-// browser/OS downloads losing OAuth cookies and avoids the data-URL cap used by
-// preview endpoints. Every renderer gateway-file save resolves its backend here.
+export function isGeneratedOutputPath(path: string): boolean {
+  return path.startsWith('/outputs/')
+}
+
+export function gatewayFileName(path: string): string {
+  const name = mediaName(path)
+  try {
+    return decodeURIComponent(name)
+  } catch {
+    return name
+  }
+}
+
+// Pass the path and its owning session to the host that performs the download.
 export async function downloadGatewayMediaFile(
   path: string,
   origin: GatewayFileOrigin = {}
-): Promise<GatewayFileSaveResult> { throw new Error('Native download capability is disabled') }
+): Promise<GatewayFileSaveResult> {
+  if (!path?.trim()) {
+    throw new Error('Missing gateway file path')
+  }
+
+  const bridge = getWebDesktopBridge()
+  if (!bridge?.saveGatewayFile) {
+    throw new Error('Desktop file download bridge is unavailable')
+  }
+
+  const conn = $connection.get()
+  const owner = origin.owner ?? { connectionId: conn?.connectionId, profile: origin.profile ?? conn?.profile }
+
+  return bridge.saveGatewayFile({
+    ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
+    path,
+    ...(owner.profile ? { profile: owner.profile } : {}),
+    ...(origin.sessionId ? { sessionId: origin.sessionId } : {}),
+    suggestedName: origin.suggestedName || gatewayFileName(path)
+  })
+}
 
 /** A user-initiated gateway file save with the shared feedback: a brief
  *  "Saved" toast, a "Download failed" toast carrying the reason, and silence

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import asyncio
 import json
 import time
 import uuid
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
@@ -77,6 +79,10 @@ class HarnessStore:
             # pointing at compensated/deleted GridFS blobs.
             await asyncio.gather(publication, return_exceptions=True)
             raise
+        finally:
+            for artifact in artifacts:
+                if artifact.get("generated_file"):
+                    artifact["data"].close()
 
     async def _put_result(self, principal_id, session_id, observation, rows, artifacts, *, tables=None):
         if rows and tables:
@@ -129,6 +135,9 @@ class HarnessStore:
                 blob = await self.blobs.upload_from_stream(artifact.get("title", "artifact"), content)
                 blob_ids.append(blob)
                 refs.append({"artifact_id": str(blob), "title": artifact.get("title", ""), "mime": artifact.get("mime", "text/html"), "result_id": result_id})
+                if artifact.get("generated_file"):
+                    filename = quote(artifact["title"], safe="")
+                    refs[-1]["output_path"] = f"/outputs/{observation['run_id']}/{result_id}/{filename}"
             single = table_refs[0] if len(table_refs) == 1 else None
             obs = ToolObservation(**{
                 **observation, "schema_version": "harness-observation/v2",
@@ -159,6 +168,8 @@ class HarnessStore:
                     for blob in blob_ids:
                         if str(blob) not in referenced:
                             await self.blobs.delete(blob)
+                    if saved["principal_id"] != principal_id or saved["session_id"] != session_id:
+                        raise PermissionError("Result unavailable")
                     return winner
                 raise
             for blob in blob_ids:
@@ -188,6 +199,39 @@ class HarnessStore:
         blob = await self.blobs.open_download_stream(ObjectId(table.data_ref))
         return json.loads(await blob.read())
 
+    async def iter_table_rows(self, principal_id, session_id, result_id, table_id=None):
+        obs = await self.observation(principal_id, session_id, result_id)
+        table = self._select_table(obs, table_id)
+        blob = await self.blobs.open_download_stream(ObjectId(table.data_ref))
+        try:
+            async for row in self._json_array_rows(blob):
+                yield row
+        finally:
+            await asyncio.to_thread(blob.close)
+
+    @staticmethod
+    async def _json_array_rows(blob):
+        # Older GridFS tables contain one JSON array, with UTF-8 characters and rows spanning chunks.
+        utf8 = codecs.getincrementaldecoder("utf-8")()
+        decoder = json.JSONDecoder()
+        pending = ""
+        while chunk := await blob.readchunk():
+            pending += utf8.decode(chunk)
+            pos = 0
+            while pos < len(pending):
+                if pending[pos] in " [,]\t\r\n":
+                    pos += 1
+                    continue
+                try:
+                    row, end = decoder.raw_decode(pending, pos)
+                except json.JSONDecodeError:
+                    break
+                yield row
+                pos = end
+            pending = pending[pos:]
+        if (pending + utf8.decode(b"", final=True)).strip():
+            raise ValueError("Invalid stored result table")
+
     async def read_result(self, principal_id, session_id, result_id, *, table_id=None, offset=0, limit=50, columns=None):
         if offset < 0 or not 1 <= limit <= 1000:
             raise ValueError("Invalid page")
@@ -211,6 +255,8 @@ class HarnessStore:
         if not record:
             raise PermissionError("Artifact unavailable")
         ref = next(a for a in record["observation"]["artifact_refs"] if a["artifact_id"] == artifact_id)
+        if ref.get("output_path"):
+            raise PermissionError("Use the generated file download")
         blob = await self.blobs.open_download_stream(ObjectId(artifact_id))
         return {"result_id": record["observation"]["result_id"], **ref}, await blob.read()
 

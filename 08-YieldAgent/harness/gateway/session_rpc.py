@@ -300,6 +300,9 @@ class SessionRPC:
             try:
                 if method == 'session.delete':
                     await self.db.set_session_deleted(sid)
+                    controller = getattr(self.execution, 'controller', None)
+                    if kernels := getattr(controller, 'kernels', None):
+                        await kernels.close((self.execution.principal_id, sid))
                     return {'deleted': sid}
                 if method == 'session.archive':
                     await self.db.set_session_archived(sid, value)

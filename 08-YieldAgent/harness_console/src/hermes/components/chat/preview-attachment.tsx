@@ -6,7 +6,7 @@ import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Download, FolderOpen, MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
-import { downloadGatewayMediaFile } from '@/lib/media'
+import { downloadGatewayMediaFile, gatewayFileName, isGeneratedOutputPath } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
@@ -22,7 +22,11 @@ export function PreviewAttachment({ target }: { target: string }) {
   const { t } = useI18n()
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
-  const cwd = useStore(useSessionView().$cwd)
+  const view = useSessionView()
+  const cwd = useStore(view.$cwd)
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const sessionId = storedId || runtimeId
   const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -32,7 +36,8 @@ export function PreviewAttachment({ target }: { target: string }) {
   const mountedRef = useRef(false)
   const requestTokenRef = useRef(0)
   const targetRef = useRef(target)
-  const name = previewName(target)
+  const generatedOutput = isGeneratedOutputPath(target)
+  const name = generatedOutput ? gatewayFileName(target) : previewName(target)
   const isActive = openSources.includes(target)
 
   cwdRef.current = cwd
@@ -171,10 +176,7 @@ export function PreviewAttachment({ target }: { target: string }) {
     setDownloading(true)
 
     try {
-      // Works in both modes: the Electron main process fetches the bytes
-      // through the session's backend connection (local gateway or remote)
-      // and prompts for a save location.
-      const result = await downloadGatewayMediaFile(target)
+      const result = await downloadGatewayMediaFile(target, sessionId ? { sessionId } : undefined)
 
       if (mountedRef.current && result.saved) {
         setDownloaded(true)
@@ -247,20 +249,22 @@ export function PreviewAttachment({ target }: { target: string }) {
           {downloaded ? t.fileMenu.downloadSaved : t.fileMenu.download}
         </button>
       )}
-      <button
-        className="shrink-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
-        disabled={opening}
-        onClick={() => void togglePreview()}
-        type="button"
-      >
-        {opening
-          ? t.preview.opening
-          : localTarget?.type === 'missing'
-            ? t.preview.unavailable
-            : isActive
-              ? t.preview.hide
-              : t.preview.openPreview}
-      </button>
+      {!generatedOutput && (
+        <button
+          className="shrink-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
+          disabled={opening}
+          onClick={() => void togglePreview()}
+          type="button"
+        >
+          {opening
+            ? t.preview.opening
+            : localTarget?.type === 'missing'
+              ? t.preview.unavailable
+              : isActive
+                ? t.preview.hide
+                : t.preview.openPreview}
+        </button>
+      )}
     </div>
   )
 }

@@ -7,6 +7,7 @@ import signal
 from pathlib import Path
 import sys
 import threading
+import uuid
 
 HERE = Path(__file__).resolve().parent
 
@@ -82,7 +83,7 @@ def refresh_web_tool_pin(db, session, saved, tools, web_schema_names):
             db.update_session_tool_names(session, {**pin, 'tools': refreshed})
 
 
-async def chat(request, emit):
+async def chat(request, emit, waiters=None):
     from harness.config import Settings
     from harness.executor import ExecutionContext, ToolExecutor
     from harness.gateway.pending_controls import PendingControls
@@ -120,6 +121,7 @@ async def chat(request, emit):
         agent = None
         stopping = False
         invocations = set()
+        published_files = {}
 
         class ChatToolExecutor(ToolExecutor):
             async def execute(self, call):
@@ -142,8 +144,50 @@ async def chat(request, emit):
 
         loop.add_signal_handler(signal.SIGTERM, interrupt)
         executor = ChatToolExecutor(domain_registry(), ctx)
+        code_enabled = settings.web_python_enabled
+        allowed = set(executor.registry.tools if settings.native_allowed_tools is None else settings.native_allowed_tools)
+        allowed.difference_update({'run_python', 'execute_code'})
         yield_names = register_yield_tools(registry, executor, loop,
-            invocation_id=_approval_tool_call_id.get, allowed=settings.native_allowed_tools)
+            invocation_id=_approval_tool_call_id.get, allowed=allowed)
+        if code_enabled:
+            from harness import native_ipc as ipc
+            from tools import code_kernel, code_execution_tool
+            from copy import deepcopy
+
+            # The stock schema advertises host RPC stubs. The web kernel's OS boundary
+            # supports Python and explicitly published files; keep the original inputs.
+            schema = deepcopy(code_execution_tool.EXECUTE_CODE_SCHEMA)
+            schema['description'] = (
+                'Run Python in this chat’s isolated persistent Hermes kernel. Variables and imports survive '
+                'later calls and turns. Read query_db CSV paths with pd.read_csv. Use print for output. '
+                'read_result(export_for_python=true) exports other stored tables as full CSVs. Use '
+                'emit_table and emit_plot for chat artifacts. Write finished files to publish_directory '
+                '(a Path) to attach them to this reply.'
+            )
+            schema['parameters']['properties']['code']['description'] = 'Python source to execute in this session.'
+            entry = registry.get_entry('execute_code')
+            entry.schema = schema
+            entry.description = schema['description']
+            code_execution_tool.build_execute_code_schema = lambda *args, **kwargs: schema
+
+            def isolated_cell(code, *args, reset=False, **kwargs):
+                identity, queue = waiters.register()
+                try:
+                    emit(ipc.call('tool_call', identity, name='execute_code',
+                                  invocation_id=_approval_tool_call_id.get() or uuid.uuid4().hex,
+                                  args={'code': code, 'reset': reset}))
+                    result = queue.get(timeout=max(1, ctx.remaining_seconds()))
+                    for ref in result.get('artifact_refs', []):
+                        if path := ref.get('output_path'):
+                            published_files[path] = f'MEDIA:"{path}"'
+                    return json.dumps(result, ensure_ascii=False)
+                finally:
+                    waiters.discard(identity)
+
+            # Preserve upstream argument/approval checks and route both terminal profiles
+            # through the authenticated gateway kernel. Neither path can launch on the host.
+            code_kernel.execute_in_session_kernel = isolated_cell
+            code_execution_tool._execute_remote = isolated_cell
         install_shared_file_policy(registry, settings.shared_yield_dir)
         create_custom_toolset('web_shared_files', 'Read shared yield files and images',
                               tools=list(SHARED_FILE_TOOLS))
@@ -224,7 +268,7 @@ async def chat(request, emit):
             agent = AIAgent(model=settings.model, base_url=settings.base_url, api_key=api_key,
                 provider=provider, session_id=session, session_db=db, platform='yield_web',
                 enabled_toolsets=['yield', 'skills', 'memory', 'session_search', 'clarify',
-                                 'web_shared_files', 'todo', 'delegation'],
+                                 'web_shared_files', 'todo', 'delegation'] + (['code_execution'] if code_enabled else []),
                 max_iterations=max(1, remaining_models), max_tokens=settings.max_output_tokens,
                 run_budget_seconds=ctx.remaining_seconds(), quiet_mode=True,
                 reasoning_config={'enabled': True, 'effort': settings.reasoning_effort} if settings.reasoning_effort else None,
@@ -233,7 +277,7 @@ async def chat(request, emit):
                 tool_complete_callback=tool_complete)
             agent._on_session_title = publish_title
             try:
-                refresh_web_tool_pin(db, session, saved, agent.tools, (*yield_names, *SHARED_FILE_TOOLS))
+                refresh_web_tool_pin(db, session, saved, agent.tools, (*yield_names, *SHARED_FILE_TOOLS, 'execute_code'))
                 if stopping:
                     return {'interrupted': True, 'turn_exit_reason': 'interrupted'}
                 query = run.get('goal_request', run['query'])
@@ -251,6 +295,10 @@ async def chat(request, emit):
         result = await asyncio.to_thread(converse)
         status = result_status(result)
         answer = web_text(result.get('final_response') or '').strip()
+        missing = [tag for path, tag in published_files.items()
+                   if tag not in answer and f"]({path})" not in answer]
+        if missing:
+            answer = "\n\n".join(filter(None, [answer, *missing]))
         if budget.exhausted_reason:
             status = 'partial'
         if not answer:
@@ -286,5 +334,10 @@ if __name__ == '__main__':
 
     from hermes_cli.plugins_discovery import suppress_plugin_discovery
     with suppress_plugin_discovery():
-        result = asyncio.run(chat(json.loads(sys.stdin.buffer.readline()), emit))
+        from harness import native_ipc as ipc
+        request = json.loads(sys.stdin.buffer.readline())
+        waiters = ipc.Waiters()
+        threading.Thread(target=ipc.receive, args=(os.fdopen(os.dup(0), 'rb'), waiters, lambda _: None),
+                         daemon=True).start()
+        result = asyncio.run(chat(request, emit, waiters))
     emit({'type': 'result', 'result': result})

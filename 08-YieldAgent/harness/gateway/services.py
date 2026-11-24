@@ -7,6 +7,7 @@ import asyncio
 from dataclasses import dataclass
 
 from .execution import Execution
+from .generated_files import DownloadTickets
 from .session_store import MongoSessionStore
 
 
@@ -33,6 +34,7 @@ class GatewayServices:
         self.profile_id_for = profile_id_for
         self.poll_interval, self.max_requests = poll_interval, max_requests
         self._setup_lock = asyncio.Lock()
+        self.download_tickets = DownloadTickets()
         self._ready = False
         self._legacy_readers = {}
 

@@ -9421,11 +9421,11 @@
       "path": "/api/fs/download",
       "method": "GET",
       "source": "hermes_cli/web_routers/files.py:952",
-      "classification": "unsupported",
+      "classification": "implemented",
       "feature": "/api/fs/download",
-      "reason": "disabled_by_policy",
-      "detail": "M1 restricted projection / deferred UI / excluded host surface.",
-      "policy_source": "PORTING_BASELINE:3.3,7.1; m1_plan_codex.log:1.6"
+      "reason": "m1_implementation_target",
+      "detail": "Registered generated output files only.",
+      "policy_source": "Hermes 9ef4800b browser files; Y-Agent run output scope"
     },
     {
       "name": "GET /api/fs/git-root",
@@ -10505,6 +10505,17 @@
       "policy_source": "PORTING_BASELINE:3.3,7.1; m1_plan_codex.log:1.6"
     },
     {
+      "name": "HEAD /api/fs/download",
+      "path": "/api/fs/download",
+      "method": "HEAD",
+      "source": "9ef4800b:hermes_cli/web_routers/files.py:1534",
+      "classification": "implemented",
+      "feature": "/api/fs/download",
+      "reason": "m1_implementation_target",
+      "detail": "Registered generated output files only.",
+      "policy_source": "Hermes 9ef4800b browser files; Y-Agent run output scope"
+    },
+    {
       "name": "PATCH /api/profiles/{name}",
       "path": "/api/profiles/{name}",
       "method": "PATCH",
@@ -10767,6 +10778,17 @@
       "reason": "disabled_by_policy",
       "detail": "M1 restricted projection / deferred UI / excluded host surface.",
       "policy_source": "PORTING_BASELINE:3.3,7.1; m1_plan_codex.log:1.6"
+    },
+    {
+      "name": "POST /api/files/ticket",
+      "path": "/api/files/ticket",
+      "method": "POST",
+      "source": "9ef4800b:hermes_cli/web_routers/files.py:894",
+      "classification": "implemented",
+      "feature": "/api/files/ticket",
+      "reason": "m1_implementation_target",
+      "detail": "Registered generated output files only.",
+      "policy_source": "Hermes 9ef4800b browser files; Y-Agent run output scope"
     },
     {
       "name": "POST /api/files/upload",

@@ -8,6 +8,7 @@ import logging
 from langsmith import tracing_context
 
 from .executor import ExecutionContext
+from .runtime.session_kernel import SessionKernels
 from .store import Conflict, LeaseLost
 from .tools.registry import domain_registry
 
@@ -20,6 +21,7 @@ class RunController:
         self.store, self.settings = store, settings
         self.registry_factory = registry_factory
         self.chat_entrypoint = "stock_chat" if registry_factory is domain_registry else "legacy_verified"
+        self.kernels = SessionKernels()
         self.tasks = {}
         self.owner = str(uuid.uuid4())
         self.closing = False
@@ -114,7 +116,7 @@ class RunController:
 
         heartbeat.add_done_callback(stop_on_heartbeat_failure)
         try:
-            context = ExecutionContext(self.store, self.settings, run)
+            context = ExecutionContext(self.store, self.settings, run, session_kernels=self.kernels)
             await self.store.event(run["run_id"], "run_started", {"query": run["query"],
                 "goal_revision": run["goal_revision"], "engine": "hermes"})
             if run.get('chat_entrypoint') == 'stock_chat':
@@ -273,3 +275,4 @@ class RunController:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)
+        await self.kernels.close()

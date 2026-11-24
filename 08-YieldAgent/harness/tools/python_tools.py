@@ -1,8 +1,11 @@
 from collections import defaultdict
+import csv
 import json
+import tempfile
 from typing import Literal
 
 from pydantic import Field
+from ..isolation.backend import isolation_backend
 from ..runtime.container import ContainerRuntime
 from ..runtime.process import ProcessRuntime
 from ..types import Contract, ResultPage, ResultTable
@@ -28,6 +31,7 @@ class ReadInput(Contract):
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=50, ge=1, le=1000)
     columns: list[str] | None = None
+    export_for_python: bool = Field(default=False, description="Save all stored rows of the selected table and columns as a CSV for execute_code. Offset and limit apply only to the chat preview.")
     wafer_report: WaferReport | None = Field(default=None, description="단일 lot의 LOT_ID, PARAM_NM, WFID, VALUE(0~1) 전체 표에서 요약과 상세 표를 함께 표시한다.")
 
 
@@ -56,7 +60,7 @@ def _selected_map_measurements(tables, sources):
 
 async def read_result(args, ctx):
     page = await ctx.store.read_result(ctx.run["principal_id"], ctx.run["session_id"],
-                                       **args.model_dump(exclude={'wafer_report'}))
+                                       **args.model_dump(exclude={'wafer_report', 'export_for_python'}))
     projection = ResultPage(table_id=page["table_id"], source_total_rows=page["total_rows"],
                             offset=page["offset"], limit=args.limit)
     complete = page["complete"] and not page["truncated"]
@@ -69,6 +73,22 @@ async def read_result(args, ctx):
         caption, report = wafer_group_report(page["rows"], args.wafer_report.threshold_pct)
         artifacts.append(report)
         scope['rendered_summary'] = caption
+    if args.export_for_python:
+        isolation = ctx.settings.isolation
+        if isolation is None:
+            raise ValueError("A configured Python workspace is required to export a table")
+        backend = isolation_backend(isolation, ctx.run["run_id"], ctx.run["principal_id"])
+        with tempfile.TemporaryFile(mode="w+", newline="", encoding="utf-8") as output:
+            writer = csv.DictWriter(output, fieldnames=page["columns"], extrasaction="ignore")
+            writer.writeheader()
+            async for row in ctx.store.iter_table_rows(
+                ctx.run["principal_id"], ctx.run["session_id"], args.result_id, page["table_id"]
+            ):
+                writer.writerow(row)
+            output.seek(0)
+            path = await backend.upload_file(output.buffer)
+        scope["python_csv"] = {"path": path, "table_id": page["table_id"],
+                               "row_count": page["total_rows"], "source_complete": page["complete"]}
     reason = page["missing_reason"] or ("Only a page of the source table was read" if page["truncated"] else None)
     return ToolResult(tables=[ResultTable(table_id=page["table_id"], title=page["title"],
         rows=page["rows"], columns=page["columns"], units=page["units"], complete=complete, missing_reason=reason)],
@@ -106,6 +126,15 @@ async def run_python(args, ctx):
         runtime = (ContainerRuntime(ctx.settings.python_image) if ctx.settings.python_runtime == "docker"
             else ProcessRuntime(ctx.settings.python_executable))
     result = await runtime.execute(args.code, datasets)
+    try:
+        return _python_result(args, result, map_sources, limitations, origins)
+    except BaseException:
+        for item in result.get("generated_files", []):
+            item["data"].close()
+        raise
+
+
+def _python_result(args, result, map_sources, limitations, origins):
     scope = {"python_workspace": result["workspace"]} if "workspace" in result else {}
     renamed = {}
     if map_sources:
@@ -120,6 +149,7 @@ async def run_python(args, ctx):
             'title': renamed.get(table['table_id'], table['title'])} for table in raw_tables]
     artifacts = [{"title": f"분석 차트 {i+1}", "mime": "text/html", "data": html}
         for i, html in enumerate(result["plots"])]
+    artifacts.extend(result.get("generated_files", []))
     complete = result["status"] == "success" and not limitations
     reason = "; ".join(limitations) or (None if complete else "Python execution did not complete")
     tables = [ResultTable.model_validate({**table, "complete": complete, "missing_reason": reason})
@@ -140,4 +170,4 @@ async def run_python(args, ctx):
 
 def register(registry):
     registry.add(ToolSpec("read_result", "이전 결과의 전체 원본을 페이지로 읽는다. result_id와 offset으로 표본 밖의 자료를 확인한다.", ReadInput, read_result, eager=True))
-    registry.add(ToolSpec("run_python", "별도 Python 실행 환경으로 result_id의 전체 데이터를 분석한다. tables[result_id][table_id], datasets[id]와 df(단일 표 입력만), pd/np/px/go 사용. 표는 emit_table(df), 차트는 emit_plot(fig), 설명은 print(). 세션 변수는 유지되지 않는다.", PythonInput, run_python, read_only=False, timeout=70, effect='artifact', eager=True))
+    registry.add(ToolSpec("run_python", "별도 Python 실행 환경으로 result_id의 전체 데이터를 분석한다. tables[result_id][table_id], datasets[id]와 df(단일 표 입력만), pd/np/px/go 사용. 표는 emit_table(df), 차트는 emit_plot(fig). 최종 다운로드 파일은 publish_directory / 파일명 경로에 저장한다. 성공하면 폴더 바로 아래의 각 파일이 첨부된다. 답변에는 도구가 반환한 MEDIA 참조를 사용한다. 세션 변수는 유지되지 않는다.", PythonInput, run_python, read_only=False, timeout=70, effect='artifact', eager=True))

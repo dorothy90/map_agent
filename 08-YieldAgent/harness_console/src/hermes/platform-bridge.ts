@@ -19,6 +19,9 @@ export function webApi<T>(request: HermesApiRequest): Promise<T> {
 // Replaces H/apps/desktop/src/store/gateway.ts:471-491,693,1128 and registry IPC.
 // PB:D10,680. No ambient window lookup; the owning web host installs/removes it.
 export interface WebDesktopBridge extends WebUrlBridge {
+  saveGatewayFile?: (payload: {
+    path: string; sessionId?: string; profile?: string; connectionId?: string; suggestedName?: string
+  }) => Promise<{ saved: boolean }>
   getConnection(profile?: string): Promise<import('./global').HermesConnection>
   getConnectionFor?: (scope: { connectionId: string; profile?: string }) => Promise<import('./global').HermesConnection>
   settings?: { getDefaultProjectDir: () => Promise<{ dir?: string }> }

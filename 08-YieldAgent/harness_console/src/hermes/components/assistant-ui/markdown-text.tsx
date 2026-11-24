@@ -27,6 +27,7 @@ import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
   isFileMediaPath,
+  isGeneratedOutputPath,
   isHtmlHarnessArtifact,
   isHarnessArtifactUrl,
   isMarkdownDocumentPath,
@@ -355,6 +356,10 @@ function HarnessArtifactLink({ children, className, href = '', ...props }: Compo
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
+  const targetPath = mediaPath ?? href
+  if (targetPath && isGeneratedOutputPath(targetPath)) {
+    return <PreviewAttachment target={targetPath} />
+  }
 
   if (mediaPath) {
     // A delivered markdown document is renderable content, not an opaque
@@ -473,6 +478,10 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 // would still fire an image resolve for media we never render as an image.
 export function MarkdownImage(props: ComponentProps<'img'>) {
   const rawSrc = typeof props.src === 'string' ? props.src : ''
+  if (isGeneratedOutputPath(rawSrc)) {
+    return <PreviewAttachment target={rawSrc} />
+  }
+
   const kind = rawSrc ? mediaKind(rawSrc) : 'file'
 
   if (kind === 'video' || kind === 'audio') {

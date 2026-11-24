@@ -32,7 +32,7 @@ def test_inventory_exists():
 
 def test_complete_inventory(manifest):
     for section, count in [('rpc', 283), ('events', 86), ('server_requests', 16),
-                           ('routes', 290), ('external_routes', 13)]:
+                           ('routes', 292), ('external_routes', 13)]:
         rows = manifest[section]
         assert len(rows) == count
         assert len({r['name'] for r in rows}) == count
@@ -203,7 +203,7 @@ def test_classification_counts(manifest):
         'rpc': (manifest['rpc'], (41, 55, 187)),
         'events': (manifest['events'], (35, 9, 42)),
         'server_requests': (manifest['server_requests'], (2, 2, 12)),
-        'http': ([r for r in manifest['routes'] if r['method'] != 'WEBSOCKET'], (20, 71, 191)),
+        'http': ([r for r in manifest['routes'] if r['method'] != 'WEBSOCKET'], (23, 71, 190)),
         'ws': ([r for r in manifest['routes'] if r['method'] == 'WEBSOCKET'], (1, 0, 7)),
         'external': (manifest['external_routes'], (3, 0, 10)),
     }

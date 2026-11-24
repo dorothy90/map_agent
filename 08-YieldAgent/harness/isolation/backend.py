@@ -13,9 +13,11 @@ import shlex
 import signal
 import subprocess
 import tarfile
+import tempfile
 import time
 import uuid
 
+from ..runtime import output_files
 from ..config import IsolationSettings, LocalIsolationSettings, SeatbeltIsolationSettings
 
 
@@ -106,42 +108,51 @@ class ScopedProcessBackend:
                 bundle.addfile(info, io.BytesIO(content))
         quoted = shlex.quote(str(remote_dir))
         cleanup = "" if getattr(self.config, "retain_python_files", False) else f"trap 'rm -rf {quoted}' EXIT HUP INT TERM; "
-        command = (f"umask 077; mkdir {quoted}; {cleanup}"
-                   f"tar xf - -C {quoted}; mkdir {quoted}/output; "
-                   f"cd {quoted}; python3 -I -B worker.py --input-dir . --output-dir output --minimal-statistics; "
-                   f"cat output/result.json")
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *self.command(command), stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=self.client_environment(), start_new_session=True)
-        except OSError as exc:
-            raise IsolationError("isolated process backend unavailable") from exc
-        try:
-            stdout, _stderr = await asyncio.wait_for(process.communicate(archive.getvalue()), timeout)
-        except TimeoutError:
-            self._terminate(process)
-            await asyncio.shield(process.wait())
-            return {"status": "timeout", "tables": [], "plots": [], "stdout": "", "stderr": "",
-                    "error": {"type": "execution_timeout"}}
-        except asyncio.CancelledError:
-            self._terminate(process)
-            await asyncio.shield(process.wait())
-            raise
-        if process.returncode != 0:
-            raise IsolationError("isolated Python worker failed")
-        if len(stdout) > 20 * 1024 * 1024:
-            raise ValueError("Python output exceeds limit")
-        try:
-            result = json.loads(stdout)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise IsolationError("isolated Python worker returned an invalid result") from exc
-        if result.get("status") not in {"success", "error"} or not isinstance(result.get("tables"), list):
-            raise IsolationError("isolated Python worker returned an invalid protocol")
+        # Keep the collector independent of worker-writable files in the analysis directory.
+        collector = shlex.quote(Path(output_files.__file__).read_text(encoding="utf-8"))
+        command = (f"set -e; umask 077; mkdir {quoted}; {cleanup}"
+                   f"tar xf - -C {quoted}; cd {quoted}; mkdir output; "
+                   "python3 -I -B worker.py --input-dir . --output-dir output --minimal-statistics >/dev/null; "
+                   f"python3 -I -B -c {collector} output")
+        with tempfile.TemporaryFile() as transfer:
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *self.command(command), stdin=asyncio.subprocess.PIPE,
+                    stdout=transfer, stderr=asyncio.subprocess.DEVNULL,
+                    env=self.client_environment(), start_new_session=True)
+            except OSError as exc:
+                raise IsolationError("isolated process backend unavailable") from exc
+            try:
+                await asyncio.wait_for(process.communicate(archive.getvalue()), timeout)
+            except TimeoutError:
+                self._terminate(process)
+                await asyncio.shield(process.wait())
+                return {"status": "timeout", "tables": [], "plots": [], "stdout": "", "stderr": "",
+                        "error": {"type": "execution_timeout"}}
+            except asyncio.CancelledError:
+                self._terminate(process)
+                await asyncio.shield(process.wait())
+                raise
+            if process.returncode != 0:
+                raise IsolationError("isolated Python worker failed")
+            transfer.seek(0)
+            try:
+                result = output_files.read_transfer(transfer)
+            except (ValueError, TypeError) as exc:
+                raise IsolationError("isolated Python worker returned invalid output") from exc
         if getattr(self.config, "retain_python_files", False):
             result["workspace"] = {"directory": str(remote_dir), "input": str(remote_dir / "data.json"),
                                    "code": str(remote_dir / "code.py"), "result": str(remote_dir / "output" / "result.json")}
         return result
+
+    def cleanup_workspace(self):
+        if self.config.retain_python_files:
+            return
+        # The generated command can touch only the run and profile bind mounts.
+        result = subprocess.run(self.command("find . -mindepth 1 -delete"), stdin=subprocess.DEVNULL,
+                                capture_output=True, timeout=20, env=self.client_environment())
+        if result.returncode != 0:
+            raise IsolationError("isolated run cleanup failed")
 
     def _results_directory_script(self, create):
         return (_secure_directory_function() + f"base={str(self.config.work_root)!r}\n"
@@ -149,26 +160,38 @@ class ScopedProcessBackend:
                 f"directory=open_tree(base,parts,{create!r})\n")
 
     async def upload_bytes(self, data: bytes, timeout=60):
+        return await self._upload_csv(asyncio.subprocess.PIPE, data, len(data), hashlib.sha256(data).hexdigest(), timeout)
+
+    async def upload_file(self, source, timeout=60):
+        # Passing the open spool as stdin streams both local and SSH transfers.
+        size = os.fstat(source.fileno()).st_size
+        digest = await asyncio.to_thread(hashlib.file_digest, source, "sha256")
+        source.seek(0)
+        return await self._upload_csv(source, None, size, digest.hexdigest(), timeout)
+
+    async def _upload_csv(self, stdin, input_bytes, size, digest, timeout):
         results_dir = self._require_results_dir()
         name = "query-" + uuid.uuid4().hex + ".csv"
         pending = "." + name + ".pending"
         path = results_dir / name
-        digest = hashlib.sha256(data).hexdigest()
         script = (
             "import hashlib,os,sys\n"
             + self._results_directory_script(True) +
             f"name={name!r}\n"
             f"pending={pending!r}\n"
-            f"expected_size={len(data)!r}\n"
+            f"expected_size={size!r}\n"
             f"expected_digest={digest!r}\n"
             "fd=None;published=False\n"
             "try:\n"
             " fd=os.open(pending,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=directory)\n"
             " with os.fdopen(fd,'wb',closefd=True) as output:\n"
             "  fd=None\n"
-            "  data=sys.stdin.buffer.read()\n"
-            "  if len(data)!=expected_size or hashlib.sha256(data).hexdigest()!=expected_digest: raise ValueError('invalid upload')\n"
-            "  output.write(data)\n"
+            "  received=0;hasher=hashlib.sha256()\n"
+            "  while chunk:=sys.stdin.buffer.read(262144):\n"
+            "   received+=len(chunk)\n"
+            "   if received>expected_size: raise ValueError('invalid upload')\n"
+            "   hasher.update(chunk);output.write(chunk)\n"
+            "  if received!=expected_size or hasher.hexdigest()!=expected_digest: raise ValueError('invalid upload')\n"
             "  output.flush()\n"
             "  os.fsync(output.fileno())\n"
             " os.link(pending,name,src_dir_fd=directory,dst_dir_fd=directory,follow_symlinks=False)\n"
@@ -188,19 +211,19 @@ class ScopedProcessBackend:
         command = "python3 -I -B -c " + shlex.quote(script)
         try:
             process = await asyncio.create_subprocess_exec(
-                *self.command(command), stdin=asyncio.subprocess.PIPE,
+                *self.command(command), stdin=stdin,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=self.client_environment(), start_new_session=True,
             )
         except OSError as exc:
             raise IsolationError("isolated CSV upload unavailable") from exc
         try:
-            await asyncio.wait_for(process.communicate(data), timeout)
+            await asyncio.wait_for(process.communicate(input_bytes), timeout)
         except TimeoutError as exc:
             self._terminate(process)
             await asyncio.shield(process.wait())
             try:
-                await asyncio.shield(self._cleanup_upload(name, pending, len(data), digest))
+                await asyncio.shield(self._cleanup_upload(name, pending, size, digest))
             except Exception:
                 pass
             raise IsolationError("isolated CSV upload timed out") from exc
@@ -208,7 +231,7 @@ class ScopedProcessBackend:
             self._terminate(process)
             await asyncio.shield(process.wait())
             try:
-                await asyncio.shield(self._cleanup_upload(name, pending, len(data), digest))
+                await asyncio.shield(self._cleanup_upload(name, pending, size, digest))
             except Exception:
                 pass
             raise
@@ -216,13 +239,13 @@ class ScopedProcessBackend:
             self._terminate(process)
             await asyncio.shield(process.wait())
             try:
-                await asyncio.shield(self._cleanup_upload(name, pending, len(data), digest))
+                await asyncio.shield(self._cleanup_upload(name, pending, size, digest))
             except Exception:
                 pass
             raise IsolationError("isolated CSV upload unavailable") from exc
         if process.returncode != 0:
             try:
-                await self._cleanup_upload(name, pending, len(data), digest)
+                await self._cleanup_upload(name, pending, size, digest)
             except Exception:
                 pass
             raise IsolationError("isolated CSV upload failed")
@@ -241,9 +264,11 @@ class ScopedProcessBackend:
             "  if not stat.S_ISREG(info.st_mode): continue\n"
             "  if item==names[1]:\n"
             "   fd=os.open(item,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=directory)\n"
-            "   try: data=os.read(fd,size+1)\n"
-            "   finally: os.close(fd)\n"
-            "   if len(data)!=size or hashlib.sha256(data).hexdigest()!=digest: continue\n"
+            "   with os.fdopen(fd,'rb') as opened:\n"
+            "    if os.fstat(fd).st_size!=size: continue\n"
+            "    hasher=hashlib.sha256()\n"
+            "    while chunk:=opened.read(262144): hasher.update(chunk)\n"
+            "    if hasher.hexdigest()!=digest: continue\n"
             "  os.unlink(item,dir_fd=directory)\n"
             "finally: os.close(directory)\n"
         )
@@ -445,14 +470,7 @@ class LocalIsolationBackend(ScopedProcessBackend):
 
         backends._LocalEnvironment = HarnessLocalEnvironment
 
-    def cleanup(self):
-        if self.config.retain_python_files:
-            return
-        # The generated command can touch only the run and profile bind mounts.
-        result = subprocess.run(self.command("find . -mindepth 1 -delete"), stdin=subprocess.DEVNULL,
-                                capture_output=True, timeout=20, env=self.client_environment())
-        if result.returncode != 0:
-            raise IsolationError("isolated run cleanup failed")
+    cleanup = ScopedProcessBackend.cleanup_workspace
 
 
 class SeatbeltIsolationBackend(LocalIsolationBackend):

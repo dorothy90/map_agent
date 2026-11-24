@@ -126,6 +126,7 @@ class ExecutionContext:
     protected_models: int = 0
     protected_seconds: float = 0
     parent_invocation_id: str = ""
+    session_kernels: object | None = None
 
     def __post_init__(self):
         if self.active_at_start is None:
@@ -344,7 +345,13 @@ class ToolExecutor:
                 message = exc.safe_message
             observation.update(status="error", error={"code": getattr(exc, 'error_type', type(exc).__name__),
                 "source_code": getattr(exc, 'source_code', None), "retryable": retryable(exc), "safe_message": message}, summary=message)
-        await ctx.check()
+        try:
+            await ctx.check()
+        except BaseException:
+            for artifact in artifacts:
+                if artifact.get("generated_file"):
+                    artifact["data"].close()
+            raise
         observation['provenance'].update(elapsed_seconds=round(time.monotonic() - started, 3),
             parent_invocation_id=ctx.parent_invocation_id or None)
         obs = await store.put_result(run["principal_id"], run["session_id"], observation, rows, artifacts,
@@ -366,4 +373,6 @@ class ToolExecutor:
             "tool_id": obs.invocation_id, "args": obs.validated_arguments, "result": result,
             "duration_s": duration}, event_key=obs.invocation_id + ":finished", epoch=run["epoch"])
         for artifact in obs.artifact_refs:
+            if artifact.get("output_path"):
+                continue  # Delivered as a file card in the final reply.
             await store.event(run["run_id"], "artifact", artifact, event_key="artifact:" + artifact["artifact_id"], epoch=run["epoch"])

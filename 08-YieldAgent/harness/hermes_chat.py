@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+from . import native_ipc as ipc
 from .executor import ToolExecutor
 from .gateway.events import SessionEvents
 from .gateway.session_store import MongoSessionStore
@@ -87,12 +88,27 @@ async def run_chat(context):
                 start_new_session=True, env=env, cwd=work, limit=16 * 1024 * 1024)
             process.stdin.write(json.dumps(request, ensure_ascii=False).encode() + b'\n')
             await process.stdin.drain()
-            process.stdin.close()
             result = None
             messages = coalesced_worker_messages(process.stdout, context.remaining_seconds)
             async for message in messages:
                 await context.check()
                 kind = message['type']
+                if kind == 'call' and message['method'] == 'tool_call' and message['name'] == 'execute_code':
+                    if not settings.web_python_enabled or context.session_kernels is None:
+                        raise PermissionError('Python requires a session-owned OS sandbox')
+                    if audit is None:
+                        from .tools.registry import domain_registry
+                        audit = ToolExecutor(domain_registry(), context)
+                    if 'execute_code' not in audit.registry.tools:
+                        audit.registry.add(context.session_kernels.spec())
+                    obs = await audit.execute({'name': 'execute_code', 'args': message['args'],
+                                               'id': message['invocation_id']})
+                    response = dict(obs.scope.get('execute_code') or {'status': 'error', 'error': obs.summary})
+                    view = obs.model_view()
+                    response.update(result_id=obs.result_id, artifact_refs=view['artifact_refs'], tables=view['tables'])
+                    process.stdin.write(ipc.encode(ipc.reply(message['call_id'], response)).encode())
+                    await process.stdin.drain()
+                    continue
                 if kind == 'result':
                     result = message['result']
                     break
@@ -122,6 +138,7 @@ async def run_chat(context):
                     await store.runs.update_one({'_id': run_id, 'epoch': epoch, 'status': 'running'},
                         {'$set': {'usage.models': prior.get('models', 0) + message['models'],
                                   'usage.tokens': prior.get('tokens', 0) + message['tokens']}})
+            process.stdin.close()
             if await process.wait() or result is None:
                 raise RuntimeError('Hermes chat worker exited without a completed response')
         saved = await store.runs.find_one({'_id': run_id, 'epoch': epoch}, {'observations': 1})
@@ -133,6 +150,8 @@ async def run_chat(context):
     finally:
         if messages is not None:
             await messages.aclose()
+        if process is not None and not process.stdin.is_closing():
+            process.stdin.close()
         if process is not None and process.returncode is None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)

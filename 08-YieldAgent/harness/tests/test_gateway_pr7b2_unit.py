@@ -83,7 +83,10 @@ def test_static_i18n_original_shapes():
 
 
 def test_all_manifest_http_rows_and_no_services_compatibility():
-    connected = CONNECTED | {'/api/sessions/{session_id}/messages'}
+    connected = {('GET', path): 200 for path in CONNECTED | {'/api/sessions/{session_id}/messages'}}
+    # Each request below has no query parameters or body.
+    connected.update({('GET', '/api/fs/download'): 404, ('HEAD', '/api/fs/download'): 404,
+                      ('POST', '/api/files/ticket'): 422})
     for services in (None, seeded()):
         with client_for(services) as client:
             for row in MANIFEST['routes'] + MANIFEST['external_routes']:
@@ -93,16 +96,15 @@ def test_all_manifest_http_rows_and_no_services_compatibility():
                 path = re.sub(r'\{[^}]+\}', 'example', path)
                 response = client.request(row['method'], PREFIX + path)
                 rejection = http_rejection(MANIFEST, row['method'], row['path'])
-                if row['method'] == 'HEAD':
-                    assert response.status_code == rejection[0]
-                    assert response.content == b''
-                    continue
+                expected = connected.get((row['method'], row['path']), 503) if services is not None else 503
                 if rejection is not None:
-                    assert (response.status_code, response.json()) == rejection, row
-                elif services is not None and row['method'] == 'GET' and row['path'] in connected:
-                    assert response.status_code == 200, (row, response.text)
-                else:
-                    assert response.status_code == 503, (row, response.text)
+                    expected = rejection[0]
+                assert response.status_code == expected, (row, response.text)
+                if row['method'] == 'HEAD':
+                    assert response.content == b'', row
+                elif rejection is not None:
+                    assert response.json() == rejection[1], row
+                elif expected == 503:
                     assert response.json()['error']['code'] == 'handler_not_connected'
 
 

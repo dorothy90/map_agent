@@ -173,6 +173,12 @@ def extract_contract(root):
         for entry in entries:
             sources = entry['source'] if isinstance(entry['source'], list) else [entry['source']]
             files.update(source.rsplit(':', 1)[0] for source in sources)
+    # Two router entries from the newer Webapp download transport, outside the base inventory.
+    for method, path, line in [('HEAD', '/api/fs/download', 1534), ('POST', '/api/files/ticket', 894)]:
+        route_rows.append({'name': f'{method} {path}', 'path': path, 'method': method,
+            'source': f'9ef4800b:hermes_cli/web_routers/files.py:{line}',
+            **route_policy(path, method, 'files')})
+    route_rows.sort(key=lambda row: row['name'])
     return {'schema_version': 1, 'upstream': UPSTREAM, 'upstream_commit': revision,
             'classification_scope': 'milestone_1_target', 'runtime_connected': False,
             'source_hashes': {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in sorted(files)},

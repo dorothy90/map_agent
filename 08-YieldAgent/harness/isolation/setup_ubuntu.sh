@@ -24,7 +24,7 @@ usermod --shell /usr/local/libexec/yieldrun-login-shell yieldrun
 install -d -o root -g root -m 0755 /var/lib/yieldrun
 install -d -o yieldrun -g yieldrun -m 0700 /var/lib/yieldrun/work
 python3 -m venv /opt/yieldrun/analysis-venv
-/opt/yieldrun/analysis-venv/bin/python -m pip install --disable-pip-version-check pandas numpy plotly
+/opt/yieldrun/analysis-venv/bin/python -m pip install --disable-pip-version-check pandas numpy plotly openpyxl Pillow
 chown -R root:root /opt/yieldrun/analysis-venv
 chmod -R go-w /opt/yieldrun/analysis-venv
 ssh-keygen -l -f "$PUBLIC_KEY" >/dev/null

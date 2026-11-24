@@ -20,7 +20,7 @@ class LimitedOutput(io.StringIO):
         return len(text)
 
 
-def analysis_namespace(inputs, tables, plots, *, legacy_statistics=False):
+def analysis_namespace(inputs, tables, plots, *, publish_directory=None, legacy_statistics=False):
     input_tables = {key: {name: (pd.DataFrame(rows["rows"], columns=rows["columns"])
         if isinstance(rows, dict) else pd.DataFrame(rows)) for name, rows in
         (value if isinstance(value, dict) else {"default": value}).items()} for key, value in inputs.items()}
@@ -39,12 +39,26 @@ def analysis_namespace(inputs, tables, plots, *, legacy_statistics=False):
             raise ValueError("At most three plots per call")
         plots.append(figure.to_html(include_plotlyjs=True, full_html=True))
     namespace = {"pd": pd, "np": np, "px": px, "go": go,
-        "tables": input_tables, "datasets": datasets, "df": datasets.get(next(iter(inputs), ""), pd.DataFrame()), "emit_table": emit_table, "emit_plot": emit_plot}
+        "tables": input_tables, "datasets": datasets, "df": datasets.get(next(iter(inputs), ""), pd.DataFrame()), "emit_table": emit_table, "emit_plot": emit_plot, "publish_directory": publish_directory}
     if legacy_statistics:
         import scipy
         import statsmodels.api as sm
         namespace.update(scipy=scipy, sm=sm)
     return namespace
+
+
+def run_session_cell(code, namespace, output_dir):
+    directory = Path(output_dir)
+    publish = directory / "publish"
+    publish.mkdir(mode=0o700, parents=True)
+    tables, plots = [], []
+    helpers = analysis_namespace({}, tables, plots, publish_directory=publish)
+    namespace.update({name: helpers[name] for name in
+                      ("pd", "np", "px", "go", "emit_table", "emit_plot", "publish_directory")})
+    exec(compile(code, "<cell>", "exec"), namespace)
+    result = {"status": "success", "tables": tables, "plots": plots}
+    (directory / "result.json").write_text(json.dumps(result, ensure_ascii=False, allow_nan=False),
+                                           encoding="utf-8")
 
 
 def main(argv=None):
@@ -55,7 +69,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     inputs = json.loads((args.input_dir / "data.json").read_text(encoding="utf-8"))
     tables, plots = [], []
-    namespace = analysis_namespace(inputs, tables, plots,
+    publish_directory = args.output_dir.resolve() / "publish"
+    publish_directory.mkdir(mode=0o700, exist_ok=True)
+    namespace = analysis_namespace(inputs, tables, plots, publish_directory=publish_directory,
                                    legacy_statistics=not args.minimal_statistics)
     stdout, stderr = LimitedOutput(), LimitedOutput()
     result = {"status": "success", "tables": tables, "plots": plots, "error": None}

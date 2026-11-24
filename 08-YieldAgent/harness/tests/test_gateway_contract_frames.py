@@ -75,9 +75,10 @@ def test_capabilities_are_separate_and_honest(manifest):
     assert result['methods']['prompt.submit']['status'] == 'unsupported'
     assert result['methods']['prompt.submit']['reason'] == 'handler_not_connected'
     assert result['methods']['shell.exec']['status'] == 'unsupported'
-    assert len(set().union(*(set(v) for v in result['classification'].values()))) == 48
+    expected_methods = {row['name'] for row in manifest['rpc'] if 'authority' in row['modes']}
+    assert set().union(*result['classification'].values()) == expected_methods
     assert len(result['events']) == 86 and len(result['server_requests']) == 16
-    assert len(result['routes']) == 290
+    assert len(result['routes']) == 292
     result['events'][0]['name'] = 'changed'
     assert manifest == original
 

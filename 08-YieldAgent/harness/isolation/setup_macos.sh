@@ -47,7 +47,7 @@ dscl . -create /Users/yieldrun UserShell /usr/local/libexec/yieldrun-login-shell
 install -d -o root -g wheel -m 0755 /var/lib/yieldrun
 install -d -o yieldrun -g yieldrun -m 0700 /var/lib/yieldrun/work
 /usr/bin/python3 -m venv /opt/yieldrun/analysis-venv
-/opt/yieldrun/analysis-venv/bin/python -m pip install --disable-pip-version-check pandas numpy plotly
+/opt/yieldrun/analysis-venv/bin/python -m pip install --disable-pip-version-check pandas numpy plotly openpyxl Pillow
 chown -R root:wheel /opt/yieldrun/analysis-venv
 chmod -R go-w /opt/yieldrun/analysis-venv
 ssh-keygen -l -f "$PUBLIC_KEY" >/dev/null

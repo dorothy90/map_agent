@@ -137,6 +137,10 @@ HTTP_DENIED_PREFIXES = ('/dashboard-plugins/', '/api/dashboard/agent-plugins/')
 
 def route_policy(path, method, file, external=False):
     evidence = 'PORTING_BASELINE:3.3,7.1; m1_plan_codex.log:1.6'
+    if (method, path) in {('GET', '/api/fs/download'), ('HEAD', '/api/fs/download'),
+                          ('POST', '/api/files/ticket')}:
+        return decision('implemented', path, 'Registered generated output files only.',
+                        'Hermes 9ef4800b browser files; Y-Agent run output scope')
     if method == 'WEBSOCKET':
         status = 'implemented' if path == '/api/ws' else 'unsupported'
     elif external:

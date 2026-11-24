@@ -12,6 +12,9 @@ def artifact_url(session_id: str, artifact_id: str) -> str:
 def artifact_links(session_id: str, result_id: str, refs: list[dict]) -> list[dict]:
     links = []
     for ref in refs:
+        if path := ref.get('output_path'):
+            links.append({**ref, 'media': f'MEDIA:"{path}"'})
+            continue
         href = artifact_url(session_id, ref['artifact_id'])
         mime = ref.get('mime', 'application/octet-stream')
         title = str(ref.get('title') or 'Artifact')

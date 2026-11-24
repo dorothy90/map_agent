@@ -1,6 +1,6 @@
 {
   "upstream": "5894e750",
-  "source_sha256": "fb0f74c4d9b2c8c9ba41c544f67521a38fe085943cb1ee82d8677b8611de1497",
+  "source_sha256": "4b85b97035d61a1c86886fe3432e2d86028031fcbc4407d999e29c821a9044a5",
   "rpc": {
     "a2a.forward": {
       "classification": "unsupported",
@@ -4389,8 +4389,8 @@
     {
       "method": "GET",
       "path": "/api/fs/download",
-      "classification": "unsupported",
-      "reason": "disabled_by_policy",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
       "feature": "/api/fs/download"
     },
     {
@@ -5059,6 +5059,13 @@
       "feature": "/api/files/stream"
     },
     {
+      "method": "HEAD",
+      "path": "/api/fs/download",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/fs/download"
+    },
+    {
       "method": "PATCH",
       "path": "/api/profiles/{name}",
       "classification": "stub",
@@ -5225,6 +5232,13 @@
       "classification": "unsupported",
       "reason": "disabled_by_policy",
       "feature": "/api/files/mkdir"
+    },
+    {
+      "method": "POST",
+      "path": "/api/files/ticket",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
+      "feature": "/api/files/ticket"
     },
     {
       "method": "POST",

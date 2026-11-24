@@ -184,6 +184,11 @@ class Settings(BaseModel):
     principal: str = "local"
     enabled: bool = False
 
+    @property
+    def web_python_enabled(self):
+        allowed = self.native_allowed_tools
+        return self.isolation is not None and (allowed is None or bool({'run_python', 'execute_code'}.intersection(allowed)))
+
     @field_validator("shared_yield_dir")
     @classmethod
     def dedicated_shared_directory(cls, path):

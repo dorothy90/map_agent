@@ -172,6 +172,9 @@ async def dispatch(services, request, principal, row):
 
 async def serve_http(services, request, principal, row):
     try:
+        if row["path"] in {"/api/fs/download", "/api/files/ticket"}:
+            from .generated_files import serve
+            return await serve(services, request, principal)
         return JSONResponse(await dispatch(services, request, principal, row))
     except NotConnected:
         return JSONResponse({'error': {'code': 'handler_not_connected',

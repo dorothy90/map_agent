@@ -69,6 +69,7 @@ class FixedLocalPrincipal:
     async def resolve(self, connection):
         if not local_peer(connection):
             raise AuthenticationFailure(403)
+        connection.state.file_ticket_required = True
         return Principal(connection.app.state.principal_user)
 
     async def allows(self, websocket, principal):

@@ -3,6 +3,9 @@ import asyncio
 import json
 from types import SimpleNamespace
 import uuid
+from urllib.parse import quote
+
+import pytest
 
 import httpx
 from fastapi import FastAPI, Request
@@ -114,6 +117,37 @@ def test_selected_artifacts_survive_gridfs_http_replay_history_and_legacy_sse():
             assert all(ref['artifact_id'] in legacy_text for ref in projected if ref['mime'] in ('image/png', 'text/html'))
             legacy_history = await SessionRPC(scope, SimpleNamespace(mode='canonical')).history(session_id)
             assert [item['text'] for item in legacy_history if item['role'] == 'assistant'] == [legacy_text]
+        finally:
+            await store.client.drop_database(store.db.name)
+            store.client.close()
+    asyncio.run(scenario())
+
+
+def test_registered_file_uses_one_scoped_download_on_retried_publication():
+    from tempfile import TemporaryFile
+
+    async def scenario():
+        store = HarnessStore(database='test_output_publication_' + uuid.uuid4().hex)
+        filename = '맵 결과 #1.unknown'
+        run = {'run_id': str(uuid.uuid4()), 'invocation_id': 'create', 'tool_name': 'run_python'}
+        try:
+            await store.setup()
+            refs = []
+            for _ in range(2):
+                file = TemporaryFile()
+                file.write(b'\x00\xffdata')
+                file.seek(0)
+                obs = await store.put_result('owner', 's', run, [], [
+                    {'title': filename, 'mime': 'application/octet-stream', 'data': file, 'generated_file': True}])
+                assert file.closed
+                refs.append(obs.model_view()['artifact_refs'][0])
+            assert refs[0] == refs[1]
+            ref = refs[0]
+            assert ref['output_path'] == f"/outputs/{run['run_id']}/{obs.result_id}/{quote(filename, safe='')}"
+            assert ref['media'] == f'MEDIA:"{ref["output_path"]}"'
+            assert 'href' not in ref
+            with pytest.raises(PermissionError):
+                await store.artifact('owner', 's', ref['artifact_id'])
         finally:
             await store.client.drop_database(store.db.name)
             store.client.close()
