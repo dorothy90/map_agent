@@ -22,7 +22,7 @@ git -C "$DEST" rev-parse HEAD > "$AUDIT/company-base.txt"
 ```bash
 git clone -c core.autocrlf=false --single-branch --branch codex/goal-driven-harness \
   https://github.com/dorothy90/map_agent.git "$REF" &&
-git -C "$REF" merge-base --is-ancestor 725e4433e30d34f3c6f7cbc8f0fdb93b83803f2f HEAD &&
+git -C "$REF" merge-base --is-ancestor 9733331f846049fef07fe30d5451ccb5c78b1e33 HEAD &&
 test -f "$KIT/START_HERE.md" &&
 git -C "$REF" rev-parse HEAD > "$AUDIT/source-head.txt" &&
 python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.tsv"
@@ -30,7 +30,7 @@ python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.ts
 
 이미 해당 브랜치를 별도 폴더에 받았다면 `REF`를 그 폴더의 절대경로로, `KIT`를 `$REF/docs/yield-harness-port`로 지정하고 두 번째 명령인 `merge-base`부터 실행한다.
 
-예상 결과는 `tree OK: 4854 listed files`다. 설명서와 업무 스킬은 현재 브랜치의 `docs/yield-harness-port/`에 있고, FILES.tsv는 앱 기준 커밋의 소스를 가리킨다. 브랜치가 이후 바뀌어 파일 검증이 실패하면 설명서 버전과 목록의 기준 커밋을 대조한 후 진행한다. 사내 코드·비교표·로그는 내부 작업 위치에만 둔다.
+예상 결과는 `tree OK: 4859 listed files`다. 설명서와 업무 스킬은 현재 브랜치의 `docs/yield-harness-port/`에 있고, FILES.tsv는 앱 기준 커밋의 소스를 가리킨다. 브랜치가 이후 바뀌어 파일 검증이 실패하면 설명서 버전과 목록의 기준 커밋을 대조한 후 진행한다. 사내 코드·비교표·로그는 내부 작업 위치에만 둔다.
 
 ## 3. 파일별 대응표를 만든다
 

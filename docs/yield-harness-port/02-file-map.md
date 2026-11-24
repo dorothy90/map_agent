@@ -23,11 +23,17 @@
 | list_tables | H/tools/list_tables.py | Oracle 딕셔너리와 앱 계정의 가시성. 실제로 읽을 수 있는 사내 테이블·뷰 기준과 비교 |
 | query_db | H/tools/query_db.py | common.py의 Oracle 연결, SQL 조회 범위, 결과 원본 및 result_id |
 | read_result | H/tools/python_tools.py | H/store.py와 결과 페이지. preview와 전체 표 구분 |
-| run_python | H/tools/python_tools.py | H/runtime/, H/isolation/. 허용된 입력 결과를 읽고 표·차트를 저장하는 권한과 세션 범위 |
+| 웹 채팅 `execute_code` / 기존 호출 `run_python` | H/hermes_chat_worker.py, H/runtime/session_kernel.py, H/tools/python_tools.py | 일반 채팅에서는 직원·세션별 Python 실행 환경을 사용한다. 기존 도구를 직접 호출하는 경로는 호출별로 실행한다. |
 | render_yield_table | H/tools/table_artifact.py | yield_report_data.py, yield_report_scope.py, report_policy.py, wafer_group_report.py 및 폴더 밖 yield_viz.py·yield_table_renderer.py. 사내 파라미터명·단위·분모와 맞춰야 함 |
 | load_wafer_maps | H/tools/load_wafer_maps.py | map_aggregate.py, map_aggregate_plot.py, map_bin_plot.py, bin_mapping.py. 누적 맵과 저장된 LOT별 웨이퍼 개별 맵 각각의 계약을 보존 |
 
 수율일보는 별도의 일곱 번째 도구를 추가한 기능이 아니다. 사용자 프로필의 yield-daily-report/SKILL.md가 기존 도구의 보고서 입력을 사용한다. H/tools/report_analysis.py가 동일 제품과 기준일로 월·주·일 표를 만들고 report_scatter.py와 report_bin_maps.py가 산점도와 검사별 BIN 맵을 만든다. 스킬 파일만 옮기거나 표 렌더러만 가져가면 전 기능이 이어지지 않는다.
+
+### 채팅별 Python 상태와 다운로드 첨부
+
+백엔드의 `H/control.py`가 직원과 채팅 ID별로 Python 프로세스를 관리한다. `H/hermes_chat_worker.py`가 Hermes의 `execute_code` 호출을 `H/hermes_chat.py`로 전달하고, `H/runtime/session_kernel.py`가 해당 직원의 OS 격리 환경에서 실행한다. 같은 프로세스가 살아 있는 동안 다음 질문에서도 변수와 import를 재사용한다. 초기화, 유휴 종료, 서버 재시작 후에는 변수를 다시 만들어야 한다. 웹 백엔드를 여러 프로세스로 배포한다면 같은 채팅의 후속 요청을 같은 프로세스로 보내야 이 동작이 이어진다.
+
+웨이퍼 맵을 엑셀로 만들 때는 `read_result`가 저장된 좌표 표 전체를 분석용 CSV로 전달할 수 있다. 분석 가상환경에 `openpyxl`과 `Pillow`를 설치한다. Python이 `publish_directory`에 저장한 파일은 `H/runtime/output_files.py`에서 수집하고 `H/store.py`에서 직원·채팅에 귀속시킨다. `H/gateway/generated_files.py`와 웹의 `F/src/platform/web-host.ts`를 함께 이식해야 답변의 첨부 버튼으로 파일을 받을 수 있다. [이식 후 검수](04-acceptance.md#web-python-delivery)
 
 <a id="shared-files"></a>
 
