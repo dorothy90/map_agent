@@ -22,7 +22,7 @@ git -C "$DEST" rev-parse HEAD > "$AUDIT/company-base.txt"
 ```bash
 git clone -c core.autocrlf=false --single-branch --branch codex/goal-driven-harness \
   https://github.com/dorothy90/map_agent.git "$REF" &&
-git -C "$REF" merge-base --is-ancestor 40985fff61d238c0104661f3eb9c1937cee28816 HEAD &&
+git -C "$REF" merge-base --is-ancestor 725e4433e30d34f3c6f7cbc8f0fdb93b83803f2f HEAD &&
 test -f "$KIT/START_HERE.md" &&
 git -C "$REF" rev-parse HEAD > "$AUDIT/source-head.txt" &&
 python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.tsv"
@@ -30,7 +30,7 @@ python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.ts
 
 이미 해당 브랜치를 별도 폴더에 받았다면 `REF`를 그 폴더의 절대경로로, `KIT`를 `$REF/docs/yield-harness-port`로 지정하고 두 번째 명령인 `merge-base`부터 실행한다.
 
-예상 결과는 `tree OK: 4852 listed files`다. 설명서와 업무 스킬은 현재 브랜치의 `docs/yield-harness-port/`에 있고, FILES.tsv는 앱 기준 커밋의 소스를 가리킨다. 브랜치가 이후 바뀌어 파일 검증이 실패하면 설명서 버전과 목록의 기준 커밋을 대조한 후 진행한다. 사내 코드·비교표·로그는 내부 작업 위치에만 둔다.
+예상 결과는 `tree OK: 4854 listed files`다. 설명서와 업무 스킬은 현재 브랜치의 `docs/yield-harness-port/`에 있고, FILES.tsv는 앱 기준 커밋의 소스를 가리킨다. 브랜치가 이후 바뀌어 파일 검증이 실패하면 설명서 버전과 목록의 기준 커밋을 대조한 후 진행한다. 사내 코드·비교표·로그는 내부 작업 위치에만 둔다.
 
 ## 3. 파일별 대응표를 만든다
 
@@ -58,7 +58,7 @@ python3 "$KIT/port_plan.py" plan --manifest "$KIT/FILES.tsv" --target "$DEST" --
 
 **Windows는 개발 PC, Ubuntu는 실행 서버다.** Ubuntu의 기본 분석 방식은 `local`이다. 하네스가 현재 서비스 계정으로 시스템의 `/usr/bin/bwrap`을 직접 실행해 사용자별 파일과 네트워크를 분리한다. SSH 서비스·전용 계정·키, Docker, WSL 설치는 필요 없다. 자세한 실행 조건은 [Ubuntu 로컬 실행](../../08-YieldAgent/harness/isolation/README.ko.md)을 따른다.
 
-기존 사내 환경에서 `HARNESS_ISOLATION_BACKEND=ssh`를 명시했다면 `local`로 바꾼다. 이식 후 같은 Ubuntu 서비스 계정으로 루프백 `/health/isolation`을 확인하고 `backend=local` 및 `sandbox=bwrap`이 나오는지 본다. 다음으로 새 채팅에서 실제 DB 조회와 생성 Python 실행을 확인한다. 개발용 고정 사용자 게이트웨이는 로컬 검증에 사용하고, 사내 서비스에는 인증된 사용자 ID를 전달하는 기존 게이트웨이를 연결한다.
+기존 사내 환경에서 `HARNESS_ISOLATION_BACKEND=ssh`를 명시했다면 `local`로 바꾼다. 배포 전 같은 Ubuntu 서비스 계정으로 [직원별 파일 격리 검사](04-acceptance.md#ubuntu-배포-전-직원별-파일-격리)를 통과해야 한다. 서버를 시작한 뒤 루프백 `/health/isolation`에서 `backend=local` 및 `sandbox=bwrap`이 나오는지 본다. 다음으로 새 채팅에서 실제 DB 조회와 생성 Python 실행을 확인한다. 개발용 고정 사용자 게이트웨이는 로컬 검증에 사용하고, 사내 서비스에는 인증된 사용자 ID를 전달하는 기존 게이트웨이를 연결한다.
 
 ```bash
 python3 "$KIT/port_plan.py" apply --manifest "$KIT/FILES.tsv" --source "$REF" --target "$DEST" --sheet "$AUDIT/plan.tsv"
