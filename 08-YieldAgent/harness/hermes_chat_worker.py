@@ -315,7 +315,7 @@ async def chat(request, emit, waiters=None):
             create_custom_toolset('web_kanban', 'Personal persistent defect items',
                                   tools=[*WEB_KANBAN_TOOLS, *ATTACHMENT_TOOLS])
         code_enabled = settings.web_python_enabled
-        allowed.difference_update({'run_python', 'execute_code'})
+        allowed.discard('execute_code')
         yield_names = register_yield_tools(registry, executor, loop,
             invocation_id=_approval_tool_call_id.get, allowed=allowed)
         if code_enabled:

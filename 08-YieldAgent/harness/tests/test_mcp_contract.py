@@ -4,7 +4,7 @@ def test_mcp_schemas_match_registry_without_orchestration_tools():
     registry = domain_registry()
     definitions = tool_definitions(registry)
     assert {tool.name for tool in definitions} == set(registry.tools) == {
-        "read_result", "run_python", "query_db", "list_tables",
+        "read_result", "query_db", "list_tables",
         "load_wafer_maps", "render_yield_table",
     }
     for tool in definitions:

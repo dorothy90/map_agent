@@ -20,7 +20,7 @@ async def check():
             await session.initialize()
             tools = await session.list_tools()
             assert {tool.name for tool in tools.tools} == {
-                "read_result", "run_python", "query_db", "list_tables",
+                "read_result", "query_db", "list_tables",
                 "load_wafer_maps", "render_yield_table",
             }
             result = await session.call_tool("list_tables", {})

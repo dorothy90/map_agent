@@ -166,7 +166,8 @@ def test_reading_all_rows_does_not_make_incomplete_source_complete():
     asyncio.run(scenario())
 
 
-def test_python_csv_exports_whole_authorized_table_independently_of_preview(monkeypatch):
+@pytest.mark.parametrize('complete', [True, False])
+def test_python_csv_exports_whole_authorized_table_independently_of_preview(monkeypatch, complete):
     from types import SimpleNamespace
 
     class Backend:
@@ -177,13 +178,14 @@ def test_python_csv_exports_whole_authorized_table_independently_of_preview(monk
     monkeypatch.setattr('harness.tools.python_tools.isolation_backend', lambda *_: Backend())
 
     async def scenario():
-        async with reading([{'n': i} for i in range(1, 4)]) as (store, source, _, args):
+        async with reading([{'n': i} for i in range(1, 4)], complete=complete) as (store, source, _, args):
             ctx = SimpleNamespace(store=store, settings=SimpleNamespace(isolation=object()),
                                   run={'principal_id': 'p', 'session_id': 's', 'run_id': 'r'})
             request = ReadInput(**args, offset=1, limit=1, export_for_python=True)
             result = await read_result(request, ctx)
             assert result.tables[0].rows == [{'n': 2}]
             assert result.scope['python_csv']['row_count'] == 3
+            assert result.scope['python_csv']['source_complete'] is complete
             ctx.run['session_id'] = 'another-session'
             with pytest.raises(PermissionError):
                 await read_result(request, ctx)

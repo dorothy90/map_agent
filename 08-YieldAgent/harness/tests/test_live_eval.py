@@ -17,11 +17,11 @@ def test_failed_required_tool_cannot_pass():
     from harness.evals.assertions import evaluate_case
 
     result = evaluate_case(
-        {"id": "python", "expected_outcome": "success", "requires_tools": ["run_python"]},
-        {"status": "completed", "calls": [{"tool_name": "run_python", "status": "failed"}], "observations": []},
+        {"id": "python", "expected_outcome": "success", "requires_tools": ["execute_code"]},
+        {"status": "completed", "calls": [{"tool_name": "execute_code", "status": "failed"}], "observations": []},
     )
     assert result["passed"] is False
-    assert "required_tool_failed:run_python" in result["reasons"]
+    assert "required_tool_failed:execute_code" in result["reasons"]
 
 
 def test_unrelated_evidence_cannot_approve_release(tmp_path):

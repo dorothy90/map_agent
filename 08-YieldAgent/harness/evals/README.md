@@ -8,7 +8,7 @@ PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.preflight --require-l
 PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.mcp_smoke --require-live
 ```
 
-테스트 모음은 실제 Mongo와 Docker를 사용하지만 모델 응답과 장애는 제어된 대체 공급자로 검증한다. `mcp_smoke`는 여섯 도구의 노출, 실제 Oracle 테이블 목록과 저장 결과의 재열람·소유권을 확인하며 외부 모델 호출을 하지 않는다. `run_synthetic`는 실제 모델을 호출하지만 독립된 평가 DB에 저장한 가상 자료를 원본 채팅의 `read_result`와 `execute_code`로 읽고 검산한다. 실데이터 평가는 `run_live`를 사용한다.
+테스트 모음은 실제 Mongo와 Python worker를 사용하지만 모델 응답과 장애는 제어된 대체 공급자로 검증한다. `mcp_smoke`는 다섯 도구의 노출, 실제 Oracle 테이블 목록과 저장 결과의 재열람·소유권을 확인하며 외부 모델 호출을 하지 않는다. `run_synthetic`는 실제 모델을 호출하지만 독립된 평가 DB에 저장한 가상 자료를 원본 채팅의 `read_result`와 `execute_code`로 읽고 검산한다. 실데이터 평가는 `run_live`를 사용한다.
 
 실제 데이터의 외부 모델 전송을 승인한 운영자가 사용하는 명령:
 

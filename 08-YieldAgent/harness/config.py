@@ -229,7 +229,7 @@ class Settings(BaseModel):
     @property
     def web_python_enabled(self):
         allowed = self.native_allowed_tools
-        return self.isolation is not None and (allowed is None or bool({'run_python', 'execute_code'}.intersection(allowed)))
+        return self.isolation is not None and (allowed is None or 'execute_code' in allowed)
 
     @field_validator("shared_yield_dir")
     @classmethod

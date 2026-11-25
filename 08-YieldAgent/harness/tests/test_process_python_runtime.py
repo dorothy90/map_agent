@@ -59,20 +59,29 @@ def test_runtime_configuration(monkeypatch, isolated_settings_env):
         Settings.from_env()
 
 
-def test_run_python_publishes_all_final_files_as_streams():
-    from types import SimpleNamespace
-    from harness.tools.python_tools import PythonInput, run_python
+@pytest.mark.parametrize('allowed,enabled', [
+    (None, True), ([], False), (['run_python'], False), (['execute_code'], True),
+])
+def test_web_python_requires_execute_code(allowed, enabled, isolated_settings_env):
+    from harness.config import Settings
 
-    ctx = SimpleNamespace(run={}, settings=SimpleNamespace(python_runtime="process", python_executable=sys.executable))
+    settings = Settings.from_env().model_copy(update={'native_allowed_tools': allowed})
+    assert settings.web_python_enabled is enabled
+    assert not settings.model_copy(update={'isolation': None}).web_python_enabled
+
+
+def test_process_runtime_publishes_all_final_files_as_streams():
+    from harness.runtime.process import ProcessRuntime
+
     code = """
 (publish_directory / 'slides.pptx').write_bytes(b'PK\\x03\\x04')
 (publish_directory / 'raw.unknownformat').write_bytes(b'x' * (13 * 1024 * 1024))
 (publish_directory / 'drafts').mkdir()
 (publish_directory / 'drafts' / 'note.txt').write_text('draft')
 """
-    result = asyncio.run(run_python(PythonInput(code=code), ctx))
-    assert result.status == "success", result.summary
-    files = {item["title"]: item for item in result.artifacts}
+    result = asyncio.run(ProcessRuntime(sys.executable).execute(code, {}))
+    assert result["status"] == "success", result
+    files = {item["title"]: item for item in result["generated_files"]}
     try:
         assert set(files) == {"slides.pptx", "raw.unknownformat"}
         assert all(item["generated_file"] for item in files.values())

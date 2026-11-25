@@ -106,9 +106,9 @@ Python 3.11을 유지하며 Hermes를 별도로 설치하지 않는다. `harness
 
 ## Kubernetes Python 실행
 
-`run_python → 별도 .venv/bin/python worker.py → exec(code, namespace)`로 실행한다. API 서버 내부에서 직접 `exec()`하지 않는다. 기본값은 `process`이며 Docker 데몬이나 소켓이 필요하지 않다.
+웹 채팅은 `execute_code → SessionKernel → 격리된 Python kernel`로 실행한다. `read_result(export_for_python=true)`로 내보낸 전체 CSV를 읽어 계산한다. 공유 `ProcessRuntime → worker.py` 경로는 별도 프로세스 실행과 테스트에 유지한다. API 서버 내부에서 직접 `exec()`하지 않으며 Docker 런타임은 제거되었다.
 
-함께 이식할 파일: `config.py`, `tools/python_tools.py`, `runtime/process.py`, `runtime/worker.py`. 기존 Docker 선택지를 유지하려면 `runtime/container.py`도 보존한다.
+함께 이식할 파일: `config.py`, `tools/python_tools.py`, `runtime/session_kernel.py`, `runtime/process.py`, `runtime/worker.py` 및 `isolation/`. 웹 실행 환경은 [격리 설치 안내](isolation/README.ko.md)에 따라 설정한다. 아래 설정은 기존 설정 호환성을 위해 유지하며 웹 커널의 격리 설정을 대체하지 않는다.
 
 ```dotenv
 HARNESS_PYTHON_RUNTIME=process
@@ -127,9 +127,9 @@ python3.11 -m venv /app/.venv
 
 위 목록은 분석 worker용이다. 같은 환경으로 API 서버도 실행한다면 프로젝트의 서버 의존성도 설치한다. 실행 시 임시 디렉터리 쓰기 권한이 필요하며 읽기 전용 루트 파일시스템이면 `/tmp` 등에 쓰기 가능한 볼륨을 제공한다.
 
-입력 전체 표, `df`/`tables`/`datasets`, `emit_table`, `emit_plot`, `stdout` 및 결과 JSON 계약은 유지한다. 호출별 임시 디렉터리를 사용하고 기본 60초 제한, 20 MiB 결과 읽기 제한을 적용한다. 완료·시간 초과·취소 시 worker의 프로세스 그룹을 종료한다. API 키·DB 비밀번호 등 부모 환경변수는 상속하지 않는다.
+공유 `ProcessRuntime`/`worker.py`의 입력 전체 표, `df`/`tables`/`datasets`, `emit_table`, `emit_plot`, `stdout` 및 결과 JSON 계약은 유지한다. 호출별 임시 디렉터리를 사용하고 기본 60초 제한, 20 MiB 결과 읽기 제한을 적용한다. 완료·시간 초과·취소 시 worker의 프로세스 그룹을 종료한다. API 키·DB 비밀번호 등 부모 환경변수는 상속하지 않는다.
 
-**격리 범위:** `.venv`와 별도 프로세스는 보안 샌드박스가 아니다. 생성 코드는 같은 사용자 권한으로 파일과 네트워크에 접근할 수 있고 API와 Pod 자원을 공유한다. 기존 Docker의 실행별 CPU·메모리·PID 제한, 읽기 전용 입력, 네트워크 차단은 적용되지 않는다. Pod 자원 제한과 권한을 배포 정책에 맞게 설정한다. 강한 격리가 필요하면 별도 실행 Pod/서비스 구조가 필요하며 이 변경에는 포함하지 않는다.
+**격리 범위:** 로컬 `ProcessRuntime`의 `.venv`와 별도 프로세스만으로는 보안 샌드박스가 되지 않는다. 웹 `execute_code`는 설정된 격리 backend의 `SessionKernel`을 사용한다. 격리 설정과 Pod 자원 제한·권한은 배포 정책에 맞게 설정한다.
 
 검증은 저장소 루트에서 실행한다(테스트용 pytest 필요):
 
@@ -137,6 +137,6 @@ python3.11 -m venv /app/.venv
 .venv/bin/python -m pytest -q 08-YieldAgent/harness/tests/test_process_python_runtime.py
 ```
 
-그다음 사내 실제 서버·LLM·MongoDB를 연결한 새 세션에서 전체 조회 결과의 집계와 차트 생성을 요청한다. `run_python` 성공, 표·차트 저장/화면 표시, 무한 루프 시간 초과 및 취소를 확인한다. 로컬 worker 테스트만으로 사내 통합 검증 완료를 선언하지 않는다.
+그다음 사내 실제 서버·LLM·MongoDB를 연결한 새 세션에서 전체 조회 결과의 집계와 차트 생성을 요청한다. `execute_code` 성공, 표·차트 저장/화면 표시, 무한 루프 시간 초과 및 취소를 확인한다. 로컬 worker 테스트만으로 사내 통합 검증 완료를 선언하지 않는다.
 
-Docker 방식으로 되돌리려면 이미지를 빌드하고 `HARNESS_PYTHON_RUNTIME=docker`, `HARNESS_PYTHON_IMAGE=yield-harness-python:2`로 설정한다. Docker 실패 시 process 방식으로 자동 전환하지 않는다.
+`HARNESS_PYTHON_RUNTIME`, `HARNESS_PYTHON_EXECUTABLE`, `HARNESS_PYTHON_IMAGE`는 기존 설정 호환성을 위해 남아 있다. `docker` 값을 지정해도 제거된 `ContainerRuntime`을 복원하거나 웹 커널을 전환하지 않는다.

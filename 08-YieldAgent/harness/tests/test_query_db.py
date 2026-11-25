@@ -663,18 +663,10 @@ def test_executor_stores_capped_evidence_and_projects_store_result_id(monkeypatc
     assert store.tables[0].rows == [{"ID": 1, "NAME": "a"}, {"ID": 2, "NAME": "b"}]
     assert store.tables[0].complete is False
 
-    from harness.tools.python_tools import PythonInput, run_python
-
-    python_context = SimpleNamespace(
-        store=store, run={"principal_id": "p", "session_id": "s"},
-        settings=Settings(),
-    )
-    analyzed = asyncio.run(run_python(PythonInput(
-        input_result_ids=[view["result_id"]],
-        code=f"emit_table(tables[{view['result_id']!r}][{view['table_id']!r}], name='copied')",
-    ), python_context))
-    assert analyzed.status == "partial"
-    assert analyzed.tables[0].rows == store.tables[0].rows
+    stored_rows = asyncio.run(store.rows('p', 's', view['result_id'], table_id=view['table_id']))
+    assert stored_rows == store.tables[0].rows
+    assert len(stored_rows) == 2
+    assert not store.tables[0].complete
 
 
 def test_query_db_registers_seven_day_absolute_path_lifetime():

@@ -96,9 +96,9 @@ Hermes/native가 유일한 실행 경로다. 이전 standalone supervisor 서버
 - `POST /runs/{run_id}/input`: `kind=input|steer`, `request_id`, `goal_revision`, `value`; 질문 답변에는 `interrupt_id`도 필요하다.
 - `/harness/results/{result_id}`와 `/harness/artifacts/{artifact_id}`: 같은 principal과 대화의 원본·산출물만 읽는다.
 
-웹 채팅의 `yield` 도구 묶음은 `query_db`, `list_tables`, `read_result`, `render_yield_table`, `load_wafer_maps`, `run_python`으로 구성된다. 각 핸들러는 현재 사용자의 세션과 실행에 연결된 `ToolExecutor`를 호출한다. 도구를 추가할 때는 `harness/tools/registry.py`의 `domain_registry()`에 정의를 등록한다. 기존 MCP 서버는 별도로 실행할 수 있다.
+웹 채팅의 `yield` 도구 묶음은 `query_db`, `list_tables`, `read_result`, `render_yield_table`, `load_wafer_maps`의 다섯 도구로 구성된다. 웹 채팅은 별도로 Hermes `execute_code`도 제공한다. 각 핸들러는 현재 사용자의 세션과 실행에 연결된 `ToolExecutor`를 호출한다. 도구를 추가할 때는 `harness/tools/registry.py`의 `domain_registry()`에 정의를 등록한다. 기존 MCP 서버는 별도로 실행할 수 있다.
 
-일반 채팅에서는 Hermes의 스킬, 메모리, 같은 프로필의 대화 검색, 사용자 질문도 사용한다. 표와 차트는 도구 응답의 `artifact_refs[].markdown`으로 표시한다. 다운로드할 완성 파일은 `run_python`의 `publish_directory` 바로 아래에 저장한다. 실행이 성공하면 각 파일을 현재 세션에 등록한다. 도구가 반환하는 `artifact_refs[].media`는 Hermes 첨부 카드의 다운로드 버튼으로 표시된다. 다운로드 시 사용자와 세션을 확인하고 저장된 바이트를 스트리밍한다. 파일 확장자가 없어도 같은 경로를 사용한다. 합성 평가도 같은 채팅 실행기를 사용하며, 입력 자료를 세션 결과에 저장하고 허용된 도구 범위를 실행에 지정한다.
+일반 채팅에서는 Hermes의 스킬, 메모리, 같은 프로필의 대화 검색, 사용자 질문도 사용한다. 표와 차트는 도구 응답의 `artifact_refs[].markdown`으로 표시한다. 다운로드할 완성 파일은 `execute_code`의 `publish_directory` 바로 아래에 저장한다. 실행이 성공하면 각 파일을 현재 세션에 등록한다. 도구가 반환하는 `artifact_refs[].media`는 Hermes 첨부 카드의 다운로드 버튼으로 표시된다. 다운로드 시 사용자와 세션을 확인하고 저장된 바이트를 스트리밍한다. 파일 확장자가 없어도 같은 경로를 사용한다. 합성 평가도 같은 채팅 실행기를 사용하며, 입력 자료를 세션 결과에 저장하고 허용된 도구 범위를 실행에 지정한다.
 
 웹 채팅은 Hermes 기본 검색 설정에 따라 `todo_list`를 필요할 때 찾아 쓰고, `delegate_task`, `read_file`, `search_files`와 공급자가 지원하는 `vision_analyze`를 모델에 직접 제공한다. 위임한 수율 조회도 원래 대화의 실행에 결과를 저장한다.
 
@@ -106,7 +106,7 @@ Hermes/native가 유일한 실행 경로다. 이전 standalone supervisor 서버
 
 파일 도구는 요청마다 임시 폴더에 허용된 파일만 준비한다. 한 번에 복사하는 데이터는 최대 64 MiB이고, 디렉터리 검색은 하위 항목 10,000개까지 지원한다. 한도에 도달하면 오류를 반환하므로 하위 폴더를 지정해서 검색한다. 이미지 분석에는 PNG·JPEG 같은 래스터 파일을 사용한다. 이 한도는 DB 조회와 웨이퍼 맵 집계에 적용되지 않는다.
 
-도구 결과에는 전체 행 수, 범위, 출처, 원본 ID, 성공·부분·빈 결과·오류 구분이 있다. 작은 preview와 별개로 원본 전체를 저장한다. `read_result`는 원본 페이지를, `run_python`은 지정한 결과의 전체 데이터를 읽는다. 신규 채팅은 Hermes가 반환한 최종 답변을 게시한다. 이전 실행의 메시지와 당시 검증 결과는 계속 열람할 수 있다.
+도구 결과에는 전체 행 수, 범위, 출처, 원본 ID, 성공·부분·빈 결과·오류 구분이 있다. 작은 preview와 별개로 원본 전체를 저장한다. `read_result`는 원본 페이지를 읽는다. `read_result(export_for_python=true)`로 전체 저장 표를 CSV로 내보내면 `execute_code`에서 읽고 계산한다. 신규 채팅은 Hermes가 반환한 최종 답변을 게시한다. 이전 실행의 메시지와 당시 검증 결과는 계속 열람할 수 있다.
 
 Mongo lease와 epoch가 실행 소유권을 정한다. 이전 서버의 늦은 저장이 새 서버의 상태를 덮지 않도록 실행·종료·결과 저장을 제한한다. Hermes 실행의 대화와 사용량은 저장소에 보존한다.
 
@@ -124,7 +124,7 @@ MCP 호스트에는 이 명령과 작업 디렉터리를 등록한다. 공통 re
 
 ## 도메인 범위와 현재 제한
 
-`list_tables`로 스키마를 확인하고 `query_db`로 조회하며, `read_result`·`run_python`으로 저장된 근거를 읽고 계산한다. `render_yield_table`은 수율 표를, `load_wafer_maps`는 웨이퍼 맵 자료를 제공한다. 이전 전용 도메인 bundle과 wafer-set 도구는 등록되거나 실행되지 않는다.
+`list_tables`로 스키마를 확인하고 `query_db`로 조회하며, `read_result`로 저장된 근거를 읽는다. MCP는 이 다섯 도메인 도구만 노출하며 `execute_code`는 제공하지 않는다. `render_yield_table`은 수율 표를, `load_wafer_maps`는 웨이퍼 맵 자료를 제공한다. 이전 전용 도메인 bundle과 wafer-set 도구는 등록되거나 실행되지 않는다.
 
 검증 명령과 실제/가상 자료의 구분은 [평가 안내](evals/README.md)를 따른다. 단위 테스트 통과나 일부 실제 시나리오 성공을 전체 운영 전환 승인으로 취급하지 않는다.
 

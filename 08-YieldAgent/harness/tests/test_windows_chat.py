@@ -25,7 +25,7 @@ loop = asyncio.new_event_loop()
 try:
     assert callable(AIAgent.run_conversation)
     executor = SimpleNamespace(registry=native_domain_registry(), execute=None)
-    selected = set(executor.registry.tools) - {'run_python', 'execute_code'}
+    selected = set(executor.registry.tools) - {'execute_code'}
     names = register_yield_tools(registry, executor, loop, allowed=selected)
     available = _select_tool_names([*WINDOWS_WEB_TOOLSETS, 'code_execution'], [], True)
     assert set(names).issubset(available)

@@ -1,13 +1,11 @@
 import asyncio
 import json
 import sys
-from types import SimpleNamespace
 
 import pytest
 
-from harness.native_verification import validate_wafer_map_contract
-from harness.tools.python_tools import PythonInput, run_python
-from harness.types import TableRef, ToolObservation
+from harness.native_verification import validate_wafer_map_contract, normalize_wafer_map_tables
+from harness.runtime.process import ProcessRuntime
 
 
 def source_rows(mode):
@@ -70,35 +68,22 @@ print(figure.to_json())
 
 async def run_case(mode, selected):
     rows = source_rows(mode)
-    table = TableRef(table_id='wafer_map_dies', title='Synthetic source', columns=list(rows[0]),
-        total_rows=len(rows), preview_rows=rows[:5], complete=True, data_ref='fixture')
-    observation = ToolObservation(principal_id='fixture', session_id='fixture', run_id='fixture',
-        invocation_id='fixture', result_id='source', tool_name='load_wafer_maps', tables=[table],
-        provenance={'data_origin': 'fixture'})
-
-    class Store:
-        async def observation(self, *args):
-            return observation
-
-        async def rows(self, *args, **kwargs):
-            return rows
-
-    context = SimpleNamespace(store=Store(), run={'principal_id': 'fixture', 'session_id': 'fixture'},
-        settings=SimpleNamespace(no_yield_tools=False, python_runtime='process', python_executable=sys.executable))
-    result = await run_python(PythonInput(code=analysis_code(mode, selected), input_result_ids=['source']), context)
+    result = await ProcessRuntime(sys.executable).execute(
+        analysis_code(mode, selected), {'source': {'wafer_map_dies': rows}})
     return rows, result
 
 
 @pytest.mark.parametrize('mode,selected', [('wafer', False), ('wafer', True), ('lot', False), ('lot', True)])
 def test_cummap_unnamed_evidence_recovers_without_changing_cells_or_panel_axes(mode, selected):
     rows, result = asyncio.run(run_case(mode, selected))
-    assert result.status == 'success', result.summary
-    tables = {table.table_id: table.rows for table in result.tables}
+    assert result['status'] == 'success', result
+    tables, renamed = normalize_wafer_map_tables({table['table_id']: table['rows'] for table in result['tables']})
+    assert set(renamed) == {'table_1', 'table_2', 'table_3'}
     assert set(tables) == {'wafer_map_manifest', 'wafer_map_members', 'wafer_map_cells'}
     assert validate_wafer_map_contract(tables, {'source': rows})['verdict'] == 'pass'
     member_counts = [row['member_count'] for row in tables['wafer_map_manifest']]
     assert member_counts == ([3] if mode == 'wafer' else [25, 25, 25])
-    html = result.artifacts[0]['data']
+    html = result['plots'][0]
     assert 'Plotly.newPlot' in html
     start = html.rindex('Plotly.newPlot(')
     decoder = json.JSONDecoder()

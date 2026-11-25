@@ -114,11 +114,11 @@ Oracle 연결은 `common.py`의 `ORACLE_USER`, `ORACLE_PASSWORD`, `ORACLE_DSN`, 
 
 ## 5. Docker 없는 Python 실행 방식을 고른다
 
-일반 업무 도구 모드에서는 `HARNESS_PYTHON_RUNTIME=process`와 `HARNESS_PYTHON_EXECUTABLE`로 별도 Python worker를 실행한다. Docker 데몬이 필요하지 않다. API 서버 내부에서 생성 코드를 직접 실행하도록 바꾸지 않는다. 분석 환경에는 실제 분석에 필요한 pandas, numpy, scipy, plotly, statsmodels를 준비한다. 자세한 계약은 [Kubernetes Python 실행](MIGRATION.md#kubernetes-python-실행)을 따른다.
+웹 채팅에서는 `execute_code`가 격리된 `SessionKernel`에서 Python을 실행한다. 공유 `ProcessRuntime`과 `worker.py`는 별도 프로세스 실행 및 테스트용으로 유지한다. Docker 데몬이 필요하지 않다. API 서버 내부에서 생성 코드를 직접 실행하도록 바꾸지 않는다. 분석 환경에는 실제 분석에 필요한 pandas, numpy, scipy, plotly, statsmodels를 준비한다. 자세한 계약은 [Kubernetes Python 실행](MIGRATION.md#kubernetes-python-실행)을 따른다.
 
 `.venv`는 보안 샌드박스가 아니다. 일반 process 방식은 API와 같은 OS 사용자 또는 Pod 권한을 공유할 수 있다. 읽기 전용 루트 파일시스템을 사용하면 작업용 임시 디렉터리에 쓰기 가능한 볼륨이 필요하다. 사내 실행 정책에 맞춰 Pod 자원과 네트워크 권한을 결정한다.
 
-`HARNESS_NO_YIELD_TOOLS=1`은 단순히 수율 도구만 끄는 옵션이 아니다. 현재 레지스트리는 이 모드에서 `query_db`와 `run_python`을 등록하며 native worker의 terminal·file·execute_code 계열도 전용 `yieldrun` 계정 격리 경로를 사용한다. [격리 설치 안내](isolation/README.ko.md)를 함께 적용한다.
+`Settings.from_env()`는 `no_yield_tools=True`를 설정한다. `domain_registry()`는 다섯 도메인 도구를 등록하며 Python 실행 도구는 포함하지 않는다. `HARNESS_NO_YIELD_TOOLS`로 이전 Python 도구를 활성화하지 않는다. 웹의 `execute_code`는 격리된 세션 커널을 사용하며 terminal·file 계열도 설정된 격리 backend를 사용한다. [격리 설치 안내](isolation/README.ko.md)를 함께 적용한다.
 
 이 격리 모드는 localhost SSH, 고정 사용자 `yieldrun`, 관리자가 소유한 launcher·분석 venv, 저장소 밖의 절대 경로를 요구한다. `work_root`는 `home` 바로 아래에 있어야 한다. Linux에서는 `bwrap`와 namespace 지원이 필요하다. `auto`도 격리 없는 실행으로 전환하지 않는다. SSH가 없는 Kubernetes Pod에 이 옵션만 설정하면 작동하지 않는다. 대상 Pod에서 이 계약을 제공할 수 없으면 해당 모드 도입을 미검증으로 기록하고 사내 실행 서비스에 대한 별도 설계를 한다. 일반 process 방식으로 몰래 fallback하지 않는다.
 
@@ -204,4 +204,4 @@ PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.evals.read_result_page --li
 
 아래 문구에 실제 참조 소스 경로와 사내 저장소 경로를 추가한다.
 
-> 참조 소스의 `08-YieldAgent/harness/INTERNAL_MIGRATION_2026_10_31.md`와 `INTERNAL_PORTING_LUNA.md`를 읽고 사내 최신 main에 현재 하네스를 이식하라. 참조 소스의 실제 전체 SHA와 사내 시작 SHA를 먼저 기록하라. 사내 기존 서버·에이전트·인증·프런트 코드를 정본으로 보존하고 파일을 통째로 덮어쓰지 마라. 원본→사내 대응표, 의존성 및 환경 차이, 단계별 검증 계획을 작성한 뒤 구현하라. 외부 모델 기본값을 사내 승인 LLM으로 교체하고 실제 MongoDB와 업무 DB를 연결하라. Docker 없는 일반 process 실행과 `HARNESS_NO_YIELD_TOOLS=1`의 localhost SSH·yieldrun·bwrap 격리를 구분하라. 새 Hermes UI의 `/api/ws`, gateway mount, 인증·ticket·origin과 연결되지 않은 handler를 확인하라. read_result의 페이지 정보와 공통 표시 행 수 계산을 관련 파일 전체에 함께 반영하라. 자연어 키워드·정규식·실패 문구 하드코딩으로 planner를 보정하지 마라. 각 단계의 실제 검증을 통과하면 다음 단계로 진행하되 부족한 권한·업무 정의·접속 정보는 구체적으로 보고하라. 실제 LLM·도구·DB·UI 사용자 시나리오를 실행하고 정상·실패·미검증을 구분하라. 사내 코드·자격증명·업무 데이터를 외부로 전송하지 마라. 완료 시 커밋, 변경 파일, 설정, 검증 근거, 남은 제약과 롤백 절차를 보고하라.
+> 참조 소스의 `08-YieldAgent/harness/INTERNAL_MIGRATION_2026_10_31.md`와 `INTERNAL_PORTING_LUNA.md`를 읽고 사내 최신 main에 현재 하네스를 이식하라. 참조 소스의 실제 전체 SHA와 사내 시작 SHA를 먼저 기록하라. 사내 기존 서버·에이전트·인증·프런트 코드를 정본으로 보존하고 파일을 통째로 덮어쓰지 마라. 원본→사내 대응표, 의존성 및 환경 차이, 단계별 검증 계획을 작성한 뒤 구현하라. 외부 모델 기본값을 사내 승인 LLM으로 교체하고 실제 MongoDB와 업무 DB를 연결하라. 공유 ProcessRuntime worker와 웹 execute_code의 격리된 SessionKernel 실행을 구분하라. 새 Hermes UI의 `/api/ws`, gateway mount, 인증·ticket·origin과 연결되지 않은 handler를 확인하라. read_result의 페이지 정보와 공통 표시 행 수 계산을 관련 파일 전체에 함께 반영하라. 자연어 키워드·정규식·실패 문구 하드코딩으로 planner를 보정하지 마라. 각 단계의 실제 검증을 통과하면 다음 단계로 진행하되 부족한 권한·업무 정의·접속 정보는 구체적으로 보고하라. 실제 LLM·도구·DB·UI 사용자 시나리오를 실행하고 정상·실패·미검증을 구분하라. 사내 코드·자격증명·업무 데이터를 외부로 전송하지 마라. 완료 시 커밋, 변경 파일, 설정, 검증 근거, 남은 제약과 롤백 절차를 보고하라.

@@ -90,29 +90,6 @@ def test_worker_keeps_tables_distinct_and_rejects_duplicate_names(tmp_path, monk
     assert result['status'] == 'error' and 'Duplicate' in result['error']['message']
 
 
-def test_python_inherits_incomplete_input_even_when_stdout_claims_complete(monkeypatch):
-    from types import SimpleNamespace
-    from harness.types import ToolObservation
-    from harness.tools.python_tools import PythonInput, run_python
-    from harness.runtime.container import ContainerRuntime
-    obs = ToolObservation(principal_id='a', session_id='s', run_id='r', invocation_id='i', result_id='x', tool_name='q', status='partial', data_ref='blob')
-    class Store:
-        async def observation(self, *args):
-            return obs
-        async def rows(self, *args, **kwargs):
-            return [{'n': 1}]
-    async def execute(self, code, datasets):
-        assert datasets == {'x': {'default': {'rows': [{'n': 1}], 'columns': ['n']}}}
-        return {'status': 'success', 'tables': [{'table_id': 'summary', 'title': 'summary', 'rows': [{'n': 1}], 'complete': True}], 'plots': [], 'stdout': 'all data complete', 'stderr': ''}
-    monkeypatch.setattr(ContainerRuntime, 'execute', execute)
-    ctx = SimpleNamespace(store=Store(), run={'principal_id': 'a', 'session_id': 's'}, settings=SimpleNamespace(python_runtime='docker', python_image='unused'))
-    result = asyncio.run(run_python(PythonInput(code='print(1)', input_result_ids=['x']), ctx))
-    assert result.status == 'partial'
-    assert not result.tables[0].complete
-    assert 'x/default' in result.tables[0].missing_reason
-    assert result.source_result_ids == ['x']
-
-
 def test_v1_gridfs_record_reads_without_rewrite():
     from harness.store import HarnessStore
     async def scenario():
@@ -133,11 +110,12 @@ def test_v1_gridfs_record_reads_without_rewrite():
     asyncio.run(scenario())
 
 
-def test_run_python_process_reads_full_stored_table_and_saves_artifacts():
+def test_process_reads_full_exported_table_and_saves_artifacts(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from harness.config import Settings
+    import sys
+    from harness.runtime.process import ProcessRuntime
     from harness.store import HarnessStore
-    from harness.tools.python_tools import PythonInput, run_python
+    from harness.tools.python_tools import ReadInput, read_result
     from harness.types import ResultTable
 
     async def scenario():
@@ -146,12 +124,35 @@ def test_run_python_process_reads_full_stored_table_and_saves_artifacts():
             await store.setup()
             source = await store.put_result('a', 's', dict(run_id='r', invocation_id='input', tool_name='fixture'), [], [],
                 tables=[ResultTable(table_id='data', title='Fixture', rows=[{'n': i} for i in range(120)], complete=True)])
-            ctx = SimpleNamespace(store=store, run={'principal_id': 'a', 'session_id': 's'}, settings=Settings())
-            result = await run_python(PythonInput(input_result_ids=[source.result_id], code=
-                "emit_table(pd.DataFrame([{'count': len(df), 'total': int(df.n.sum())}]))\nemit_plot(px.bar(df, y='n'))\ndf.to_csv(publish_directory / 'rows.csv', index=False)"), ctx)
-            assert result.status == 'success'
-            saved = await store.put_result('a', 's', dict(run_id='r', invocation_id='output', tool_name='run_python'),
-                [], result.artifacts, tables=result.tables)
+            class Backend:
+                async def upload_file(self, stream):
+                    path = tmp_path / 'source.csv'
+                    path.write_bytes(stream.read())
+                    return str(path)
+
+            monkeypatch.setattr('harness.tools.python_tools.isolation_backend', lambda *_: Backend())
+            ctx = SimpleNamespace(store=store, run={'principal_id': 'a', 'session_id': 's', 'run_id': 'r'},
+                                  settings=SimpleNamespace(isolation=object()))
+            exported = await read_result(ReadInput(result_id=source.result_id, table_id='data',
+                                                  limit=10, export_for_python=True), ctx)
+            assert len(exported.tables[0].rows) == 10
+            csv = exported.scope['python_csv']
+            assert csv['row_count'] == 120 and csv['source_complete']
+            result = await ProcessRuntime(sys.executable).execute(
+                f"df = pd.read_csv({csv['path']!r})\n"
+                "emit_table(pd.DataFrame([{'count': len(df), 'total': int(df.n.sum())}]))\n"
+                "emit_plot(px.bar(df, y='n'))\n"
+                "df.to_csv(publish_directory / 'rows.csv', index=False)", {})
+            assert result['status'] == 'success', result
+            artifacts = [{'title': 'Chart', 'mime': 'text/html', 'data': html} for html in result['plots']]
+            artifacts.extend(result['generated_files'])
+            try:
+                saved = await store.put_result('a', 's', dict(run_id='r', invocation_id='output',
+                    tool_name='execute_code', source_result_ids=[source.result_id]), [], artifacts,
+                    tables=[ResultTable.model_validate({**table, 'complete': True}) for table in result['tables']])
+            finally:
+                for item in result['generated_files']:
+                    item['data'].close()
             assert await store.rows('a', 's', saved.result_id, table_id='table_1') == [{'count': 120, 'total': 7140}]
             assert len(saved.artifact_refs) == 2
             assert any(a.get("output_path", "").endswith("/rows.csv") for a in saved.artifact_refs)

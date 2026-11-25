@@ -93,7 +93,7 @@ def test_native_registry_dispatch_uses_authenticated_executor_and_links(monkeypa
         executor = SimpleNamespace(registry=domain_registry(), execute=execute)
         names = register_yield_tools(registry, executor, loop, invocation_id=lambda: "hermes-call")
         assert set(names) == set(registry.get_tool_names_for_toolset("yield")) == {
-            "list_tables", "query_db", "read_result", "render_yield_table", "load_wafer_maps", "run_python",
+            "list_tables", "query_db", "read_result", "render_yield_table", "load_wafer_maps",
         }
         args = {"result_id": "previous"}
         response = json.loads(await asyncio.to_thread(registry.dispatch, "read_result", args))

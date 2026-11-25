@@ -51,7 +51,7 @@ async def serve():
     connection_id = uuid.uuid4().hex
     run = await acquire_session(store, settings.principal, session_id, connection_id)
     executor = ToolExecutor(registry, ExecutionContext(store, settings, run))
-    server = Server("yield-harness", version="2.0.0", instructions="결과는 preview와 전체 원본 result_id를 포함합니다. 전체 계산은 run_python, 추가 행은 read_result를 사용하세요. empty/error/partial을 구분하세요. 출처 없는 인과관계를 단정하지 마세요.")
+    server = Server("yield-harness", version="2.0.0", instructions="결과는 preview와 전체 원본 result_id를 포함합니다. 전체 원본과 추가 행은 read_result를 사용하세요. empty/error/partial을 구분하세요. 출처 없는 인과관계를 단정하지 마세요.")
     gate = asyncio.Semaphore(2)
     inflight = 0
     last_accounted = time.monotonic()

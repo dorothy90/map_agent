@@ -17,10 +17,9 @@ def test_domain_tool_registry_exposes_yield_handlers():
 
     registry = domain_registry()
     assert model_tool_names() == [
-        "read_result", "run_python", "query_db", "list_tables", "load_wafer_maps", "render_yield_table",
+        "read_result", "query_db", "list_tables", "load_wafer_maps", "render_yield_table",
     ]
     assert registry.tools["read_result"].handler.__module__ == "harness.tools.python_tools"
-    assert registry.tools["run_python"].handler.__module__ == "harness.tools.python_tools"
     assert registry.tools["query_db"].handler.__module__ == "harness.tools.query_db"
     assert registry.tools["query_db"].read_only is True
     assert registry.tools["query_db"].effect == "artifact"

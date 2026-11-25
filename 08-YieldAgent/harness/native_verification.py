@@ -41,7 +41,7 @@ def _missing_table_issue(names):
     return ('웨이퍼 맵 구조화 근거 표가 없습니다: ' + ', '.join(names)
             + '. 각 필수 열을 갖춘 실제 근거 DataFrame을 저장하세요: ' + calls
             + '. 후보 표가 여러 개이거나 열이 부족하면 자동으로 이름을 추정하지 않습니다. '
-            'run_python으로 근거 표와 맵을 함께 다시 생성한 뒤 최종 답변을 제출하세요.')
+            'execute_code로 근거 표와 맵을 함께 다시 생성한 뒤 최종 답변을 제출하세요.')
 
 
 def _contract_fail(*issues):
@@ -367,7 +367,7 @@ async def inspect_wafer_map_contracts(store, principal_id, session_id, observati
             continue
         source_ids = (map_sources(item) if selected_result_ids is not None else
             tuple(sorted(set(item.get('source_result_ids', [])) & set(sources))))
-        if item.get('tool_name') == 'run_python' and item.get('artifact_refs') and source_ids:
+        if item.get('tool_name') in {'execute_code', 'run_python'} and item.get('artifact_refs') and source_ids:
             key = item['result_id'] if selected_result_ids is not None else source_ids
             latest[key] = (source_ids, item)
     if not latest:

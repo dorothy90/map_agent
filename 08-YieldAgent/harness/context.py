@@ -159,7 +159,7 @@ def evidence_views(observations, *, token_budget=8000):
         if observation.get("page"):
             ResultPage.model_validate(observation["page"]).project(view)
         if view['truncated']:
-            view['read_more'] = 'read_result(result_id, table_id, columns, offset, limit); run_python reads complete stored tables'
+            view['read_more'] = 'read_result(result_id, table_id, columns, offset, limit, export_for_python=true); execute_code reads exported CSVs'
     return [source['view'] for source in sources]
 
 

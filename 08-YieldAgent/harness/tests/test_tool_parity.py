@@ -7,7 +7,7 @@ from harness.tools.registry import domain_registry
 
 def test_domain_registry_exposes_only_native_capabilities():
     assert set(domain_registry().tools) == {
-        "read_result", "run_python", "query_db", "list_tables",
+        "read_result", "query_db", "list_tables",
         "load_wafer_maps", "render_yield_table",
     }
 

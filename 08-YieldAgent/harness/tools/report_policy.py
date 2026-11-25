@@ -133,7 +133,7 @@ def _failure(state, fingerprint, code, details, *, record=True):
                 'required_columns': ['group_id', 'lot_id'],
                 'wafer_columns': ['group_id', 'lot_id', 'wf_id'],
                 'member_grain': '기본 lot; wafer는 member_grain=wafer와 PRB WFID 원문 문자열 wf_id가 필요하다.',
-                'rendering': 'query_db/run_python으로 멤버십 구성 후 공식 그룹 수율 표는 render_yield_table로 렌더링한다. 동일 OPER_ID의 wafer에 여러 EQP 행이면 임의 중복 제거 없이 clarify한다.',
+                'rendering': 'query_db/execute_code으로 멤버십 구성 후 공식 그룹 수율 표는 render_yield_table로 렌더링한다. 동일 OPER_ID의 wafer에 여러 EQP 행이면 임의 중복 제거 없이 clarify한다.',
                 'reference': 'Use a saved result_id and table_id for complete identifier-only membership; do not send report cells or raw measurement rows.',
                 'table_selection': 'table_id may be omitted only when the result contains exactly one table overall and that table has group_id and lot_id.',
             },
