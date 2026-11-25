@@ -77,7 +77,7 @@ async def read_result(args, ctx):
         isolation = ctx.settings.isolation
         if isolation is None:
             raise ValueError("A configured Python workspace is required to export a table")
-        backend = isolation_backend(isolation, ctx.run["run_id"], ctx.run["principal_id"])
+        backend = isolation_backend(isolation, ctx.run["run_id"], ctx.run["principal_id"], ctx.run.get("session_id"))
         with tempfile.TemporaryFile(mode="w+", newline="", encoding="utf-8") as output:
             writer = csv.DictWriter(output, fieldnames=page["columns"], extrasaction="ignore")
             writer.writeheader()

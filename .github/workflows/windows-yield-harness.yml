@@ -1,0 +1,47 @@
+name: Windows yield harness
+on:
+  push:
+    branches: [codex/goal-driven-harness]
+    paths:
+      - '.github/workflows/windows-yield-harness.yml'
+      - '08-YieldAgent/harness/isolation/windows*'
+      - '08-YieldAgent/harness/runtime/session_kernel.py'
+      - '08-YieldAgent/harness/evals/windows_isolation.py'
+      - '08-YieldAgent/harness/tests/test_windows*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      HARNESS_ISOLATION_BACKEND: windows
+      HARNESS_PRINCIPAL: windows-qa
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install service and dedicated analysis environments
+        shell: pwsh
+        run: |
+          python -m pip install uv
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          uv sync --locked --python "$env:pythonLocation\python.exe"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & .\08-YieldAgent\harness\isolation\setup_windows.ps1 -Python "$env:pythonLocation\python.exe"
+      - name: Verify Windows gateway and sandbox
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = (Resolve-Path 08-YieldAgent).Path
+          $py = (Resolve-Path .venv\Scripts\python.exe).Path
+          & $py -c "from harness.dev.local_gateway_app import app"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $tests = @(Get-ChildItem .\08-YieldAgent\harness\tests\test_windows*.py | ForEach-Object FullName)
+          & $py -m pytest -q @tests
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $py -m harness.evals.windows_isolation

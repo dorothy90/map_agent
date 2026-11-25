@@ -1,7 +1,6 @@
 """Shared gateway services for stock Hermes chat runs and saved conversations."""
 import asyncio
 from contextlib import contextmanager
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -334,6 +333,18 @@ def profile_path(principal_id):
 @contextmanager
 def profile_write_lock(profile):
     # Profile migrations and user edits share this lock.
+    if os.name == 'nt':
+        import msvcrt
+        # Windows locks byte ranges on files. A persistent lockfile keeps all
+        # writers on one inode when config.yaml is atomically replaced.
+        fd = os.open(profile / '.profile-write.lock', os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            yield
+        finally:
+            os.close(fd)
+        return
+    import fcntl
     fd = os.open(profile, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -352,7 +363,7 @@ def prepare_profile(principal_id):
 
 def _prepare_profile_config(profile):
     config = profile / 'config.yaml'
-    content = (yaml.safe_load(config.read_text()) or {}) if config.exists() else {}
+    content = (yaml.safe_load(config.read_text(encoding='utf-8')) or {}) if config.exists() else {}
     # This worker has no host terminal tool; probing its package manager is irrelevant.
     content.setdefault('agent', {})
     content.setdefault('delegation', {})
@@ -388,7 +399,7 @@ def _prepare_profile_config(profile):
         del search['enabled'], search['defer']
         changed = True
     if changed:
-        with tempfile.NamedTemporaryFile(mode='w', dir=profile, delete=False) as pending:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=profile, delete=False) as pending:
             pending.write(yaml.safe_dump(content, allow_unicode=True))
         os.replace(pending.name, config)
     if not title_migration.exists():

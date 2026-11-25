@@ -310,7 +310,7 @@ async def query_db(args, ctx):
     isolation = getattr(ctx.settings, "isolation", None)
     if isolation is None:
         raise RuntimeError("isolated backend is not configured")
-    backend = isolation_backend(isolation, ctx.run["run_id"], ctx.run["principal_id"])
+    backend = isolation_backend(isolation, ctx.run["run_id"], ctx.run["principal_id"], ctx.run.get("session_id"))
     source = tempfile.TemporaryFile()
     try:
         with tempfile.TemporaryFile(mode="w+", encoding="utf-8", newline="") as csv_file:

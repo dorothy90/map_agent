@@ -1,14 +1,15 @@
 from contextlib import asynccontextmanager
 import asyncio
+import logging
 import os
 import uuid
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 
-from .config import LocalIsolationSettings, SeatbeltIsolationSettings, Settings
+from .config import LocalIsolationSettings, SeatbeltIsolationSettings, Settings, WindowsIsolationSettings
 from .control import RunController
-from .isolation.backend import prepare_isolated_run
+from .isolation.backend import cleanup_isolated_run, prepare_isolated_run
 from .map_jobs import supervise_map_jobs
 from .runtime.process import ProcessRuntime
 from .router import router
@@ -51,6 +52,21 @@ async def isolation_health(request: Request):
     if request.client is None or request.client.host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(403, "local health check only")
     settings = request.app.state.harness.settings
+    if isinstance(settings.isolation, WindowsIsolationSettings):
+        run = "health-" + uuid.uuid4().hex
+        try:
+            await asyncio.to_thread(prepare_isolated_run, settings.isolation, run,
+                                    settings.principal, session_id="health")
+        except Exception:
+            try:
+                await asyncio.to_thread(cleanup_isolated_run, settings.isolation, run,
+                                        settings.principal, session_id="health")
+            except Exception:
+                logging.getLogger(__name__).warning("Could not clean up failed Windows isolation probe")
+            raise
+        await asyncio.to_thread(cleanup_isolated_run, settings.isolation, run,
+                                settings.principal, session_id="health")
+        return {"status": "ok", "backend": "windows", "sandbox": "appcontainer"}
     if not isinstance(settings.isolation, (LocalIsolationSettings, SeatbeltIsolationSettings)):
         raise HTTPException(404, "Local isolation is not enabled")
     run_id = "health-" + uuid.uuid4().hex

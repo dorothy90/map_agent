@@ -106,9 +106,10 @@ def create_app(*, base_app=None, user=None, services_factory=None):
             app.state.principal_user = principal_user
             ctrl = getattr(base_app.state, 'harness', None)
             if production:
-                from harness.config import LocalIsolationSettings, SeatbeltIsolationSettings
+                from harness.config import LocalIsolationSettings, SeatbeltIsolationSettings, WindowsIsolationSettings
                 if (ctrl is None or not ctrl.settings.no_yield_tools
-                        or not isinstance(ctrl.settings.isolation, (LocalIsolationSettings, SeatbeltIsolationSettings))
+                        or not isinstance(ctrl.settings.isolation, (
+                            LocalIsolationSettings, SeatbeltIsolationSettings, WindowsIsolationSettings))
                         or ctrl.settings.isolation.sandbox != 'required'
                         or ctrl.settings.principal != principal_user):
                     raise RuntimeError('Local gateway requires local isolation and the configured principal')
@@ -145,7 +146,7 @@ def create_app(*, base_app=None, user=None, services_factory=None):
 
     app.include_router(build_gateway_router(resolver, origin_policy=resolver,
         ticket_verifier=resolver, rpc_mode='authority', services=services,
-        schedule_lifespan=schedules if production else None), prefix='/gateway-m1')
+        schedule_lifespan=schedules if production and sys.platform != 'win32' else None), prefix='/gateway-m1')
     app.include_router(build_gateway_router(resolver, origin_policy=resolver,
         ticket_verifier=resolver, rpc_mode='authority', services=services))
     return app

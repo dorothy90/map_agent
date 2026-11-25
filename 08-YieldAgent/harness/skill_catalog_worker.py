@@ -1,6 +1,7 @@
 """Read one profile with the bundled Hermes parser in its own import namespace."""
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import stat
 import sys
@@ -12,22 +13,53 @@ from hermes_cli.skills_config import get_disabled_skills
 from hermes_yaml import safe_load
 
 
+def _walk_skills(root):
+    if os.name != 'nt':
+        yield from os.fwalk(root, follow_symlinks=False)
+        return
+    if root.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        return
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        # os.walk treats some Windows junctions as ordinary directories.
+        dirs[:] = [d for d in dirs if not (Path(directory) / d).lstat().st_file_attributes
+                   & stat.FILE_ATTRIBUTE_REPARSE_POINT]
+        yield directory, dirs, files, None
+
+
+@contextmanager
+def _open_skill(path, dir_fd):
+    if dir_fd is not None:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        with os.fdopen(fd, encoding='utf-8-sig') as stream:
+            yield stream
+        return
+    import msvcrt
+    import win32file
+    from hermes_dir_acl import _strip_win32_prefix
+    if path.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        raise ValueError('Linked skill file')
+    with path.open(encoding='utf-8-sig') as stream:
+        actual = win32file.GetFinalPathNameByHandle(msvcrt.get_osfhandle(stream.fileno()), 0)
+        if Path(_strip_win32_prefix(actual)) != path:
+            raise ValueError('Skill file changed location')
+        yield stream
+
+
 def read_cards(root):
     entries = []
-    for directory, dirs, files, dir_fd in os.fwalk(root, follow_symlinks=False):
+    for directory, dirs, files, dir_fd in _walk_skills(root):
         dirs[:] = [d for d in dirs if d not in skill_utils.EXCLUDED_SKILL_DIRS
                    and not ('SKILL.md' in files and d in skill_utils.SKILL_SUPPORT_DIRS)]
         if 'SKILL.md' not in files:
             continue
         path = Path(directory) / 'SKILL.md'
         try:
-            fd = os.open('SKILL.md', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
-            with os.fdopen(fd, encoding='utf-8-sig') as stream:
+            with _open_skill(path, dir_fd) as stream:
                 info = os.fstat(stream.fileno())
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     continue
                 front, body = skill_utils.parse_frontmatter(stream.read())
-        except (OSError, UnicodeError):
+        except (OSError, ValueError):
             continue
         name = front.get('name') or path.parent.name
         if not isinstance(name, str):
@@ -54,7 +86,7 @@ def run():
     if config_path.is_symlink() or (config_path.exists() and (
             not config_path.is_file() or config_path.stat().st_nlink != 1)):
         raise ValueError('Unsupported profile config path')
-    config = (safe_load(config_path.read_text()) or {}) if config_path.exists() else {}
+    config = (safe_load(config_path.read_text(encoding='utf-8')) or {}) if config_path.exists() else {}
     disabled = get_disabled_skills(config)
     cards = read_cards(profile / 'skills')
     if len(sys.argv) > 1:

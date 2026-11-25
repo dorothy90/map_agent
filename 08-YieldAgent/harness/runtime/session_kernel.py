@@ -3,7 +3,6 @@ import asyncio
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
-import shlex
 import tempfile
 import time
 import uuid
@@ -48,9 +47,9 @@ class SessionKernel:
             "runner['GLOBALS']['_yield_cell'] = helpers['run_session_cell']\n"
             "runner['main']()\n"
         )
+        command, options = self.backend.python_program(bootstrap, name="kernel.py")
         self.process = await asyncio.create_subprocess_exec(
-            *self.backend.command('exec python3 -I -B -u -c ' + shlex.quote(bootstrap)),
-            env=self.backend.client_environment(), start_new_session=True,
+            *command, **options,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, limit=2_100_000,
         )
@@ -71,10 +70,9 @@ class SessionKernel:
 
     async def collect(self, directory):
         source = Path(output_files.__file__).read_text(encoding='utf-8')
-        command = 'exec python3 -I -B -c ' + shlex.quote(source) + ' ' + shlex.quote(str(directory))
+        command, options = self.backend.python_program(source, [directory], name="collect.py")
         with tempfile.TemporaryFile() as transfer:
-            proc = await asyncio.create_subprocess_exec(*self.backend.command(command),
-                env=self.backend.client_environment(), start_new_session=True,
+            proc = await asyncio.create_subprocess_exec(*command, **options,
                 stdout=transfer, stdin=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
             try:
                 if await proc.wait():
@@ -131,7 +129,7 @@ class SessionKernels:
                     if idle is None:
                         raise ValueError('All Python kernels are busy. Retry after another cell finishes.')
                     await self.close(idle)
-                backend = isolation_backend(ctx.settings.isolation, 'kernel-' + uuid.uuid4().hex, owner[0])
+                backend = isolation_backend(ctx.settings.isolation, 'kernel-' + uuid.uuid4().hex, *owner)
                 kernel = self.sessions.setdefault(owner, SessionKernel(backend))
         async with kernel.lock:
             if self.sessions.get(owner) is not kernel:

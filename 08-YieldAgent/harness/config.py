@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import stat
 import sys
 from typing import Literal
 from urllib.parse import urlparse
@@ -150,6 +151,49 @@ class LocalIsolationSettings(_LocalBoundarySettings):
         )
 
 
+class WindowsIsolationSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    backend: Literal["windows"] = "windows"
+    sandbox: Literal["required"] = "required"
+    home: Path
+    work_root: Path
+    analysis_venv: Path
+
+    @model_validator(mode="after")
+    def validate_boundary(self):
+        if sys.platform != "win32":
+            raise ValueError("Windows AppContainer isolation requires Windows")
+        for path in (self.home, self.work_root, self.analysis_venv):
+            if (not path.is_absolute() or len(path.drive) != 2 or path == Path(path.anchor)
+                    or ".." in path.parts or path.resolve() != path):
+                raise ValueError("Windows isolation requires canonical local drive paths")
+            for parent in (path, *path.parents):
+                if parent.exists() and parent.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                    raise ValueError("Windows isolation paths cannot cross a reparse point")
+            if path.is_relative_to(REPOSITORY_ROOT) or REPOSITORY_ROOT.is_relative_to(path):
+                raise ValueError("Windows isolation paths must be separate from the checkout")
+        if (self.work_root.parent != self.home or self.analysis_venv.is_relative_to(self.home)
+                or self.home.is_relative_to(self.analysis_venv) or self.analysis_venv == Path(sys.prefix)):
+            raise ValueError("Windows requires separate workspace, service and analysis environments")
+        if not (self.analysis_venv / "pyvenv.cfg").is_file() or not self.python_executable.is_file():
+            raise ValueError("Create the dedicated Windows analysis venv before starting the gateway")
+        return self
+
+    @property
+    def python_executable(self):
+        return self.analysis_venv / "Scripts" / "python.exe"
+
+    @classmethod
+    def from_env(cls):
+        if sys.platform != "win32":
+            raise ValueError("Windows AppContainer isolation requires Windows")
+        base = Path(os.environ["LOCALAPPDATA"]) / "YieldHarness"
+        home = Path(os.getenv("HARNESS_ISOLATION_HOME") or base / "state")
+        return cls(home=home, work_root=os.getenv("HARNESS_ISOLATION_WORK_ROOT") or home / "work",
+                   analysis_venv=os.getenv("HARNESS_ISOLATION_ANALYSIS_VENV") or base / "analysis-venv",
+                   sandbox=os.getenv("HARNESS_ISOLATION_SANDBOX") or "required")
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     engine: Literal["hermes"] = "hermes"
@@ -178,7 +222,7 @@ class Settings(BaseModel):
     no_yield_tools: bool = False
     native_allowed_tools: list[str] | None = None
     shared_yield_dir: Path | None = None
-    isolation: LocalIsolationSettings | SeatbeltIsolationSettings | IsolationSettings | None = None
+    isolation: LocalIsolationSettings | SeatbeltIsolationSettings | WindowsIsolationSettings | IsolationSettings | None = None
     principal: str = "local"
     enabled: bool = False
 
@@ -219,10 +263,12 @@ class Settings(BaseModel):
             key = os.getenv("GROQ_API_KEY") or os.getenv("groq_api_key", "")
         elif not key and host == "openrouter.ai":
             key = os.getenv("OPENROUTER_API_KEY", "")
-        default_backend = "seatbelt" if sys.platform == "darwin" else "local"
+        default_backend = {"darwin": "seatbelt", "win32": "windows"}.get(sys.platform, "local")
         backend = os.getenv("HARNESS_ISOLATION_BACKEND", default_backend)
         if backend == "local":
             isolation = LocalIsolationSettings.from_env()
+        elif backend == "windows":
+            isolation = WindowsIsolationSettings.from_env()
         elif backend == "seatbelt":
             names = {
                 "home": "HARNESS_ISOLATION_HOME",
@@ -268,7 +314,7 @@ class Settings(BaseModel):
                 sandbox=os.getenv(names["sandbox"], "auto"),
                 retain_python_files=os.getenv("HARNESS_RETAIN_PYTHON_FILES") == "1")
         else:
-            raise ValueError("HARNESS_ISOLATION_BACKEND must be local, seatbelt or ssh")
+            raise ValueError("HARNESS_ISOLATION_BACKEND must be local, seatbelt, windows or ssh")
         return cls(
             engine=engine,
             model=os.getenv("HARNESS_MODEL", cls.model_fields["model"].default),

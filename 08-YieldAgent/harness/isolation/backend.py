@@ -18,7 +18,7 @@ import time
 import uuid
 
 from ..runtime import output_files
-from ..config import IsolationSettings, LocalIsolationSettings, SeatbeltIsolationSettings
+from ..config import IsolationSettings, LocalIsolationSettings, SeatbeltIsolationSettings, WindowsIsolationSettings
 
 
 class IsolationError(RuntimeError):
@@ -76,6 +76,12 @@ class ScopedProcessBackend:
     def _results_parts(self):
         self._require_results_dir()
         return ("profiles", principal_hash(self.principal_id), "results")
+
+    def python_program(self, source, arguments=(), *, name):
+        command = 'exec python3 -I -B -u -c ' + shlex.quote(source)
+        if arguments:
+            command += ' ' + shlex.join(map(str, arguments))
+        return self.command(command), dict(env=self.client_environment(), start_new_session=True)
 
     def client_environment(self):
         return {"PATH": os.defpath, "LANG": os.environ.get("LANG", "C.UTF-8")}
@@ -486,7 +492,10 @@ class SeatbeltIsolationBackend(LocalIsolationBackend):
         return None
 
 
-def isolation_backend(config, run_id: str, principal_id: str | None = None):
+def isolation_backend(config, run_id: str, principal_id: str | None = None, session_id: str | None = None):
+    if isinstance(config, WindowsIsolationSettings):
+        from .windows_backend import WindowsIsolationBackend
+        return WindowsIsolationBackend(config, run_id, principal_id, session_id)
     if isinstance(config, SeatbeltIsolationSettings):
         return SeatbeltIsolationBackend(config, run_id, principal_id)
     if isinstance(config, LocalIsolationSettings):
@@ -496,9 +505,11 @@ def isolation_backend(config, run_id: str, principal_id: str | None = None):
     raise TypeError("unsupported isolation backend configuration")
 
 
-def prepare_isolated_run(config: IsolationSettings | LocalIsolationSettings | SeatbeltIsolationSettings,
-                         run_id: str, principal_id: str | None = None):
-    backend = isolation_backend(config, run_id, principal_id)
+def prepare_isolated_run(config: IsolationSettings | LocalIsolationSettings | SeatbeltIsolationSettings | WindowsIsolationSettings,
+                         run_id: str, principal_id: str | None = None, session_id: str | None = None):
+    backend = isolation_backend(config, run_id, principal_id, session_id)
+    if isinstance(config, WindowsIsolationSettings):
+        return backend.verify()
     probe = (
         "import getpass,json,os,pathlib,sys;"
         "import pandas,numpy,plotly;"
@@ -593,11 +604,11 @@ def prepare_isolated_run(config: IsolationSettings | LocalIsolationSettings | Se
     }
 
 
-def cleanup_isolated_run(config: IsolationSettings | LocalIsolationSettings | SeatbeltIsolationSettings,
-                         run_id: str, principal_id: str):
-    isolation_backend(config, run_id, principal_id).cleanup()
+def cleanup_isolated_run(config: IsolationSettings | LocalIsolationSettings | SeatbeltIsolationSettings | WindowsIsolationSettings,
+                         run_id: str, principal_id: str, session_id: str | None = None):
+    isolation_backend(config, run_id, principal_id, session_id).cleanup()
 
 
-def cleanup_profile_results(config: IsolationSettings | LocalIsolationSettings | SeatbeltIsolationSettings,
-                            principal_id: str, *, now=None):
-    isolation_backend(config, "retention", principal_id).cleanup_results(now=now)
+def cleanup_profile_results(config: IsolationSettings | LocalIsolationSettings | SeatbeltIsolationSettings | WindowsIsolationSettings,
+                            principal_id: str, *, now=None, session_id: str | None = None):
+    isolation_backend(config, "retention", principal_id, session_id).cleanup_results(now=now)

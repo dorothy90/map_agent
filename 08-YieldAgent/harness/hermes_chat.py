@@ -37,7 +37,7 @@ async def run_chat(context):
     principal, session, epoch = run['principal_id'], run['session_id'], run['epoch']
     run_id = run['run_id']
     profile = prepare_profile(principal)
-    profile_config = yaml.safe_load((profile / 'config.yaml').read_text()) or {}
+    profile_config = yaml.safe_load((profile / 'config.yaml').read_text(encoding='utf-8')) or {}
     skills = profile_config.get('skills') or {}
     if any(skills.get(key) for key in ('create_dir', 'external_dirs', 'inline_shell')):
         raise ValueError('Web chat skills must stay within the authenticated profile')
@@ -64,6 +64,12 @@ async def run_chat(context):
                PYTHON_DOTENV_DISABLED='1',
                HERMES_TIMEZONE=str(zone), HERMES_API_TIMEOUT=str(settings.call_timeout),
                HERMES_WRITE_SAFE_ROOT=str(profile))
+    windows = sys.platform == 'win32'
+    if windows:
+        # Python's shell/DLL and TLS/network initialization needs the OS root;
+        # keep profile and application data scoped to this employee.
+        env['SystemRoot'] = os.environ['SystemRoot']
+        env.update(USERPROFILE=str(profile), APPDATA=str(profile), LOCALAPPDATA=str(profile))
     log_dir = ROOT / '.runtime/hermes/logs'
     log_dir.mkdir(parents=True, exist_ok=True)
     gateway_session = await store.db.gateway_sessions.find_one(
@@ -80,10 +86,13 @@ async def run_chat(context):
     messages = None
     tool_starts = {}
     prepared = False
+    job = None
+    workspace = None
+    session_scope = {'session_id': session} if windows else {}
     try:
         if settings.isolation:
             prepare = asyncio.create_task(asyncio.to_thread(
-                prepare_isolated_run, settings.isolation, run_id, principal))
+                prepare_isolated_run, settings.isolation, run_id, principal, **session_scope))
             try:
                 await asyncio.shield(prepare)
                 prepared = True
@@ -91,12 +100,20 @@ async def run_chat(context):
                 await asyncio.gather(prepare, return_exceptions=True)
                 prepared = not prepare.cancelled() and prepare.exception() is None
                 raise
-            await asyncio.to_thread(cleanup_profile_results, settings.isolation, principal)
-        with tempfile.TemporaryDirectory(prefix='yield-chat-') as work, (log_dir / f'stock-chat-{run_id}.log').open('ab') as log:
+            await asyncio.to_thread(cleanup_profile_results, settings.isolation, principal, **session_scope)
+        workspace = tempfile.TemporaryDirectory(prefix='yield-chat-')
+        if windows:
+            env.update(TEMP=workspace.name, TMP=workspace.name)
+        with (log_dir / f'stock-chat-{run_id}.log').open('ab') as log:
             process = await asyncio.create_subprocess_exec(
-                sys.executable, '-I', str(Path(__file__).with_name('hermes_chat_worker.py')),
+                sys.executable, '-I', '-X', 'utf8', str(Path(__file__).with_name('hermes_chat_worker.py')),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=log,
-                start_new_session=True, env=env, cwd=work, limit=16 * 1024 * 1024)
+                start_new_session=not windows, env=env, cwd=workspace.name, limit=16 * 1024 * 1024)
+            if windows:
+                from .isolation.windows_launcher import attach_process_tree
+                # The worker waits for the authenticated request on stdin before
+                # starting Hermes or any domain subprocess.
+                job = attach_process_tree(process.pid)
             process.stdin.write(json.dumps(request, ensure_ascii=False).encode() + b'\n')
             await process.stdin.drain()
 
@@ -203,23 +220,32 @@ async def run_chat(context):
             await messages.aclose()
         if process is not None and not process.stdin.is_closing():
             process.stdin.close()
+        if job is not None:
+            job.close()
         if process is not None and process.returncode is None:
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    await asyncio.wait_for(process.communicate(), timeout=5)
-                except asyncio.TimeoutError:
-                    os.killpg(process.pid, signal.SIGKILL)
+                if windows:
+                    if job is None:
+                        process.kill()  # Failed to assign job before sending the request.
                     await process.communicate()
+                else:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        await asyncio.wait_for(process.communicate(), timeout=5)
+                    except asyncio.TimeoutError:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        await process.communicate()
             except ProcessLookupError:
                 await process.wait()
         try:
+            if workspace is not None:
+                workspace.cleanup()
             await cancel_run_prompts(store, principal, run_id, 'turn_ended')
         finally:
             if prepared:
                 active_error = sys.exc_info()[0] is not None
                 try:
-                    await asyncio.to_thread(cleanup_isolated_run, settings.isolation, run_id, principal)
+                    await asyncio.to_thread(cleanup_isolated_run, settings.isolation, run_id, principal, **session_scope)
                 except Exception:
                     if not active_error:
                         raise

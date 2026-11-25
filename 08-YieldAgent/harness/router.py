@@ -133,10 +133,12 @@ def profile_skills(request, name=None, enabled=None):
         if name is not None:
             raise HTTPException(404, 'Skill not found')
         return {'skills': []}
-    command = [sys.executable, '-I', str(Path(__file__).with_name('skill_catalog_worker.py'))]
+    command = [sys.executable, '-I', '-X', 'utf8', str(Path(__file__).with_name('skill_catalog_worker.py'))]
     if name is not None:
         command.extend((name, json.dumps(enabled)))
     env = {'HERMES_HOME': str(profile), 'HOME': str(profile), 'PATH': os.defpath}
+    if os.name == 'nt':
+        env.update(SystemRoot=os.environ['SystemRoot'], USERPROFILE=str(profile))
     try:
         with profile_write_lock(profile) if name is not None else nullcontext():
             result = subprocess.run(command, cwd=profile, env=env, capture_output=True, check=True, timeout=15)

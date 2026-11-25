@@ -13,6 +13,10 @@ import uuid
 
 HERE = Path(__file__).resolve().parent
 
+# The Windows developer gateway exposes domain tools and chat-scoped Python.
+# Host file, delegation, scheduler and MCP integrations have separate policies.
+WINDOWS_WEB_TOOLSETS = ('yield', 'skills', 'memory', 'session_search', 'clarify')
+
 
 # GLM may place a serialized function frame directly after prose, then hit its
 # output limit before the closing tag. A literal mention of the tag is prose.
@@ -255,10 +259,11 @@ async def chat(request, emit, waiters=None):
             chat_row = await store.db.gateway_sessions.find_one({
                 'principal_id': run['principal_id'], 'id': run['session_id'],
                 'deleted': {'$ne': True}}, {'ended_at': 1})
-        can_group_chats = chat_row is not None
+        windows = getattr(settings.isolation, 'backend', None) == 'windows'
+        can_group_chats = chat_row is not None and not windows
         can_schedule = request.get('web_scheduling_enabled') is True and can_group_chats and chat_row.get('ended_at') is None
         ctx = ExecutionContext(store, settings, run, web_map_jobs_enabled=(
-            can_group_chats and request.get("web_map_jobs_enabled") is True))
+            chat_row is not None and request.get("web_map_jobs_enabled") is True))
         loop = asyncio.get_running_loop()
         if can_group_chats:
             def session_project(project):
@@ -294,10 +299,11 @@ async def chat(request, emit, waiters=None):
             if agent is not None:
                 agent.interrupt()
 
-        loop.add_signal_handler(signal.SIGTERM, interrupt)
+        if sys.platform != 'win32':
+            loop.add_signal_handler(signal.SIGTERM, interrupt)
         executor = ChatToolExecutor(native_domain_registry(), ctx)
         allowed = set(executor.registry.tools if settings.native_allowed_tools is None else settings.native_allowed_tools)
-        can_use_kanban = 'load_wafer_maps' in allowed
+        can_use_kanban = not windows and 'load_wafer_maps' in allowed
         if can_use_kanban:
             profile = Path(os.environ['HERMES_HOME'])
             install_web_kanban(registry, profile, store.db.name, run,
@@ -351,43 +357,48 @@ async def chat(request, emit, waiters=None):
             # through the authenticated gateway kernel. Neither path can launch on the host.
             code_kernel.execute_in_session_kernel = isolated_cell
             code_execution_tool._execute_remote = isolated_cell
-        install_shared_file_policy(registry, settings.shared_yield_dir)
-        create_custom_toolset('web_shared_files', 'Read shared yield files and images',
-                              tools=list(SHARED_FILE_TOOLS))
         from cron.scheduler import _resolve_cron_disabled_toolsets
         from hermes_cli.config import load_config_readonly
 
         cron_disabled = _resolve_cron_disabled_toolsets(load_config_readonly())
-        selected_toolsets = schedule_options.get('enabled_toolsets')
-        personal_files_enabled = not run.get('web_schedule_job_id') or (
-            'web_personal_files' not in cron_disabled
-            and (selected_toolsets is None or 'web_personal_files' in selected_toolsets))
-        install_personal_file_policy(registry, Path(os.environ['HERMES_HOME']), store.db.name,
-                                     settings.shared_yield_dir, enabled=personal_files_enabled)
-        create_custom_toolset('web_personal_files', 'Edit personal workspace files', tools=list(PERSONAL_FILE_TOOLS))
-        web_toolsets = ['yield', 'skills', 'memory', 'session_search', 'web_shared_files', 'web_personal_files',
-                        'todo', 'delegation']
+        if windows:
+            web_toolsets = list(WINDOWS_WEB_TOOLSETS)
+        else:
+            install_shared_file_policy(registry, settings.shared_yield_dir)
+            create_custom_toolset('web_shared_files', 'Read shared yield files and images',
+                                  tools=list(SHARED_FILE_TOOLS))
+            selected_toolsets = schedule_options.get('enabled_toolsets')
+            personal_files_enabled = not run.get('web_schedule_job_id') or (
+                'web_personal_files' not in cron_disabled
+                and (selected_toolsets is None or 'web_personal_files' in selected_toolsets))
+            install_personal_file_policy(registry, Path(os.environ['HERMES_HOME']), store.db.name,
+                                         settings.shared_yield_dir, enabled=personal_files_enabled)
+            create_custom_toolset('web_personal_files', 'Edit personal workspace files', tools=list(PERSONAL_FILE_TOOLS))
+            web_toolsets = ['yield', 'skills', 'memory', 'session_search', 'web_shared_files', 'web_personal_files',
+                            'todo', 'delegation']
         if can_use_kanban:
             web_toolsets.append('web_kanban')
         if code_enabled:
             web_toolsets.append('code_execution')
         schedule_toolsets = sorted(set(web_toolsets) - set(cron_disabled))
         mcp_toolsets = []
-        if not run.get('web_schedule_job_id'):
+        if not windows and not run.get('web_schedule_job_id'):
             from harness.web_connections import install_web_connections
             install_web_connections(registry)
             create_custom_toolset('web_connections', 'Manage employee-local MCP servers', tools=['manage_connections'])
             web_toolsets.append('web_connections')
             mcp_toolsets = attach_employee_mcp_toolsets(web_toolsets, scheduled=False)
-        web_toolsets.append('clarify')
+        if not windows:
+            web_toolsets.append('clarify')
         if can_group_chats:
             web_toolsets.append('web_projects')
         if can_schedule:
             web_toolsets.append('cronjob')
-        install_web_cron_tool(registry, Path(os.environ['HERMES_HOME']), run, database=store.db.name,
-                              enabled=can_schedule, invocation_id=_approval_tool_call_id.get, store=store,
-                              model=settings.model, provider=provider, toolsets=schedule_toolsets)
-        configure_web_delegation(schedule_options.get('enabled_toolsets'))
+        if not windows:
+            install_web_cron_tool(registry, Path(os.environ['HERMES_HOME']), run, database=store.db.name,
+                                  enabled=can_schedule, invocation_id=_approval_tool_call_id.get, store=store,
+                                  model=settings.model, provider=provider, toolsets=schedule_toolsets)
+            configure_web_delegation(schedule_options.get('enabled_toolsets'))
         constrain_session_search(session_search_tool)
         observe_skill_reads(skills_tool, emit)
         pending = PendingControls(store, run['principal_id'])
@@ -499,7 +510,7 @@ async def chat(request, emit, waiters=None):
                 provider=provider, session_id=session, session_db=db, platform='cron' if scheduled else 'yield_web',
                 ephemeral_system_prompt=instructions,
                 disabled_toolsets=cron_disabled if scheduled else None,
-                skip_background_review=scheduled,
+                skip_background_review=scheduled or windows,
                 enabled_toolsets=enabled,
                 max_iterations=max(1, remaining_models), max_tokens=settings.max_output_tokens,
                 run_budget_seconds=ctx.remaining_seconds(), quiet_mode=True,
@@ -507,6 +518,8 @@ async def chat(request, emit, waiters=None):
                 request_overrides={'temperature': settings.temperature}, clarify_callback=clarify,
                 stream_delta_callback=stream_delta, interim_assistant_callback=interim,
                 tool_start_callback=tool_start, tool_complete_callback=tool_complete)
+            if windows:
+                agent._skip_mcp_refresh = True
             if not scheduled:
                 agent._on_session_title = publish_title
             try:

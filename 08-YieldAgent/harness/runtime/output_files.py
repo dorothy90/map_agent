@@ -3,7 +3,7 @@ from contextlib import ExitStack, contextmanager
 import json
 import mimetypes
 import os
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 import shutil
 import stat
 import sys
@@ -99,6 +99,80 @@ def write_transfer(directory, output):
         output.write(b"\n")
 
 
+@contextmanager
+def _windows_handle(path, *, directory):
+    """Pin a non-reparse component against renames while its children are opened."""
+    import ctypes
+    from ctypes import wintypes as w
+    import msvcrt
+
+    class FileInfo(ctypes.Structure):
+        _fields_ = [("attributes", w.DWORD), ("created", w.FILETIME), ("accessed", w.FILETIME),
+                    ("written", w.FILETIME), ("volume", w.DWORD), ("size_high", w.DWORD),
+                    ("size_low", w.DWORD), ("links", w.DWORD), ("index_high", w.DWORD),
+                    ("index_low", w.DWORD)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = (w.LPCWSTR, w.DWORD, w.DWORD, w.LPVOID, w.DWORD, w.DWORD, w.HANDLE)
+    kernel.CreateFileW.restype = w.HANDLE
+    kernel.GetFileInformationByHandle.argtypes = (w.HANDLE, ctypes.POINTER(FileInfo))
+    kernel.GetFileType.argtypes = (w.HANDLE,)
+    kernel.CloseHandle.argtypes = (w.HANDLE,)
+    # FILE_FLAG_OPEN_REPARSE_POINT prevents traversal at the final component.
+    # Denying FILE_SHARE_DELETE pins this component for the entire context.
+    handle = kernel.CreateFileW(str(path), 0x80000000, 1, None, 3, 0x00200000 | 0x02000000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        info = FileInfo()
+        if not kernel.GetFileInformationByHandle(handle, ctypes.byref(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if (kernel.GetFileType(handle) != 1 or info.attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                or bool(info.attributes & stat.FILE_ATTRIBUTE_DIRECTORY) != directory
+                or (not directory and info.links != 1)):
+            raise ValueError("Unexpected Windows output file type or link")
+        if directory:
+            yield
+        else:
+            fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+            handle = None  # The CRT now owns the native file handle.
+            with os.fdopen(fd, "rb") as source:
+                yield source
+    finally:
+        if handle is not None:
+            kernel.CloseHandle(handle)
+
+
+def _write_windows_transfer(directory, output):
+    # Run inside the original session's AppContainer. The host consumes bytes
+    # and never opens filenames or traverses directories supplied by a kernel.
+    root = Path(directory)
+    if root.parent != Path.cwd():
+        raise ValueError("Cell output must be a direct child of the sandbox working directory")
+    with _windows_handle(root, directory=True):
+        with _windows_handle(root / "result.json", directory=False) as source:
+            result = _parse_result(source.read(METADATA_LIMIT + 1))
+        output.write(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode() + b"\n")
+        if result["status"] == "success":
+            publish = root / "publish"
+            with _windows_handle(publish, directory=True):
+                for name in sorted(os.listdir(publish)):
+                    _validate_name(name)
+                    if ":" in name or name.endswith((" ", ".")) or PureWindowsPath(name).is_reserved():
+                        raise ValueError("Invalid Windows published filename")
+                    file = publish / name
+                    attributes = file.lstat().st_file_attributes
+                    if attributes & stat.FILE_ATTRIBUTE_DIRECTORY and not attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                        continue
+                    with _windows_handle(file, directory=False) as source:
+                        size = os.fstat(source.fileno()).st_size
+                        output.write(json.dumps([name, size], ensure_ascii=False).encode() + b"\n")
+                        shutil.copyfileobj(source, output)
+                        if source.tell() != size:
+                            raise ValueError("Published file changed during transfer")
+        output.write(b"\n")
+
+
 def read_transfer(source):
     result = _parse_result(source.readline(METADATA_LIMIT + 2).removesuffix(b"\n"))
     files = []
@@ -132,4 +206,5 @@ def read_transfer(source):
 
 
 if __name__ == "__main__":
-    write_transfer(sys.argv[1], sys.stdout.buffer)
+    transfer = _write_windows_transfer if os.name == "nt" else write_transfer
+    transfer(sys.argv[1], sys.stdout.buffer)
