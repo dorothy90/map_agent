@@ -242,10 +242,11 @@ def _container_sid(name):
         _function(advapi, 'FreeSid', w.LPVOID, w.LPVOID)(sid)
 
 
-def _child_environment(cwd, python, windows):
+def _child_environment(cwd, python, windows, local_appdata):
     return {'SystemRoot': windows, 'WINDIR': windows,
             'PATH': os.pathsep.join((str(Path(python).parent), str(Path(windows) / 'System32'))),
             'TMP': str(cwd), 'TEMP': str(cwd), 'HOME': str(cwd), 'USERPROFILE': str(cwd),
+            'LOCALAPPDATA': str(local_appdata),
             'MPLCONFIGDIR': str(Path(cwd) / '.matplotlib'), 'OPENBLAS_NUM_THREADS': '1'}
 
 
@@ -293,7 +294,10 @@ def _launch(args):
         setup.dwFlags = 0x100  # STARTF_USESTDHANDLES
         setup.hStdInput, setup.hStdOutput, setup.hStdError = handles
         setup.lpAttributeList = ctypes.addressof(buf)
-        env = _child_environment(args.cwd, args.python, win32api.GetWindowsDirectory())
+        from win32com.shell import shell, shellcon
+        # CreateProcessW resolves this AppContainer's package under the real LocalAppData folder.
+        local_appdata = shell.SHGetFolderPath(0, shellcon.CSIDL_LOCAL_APPDATA, 0, 0)
+        env = _child_environment(args.cwd, args.python, win32api.GetWindowsDirectory(), local_appdata)
         environment = ctypes.create_unicode_buffer('\0'.join(f'{k}={v}' for k, v in sorted(env.items(), key=lambda item: item[0].upper())) + '\0')
         arguments = subprocess.list2cmdline([args.python, *args.argv])
         info = _ProcessInfo()

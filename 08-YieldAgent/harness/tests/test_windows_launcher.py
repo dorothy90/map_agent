@@ -30,9 +30,11 @@ def test_command_launches_isolated_supervisor_and_preserves_argument_boundaries(
 
 
 def test_analysis_environment_contains_no_service_credentials(tmp_path):
-    env = launcher._child_environment(tmp_path, sys.executable, 'C:/Windows')
+    local = tmp_path / 'LocalAppData'
+    env = launcher._child_environment(tmp_path, sys.executable, 'C:/Windows', local)
+    assert env['LOCALAPPDATA'] == str(local)
     assert set(env) == {'SystemRoot', 'WINDIR', 'PATH', 'TMP', 'TEMP', 'HOME', 'USERPROFILE',
-                        'MPLCONFIGDIR', 'OPENBLAS_NUM_THREADS'}
+                        'MPLCONFIGDIR', 'OPENBLAS_NUM_THREADS', 'LOCALAPPDATA'}
     assert env['USERPROFILE'] == env['TEMP'] == str(tmp_path)
 
 
