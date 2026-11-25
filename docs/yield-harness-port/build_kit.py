@@ -1,4 +1,4 @@
-"""Build a source-only handoff from the pinned Git tree, or verify it offline (Python 3.11+)."""
+"""Build a source-only handoff from the checked-out Git commit, or verify it offline (Python 3.11+)."""
 import argparse
 import csv
 import gzip
@@ -10,7 +10,6 @@ import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
 
-COMMIT = "2f36fcc2bb7b3418bc287b6b7d59050f0286b7f8"
 Y = "08-YieldAgent/"
 H = Y + "harness/"
 ENGINE = H + "engine/"
@@ -24,6 +23,7 @@ ROOT_FILES = {
     "pyproject.toml": ("required", "백엔드 Python 의존성과 개발 의존성"),
     "uv.lock": ("required", "uv로 재현할 정확한 패키지 버전·해시"),
     "requirements.txt": ("optional", "기존 pip 운영환경에서 비교하는 의존성 목록"),
+    "docs/yield-harness-port/install_profile_seed.py": ("optional", "직원 프로필에 검토된 업무 스킬 설치"),
     "scripts/setup_hermes.sh": ("test", "Git에 포함된 Hermes 엔진 import 검사"),
 }
 SHARED = {
@@ -52,6 +52,12 @@ APP_MODULES = {
     "app": "FastAPI 기동·종료와 라우터 연결", "config": "모델·DB·실행 제한·격리 설정",
     "router": "제품·스킬·결과·산출물 HTTP API", "control": "실행 접수·취소·복구",
     "hermes_chat": "현재 웹 채팅 실행과 프로필 생성", "hermes_chat_worker": "Hermes 모델·도구·스트림을 한 채팅에 연결",
+    "map_jobs": "오래 걸리는 맵 조회 접수·완료·소유자 확인", "map_job_worker": "백그라운드 맵 집계 실행",
+    "mcp_profile_worker": "직원 프로필 MCP 연결 관리", "web_connections": "직원별 외부 도구 연결 설정",
+    "web_mcp_tools": "직원에게 허용된 MCP 도구 연결", "personal_file_tools": "직원별 개인 파일 읽기·쓰기",
+    "web_cron_dispatch": "예약 시각·즉시 실행 요청 접수", "web_cron_tool": "원본 예약 도구의 웹 세션 연결",
+    "web_cron_worker": "예약 요청을 소유자의 채팅으로 실행", "web_projects": "직원별 프로젝트와 채팅 관리",
+    "web_kanban": "직원별 Hermes 칸반", "web_kanban_attachments": "칸반 카드의 결과와 파일 첨부",
     "shared_file_tools": "공용 수율 폴더로 파일 읽기·검색·이미지 입력 제한",
     "web_delegation": "위임 작업의 도구 권한·프로필·실행 수명 연결",
     "native_tools": "수율 도구 6개를 Hermes의 yield 도구 묶음에 등록", "executor": "인증된 도구 실행과 결과 저장",
@@ -69,6 +75,9 @@ TOOLS = {
     "registry":"도구 공개 스키마·실행 명세 묶음", "list_tables":"Oracle 테이블·컬럼 정보",
     "query_db":"조회 전용 SQL과 원본 행/스키마 보존", "python_tools":"read_result·run_python 결과 읽기와 분석",
     "table_artifact":"render_yield_table 수율표 및 결과 링크",
+    "map_matrix": "조회 결과의 행·열별 맵과 화면 템플릿", "map_matrix_counts": "맵 행렬 전체의 좌표별 계수 집계",
+    "map_matrix_plot": "맵 행렬의 셀 표시", "map_page_result": "맵 결과 페이지와 이어 읽기",
+    "lot_history":"LOT 이력 읽기 전용 네이티브 도구",
     "load_wafer_maps":"load_wafer_maps 개별 맵·누적 맵 조회",
     "map_aggregate":"원본 MAP에서 그룹별 좌표 집계", "map_aggregate_plot":"누적 맵 Plotly 시각화",
     "map_bin_plot":"기억한 그룹별 개별 측정의 좌표·BIN 표시", "report_analysis":"수율일보 요청 계약",
@@ -89,6 +98,8 @@ def describe(name):
     """One row per tracked file; upstream integrity requires its entire distribution."""
     if name in ROOT_FILES:
         return ROOT_FILES[name]
+    if PurePosixPath(name).match("docs/yield-harness-port/profile-seed/skills/*/SKILL.md"):
+        return "optional", "직원 프로필에 설치하는 수율 업무 스킬"
     if name.startswith(ENGINE):
         rel = name[len(ENGINE):]
         area = ENGINE_AREAS.get(rel.split("/")[0], "원본 런타임·배포 구성")
@@ -152,8 +163,9 @@ def safe_path(name):
 
 
 def build(repo, archive, inventory):
-    tree = git(repo, "ls-tree", "-rz", COMMIT)
-    engine_pin = json.loads(git(repo, "show", f"{COMMIT}:{ENGINE}UPSTREAM.json"))["files"]
+    commit = git(repo, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
+    tree = git(repo, "ls-tree", "-rz", commit)
+    engine_pin = json.loads(git(repo, "show", f"{commit}:{ENGINE}UPSTREAM.json"))["files"]
     engine_hashes = {}
     rows = []
     archive.parent.mkdir(parents=True, exist_ok=True)
@@ -242,16 +254,33 @@ def verify(archive, inventory):
     print(f"archive OK: {len(seen)} regular files")
 
 
-def verify_tree(root, inventory):
+def verify_tree(root, inventory, git_checkout=False):
     records = read_inventory(inventory)
     root = root.resolve(strict=True)
+    git_modes = {}
+    if git_checkout:
+        tree = git(root, "ls-tree", "-rz", "HEAD")
+        for item in tree.rstrip(b"\0").split(b"\0"):
+            metadata, raw_name = item.split(b"\t", 1)
+            name = raw_name.decode()
+            role = describe(name)
+            if role:
+                git_modes[name] = metadata.split()[0].decode()
+                row = records.get(name)
+                if not row or (row["class"], row["role"]) != role or row["mode"] != git_modes[name]:
+                    raise ValueError(f"Inventory does not describe the checked-out commit: {name}")
+        if git_modes.keys() != records.keys():
+            raise ValueError("Inventory contains files outside the selected Git tree")
+        if git(root, "status", "--porcelain", "--untracked-files=no"):
+            raise ValueError("Use a clean source checkout to verify the Git inventory")
     for name, row in records.items():
         path = root / name
         if path.resolve(strict=True) != path or not path.is_file():
             raise ValueError(f"Expected regular file: {name}")
         st = path.stat()
         with path.open("rb") as f:
-            git_mode = 0o755 if st.st_mode & stat.S_IXUSR else 0o644
+            git_mode = (int(git_modes[name][-3:], 8) if git_checkout else
+                        0o755 if st.st_mode & stat.S_IXUSR else 0o644)
             check_stream(name, row, f, git_mode, st.st_size)
     print(f"tree OK: {len(records)} listed files (other paths are not checked)")
 
@@ -268,13 +297,14 @@ def main():
             cmd.add_argument("--repo", type=Path, required=True)
         if action == "verify-tree":
             cmd.add_argument("--root", type=Path, required=True)
+            cmd.add_argument("--git-checkout", action="store_true", help="Also verify Git selection, roles and executable modes")
     args = parser.parse_args()
     if args.action == "build":
         build(args.repo, args.archive, args.inventory)
     elif args.action == "verify":
         verify(args.archive, args.inventory)
     else:
-        verify_tree(args.root, args.inventory)
+        verify_tree(args.root, args.inventory, args.git_checkout)
 
 
 if __name__ == "__main__":

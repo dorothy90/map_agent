@@ -38,7 +38,7 @@ def mode(row):
 
 def identical(path, row):
     return (path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == row['sha256']
-            and bool(path.stat().st_mode & stat.S_IXUSR) == bool(mode(row) & stat.S_IXUSR))
+            and (os.name == 'nt' or bool(path.stat().st_mode & stat.S_IXUSR) == bool(mode(row) & stat.S_IXUSR)))
 
 
 def state(root, row, destination):
@@ -57,11 +57,14 @@ def write_new(src, dst, row):
         raise ValueError(f"Reference changed: {row['path']}")
     dst.parent.mkdir(parents=True, exist_ok=True)
     # Install a complete file or leave the destination untouched.
-    with tempfile.NamedTemporaryFile(dir=dst.parent) as out:
-        out.write(data)
-        out.flush()
-        os.chmod(out.name, mode(row))
-        os.link(out.name, dst)
+    temp = tempfile.NamedTemporaryFile(dir=dst.parent, delete=False)
+    try:
+        with temp as out:
+            out.write(data)
+        os.chmod(temp.name, mode(row))
+        os.link(temp.name, dst)
+    finally:
+        os.unlink(temp.name)
 
 
 def main():
@@ -87,6 +90,8 @@ def main():
                 result = state(root, row, row['destination'])
                 writer.writerow({**{k: row[k] for k in ('path', 'destination', 'class', 'role')},
                                  'action': 'HOLD', 'state': result})
+        if os.name == 'nt':
+            print('Windows compares file bytes. Check and stage executable bits in Git before deployment.')
         print(f'{len(rows)} paths compared. Review the TSV and set ADD on approved missing paths.')
         return
     if not args.source:

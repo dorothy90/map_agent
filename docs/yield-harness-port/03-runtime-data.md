@@ -2,12 +2,12 @@
 
 **선택 부록.** 기존 소스만 옮길 때는 이 장을 건너뛴다. 기존 업무 스킬까지 보존하려면 2절을 먼저 읽는다. 개인 이력까지 옮기는 경우에만 해당 백업 절차를 사용한다.
 
-기준 앱은 `40985fff61d238c0104661f3eb9c1937cee28816`이다. 앱 소스만 반입하면 새 프로필과 빈 채팅 목록으로 시작한다. Luna/Terra에 설치하는 개발 스킬과 앱 사용자가 만드는 Hermes 스킬은 저장 위치가 다르다.
+이식 기준은 첫 비교에서 기록한 GitHub 브랜치의 HEAD다. 앱 소스만 반입하면 새 프로필과 빈 채팅 목록으로 시작한다. Luna/Terra에 설치하는 개발 스킬과 앱 사용자가 만드는 Hermes 스킬은 저장 위치가 다르다.
 
 |원하는 결과|진행할 단계|필요한 반입물 또는 사내 자원|
 |---|---|---|
 |같은 앱으로 사내 DB를 조회하고 수율일보 등 네 스킬을 호출|1, 2, 4, 5|이 브랜치의 업무 스킬, 사내 Oracle/Mongo/모델 및 사용자 인증|
-|새 채팅에서 저장한 웨이퍼 그룹을 기억|1, 2 또는 3A, 4, 5|소유자가 승인한 메모. 동일 더미 DB를 재현할 때는 동봉된 예제 메모를 별도 선택|
+|새 채팅에서 저장한 웨이퍼 그룹을 기억|1, 2 또는 3A, 4, 5|소유자가 승인한 사내 업무 메모|
 |과거 대화와 기존 표·맵 링크까지 재개|1, 3A, 3B, 4, 5|같은 정지 시점의 사용자 프로필과 Mongo 앱 DB 백업. 소유자 및 DBA와 진행|
 
 DB 덤프, 원본 채팅, 개인 설정, 서비스 계정과 비밀은 이식용 파일 목록에서 제외했다. 실제 이력은 조직에서 승인한 별도의 **반입 전용 데이터 매체**로 전달한다. 사내 호스트명·DDL·로그·화면·업무 수치·백업을 외부 AI나 저장소에 올리지 않는다. 아래 근거와 실행 결과도 내부에만 보관한다.
@@ -35,10 +35,9 @@ umask 077
 |`profile-seed/skills/yield-summary/SKILL.md`|수율 요약. 월·주·일 표 앞에 같은 조회 결과에 근거한 결론 표시|
 |`profile-seed/skills/wafer-map-cummap/SKILL.md`|웨이퍼 개별·누적 맵. 원문에 개발 당시 좌표·검사 사례와 직접 SQL 대안이 있다. 사내 좌표 범위나 제품 기본값으로 고정하지 않는다. 저장 그룹 조회 시 Hermes가 메모에서 읽은 LOT·웨이퍼 쌍을 전용 도구의 `wafer_groups` 인자로 전달한다.|
 |`profile-seed/skills/wafer-handoff-note/SKILL.md`|현장 메모만으로 3줄 교대 인수인계. 실데이터 없이 스킬 로딩을 확인할 때도 사용 가능|
-|`profile-seed/optional-demo/MEMORY.md`|외부 더미 DB의 회오리·환형 예제 메모 두 항목. 기본 설치 제외. 동일 더미 식별자가 있는 검증 DB에서만 설치|
 |`install_profile_seed.py`|대상 프로필 경로 계산, 충돌 점검, 누락된 파일 설치|
 |`snapshot_profile.py`|기존 사용자 스킬 리소스/메모리/SQLite 이력 중 선택한 자료를 별도 스냅숏으로 생성|
-|`check_oracle_contract.sql`|핵심 테이블/뷰 9개의 컬럼과 읽기 권한을 0행 조회로 점검|
+|`check_oracle_contract.sql`|수율·맵과 LOT 이력 테이블/뷰의 컬럼과 읽기 권한을 0행 조회로 점검|
 
 실제 원본 4개 스킬은 각각 SKILL.md 한 파일이며 하위 스크립트·템플릿·그림은 없었다. 메타데이터와 본문을 원문 그대로 동봉했다. 추후 다른 스킬에 references/, scripts/, assets/ 등이 있으면 3A 방식으로 같은 상대경로에 복원한다.
 
@@ -49,7 +48,7 @@ python3 "$PORT_DOCS/install_profile_seed.py" --project-root "$APP_ROOT" --princi
 python3 "$PORT_DOCS/install_profile_seed.py" --project-root "$APP_ROOT" --principal "$PRINCIPAL_ID" --apply
 ```
 
-더미 맵 조회를 재현할 때만 위 명령에 `--with-demo-memory`를 붙여 미리보기 후 적용한다. 사내 DB에 등록된 다른 웨이퍼를 쓰는 경우에는 실제 사내 채팅으로 승인된 그룹·LOT·번호를 저장한다. 다른 직원에게 원 소유자의 메모를 일괄 설치하지 않는다.
+사내 DB에 등록된 다른 웨이퍼를 쓰는 경우에는 실제 사내 채팅으로 승인된 그룹·LOT·번호를 저장한다. 다른 직원에게 원 소유자의 메모를 일괄 설치하지 않는다.
 
 다음은 UI와 같은 Hermes 파서로 설치를 확인하는 명령이다. 새 스테이징 사용자의 예상 결과는 네 이름과 enabled=True다. 기존 프로필은 네 이름이 있는지 및 해당 사용자의 활성화 설정을 점검한다.
 
@@ -110,6 +109,8 @@ PY
 
 동일 사용자의 로그인 ID가 사내에서 변경되는 경우 스킬·선별 메모는 새 소유자의 새 프로필로 설치할 수 있다. 과거 대화는 해시 폴더명만 변경해 복구할 수 없다. Mongo에도 권한·세션·결과·승인 소유자가 기록된다. 전체 이력에는 같은 안정된 principal_id를 매핑하고 권한 검증을 해야 한다. 내부에서 매핑을 보증할 수 없으면 새 이력으로 시작하고 원본은 승인된 내부 보관본에 유지한다.
 
+기존 직원의 예약·칸반 첨부·개인 파일·프로젝트를 함께 이전할 때는 `snapshot_profile.py`의 범위(스킬·메모·대화) 밖에 있는 업무 저장소도 확인한다. 직원 프로필의 `web-schedules`, `web-projects`, `web-files`와 `web-kanban` 아래의 보드 DB·첨부 경로, 직원별 MCP 연결 설정은 데이터 소유자·사내 담당자가 승인한 범위에서 별도로 복원한다. 서비스와 예약 작업을 멈추고 Mongo와 같은 시점의 일관된 백업을 사용한다. 빈 설치에서는 신규 프로필을 사용한다.
+
 ## 3B. 과거 대화와 결과 링크를 위한 Mongo 복원
 
 harness.store.HarnessStore는 harness_runs, harness_invocations, harness_results, harness_sessions를 사용한다. 게이트웨이에는 gateway_sessions, gateway_messages, 메시지 순번, 이벤트, 요청 영수증, pending_prompts, 승인 기록 등이 있다. 원본 행·표·이미지·HTML은 GridFS 버킷 **harness_blobs.files 및 harness_blobs.chunks**와 결과 문서의 ObjectId로 연결된다. 개별 JSON/CSV 추출로는 BSON 타입이나 첨부 링크를 잃을 수 있다.
@@ -152,9 +153,10 @@ harness.store.HarnessStore는 harness_runs, harness_invocations, harness_results
 |열화·개선 산점도|DF_PARAM_META|SOURCE_ID='wafer_parameter', 제품·검사·파라미터별 UNIT, BETTER_WHEN의 higher/lower. 직전 주와 최근 주에 모두 측정된 적격 항목 수|
 |웨이퍼 맵 및 BIN 맵|MAP, DF_SYMBOL_BIN|MAP.WF_ID, OPER_DET_DESC, START_TM, END_TM 및 MAP_VAL_JSON. 원본 예제 다이 문자열의 첫 필드=row(y), 둘째=col(x), 다음 좌·우 심볼. 양쪽 '?'가 모두 통과 심볼. 제품·검사별 REGEX_PATTERN. 사내 포맷이 다르면 어댑터에서 변환하고 실제 원본 좌표와 대조|
 |공정별 RCP·장비 비교|DF_WF_LEGEND|제품·LOT·웨이퍼+OPER_ID/OPER_DET_DESC와 RECIPE_ID, EQP_ID, EQP_CH, STEPPER_RECIPE_ID. 공정 이력과 맵 측정 검사는 별도 조건|
+|LOT 이력|DF_FDC_ALARM, DF_QTIME_OVER, DF_TROUBLE_LOT, DF_FUTURE_ACTION, DF_SAMPLE_SPLIT|이력 종류별 LOT 키와 시간 열. 샘플 분할 소스에는 기간용 시각 열이 없다. FDC 한 종류만 요청할 때 FDC 테이블에만 접근한다.|
 |GMS|DF_GMS_YIELD_MONTHLY, DF_GMS_YIELD_WEEKLY, DF_GMS_YIELD_DAILY|LOTCODE, PERIOD_DATE, FAB_YIELD, PRB_YIELD, CUM0_YIELD. 각 기간 키·범위·단위 확인|
 
-사내 SQLcl/SQL*Plus에서 실제 앱 계정으로 접속해 `@/반입문서경로/check_oracle_contract.sql`을 실행한다. 9개 쿼리는 값이 노출되지 않는 **0행 읽기**다. PASS는 열 이름과 읽기 권한이 맞다는 의미다. 단위·재측정 중복·데이터 존재 여부까지 검증하지 않는다. 오류가 발생하면 DBA가 사내에서 이름/권한/뷰를 확인한다. 목록 탐색은 별도 사용자 데이터 딕셔너리(user_tables 등)를 쓰므로 list_tables와 SELECT 양쪽을 확인한다. synonym으로 읽히지만 목록이 비면 harness/tools/list_tables.py가 보는 객체와 사내 노출 방식을 대조한다.
+사내 SQLcl/SQL*Plus에서 실제 앱 계정으로 접속해 `@/반입문서경로/check_oracle_contract.sql`을 실행한다. 여기 실린 쿼리는 값이 노출되지 않는 **0행 읽기**다. PASS는 열 이름과 읽기 권한이 맞다는 의미다. 단위·재측정 중복·데이터 존재 여부까지 검증하지 않는다. 오류가 발생하면 DBA가 사내에서 이름/권한/뷰를 확인한다. 목록 탐색은 별도 사용자 데이터 딕셔너리(user_tables 등)를 쓰므로 list_tables와 SELECT 양쪽을 확인한다. synonym으로 읽히지만 목록이 비면 harness/tools/list_tables.py가 보는 객체와 사내 노출 방식을 대조한다.
 
 제품 하나를 골라 동일 계정에서 독립적으로 재집계한다. 기간 경계, 최근 측정 선택, PT1H/PT1C 포함 여부, wafer/lot 고유 수, 각 파라미터 분모와 표시 단위를 대조한다. 사내 검사가 다르면 담당자가 이름과 데이터 의미를 확인하고 사내 호환 뷰/어댑터에 반영한다. 더미 제품명·수치·LOT를 사내 기대 결과로 고정하지 않는다.
 
@@ -165,4 +167,4 @@ harness.store.HarnessStore는 harness_runs, harness_invocations, harness_results
 - 새 대화에 “수율일보 작성해줘”만 입력하고 실제 제품 하나를 고른다. yield-daily-report가 로드되는지 보고 제품 범위, 검사 둘 다, 기간별 실제 표, 적격 산점도와 3행 BIN 맵을 확인한다. 표본/메타 부족이면 실제 개수와 미생성 이유를 DB로 확인한다.
 - 같은 사용자의 다른 대화에서 그룹명과 검사만 입력한다. 전용 `load_wafer_maps`에 전달된 `wafer_groups`의 (LOT_ID, WF_ID) 쌍을 메모 원문 및 DB와 대조한다. 다른 LOT의 같은 웨이퍼 번호가 섞이면 실패다. 사내 데이터에는 사내 사용자 지정 그룹으로 시험한다.
 - 권한이 다른 두 계정으로 스킬·메모리·과거 링크 분리를 검증한다. 모두 같은 로컬 개발 principal을 쓰는 환경으로는 이 검증을 대신할 수 없다.
-- 이 반입 자료의 검증 범위는 원본 스킬 4개 바이트 일치 및 실제 카탈로그 읽기, 선택 메모·충돌·재실행, 하위 스킬 리소스·SQLite WAL 백업, 임시 Mongo의 GridFS 주소/원본 바이트 복원, 개발 Oracle 9개 계약 0행 조회다. 사내 계정·프록시·업무 정의와 기존 실제 사용자 전체 자료는 사내에서 별도로 검증한다.
+- 이 반입 자료의 검증 범위는 원본 스킬 4개 바이트 일치 및 실제 카탈로그 읽기, 선택 메모·충돌·재실행, 하위 스킬 리소스·SQLite WAL 백업, 임시 Mongo의 GridFS 주소/원본 바이트 복원, 개발 Oracle 14개 계약 0행 조회다. 사내 계정·프록시·업무 정의와 기존 실제 사용자 전체 자료는 사내에서 별도로 검증한다.

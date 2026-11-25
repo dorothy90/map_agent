@@ -22,15 +22,15 @@ git -C "$DEST" rev-parse HEAD > "$AUDIT/company-base.txt"
 ```bash
 git clone -c core.autocrlf=false --single-branch --branch codex/goal-driven-harness \
   https://github.com/dorothy90/map_agent.git "$REF" &&
-git -C "$REF" merge-base --is-ancestor 2f36fcc2bb7b3418bc287b6b7d59050f0286b7f8 HEAD &&
+git -C "$REF" switch --detach HEAD &&
 test -f "$KIT/START_HERE.md" &&
 git -C "$REF" rev-parse HEAD > "$AUDIT/source-head.txt" &&
-python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.tsv"
+python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.tsv" --git-checkout
 ```
 
-이미 해당 브랜치를 별도 폴더에 받았다면 `REF`를 그 폴더의 절대경로로, `KIT`를 `$REF/docs/yield-harness-port`로 지정하고 두 번째 명령인 `merge-base`부터 실행한다.
+이미 해당 브랜치를 별도 폴더에 받았다면 `REF`를 그 폴더의 절대경로로, `KIT`를 `$REF/docs/yield-harness-port`로 지정하고 브랜치를 확인하고 두 번째 명령인 `switch --detach HEAD`부터 실행한다.
 
-예상 결과는 `tree OK: 4835 listed files`다. 설명서와 업무 스킬은 현재 브랜치의 `docs/yield-harness-port/`에 있고, FILES.tsv는 앱 기준 커밋의 소스를 가리킨다. 브랜치가 이후 바뀌어 파일 검증이 실패하면 설명서 버전과 목록의 기준 커밋을 대조한 후 진행한다. 사내 코드·비교표·로그는 내부 작업 위치에만 둔다.
+성공 시 `tree OK`에 표시된 수가 해당 커밋의 FILES.tsv 행 수(헤더 제외)다. 검사는 Git 선택 경로와 권한·역할, 체크아웃한 파일의 바이트를 모두 대조한다. 같은 참조 폴더를 병합과 검수에 다시 사용한다. 원본을 업데이트하면 새 비교표를 만든다. 사내 코드·비교표·로그는 내부 작업 위치에만 둔다.
 
 ## 3. 파일별 대응표를 만든다
 
@@ -52,6 +52,29 @@ python3 "$KIT/port_plan.py" plan --manifest "$KIT/FILES.tsv" --target "$DEST" --
 
 파일별 action이 모두 HOLD에서 시작한다. 수천 개 엔진 파일은 `08-YieldAgent/harness/engine/` 경로와 state로 TSV 필터를 걸어 묶어서 검토한다. 기존 내부 엔진이 다르면 새 참조 경로에 고정 버전을 나란히 놓고 검증한 뒤 호스트의 로딩 경로를 결정한다. 서로 다른 커밋의 엔진을 파일별로 섞으면 매니페스트 검증을 잃는다. 프론트 하위 경로를 옮길 때에는 진입점과 상대 import의 대응을 기록한다.
 
+### Windows 개발 PC에서 같은 비교 실행하기
+
+PowerShell에서 사내 레포를 연 뒤 실행한다. Python 3.11 이상과 Git이 필요하다. Git 실행 명령이 실패하면 그 위치에서 멈춘다.
+
+```powershell
+$dest = git rev-parse --show-toplevel
+$work = Join-Path (Split-Path $dest) ("yield-port-" + [guid]::NewGuid())
+$ref = Join-Path $work "source"
+$audit = New-Item -ItemType Directory -Path (Join-Path $work "audit") -Force
+$kit = Join-Path $ref "docs/yield-harness-port"
+git -C $dest rev-parse HEAD | Set-Content "$audit/company-base.txt"
+git clone -c core.autocrlf=false --single-branch --branch codex/goal-driven-harness https://github.com/dorothy90/map_agent.git $ref
+if ($LASTEXITCODE) { throw "clone failed" }
+git -C $ref switch --detach HEAD
+if ($LASTEXITCODE) { throw "checkout failed" }
+git -C $ref rev-parse HEAD | Set-Content "$audit/source-head.txt"
+py -3 "$kit/build_kit.py" verify-tree --root $ref --inventory "$kit/FILES.tsv" --git-checkout
+if ($LASTEXITCODE) { throw "source verification failed" }
+py -3 "$kit/port_plan.py" plan --manifest "$kit/FILES.tsv" --target $dest --sheet "$audit/plan.tsv"
+```
+
+Windows에서 출처의 모드는 Git 트리에서 읽는다. 대상의 비교표와 ADD는 바이트를 비교한다. 반영 후 검토하여 스테이징하고, 승인된 ADD/KEEP 파일은 FILES.tsv의 모드와 `git ls-files --stage -- <목적지>`를 대조한다. `100755`인 파일은 필요하면 `git update-index --chmod=+x -- <목적지>`로 수정하고 Ubuntu 체크아웃에서 04의 검수를 다시 실행한다.
+
 ## 4. 파일을 반영한다
 
 여기부터는 비교표 검토를 마친 뒤 진행한다. 사내 이식 브랜치에서 작업하고 이미 변경 중인 파일을 보존한다.
@@ -61,6 +84,8 @@ python3 "$KIT/port_plan.py" plan --manifest "$KIT/FILES.tsv" --target "$DEST" --
 기존 사내 환경에서 `HARNESS_ISOLATION_BACKEND=ssh`를 명시했다면 `local`로 바꾼다. 배포 전 같은 Ubuntu 서비스 계정으로 [직원별 파일 격리 검사](04-acceptance.md#ubuntu-배포-전-직원별-파일-격리)를 통과해야 한다. 서버를 시작한 뒤 루프백 `/health/isolation`에서 `backend=local` 및 `sandbox=bwrap`이 나오는지 본다. 다음으로 새 채팅에서 실제 DB 조회와 생성 Python 실행을 확인한다. 개발용 고정 사용자 게이트웨이는 로컬 검증에 사용하고, 사내 서비스에는 인증된 사용자 ID를 전달하는 기존 게이트웨이를 연결한다.
 
 ```bash
+test "$(git -C "$REF" rev-parse HEAD)" = "$(cat "$AUDIT/source-head.txt")" &&
+python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.tsv" --git-checkout &&
 python3 "$KIT/port_plan.py" apply --manifest "$KIT/FILES.tsv" --source "$REF" --target "$DEST" --sheet "$AUDIT/plan.tsv"
 git -C "$DEST" status --short
 ```
@@ -75,7 +100,7 @@ MERGE할 때는 예를 들어 `git diff --no-index -- "$DEST/08-YieldAgent/commo
 |---|---|---|
 | 1. 실행 환경 | 루트 pyproject.toml, uv.lock, .python-version, requirements.txt, scripts/setup_hermes.sh | 프로젝트 범위와 잠금 파일을 짝지어 대응. 사내 루트에서 이미 쓰는 버전과의 차이는 MERGE에 기록 |
 | 2. 엔진 | harness/engine/UPSTREAM.json, engine/LICENSE, hermes_chat.py | 원본 파일 해시와 Python 경로 확인. 작업 폴더에 있는 다른 Hermes 설치를 import하지 않는지 확인 |
-| 3. 데이터·도구 | harness/tools/registry.py, native_tools.py, executor.py, tools/query_db.py, list_tables.py, python_tools.py, table_artifact.py, load_wafer_maps.py | 외부 계약의 도구명 6개와 JSON 입력, 소유권, 표·산출물 결과를 유지. 응답의 result_id가 가리키는 전체 자료에서 요약. 필수 공용 파일은 FILES.tsv 참조 |
+| 3. 데이터·도구 | harness/tools/registry.py, native_tools.py, executor.py, tools/query_db.py, list_tables.py, python_tools.py, table_artifact.py, load_wafer_maps.py, lot_history.py | 등록된 수율 도구 이름과 JSON 입력, 소유권, 표·산출물 결과를 유지. 응답의 result_id가 가리키는 전체 자료에서 요약. 필수 공용 파일은 FILES.tsv 참조 |
 | 4. 실행과 상태 | control.py, hermes_chat.py, hermes_chat_worker.py, store.py, runtime/, isolation/ | 새 채팅이 stock_chat 경로로 진입. 실제 사용자와 session/run에 결과 귀속, 모델 호출·취소·다중 턴 확인. 생성 Python은 격리 백엔드에서 실행 |
 | 5. API·인증 | app.py, router.py, gateway/auth.py, routes.py, services.py, manifest.json, dev/local_gateway_app.py | 사내 호스트가 신뢰하는 사용자 ID와 WS 연결 정책을 주입. 개인 개발용 고정 사용자 게이트웨이는 격리된 단일 사용자 테스트에 사용. 권한이 다른 두 실제 테스트 계정으로 세션·산출물 분리 확인 |
 | 6. UI | harness_console/src/main.tsx, src/web/entry.tsx, HermesWebApp.tsx, src/platform/, src/protocol/, src/hermes/, vite.config.ts | 운영 resolver, WebSocket 스트리밍, 세션 복구, 표·HTML 링크, 제품 선택, 스킬 목록. 서비스 라우트와 API 주소는 한 배포 대상으로 연결 |
