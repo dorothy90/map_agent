@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from contextlib import ExitStack, contextmanager
 import ctypes
 from ctypes import wintypes as w
@@ -16,8 +17,8 @@ import sys
 def _scope_name(scope):
     if len(scope) != 64 or any(c not in '0123456789abcdef' for c in scope):
         raise ValueError("Expected a SHA-256 session scope")
-    # AppContainer profile names are limited to 64 characters.
-    return 'yield.' + scope[:58]
+    # Keep the entire digest within the AppContainer name length limit.
+    return 'yield.' + base64.b32encode(bytes.fromhex(scope)).decode('ascii').rstrip('=').lower()
 
 
 def command(*, scope, python, cwd, read_dirs, write_dirs, argv):
@@ -221,7 +222,7 @@ def _container_sid(name):
                        ctypes.POINTER(w.LPVOID))
     sid = w.LPVOID()
     status = create(name, name, 'Yield chat analysis', None, 0, ctypes.byref(sid))
-    if status & 0xffffffff == 0x800700b7:
+    if (status & 0xffffffff) == 0x800700b7:
         status = derive(name, ctypes.byref(sid))
     if status < 0:
         raise OSError(f'AppContainer profile creation failed: HRESULT {status & 0xffffffff:#010x}')

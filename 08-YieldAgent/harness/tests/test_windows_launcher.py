@@ -88,7 +88,7 @@ print('ok')
     with socket.socket() as listener:
         listener.bind(('127.0.0.1', 0))
         listener.listen()
-        args = [ '-I', '-B', '-c', script, inputs / 'source.csv', other / 'other.csv', work / 'out.txt',
+        args = ['-I', '-B', '-c', script, inputs / 'source.csv', other / 'other.csv', work / 'out.txt',
                  str(listener.getsockname()[1])]
         argv = launcher.command(scope=uuid.uuid4().hex * 2, python=analysis, cwd=work,
                                 read_dirs=(inputs,), write_dirs=(work,), argv=args)
@@ -97,3 +97,45 @@ print('ok')
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == 'ok'
     assert (work / 'out.txt').read_text() == 'done'
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows Job Object must kill the actual analysis process tree')
+def test_windows_supervisor_termination_kills_grandchildren(tmp_path):
+    import time
+    import win32api
+    import win32con
+    import win32event
+
+    private = tmp_path / 'private'
+    launcher.ensure_private_root(private)
+    work = private / 'work'
+    work.mkdir()
+    marker = work / 'pid'
+    code = ("import os,pathlib,subprocess,sys,time\n"
+            "child=subprocess.Popen([sys.executable,'-I','-c','import time; time.sleep(120)'])\n"
+            "p=pathlib.Path('pending'); p.write_text(str(child.pid)); p.replace('pid')\n"
+            "time.sleep(120)")
+    analysis = Path(os.environ.get('HARNESS_WINDOWS_TEST_PYTHON', sys.executable))
+    argv = launcher.command(scope=uuid.uuid4().hex * 2, python=analysis, cwd=work, read_dirs=(),
+                            write_dirs=(work,), argv=['-I', '-B', '-c', code])
+    process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE)
+    try:
+        deadline = time.monotonic() + 45
+        while not marker.is_file() and time.monotonic() < deadline:
+            if process.poll() is not None:
+                pytest.fail(process.stderr.read().decode(errors='replace'))
+            time.sleep(.05)
+        assert marker.is_file(), 'Analysis child never reported its grandchild'
+        handle = win32api.OpenProcess(win32con.SYNCHRONIZE, False, int(marker.read_text()))
+        try:
+            process.kill()
+            process.wait(10)
+            assert win32event.WaitForSingleObject(handle, 5000) == win32event.WAIT_OBJECT_0
+        finally:
+            handle.Close()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(10)
+        process.stderr.close()
