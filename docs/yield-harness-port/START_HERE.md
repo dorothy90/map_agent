@@ -6,6 +6,18 @@
 
 Windows 개발 PC에서 새 채팅으로 맵 조회와 엑셀 다운로드를 검증할 때는 [Windows 실채팅 절차](06-windows-chat.md)를 따른다.
 
+## 이전 Windows 이식본에서 이어가기
+
+Windows 맵·엑셀 지원 버전(`f7232c7c`)까지 옮겼다면, 다음 기능 커밋(`9ff7d746`)의 차이는 채팅 조건 처리 파일 6개다. 같은 대화에서 사용자가 확정한 조건은 후속 질문에 이어 쓰고, 다른 대화에서 검색된 조건은 확인 카드에서 사용자가 선택한 뒤 조회에 쓴다.
+
+| 사내에서 비교할 경로 (`08-YieldAgent/harness/` 기준) | 확인할 내용 |
+|---|---|
+| `instructions.py`, `instructions/behavior.md` | 매 턴 새 지침 파일을 읽는다. 사내 패키지에도 두 파일을 같은 상대 경로로 배치한다. |
+| `chat_tool_helpers.py` | 이전 대화 검색 결과가 현재 대화의 확정 조건인지 모델이 구분할 수 있게 표시한다. 직원별 검색 범위를 보존한다. |
+| `tests/test_instructions.py`, `tests/test_domain_tool_registry.py`, `tests/test_hermes_chat.py` | 지침 로드, 검색 도구의 실제 반환값, 채팅에서 모델에 전달되는 입력을 검사한다. |
+
+어디까지 옮겼는지 불분명하면 사내 레포에서 최신 [첫 지시문](05-luna-terra.md#첫-지시문)을 실행한다. 이전 비교표는 보관하고, GitHub에서 새로 받은 참조본의 `FILES.tsv`로 전체 비교표를 다시 만든다. 사내 경로가 다르거나 자체 수정이 있는 파일은 내용을 대조해 병합한다.
+
 ## 무엇을 열어야 하나
 
 [2026-11-25 이식 재검증](VERIFICATION.md#port-2026-11-25)에서는 실제 4SA 조회 1,200행, 수율일보의 표·산점도·BIN 맵과 업무 도구를 확인했다. 2026-11-24 실제 웹 채팅에서 수율 조회, 스킬 호출, 후속 질문을 확인했다. 도구 없는 모델 평가와 가상 자료 평가도 같은 Hermes 진입점에서 완료됐다. Ubuntu 직원별 파일 격리는 배포 전 필수 확인 항목이다. [웹 콘솔 정리 검증](VERIFICATION.md#unused-harness-cleanup) · [Hermes 실행 경로 검증](VERIFICATION.md#stock-only) · [Python 변수와 엑셀 다운로드 검증](VERIFICATION.md#web-python-delivery) · [Ubuntu 통과 기준](04-acceptance.md#ubuntu-배포-전-직원별-파일-격리)

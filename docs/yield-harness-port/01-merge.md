@@ -28,7 +28,7 @@ git -C "$REF" rev-parse HEAD > "$AUDIT/source-head.txt" &&
 python3 "$KIT/build_kit.py" verify-tree --root "$REF" --inventory "$KIT/FILES.tsv" --git-checkout
 ```
 
-이미 해당 브랜치를 별도 폴더에 받았다면 `REF`를 그 폴더의 절대경로로, `KIT`를 `$REF/docs/yield-harness-port`로 지정하고 브랜치를 확인하고 두 번째 명령인 `switch --detach HEAD`부터 실행한다.
+이전 이식에서 사용한 참조 폴더와 비교표는 당시 버전의 기록으로 보관한다. 최신 변경을 비교할 때는 1절에서 만든 새 작업 위치에 위 명령으로 브랜치를 다시 복제한다. 이미 기록한 특정 커밋의 이식을 재개할 때만 기존 참조 폴더와 같은 커밋의 비교표를 함께 사용한다.
 
 성공 시 `tree OK`에 표시된 수가 해당 커밋의 FILES.tsv 행 수(헤더 제외)다. 검사는 Git 선택 경로와 권한·역할, 체크아웃한 파일의 바이트를 모두 대조한다. 같은 참조 폴더를 병합과 검수에 다시 사용한다. 원본을 업데이트하면 새 비교표를 만든다. 사내 코드·비교표·로그는 내부 작업 위치에만 둔다.
 
