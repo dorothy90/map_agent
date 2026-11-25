@@ -2,6 +2,8 @@
 
 ## 2026-11-25 Windows 개발 환경과 맵 엑셀 다운로드
 
+Windows Server 2022의 실제 러너에서 CPython 3.11과 전용 분석 환경을 설치하고 검사했다. WSL·Docker 없이 채팅에 할당한 AppContainer에서 CSV를 읽고 다음 Python 호출에서 같은 변수를 재사용했다. 생성한 한글 이름의 엑셀을 다시 열어 이미지 픽셀과 좌표·BIN을 비교했다. 다른 채팅의 CSV 읽기, 호스트 전용 파일 접근과 네트워크 연결은 거부됐고, 취소 시 자식 프로세스 종료도 확인했다. 별도 Windows 회귀 테스트는 14건 통과, 다른 운영체제 전용 검사 1건 제외였다. 이 실행은 합성 좌표를 사용했다. [Windows 실행 로그](https://github.com/dorothy90/map_agent/actions/runs/45562901514)
+
 macOS의 깨끗한 체크아웃에서 실제 웹 채팅 경로로 OpenRouter `z-ai/glm-5.3-flash`에 `4SA0522` 3번 웨이퍼의 PT1C 맵을 요청했다. 같은 채팅에서 맵과 좌표를 엑셀로 요청해 첨부 파일을 다운로드했다(HTTP 200, 122,812바이트). 파일을 다시 열어 `Map` 시트의 이미지 1장과 `Dies` 시트의 좌표 및 좌·우 BIN 2,821행을 확인했다. 2,821행 모두 Oracle의 독립 조회와 일치했다. 해당 개발 DB에서 검사명은 `PT1C TEST`였다.
 
 깨끗한 macOS 체크아웃(`e7ddae28`)에서 백엔드 테스트 1,985건이 통과했다. 건너뛴 4건은 Windows 전용 3건과 Ubuntu 직원 격리 1건이다. Windows의 사내 모델·DB 접속과 브라우저 다운로드는 [사내 Windows 검증 절차](06-windows-chat.md)에 따라 사내 PC에서 확인한다.
