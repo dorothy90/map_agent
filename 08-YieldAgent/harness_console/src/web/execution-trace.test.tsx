@@ -217,3 +217,21 @@ it('restores the pre-tool commentary to its own turn and keeps a following plain
   expect(visible(group, '.web-trace-note').map(row => row.textContent)).toEqual([note])
   expect(visible(group, '.web-tool-row')).toHaveLength(1)
 })
+
+it('shows only confirmed saved wafer membership and keeps earlier turn counts on replay', async () => {
+  const groups = [{ lot_id: 'A', wf_ids: [1, 2] }]
+  const saved = (members: typeof groups, added: typeof groups, count: number) => ({ status: 'success',
+    wafer_item: { id: 't1', title: 'Edge', wafer_groups: members, added_wafer_groups: added, wafer_count: count } })
+  const next = [{ lot_id: 'B', wf_ids: [1] }]
+  const { container } = render(chat([
+    userMessage(), reply('create', [call('a', 'kanban_create', saved(groups, groups, 2)), { type: 'text', text: '등록했어요.' }]),
+    userMessage('more', '추가해줘'), reply('append', [call('b', 'kanban_comment', saved([...groups, ...next], next, 3)),
+      call('c', 'kanban_show', saved([...groups, ...next], next, 3)), { type: 'text', text: '추가했어요.' }]),
+  ]))
+  const cards = await within(container).findAllByRole('group', { name: 'Edge' })
+  expect(cards).toHaveLength(2)
+  expect(cards[0].textContent).toContain('총 2장')
+  expect(cards[1].textContent).toContain('기존 2장 + 추가 1장')
+  expect(cards[1].textContent).toContain('총 3장')
+  expect(within(cards[1]).getByText('B')).toBeTruthy()
+})

@@ -77,3 +77,20 @@ def test_parallel_tool_settings(monkeypatch, isolated_settings_env):
     monkeypatch.setenv('HARNESS_PARALLEL_TOOLS', '3')
     settings = Settings.from_env()
     assert settings.parallel_tool_limit == 3
+
+
+def test_saved_item_roundtrip_preserves_exact_snapshot():
+    ipc = ipc_module()
+    message = dict(type='wafer_item_saved', name='kanban_comment', invocation_id='c1',
+                   wafer_item={'id': 't1', 'wafer_groups': [{'lot_id': 'A', 'wf_ids': [8]}]})
+    assert ipc.decode(ipc.encode(message)) == message
+    assert not ipc.valid({**message, 'wafer_item': 'raw output'})
+
+
+def test_tool_event_roundtrip():
+    ipc = ipc_module()
+    start = {'type': 'tool_start', 'invocation_id': 'c1', 'name': 'mcp__yfd_echo__echo', 'args': {'text': 'hi'}}
+    done = {'type': 'tool_complete', 'invocation_id': 'c1', 'name': 'mcp__yfd_echo__echo', 'args': {'text': 'hi'}, 'result': 'echo:hi'}
+    assert ipc.decode(ipc.encode(start)) == start
+    assert ipc.decode(ipc.encode(done)) == done
+    assert not ipc.valid({**start, 'args': 'not-a-dict'})

@@ -173,7 +173,7 @@ def _view(views, root: Path, raw: str, *, search: bool, names_only: bool = False
         os.close(fd)
 
 
-def _text_handler(views, root, original, search):
+def _text_handler(views, root, original, search, *, display_root=""):
     from tools.registry import tool_error
 
     def scoped(args, **kwargs):
@@ -189,7 +189,8 @@ def _text_handler(views, root, original, search):
                     if isinstance(pattern, str) and pattern.startswith('-'):
                         safe['pattern'] = '[-]' + pattern[1:]
                 result = original(safe, **kwargs)
-                return result.replace(str(base) + '/', '').replace(str(base), '.')
+                prefix = display_root + '/' if display_root else ''
+                return result.replace(str(base) + '/', prefix).replace(str(base), display_root or '.')
         except (OSError, ValueError, RuntimeError) as exc:
             return tool_error(f"Shared yield folder: {exc}" if isinstance(exc, ValueError)
                               else "Shared yield folder or requested file is unavailable.")

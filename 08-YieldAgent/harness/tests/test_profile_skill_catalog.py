@@ -67,3 +67,29 @@ def test_skills_require_verified_profile():
     app = FastAPI()
     app.include_router(router)
     assert TestClient(app).get('/harness/skills?principal_id=owner').status_code == 401
+
+
+def test_cron_turn_uses_live_employee_skill_and_its_own_history(tmp_path):
+    package = tmp_path / 'skills' / 'report'
+    package.mkdir(parents=True)
+    skill = package / 'SKILL.md'
+    skill.write_text('---\nname: report\ndescription: scheduled content\n---\nFirst revision\n')
+    script = """
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+from harness.hermes_chat_worker import resume_session, turn_query
+run = dict(session_id='origin', run_id='fire', query='Product X', web_schedule_job_id='job', web_schedule_skills=['report'])
+db = SimpleNamespace(resolve_resume_session_id=lambda sid:sid, get_resume_conversations=lambda sid: ([{'role':'user','content':sid}], []))
+session, history = asyncio.run(resume_session(db, None, run))
+assert session != 'origin' and history[0]['content'] == session
+assert 'First revision' in turn_query(run) and 'Product X' in turn_query(run)
+skill = Path('skills/report/SKILL.md')
+skill.write_text(skill.read_text().replace('First revision','Second revision'))
+assert 'Second revision' in turn_query(run)
+assert turn_query({'query':'ordinary question'}) == 'ordinary question'
+"""
+    harness = Path(native_hermes.__file__).parent
+    subprocess.run([sys.executable, '-c', script], check=True, cwd=tmp_path, env={
+        **os.environ, 'PYTHONPATH': os.pathsep.join(map(str, (harness.parent, harness / 'engine'))),
+        'HOME': str(tmp_path), 'HERMES_HOME': str(tmp_path), 'PYTHON_DOTENV_DISABLED': '1'})

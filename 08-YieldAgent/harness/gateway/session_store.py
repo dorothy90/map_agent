@@ -662,6 +662,8 @@ class MongoSessionStore:
 
     async def _rich(self, row, compact_rows=False):
         result = _public_session(row)
+        if project := row.get('web_project'):
+            result['web_project'] = {'id': project['id'], 'name': project['name']}
         result['last_active'] = await self._last_active(row)
         first = await self.messages.find_one(self._scope(session_id=row['id'], role='user', content={'$ne': None}, display_kind={'$ne': 'hidden'}),
                                               sort=[('timestamp', 1), ('id', 1)])
@@ -747,7 +749,7 @@ class MongoSessionStore:
                     tip = await self._rich(by_id[chain[-1]], compact_rows)
                     root_id, root_title = row['id'], row['title']
                     for field in ('id', 'ended_at', 'end_reason', 'message_count', 'tool_call_count', 'title',
-                                  'last_active', 'preview', 'model', 'system_prompt', 'cwd', 'git_branch', 'git_repo_root'):
+                                  'last_active', 'preview', 'model', 'system_prompt', 'cwd', 'git_branch', 'git_repo_root', 'web_project'):
                         if field in tip:
                             row[field] = tip[field]
                     row['title'] = row['title'] if row['title'] is not None else root_title

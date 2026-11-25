@@ -976,3 +976,24 @@ def test_authority_soft_flags_validate_params(method, params):
     with client_for(MemoryServices(), 'authority') as client:
         with client.websocket_connect('/gateway-m1/api/ws') as ws:
             assert call(ws, method, params)['error']['code'] == 4001
+
+
+def test_saved_wafer_card_replay_keeps_committed_snapshots_for_direct_and_deferred_calls():
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        for number, native_name, saved_name, outer_id in [(1, 'kanban_create', 'kanban_create', 'c1'),
+                                                           (2, 'tool_call', 'kanban_comment', 'batch')]:
+            iid = f'c{number}'
+            saved = {'id': 't1', 'title': 'Edge', 'wafer_count': number}
+            result = {'status': 'success', 'wafer_item': saved}
+            services.runs.append({'principal_id': 'alice', 'session_id': sid, 'run_id': str(number),
+                'created_at': number, 'query': f'q{number}', 'active': False, 'status': 'completed',
+                'events': [{'type': 'tool_finished', 'payload': {'tool_id': iid, 'name': saved_name, 'result': result}}],
+                'native_messages': [{'role': 'user', 'content': f'q{number}'},
+                    {'role': 'assistant', 'tool_calls': [{'id': outer_id, 'function': {'name': native_name}}]},
+                    {'role': 'tool', 'tool_call_id': outer_id, 'content': 'PRIVATE NATIVE REPLY'}]})
+        messages = call(ws, 'session.resume', {'session_id': sid})['result']['messages']
+        cards = [m for m in messages if m.get('name') in ('kanban_create', 'kanban_comment')]
+        assert [json.loads(m['content'])['wafer_item']['wafer_count'] for m in cards] == [1, 2]
+        assert 'PRIVATE NATIVE REPLY' not in str(messages)

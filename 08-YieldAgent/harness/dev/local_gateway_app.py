@@ -27,6 +27,7 @@ load_existing_dotenv(PROJECT, override=False)
 from harness.gateway.auth import AuthenticationFailure, Principal
 from harness.gateway.routes import build_gateway_router
 from harness.gateway.services import GatewayServices
+from harness.web_cron_dispatch import gateway_schedule_lifespan
 
 WEB_HOST = f"127.0.0.1:{int(os.getenv('HARNESS_WEB_PORT', '61313'))}"
 GATEWAY_HOST = f"127.0.0.1:{int(os.getenv('HARNESS_GATEWAY_PORT', '61302'))}"
@@ -139,8 +140,12 @@ def create_app(*, base_app=None, user=None, services_factory=None):
 
     app.router.routes.extend(base_app.router.routes)
     services = BoundServices()
+    def schedules(app):
+        return gateway_schedule_lifespan(app, principal=app.state.principal_user)
+
     app.include_router(build_gateway_router(resolver, origin_policy=resolver,
-        ticket_verifier=resolver, rpc_mode='authority', services=services), prefix='/gateway-m1')
+        ticket_verifier=resolver, rpc_mode='authority', services=services,
+        schedule_lifespan=schedules if production else None), prefix='/gateway-m1')
     app.include_router(build_gateway_router(resolver, origin_policy=resolver,
         ticket_verifier=resolver, rpc_mode='authority', services=services))
     return app

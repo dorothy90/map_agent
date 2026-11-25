@@ -40,7 +40,8 @@ class FakeCursor:
         return list(self._result)
 
     def fetchmany(self, size):
-        return list(self._result[:size])
+        batch, self._result = self._result[:size], self._result[size:]
+        return batch
 
     def close(self):
         self.closed = True
@@ -96,11 +97,11 @@ def run_query(
     uploaded = {}
 
     async def upload(self, data, timeout=60):
-        uploaded["data"] = data
+        uploaded["data"] = data.read()
         return str(self.results_dir / "query-fixture.csv")
 
     monkeypatch.setattr(query_db, "_connection", lambda: connection)
-    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_bytes", upload)
+    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_file", upload)
     args = query_db.QueryDBInput.model_validate(payload)
     result = asyncio.run(query_db.query_db(args, context(tmp_path)))
     return connection, uploaded, result
@@ -272,7 +273,7 @@ def test_global_aggregate_and_aggregate_projection_validation(monkeypatch, tmp_p
                 query_db.QueryDBInput.model_validate(payload),
                 threading.Event(),
                 {},
-                threading.Lock(),
+                threading.Lock(), io.BytesIO(), io.StringIO(),
             )
 
 
@@ -336,14 +337,14 @@ def test_temporal_filters_reject_ambiguous_values(monkeypatch, data_type, value)
         "filters": [{"column": "stamp", "op": "ge", "value": value}],
     })
     with pytest.raises(ValueError, match="ISO|offset|precision"):
-        query_db._query(args, threading.Event(), {}, threading.Lock())
+        query_db._query(args, threading.Event(), {}, threading.Lock(), io.BytesIO(), io.StringIO())
 
 
 @pytest.mark.parametrize(
     ("rows", "limit", "truncated", "status", "summary"),
     [
-        ([(1, "a"), (2, "b")], 2, False, None, "결과 2건"),
-        ([(1, "a"), (2, "b"), (3, "c")], 2, True, None, "결과 2건"),
+        ([(1, "a"), (2, "b")], 2, False, "success", "결과 2건"),
+        ([(1, "a"), (2, "b"), (3, "c")], 2, True, "success", "결과 2건"),
         ([], 2, False, "empty", "결과 0건"),
     ],
 )
@@ -398,11 +399,11 @@ def test_lob_is_read_before_connection_closes(monkeypatch, tmp_path):
     import harness.tools.query_db as query_db
 
     async def upload(self, data, timeout=60):
-        uploaded["data"] = data
+        uploaded["data"] = data.read()
         return str(self.results_dir / "query-lob.csv")
 
     monkeypatch.setattr(query_db, "_connection", lambda: connection)
-    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_bytes", upload)
+    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_file", upload)
     result = asyncio.run(query_db.query_db(
         query_db.QueryDBInput(table="people"), context(tmp_path)
     ))
@@ -442,7 +443,7 @@ def test_connection_still_closes_when_cursor_cleanup_fails(monkeypatch):
 
     with pytest.raises(RuntimeError, match="cursor close failed"):
         query_db._query(
-            query_db.QueryDBInput(table="people"), threading.Event(), active, lock
+            query_db.QueryDBInput(table="people"), threading.Event(), active, lock, io.BytesIO(), io.StringIO()
         )
     assert connection.closed
     assert active == {}
@@ -458,7 +459,7 @@ def test_transfer_failure_has_no_successful_path(monkeypatch, tmp_path):
         raise IsolationError("upload failed")
 
     monkeypatch.setattr(query_db, "_connection", lambda: connection)
-    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_bytes", failed)
+    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_file", failed)
 
     with pytest.raises(IsolationError, match="upload failed"):
         asyncio.run(query_db.query_db(query_db.QueryDBInput(table="people"), context(tmp_path)))
@@ -643,7 +644,7 @@ def test_executor_stores_capped_evidence_and_projects_store_result_id(monkeypatc
         return str(self.results_dir / "query-stored.csv")
 
     monkeypatch.setattr(query_db, "_connection", lambda: connection)
-    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_bytes", upload)
+    monkeypatch.setattr("harness.isolation.backend.IsolatedSSHBackend.upload_file", upload)
     registry = ToolRegistry()
     query_db.register(registry)
     store = Store()
@@ -686,4 +687,41 @@ def test_query_db_registers_seven_day_absolute_path_lifetime():
     description = registry.tools["query_db"].description
     assert "absolute" in description.lower()
     assert "7일" in description
-    assert "tables[result_id][table_id]" in description
+    assert "pd.read_csv(path)" in description
+
+
+def test_omitted_limit_stores_and_pages_the_full_query(monkeypatch, tmp_path):
+    import uuid
+    from harness.store import HarnessStore
+
+    rows = [(i, "이름 " * 40 + str(i)) for i in range(2150)]
+    connection, uploaded, result = run_query(monkeypatch, tmp_path, rows, {"table": "people"})
+    assert "ROWNUM" not in connection.fake_cursor.calls[-1][0]
+    assert result.scope["query_db"]["row_count"] == len(rows)
+    assert len(result.tables[0].rows) <= 50
+    assert list(csv.DictReader(io.StringIO(uploaded["data"].decode())))[-1]["ID"] == "2149"
+
+    async def scenario():
+        store = HarnessStore(database="harness_query_" + uuid.uuid4().hex)
+        try:
+            await store.setup()
+            obs = await store.put_result("alice", "chat", dict(run_id="run", invocation_id="query",
+                tool_name="query_db"), [], [], tables=result.tables)
+            assert obs.total_rows == 2150 and obs.tables[0].complete
+            for principal, session in [("alice", "other"), ("bob", "chat")]:
+                with pytest.raises(PermissionError):
+                    await store.read_result(principal, session, obs.result_id, offset=2148)
+            tail = await store.read_result("alice", "chat", obs.result_id, offset=2148, columns=["ID"])
+            assert tail["rows"] == [{"ID": 2148}, {"ID": 2149}]
+            assert tail["total_rows"] == 2150
+            count = 0
+            async for row in store.iter_table_rows("alice", "chat", obs.result_id):
+                assert row == {"ID": count, "NAME": rows[count][1]}
+                count += 1
+            assert count == len(rows)
+            assert result.tables[0].source.closed
+        finally:
+            await store.client.drop_database(store.db.name)
+            store.client.close()
+
+    asyncio.run(scenario())

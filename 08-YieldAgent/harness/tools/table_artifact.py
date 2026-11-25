@@ -1,4 +1,5 @@
 import asyncio
+import json
 import math
 from dataclasses import dataclass
 from typing import Annotated, Literal
@@ -13,6 +14,10 @@ from .yield_report_data import (
     fetch_period_report, aggregate_groups,
 )
 from yield_viz import GMS_COLUMNS, _build_html_table
+
+
+DISPLAY_PREVIEW_BYTES = 9000
+COUNT_PREVIEW_BYTES = 3000
 
 
 class YieldReportRow(Contract):
@@ -408,6 +413,24 @@ async def _membership(args, data, ctx):
     return rows, groups, origin, uncovered, None
 
 
+def _summary_tail(rows, budget):
+    """Accept complete rows newest first, then restore their display order."""
+    selected = []
+    for row in rows:
+        budget -= len(json.dumps(row, ensure_ascii=False).encode()) + 2
+        if budget < 0:
+            return selected[::-1], True
+        selected.append(row)
+    return selected[::-1], False
+
+
+def _display_rows(cells, column_count, **section):
+    for end in range(len(cells), 0, -column_count):
+        row = cells[end - column_count:end]
+        yield {**section, **{k: row[0][k] for k in ("grain", "bucket", "row") if k in row[0]},
+               "values": {cell["column"]: cell["shown"] for cell in row}}
+
+
 def _render_groups(args, data, membership, groups):
     comparison = args.comparison
     comparison_source = "caller" if comparison else None
@@ -460,12 +483,18 @@ def _render_groups(args, data, membership, groups):
         aggregation="Source-row AVG(VALUE); not an average of lot means",
         comparison=comparison.model_dump() if comparison else None,
         comparison_source=comparison_source)
+    shown, omitted_cells = _summary_tail(_display_rows(cells, len(result.scope["displayed_columns"])), DISPLAY_PREVIEW_BYTES)
+    count_preview, omitted_counts = _summary_tail(reversed(counts), COUNT_PREVIEW_BYTES)
+    group_preview, omitted_groups = _summary_tail(reversed(result.scope["groups"]), 1500)
+    result.scope["report_summary"] = dict(displayed_rows=shown, counts=count_preview, groups=group_preview,
+        comparison=result.scope["comparison"], delta_definition=result.scope["delta_definition"],
+        truncated=omitted_cells or omitted_counts or omitted_groups)
     result.status = "empty" if not any(r["lot_count"] for r in counts) else "partial" if missing else "success"
     if member_grain == "wafer":
         result.scope["aggregation"] = "Source-row AVG(VALUE) over selected (LOT_ID, WFID); not an average of wafer means"
         result.status = "empty" if not any(r["lot_count"] or r["has_yield_data"] for r in counts) else "partial" if missing else "success"
     result.summary = (f"LOT_CD={data.lot_cd} {data.window['start']}~{data.window['end']}: "
-                      f"{len(groups)} groups; counts in group_counts; {result.scope['selection_rule']}; "
+                      f"{len(groups)} groups; cite report_summary counts and displayed_rows; {result.scope['selection_rule']}; "
                       "group GMS unavailable; selection meaning requires verification")
     return result
 
@@ -530,6 +559,7 @@ def _render_period_report(args: YieldTableInput, data: PeriodReportData, *, repo
     """Render each grain through the same pivot/HTML path and attach shared evidence."""
     rendered, count_tables, gms_tables, displayed_rows = [], [], [], []
     missing, missing_gms, deltas = {}, {}, {}
+    summary = {"counts": [], "displayed_rows": [], "truncated": False}
     totals = {
         "lot_cd": data.lot_cd, "start": data.window["start"], "end": data.window["end"],
         "counts_process": ", ".join(report_tests) if report_tests else "PT1H TEST", "period_lot_count": data.period_lot_count,
@@ -565,6 +595,13 @@ def _render_period_report(args: YieldTableInput, data: PeriodReportData, *, repo
         rendered.append(result)
         deltas[grain] = result.scope["delta_definition"]
         displayed_rows.extend({"grain": grain, **row} for row in result.tables[0].rows)
+        grain_rows = _display_rows(result.tables[0].rows, len(result.scope["displayed_columns"]), grain=grain)
+        shown, omitted_cells = _summary_tail(grain_rows, DISPLAY_PREVIEW_BYTES // len(data.counts))
+        count_preview, omitted_counts = _summary_tail(
+            ({"grain": grain, **row} for row in reversed(counts)), COUNT_PREVIEW_BYTES // len(data.counts))
+        summary["displayed_rows"].extend(shown)
+        summary["counts"].extend(count_preview)
+        summary["truncated"] |= omitted_cells or omitted_counts
         totals.update({key: ",".join(buckets), f"{grain}_count": len(buckets),
                        f"sum_of_{unit}_lot_count": sum(row["lot_count"] or 0 for row in counts),
                        f"sum_of_{unit}_wafer_count": sum(row["wafer_count"] or 0 for row in counts)})
@@ -597,7 +634,7 @@ def _render_period_report(args: YieldTableInput, data: PeriodReportData, *, repo
         f"LOT_CD={data.lot_cd} {data.window['start']}~{data.window['end']}: "
         f"기간 distinct lot {data.period_lot_count}, wafer {data.period_wafer_count}; "
         f"{result.scope['selection_rule']}; {'; '.join(deltas.values())}; "
-        "기간 수는 report_totals, 버킷 수는 grain counts 표만 인용; 더하지 않는다"
+        "기간 수는 report_totals, 버킷 수와 표시 Δ는 report_summary에서 인용한다"
     )
     result.scope.update({
         "period": args.period if isinstance(args.period, dict) else args.period.model_dump(exclude_none=True), "window": data.window,
@@ -615,6 +652,9 @@ def _render_period_report(args: YieldTableInput, data: PeriodReportData, *, repo
         "tables_available": [table.table_id for table in result.tables],
         "default_table_id": "report_totals",
     })
+    summary.update(period_totals={k: totals[k] for k in ("period_lot_count", "period_wafer_count", "counts_process")},
+                   comparisons=result.scope["comparisons"], delta_definition=result.scope["delta_definition"])
+    result.scope["report_summary"] = summary
     if "weeks" in data.window:
         result.scope.update(resolved_weeks=data.window["weeks"], missing_weeks=missing["week"])
     result.status = ("empty" if not data.yield_long and not any(
@@ -628,13 +668,15 @@ def register(registry):
         "render_yield_table",
         "표·리포트를 요청한 경우 사용하는 표준 수율 리포트다. lot_cd+period 또는 이전 report_scope_id 중 하나를 전달한다. "
         "월·주·일 표와 산점도·BIN 비교맵은 analysis로 한 번에 조회한다. 제품 미지정이면 lot_cd를 생략한다. 반환된 DB 제품 목록에서 clarify로 선택을 받아 lot_cd와 함께 다시 호출한다. "
-        "공식 수율표는 artifact_refs의 해당 HTML markdown을 최종 답변에 그대로 한 번 넣으면 표 전체가 표시되므로 본문에 표를 다시 작성하지 않으며, displayed_yield_table은 수치 확인과 비교 계산에만 사용한다. "
+        "공식 수율표는 artifact_refs의 해당 HTML markdown을 최종 답변에 그대로 한 번 넣으면 표 전체가 표시되므로 본문에 표를 다시 작성하지 않는다. "
+        "답변 수치와 Δ는 scope.report_summary의 counts와 displayed_rows에서 부호와 반올림을 그대로 인용한다. "
+        "analysis는 month/week/day별 report_summary를 반환한다. truncated이면 필요한 수치는 read_result로 해당 counts 또는 displayed_yield_table에서 확인한다. "
         "period는 recent(weeks/months/days 중 하나의 count, 선택적 grains) 또는 명시적 weeks/months/days 목록이다. "
         "최근 기간은 PT1H TEST 최신 DB 측정일 기준이며 오늘 날짜를 계산하지 않는다. ISO 주차와 빈 버킷을 보존한다. "
         "결과 lot_population의 전체 lot_id, wafer_count, pt1h_mean, pt1h_value_count로 Python에서 그룹을 선택한다. "
         "grouping.membership은 {kind:'table',result_id,table_id}로 group_id,lot_id 표를 참조한다. "
         "wafer 멤버십은 member_grain:'wafer'와 group_id,lot_id,wf_id 열(PRB WFID 원문 문자열)을 사용한다. "
-        "멤버십은 query_db/run_python으로 구성하고 OPER_ID별 EQP_ID 등 공식 그룹 수율 표는 이 도구로 렌더링한다. "
+        "멤버십은 query_db와 Python으로 구성하고 OPER_ID별 EQP_ID 등 공식 그룹 수율 표는 이 도구로 렌더링한다. "
         "동일 OPER_ID의 wafer가 여러 EQP 행에 매칭되면 임의 중복 제거 없이 clarify한다. "
         "단일 표이면 table_id 생략 가능, 여러 표이면 반드시 지정한다. 소수 lot은 {kind:'inline',groups:[{group_id,lot_ids}]}도 가능하다. "
         "그룹 호출은 이전 render_yield_table의 report_scope_id(또는 lot_cd+period)와 grouping.membership이 필수다. "

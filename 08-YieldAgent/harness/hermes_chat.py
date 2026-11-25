@@ -7,6 +7,7 @@ from pathlib import Path
 import signal
 import sys
 import tempfile
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -55,6 +56,7 @@ async def run_chat(context):
     config.update(api_key=settings.api_key.get_secret_value(), mongo_db=store.db.name)
     request = {'run_id': run_id, 'epoch': epoch, 'principal_id': principal, 'session_id': session,
                'settings': config, 'request_context': request_context,
+               'web_scheduling_enabled': getattr(context, 'web_scheduling_enabled', False),
                'web_map_jobs_enabled': getattr(context, 'web_map_jobs_enabled', False)}
     env = {k: os.environ[k] for k in ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
            'ORACLE_USER', 'ORACLE_PASSWORD', 'ORACLE_DSN', 'ORACLE_CALL_TIMEOUT_MS') if k in os.environ}
@@ -76,6 +78,7 @@ async def run_chat(context):
     audit = None
     process = None
     messages = None
+    tool_starts = {}
     prepared = False
     try:
         if settings.isolation:
@@ -96,6 +99,7 @@ async def run_chat(context):
                 start_new_session=True, env=env, cwd=work, limit=16 * 1024 * 1024)
             process.stdin.write(json.dumps(request, ensure_ascii=False).encode() + b'\n')
             await process.stdin.drain()
+
             result = None
             messages = coalesced_worker_messages(process.stdout, context.remaining_seconds)
             async for message in messages:
@@ -105,8 +109,8 @@ async def run_chat(context):
                     if not settings.web_python_enabled or context.session_kernels is None:
                         raise PermissionError('Python requires a session-owned OS sandbox')
                     if audit is None:
-                        from .tools.registry import domain_registry
-                        audit = ToolExecutor(domain_registry(), context)
+                        from .tools.registry import native_domain_registry
+                        audit = ToolExecutor(native_domain_registry(), context)
                     if 'execute_code' not in audit.registry.tools:
                         audit.registry.add(context.session_kernels.spec())
                     obs = await audit.execute({'name': 'execute_code', 'args': message['args'],
@@ -134,14 +138,53 @@ async def run_chat(context):
                             await store.runs.update_one(
                                 {'_id': run_id, 'epoch': epoch, 'status': 'running'},
                                 {'$push': {'public_interims': live[1]['text']}})
+                elif kind in ('tool_start', 'tool_complete'):
+                    call_id = message['invocation_id']
+                    args = message.get('args', {})
+                    args_text = json.dumps(args, ensure_ascii=False)
+                    bounded_args = args if len(args_text.encode('utf-8')) <= 64 * 1024 else {}
+                    payload = {'name': message['name'], 'invocation_id': call_id,
+                               'tool_id': call_id, 'args': bounded_args}
+                    if kind == 'tool_start':
+                        tool_starts[call_id] = time.monotonic()
+                        preview = json.dumps(bounded_args, ensure_ascii=False, separators=(',', ':'))
+                        payload['context'] = preview if len(preview) <= 80 else preview[:77] + '...'
+                        await store.event(run_id, 'tool_started', payload,
+                                          event_key=call_id + ':started', epoch=epoch)
+                    else:
+                        tool_result = message.get('result')
+                        if isinstance(tool_result, str):
+                            try:
+                                tool_result = json.loads(tool_result)
+                            except ValueError:
+                                pass
+                        payload['is_error'] = isinstance(tool_result, dict) and (
+                            bool(tool_result.get('error')) or tool_result.get('isError') is True
+                            or tool_result.get('ok') is False or tool_result.get('success') is False
+                            or tool_result.get('status') == 'error')
+                        text = tool_result if isinstance(tool_result, str) else json.dumps(tool_result, ensure_ascii=False)
+                        if len(text.encode('utf-8')) > 64 * 1024:
+                            text = text.encode('utf-8')[:63 * 1024].decode('utf-8', errors='ignore')
+                            tool_result = ({'local_mcp': True, 'preview': text[:8 * 1024], 'truncated': True}
+                                      if message['name'] == 'manage_connections' and isinstance(tool_result, dict)
+                                      and tool_result.get('local_mcp') is True else text)
+                        payload.update(result=tool_result, duration_s=max(0, time.monotonic() - tool_starts.pop(call_id, time.monotonic())))
+                        await store.event(run_id, 'tool_finished', payload,
+                                          event_key=call_id + ':finished', epoch=epoch)
                 elif kind == 'skill_read':
                     await store.runs.update_one({'_id': run_id, 'epoch': epoch, 'status': 'running'},
                         {'$addToSet': {'skill_reads': {k: message[k] for k in ('name', 'resource', 'sha256')}}})
                 elif kind == 'skill_result':
                     if audit is None:
-                        from .tools.registry import domain_registry
-                        audit = ToolExecutor(domain_registry(), context)
+                        from .tools.registry import native_domain_registry
+                        audit = ToolExecutor(native_domain_registry(), context)
                     await record_skill_result(context, audit, message)
+                elif kind == 'wafer_item_saved' and message['name'] in ('kanban_create', 'kanban_comment'):
+                    tool_id = message['invocation_id']
+                    await store.event(run_id, 'tool_finished', {
+                        'name': message['name'], 'tool_id': tool_id,
+                        'result': {'status': 'success', 'wafer_item': message['wafer_item']},
+                    }, event_key=tool_id + ':wafer-item-saved', epoch=epoch)
                 elif kind == 'step':
                     await store.runs.update_one({'_id': run_id, 'epoch': epoch, 'status': 'running'},
                         {'$set': {'usage.models': usage.get('models', 0) + message['models'],

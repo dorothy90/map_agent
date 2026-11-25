@@ -31,7 +31,7 @@ HARNESS_ISOLATION_LAUNCHER=/usr/local/libexec/yieldrun-launcher
 HARNESS_ISOLATION_SANDBOX=required
 ```
 
-분석 venv와 HOME 최상위는 root 소유이며 `work`만 `yieldrun`이 쓸 수 있습니다. launcher는 인증된 principal/run hash로 profile과 workdir를 매 요청마다 고정합니다. 직접 패키지는 `pandas`, `numpy`, `plotly`뿐입니다. 전용 HOME/workdir에는 실제 저장소, `.env`, 모델/DB 자격증명을 두지 마십시오.
+분석 venv와 HOME 최상위는 root 소유이며 `work`만 `yieldrun`이 쓸 수 있습니다. launcher는 인증된 principal/run hash로 profile과 workdir를 매 요청마다 고정합니다. 직접 패키지는 `pandas`, `numpy`, `plotly`, `openpyxl`, `Pillow`, `python-docx`, `python-pptx`입니다. 전용 HOME/workdir에는 실제 저장소, `.env`, 모델/DB 자격증명을 두지 마십시오.
 
 ## 필수 sandbox
 

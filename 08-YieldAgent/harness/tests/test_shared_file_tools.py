@@ -86,3 +86,61 @@ def test_shared_files_use_native_handlers_on_published_data_only(tmp_path):
              'HERMES_DISABLE_LAZY_INSTALLS': '1', 'PYTHON_DOTENV_DISABLED': '1'},
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_employee_workspace_writes_use_hermes_and_leave_published_files_read_only(tmp_path):
+    shared = tmp_path / 'shared'
+    shared.mkdir()
+    (shared / 'published.txt').write_text('published')
+    harness = Path(__file__).resolve().parents[1]
+    script = """
+        import json, sys
+        from pathlib import Path
+        from tools import file_tools, vision_tools
+        from tools.registry import registry
+        from harness.personal_file_tools import install_personal_file_policy
+        from harness.shared_file_tools import install_shared_file_policy
+        shared, profile = map(Path, sys.argv[1:3])
+        profile.mkdir(exist_ok=True)
+        install_shared_file_policy(registry, shared)
+        install_personal_file_policy(registry, profile, 'yielddata', shared)
+        def call(name, **args):
+            return json.loads(registry.dispatch(name, args, task_id='staff-chat'))
+        target = '/workspace/notes/sample.txt'
+        if sys.argv[3] == 'other':
+            assert 'error' in call('read_file', path=target)
+        else:
+            assert 'error' not in call('write_file', path=target, content='draft'), 'write'
+            assert 'draft' in call('read_file', path=target)['content']
+            assert 'error' not in call('patch', path=target, old_string='draft', new_string='verified')
+            assert 'verified' in call('read_file', path=target)['content']
+            matches = call('search_files', path='/workspace', pattern='verified')['matches']
+            assert [m['path'] for m in matches] == [target], matches
+            one = '*** Begin Patch\\n*** Add File: /workspace/extra.txt\\n+example\\n*** End Patch'
+            assert 'error' not in call('patch', mode='patch', patch=one)
+            assert 'example' in call('read_file', path='/workspace/extra.txt')['content']
+            assert 'error' in call('patch', mode='patch', patch=one.replace('/workspace/extra.txt', str(shared / 'new.txt')))
+            for path in ['published.txt', str(shared / 'published.txt'), '/workspace/../outside', '/workspace/.git/config']:
+                assert 'error' in call('write_file', path=path, content='no'), path
+            assert (shared / 'published.txt').read_text() == 'published'
+            assert not (shared / 'new.txt').exists()
+            actual = next(profile.rglob('sample.txt'))
+            actual.with_name('alias').symlink_to(shared / 'published.txt')
+            assert 'error' in call('write_file', path='/workspace/notes/alias', content='no')
+            from tools.delegate_tool_registry import _register_subagent
+            _register_subagent({'subagent_id': 'delegated-test'})
+            for path, permitted in [('published.txt', True), (target, False)]:
+                result = registry.dispatch('read_file', {'path': path}, task_id='delegated-test')
+                assert ('content' in json.loads(result)) == permitted
+    """
+    for principal in ('owner', 'other'):
+        profile = tmp_path / principal
+        result = subprocess.run(
+            [sys.executable, '-c', textwrap.dedent(script), str(shared), str(profile), principal],
+            cwd=tmp_path, timeout=60, capture_output=True, text=True,
+            env={'PATH': os.environ['PATH'], 'HOME': str(profile), 'HERMES_HOME': str(profile),
+                 'HERMES_WRITE_SAFE_ROOT': str(profile),
+                 'PYTHONPATH': os.pathsep.join(map(str, (harness.parent, harness / 'engine'))),
+                 'HERMES_DISABLE_LAZY_INSTALLS': '1', 'PYTHON_DOTENV_DISABLED': '1'},
+        )
+        assert result.returncode == 0, result.stdout + result.stderr

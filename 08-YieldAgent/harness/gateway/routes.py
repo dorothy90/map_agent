@@ -43,6 +43,7 @@ def build_gateway_router(
     ticket_verifier: TicketVerifier | None = None,
     rpc_mode: str = 'legacy',
     services=None,
+    schedule_lifespan=None,
 ) -> APIRouter:
     """Construct inert routes; RPC mode is server-selected, never client fallback."""
     validate_mode(rpc_mode)
@@ -50,7 +51,10 @@ def build_gateway_router(
     origin_policy = origin_policy if origin_policy is not None else DenyOriginPolicy()
     ticket_verifier = ticket_verifier if ticket_verifier is not None else DenyTicketVerifier()
     manifest = json.loads(Path(__file__).with_name('manifest.json').read_text())
-    router = APIRouter()
+    if schedule_lifespan is not None and (rpc_mode != 'authority' or services is None
+            or isinstance(resolver, DenyPrincipalResolver)):
+        raise ValueError('Web schedules require an authenticated authority gateway')
+    router = APIRouter(lifespan=schedule_lifespan)
 
     async def authenticate(connection):
         principal = await resolver.resolve(connection)

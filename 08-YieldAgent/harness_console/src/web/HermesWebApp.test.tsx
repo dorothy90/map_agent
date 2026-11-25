@@ -1,7 +1,7 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 import { FakeWebSocket } from '../platform/fake-websocket'
 import { writeFileSync } from 'node:fs'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { HermesWebApp } from './HermesWebApp'
 import { WebHostAdapter } from '../platform/web-host'
@@ -66,6 +66,24 @@ it('renders server sessions and only implemented calls after connection', async 
  expect(screen.getByRole('button',{name:'Saved session'})).toBeTruthy()
  for(const [method] of request.mock.calls) expect(capabilityError(method,'authority')).toBeNull()
  for(const [call] of api.mock.calls) expect(restCapabilityError(call.path,call.method ?? 'GET')).toBeNull()
+})
+
+it('groups only assigned chats under the project even when it has the same name as a date heading', async () => {
+ vi.useFakeTimers()
+ const host=new WebHostAdapter({rpcMode:'authority',location:{href:'http://localhost/'},reconnect:false})
+ vi.spyOn(host,'connect').mockResolvedValue()
+ vi.spyOn(host.gateway,'request').mockResolvedValue({})
+ const row={source:'cli',started_at:0,last_active:0,message_count:1}
+ vi.spyOn(host,'api').mockImplementation(async call => call.path.includes('/messages')
+  ? {messages:[]} : {sessions:[
+    {...row,id:'first',title:'Project chat',web_project:{id:'p_1',name:'이전 대화'}},
+    {...row,id:'second',title:'Personal chat'}],total:2})
+ render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host}/>)
+ await act(async () => {await vi.advanceTimersByTimeAsync(11000)})
+ const project=screen.getByRole('region',{name:'프로젝트 이전 대화'})
+ expect(within(project).getByRole('button',{name:'Project chat'})).toBeTruthy()
+ expect(within(project).queryByRole('button',{name:'Personal chat'})).toBeNull()
+ expect(within(screen.getByRole('region',{name:'이전 대화'})).getByRole('button',{name:'Personal chat'})).toBeTruthy()
 })
 
 it('opens mobile search and returns keyboard focus when the drawer closes', async () => {

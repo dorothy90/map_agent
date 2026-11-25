@@ -1,12 +1,11 @@
 from datetime import date
-from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from harness.tools import report_analysis, report_bin_maps, report_scatter, table_artifact
 from harness.tools.load_wafer_maps import LoadWaferMapsInput
-from harness.tools.registry import ToolResult
+from harness.tests.test_period_report_data import period_db
 
 
 RECIPE = dict(months=3, weeks=4, days=3, parameters_per_direction=3, bins_per_test=10)
@@ -23,15 +22,16 @@ def test_report_scope_cannot_mix_raw_limits_or_period_scope():
     assert LoadWaferMapsInput(lot_ids=["L"], max_dies=24).max_dies == 24
 
 
-def test_each_section_uses_same_product_tests_and_shared_calendar(monkeypatch):
+def test_each_section_uses_same_product_tests_and_shared_calendar(monkeypatch, period_db):
     base = date(2025, 1, 1)
     tests = ["PT1H TEST", "PT1C TEST"]
     monkeypatch.setattr(report_analysis, "analysis_scope", lambda *a: (tests, base))
     periods, charts = [], []
+    fetch_report = report_analysis.fetch_period_report
 
     def fetch(lot, period, **kw):
         periods.append((lot, period.model_dump(exclude_none=True), kw))
-        return SimpleNamespace(window={"end": base.isoformat()})
+        return fetch_report(lot, period, **kw)
 
     def render_maps(lot, tests, start, split, end, top_n):
         charts.append((lot, tests, start, split, end, top_n))
@@ -42,8 +42,6 @@ def test_each_section_uses_same_product_tests_and_shared_calendar(monkeypatch):
         return [{"title": "scatter"}], [], {}
 
     monkeypatch.setattr(report_analysis, "fetch_period_report", fetch)
-    monkeypatch.setattr(table_artifact, "_render_period_report", lambda a, d, **kw:
-                        ToolResult(status="success", artifacts=[{"title": a.title}]))
     monkeypatch.setattr(report_scatter, "build_report_scatter", render_scatter)
     monkeypatch.setattr(report_bin_maps, "report_bin_maps", render_maps)
     result = report_analysis.build_report_analysis("P", report_analysis.ReportAnalysis(**RECIPE))
@@ -54,6 +52,13 @@ def test_each_section_uses_same_product_tests_and_shared_calendar(monkeypatch):
     assert result.status == "success" and len(result.artifacts) == 6
     assert result.scope["comparison"]["previous_week"] == "2024-W52"
     assert result.scope["comparison"]["current_week"] == "2025-W01"
+    for grain in ("month", "week", "day"):
+        summary = result.scope["report_summary"][grain]
+        assert summary["period_totals"]["counts_process"] == ", ".join(tests)
+        assert summary["period_totals"]["period_lot_count"] == 15
+        assert {row["grain"] for row in summary["counts"]} == {grain}
+        assert summary["displayed_rows"][-1]["row"] == "Δ"
+        assert summary["displayed_rows"][-1]["values"]["PT1H TEST/VTH"] == "+1.0"
 
 
 def test_missing_product_returns_database_choices_to_the_model(monkeypatch):

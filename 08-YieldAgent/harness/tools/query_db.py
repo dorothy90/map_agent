@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import io
+import hashlib
+import json
 import math
 import re
+import tempfile
 import threading
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -13,7 +15,7 @@ from typing import Literal
 from pydantic import Field, field_validator
 
 from ..isolation.backend import isolation_backend
-from ..types import Contract, EMPTY_RESULT_SUMMARY, ResultTable
+from ..types import Contract, EMPTY_RESULT_SUMMARY, StreamedResultTable
 from .registry import ToolResult, ToolSpec
 
 
@@ -50,7 +52,7 @@ class QueryDBInput(Contract):
     group_by: list[str] = Field(default_factory=list)
     aggregates: list[Aggregate] = Field(default_factory=list)
     order_by: list[Ordering] = Field(default_factory=list)
-    limit: int = Field(default=100, ge=1, le=1000)
+    limit: int | None = Field(default=None, ge=1, description="Omit to store all matching rows.")
 
 
 def _connection():
@@ -138,7 +140,7 @@ def _temporal_bind(data_type: str, value, bind_name: str):
     return f"TO_TIMESTAMP(:{bind_name}, '{mask}')", normalized
 
 
-def _query(args: QueryDBInput, cancelled: threading.Event, active: dict, lock: threading.Lock):
+def _query(args: QueryDBInput, cancelled: threading.Event, active: dict, lock: threading.Lock, source, csv_file):
     connection = cursor = None
     try:
         connection = _connection()
@@ -189,13 +191,13 @@ def _query(args: QueryDBInput, cancelled: threading.Event, active: dict, lock: t
             if alias_key in grouped_keys or alias_key in aliases:
                 raise ValueError(f"Duplicate or colliding aggregate alias: {item.alias}")
             aliases[alias_key] = item.alias
-            source = "*" if item.column is None else _identifier(
+            operand = "*" if item.column is None else _identifier(
                 _resolved([item.column], available)[0]
             )
             expression = (
-                f"COUNT(DISTINCT {source})"
+                f"COUNT(DISTINCT {operand})"
                 if item.function == "count_distinct"
-                else f"{item.function.upper()}({source})"
+                else f"{item.function.upper()}({operand})"
             )
             aggregate_sql.append(f"{expression} AS {_identifier(item.alias)}")
 
@@ -235,16 +237,42 @@ def _query(args: QueryDBInput, cancelled: threading.Event, active: dict, lock: t
             inner += " GROUP BY " + ", ".join(map(_identifier, grouped))
         if ordering:
             inner += " ORDER BY " + ", ".join(ordering)
-        sql = f"SELECT * FROM ({inner}) WHERE ROWNUM <= :row_limit"
-        binds["row_limit"] = args.limit + 1
+        sql = inner
+        if args.limit is not None:
+            sql = f"SELECT * FROM ({inner}) WHERE ROWNUM <= :row_limit"
+            binds["row_limit"] = args.limit + 1
         cursor.execute(sql, binds)
-        raw_rows = cursor.fetchmany(args.limit + 1)
         output_columns = [*selected, *(item.alias for item in args.aggregates)]
-        rows = [
-            {column: _serialize(value) for column, value in zip(output_columns, row)}
-            for row in raw_rows[:args.limit]
-        ]
-        return output_columns, rows, len(raw_rows) > args.limit
+        preview, preview_bytes, count = [], 0, 0
+        digest = hashlib.sha256()
+        truncated = False
+        writer = csv.writer(csv_file)
+        writer.writerow(output_columns)
+        while not truncated:
+            if cancelled.is_set():
+                raise asyncio.CancelledError
+            batch = cursor.fetchmany(256)
+            if not batch:
+                break
+            for raw in batch:
+                if count == args.limit:
+                    truncated = True
+                    break
+                row = {column: _serialize(value) for column, value in zip(output_columns, raw)}
+                encoded = json.dumps(row, ensure_ascii=False, allow_nan=False).encode() + b"\n"
+                source.write(encoded)
+                digest.update(encoded)
+                writer.writerow(row.values())
+                count += 1
+                if count == len(preview) + 1 and count <= 50 and preview_bytes + len(encoded) <= 32000:
+                    preview.append(row)
+                    preview_bytes += len(encoded)
+        source.seek(0)
+        csv_file.seek(0)
+        table = StreamedResultTable(table_id="query_db", title=args.table, rows=preview, columns=output_columns,
+            source=source, source_digest=digest.hexdigest(), total_rows=count, complete=not truncated,
+            missing_reason="Result exceeded query limit" if truncated else None)
+        return table
     finally:
         try:
             try:
@@ -258,11 +286,11 @@ def _query(args: QueryDBInput, cancelled: threading.Event, active: dict, lock: t
                 active.pop("connection", None)
 
 
-async def _run_query(args):
+async def _run_query(args, source, csv_file):
     cancelled = threading.Event()
     active = {}
     lock = threading.Lock()
-    worker = asyncio.create_task(asyncio.to_thread(_query, args, cancelled, active, lock))
+    worker = asyncio.create_task(asyncio.to_thread(_query, args, cancelled, active, lock, source, csv_file))
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
@@ -274,43 +302,35 @@ async def _run_query(args):
                 connection.cancel()
             except Exception:
                 pass
-        worker.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+        await asyncio.gather(worker, return_exceptions=True)
         raise
 
 
-def _csv_bytes(columns, rows):
-    output = io.StringIO(newline="")
-    writer = csv.DictWriter(output, fieldnames=columns)
-    writer.writeheader()
-    writer.writerows(rows)
-    return output.getvalue().encode("utf-8")
-
-
 async def query_db(args, ctx):
-    result = await _run_query(args)
-    if result is None:
-        raise asyncio.CancelledError
-    columns, rows, truncated = result
     isolation = getattr(ctx.settings, "isolation", None)
     if isolation is None:
         raise RuntimeError("isolated backend is not configured")
     backend = isolation_backend(isolation, ctx.run["run_id"], ctx.run["principal_id"])
-    path = await backend.upload_bytes(_csv_bytes(columns, rows), timeout=60)
-    row_count = len(rows)
-    summary = EMPTY_RESULT_SUMMARY if row_count == 0 else f"결과 {row_count}건"
-    return ToolResult(
-        tables=[ResultTable(
-            table_id="query_db", title=args.table, rows=rows, columns=columns,
-            complete=not truncated,
-            missing_reason="Result exceeded query limit" if truncated else None,
-        )],
-        summary=summary,
-        status="empty" if row_count == 0 else None,
-        scope={"query_db": {
-            "columns": columns, "row_count": row_count,
-            "truncated": truncated, "path": path,
-        }},
-    )
+    source = tempfile.TemporaryFile()
+    try:
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", newline="") as csv_file:
+            table = await _run_query(args, source, csv_file)
+            if table is None:
+                raise asyncio.CancelledError
+            path = await backend.upload_file(csv_file.buffer, timeout=60)
+        count = table.total_rows
+        return ToolResult(
+            tables=[table],
+            summary=EMPTY_RESULT_SUMMARY if count == 0 else f"결과 {count}건",
+            status="empty" if count == 0 else "success",
+            scope={"query_db": {
+                "columns": table.columns, "row_count": count,
+                "truncated": not table.complete, "path": path,
+            }},
+        )
+    except BaseException:
+        source.close()
+        raise
 
 
 def register(registry):
@@ -318,9 +338,9 @@ def register(registry):
         "query_db",
         "현재 Oracle 스키마의 물리 테이블 하나를 안전하게 조회한다. 컬럼 필터, ISO 날짜·타임스탬프 범위, "
         "그룹화와 avg/count/count_distinct/min/max/sum 집계를 지원하며 count_distinct는 column이 필수다. "
-        "limit은 원본 행이 아니라 반환 행 또는 그룹에 적용된다. "
+        "limit을 생략하면 일치하는 전체 행 또는 그룹을 저장한다. 명시한 limit은 반환 행 또는 그룹에 적용된다. "
         "임의 SQL은 받지 않는다. 조회 결과를 저장하고 격리 환경에 CSV를 만든다. "
         "반환된 absolute CSV path는 실행 간 유지되며 마지막 수정 후 7일 동안 다시 열 수 있다. "
-        "후속 Python 분석은 tables[result_id][table_id]를 사용하며 table_id는 이 도구가 반환한다.",
+        "Python에서는 pd.read_csv(path)로 저장된 전체 CSV를 읽을 수 있다.",
         QueryDBInput, query_db, read_only=True, effect="artifact", eager=True,
     ))

@@ -11,6 +11,7 @@ import sys
 import uuid
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request, Query
 from fastapi.responses import Response, StreamingResponse
@@ -61,6 +62,8 @@ async def artifact_payload(request, session_id, artifact_id):
     ref, data = await controller(request).store.artifact(principal(request), session_id, artifact_id)
     mime = ref["mime"]
     kind = "html" if mime == "text/html" else "image" if mime.startswith("image/") else "pptx" if "presentation" in mime else "markdown"
+    if mime == "application/octet-stream":
+        kind = "file"
     if kind in ("html", "markdown"):
         content = data.decode()
         if mime == "text/plain":
@@ -316,6 +319,8 @@ async def artifact(artifact_id: str, session_id: str, request: Request):
             "Content-Disposition": "inline" if is_html else "attachment",
             "X-Content-Type-Options": "nosniff",
         }
+        if ref["mime"] == "application/octet-stream":
+            headers["Content-Disposition"] = "attachment; filename*=UTF-8''" + quote(ref["title"], safe="")
         if is_html:
             headers["Content-Security-Policy"] = (
                 "sandbox allow-scripts; frame-ancestors 'self'; object-src 'none'; "

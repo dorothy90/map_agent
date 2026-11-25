@@ -142,3 +142,52 @@ def test_download_ticket_expires(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         tickets.consume(ticket, 'scope')
     assert exc.value.status_code == 403
+
+
+def test_board_attachment_download_in_another_owned_chat(tmp_path, monkeypatch):
+    from harness import native_hermes
+
+    async def scenario():
+        store = HarnessStore(database='harness_board_download_' + uuid.uuid4().hex)
+        filename = '측정 목록 100%.xlsx'
+        data = bytes(range(256)) * 3600
+        try:
+            await store.setup()
+            for user, chats in [('owner', ['first', 'second']), ('other', ['third'])]:
+                sessions = MongoSessionStore(store, user)
+                await sessions.setup()
+                for sid in chats:
+                    await sessions.create_session(sid, 'gui')
+            app = FastAPI()
+            app.include_router(build_gateway_router(TestLogin(), services=GatewayServices(store, None)),
+                               prefix='/gateway-m1')
+            path = '/outputs/kanban/t_fixture~1/' + quote(filename, safe='')
+            artifact = tmp_path / filename
+            artifact.write_bytes(data)
+            def open_file(profile, database, locator):
+                if profile != tmp_path / 'owner' or database != store.db.name or locator != path:
+                    raise LookupError()
+                return {'filename': filename, 'content_type': 'application/octet-stream', 'size': len(data)}, artifact.open('rb')
+
+            monkeypatch.setattr(native_hermes, 'profile_path', lambda user: tmp_path / user)
+            monkeypatch.setattr('harness.web_kanban_attachments.open_download', open_file)
+            async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+                owner = {'x-test-user': 'owner'}
+                query = {'path': path, 'session_id': 'second'}
+                head = await client.head(DOWNLOAD, headers=owner, params=query)
+                assert head.status_code == 200 and int(head.headers['content-length']) == len(data)
+                assert head.headers['content-disposition'].endswith(quote(filename, safe=''))
+                assert (await client.get(DOWNLOAD, headers=owner, params=query)).status_code == 403
+                mint = await client.post(TICKET, headers=owner, json={'route': 'download', **query})
+                assert mint.status_code == 200
+                await check_stream(app, query | mint.json(), data)
+                for user, sid, locator in [('other', 'third', path), ('owner', 'third', path),
+                                           ('owner', 'second', path.replace('t_fixture', 'missing'))]:
+                    reply = await client.post(TICKET, headers={'x-test-user': user},
+                        json={'route': 'download', 'path': locator, 'session_id': sid})
+                    assert reply.status_code == 404
+        finally:
+            await store.client.drop_database(store.db.name)
+            store.client.close()
+
+    asyncio.run(scenario())

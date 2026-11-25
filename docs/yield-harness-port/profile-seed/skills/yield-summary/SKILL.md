@@ -26,5 +26,5 @@ metadata:
 
 1. 제품·공정·기간 확정 (누락 시 한 번의 `clarify`).
 2. 기간 조회: `render_yield_table`에 lot_cd+period(기존 report_scope_id가 있으면 그것) 전달. period는 recent(weeks/months/days 중 정확히 하나) 또는 명시적 버킷 목록. grains는 표시 집계 단위(week/month/day).
-3. 그룹이 필요하면 저장된 lot_population을 read_result/run_python으로 읽어 멤버십을 만들고 같은 report_scope_id로 그룹/버킷 렌더링.
+3. 그룹이 필요하면 저장된 lot_population을 read_result로 읽어 멤버십을 만들고 같은 report_scope_id로 그룹/버킷 렌더링.
 4. 답변: 한국어 결론 1–2문장 → artifact 표(요청 순서) → 필요한 상세 근거.

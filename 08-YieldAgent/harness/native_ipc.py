@@ -48,6 +48,9 @@ def valid(message):
         required = {'skill_read': {'name': str, 'resource': str, 'sha256': str},
             'session_title': {'title': str, 'source': str},
             'skill_result': {'invocation_id': str, 'name': str, 'args': dict, 'result': (str, dict)},
+            'tool_start': {'invocation_id': str, 'name': str, 'args': dict},
+            'tool_complete': {'invocation_id': str, 'name': str, 'args': dict, 'result': (str, dict, list, int, float, bool, type(None))},
+            'wafer_item_saved': {'invocation_id': str, 'name': str, 'wafer_item': dict},
             'step': {'tokens': int, 'models': int}, 'commentary': {'content': str},
             'result': {'result': dict}, 'error': {'message': str}}.get(kind) if isinstance(kind, str) else None
         if required is None:

@@ -54,7 +54,7 @@ def build_report_analysis(lot_cd, spec):
     split = base - timedelta(days=base.weekday())
     start, end = split - timedelta(weeks=1), base + timedelta(days=1)
     previous_week, current_week = (d.strftime("%G-W%V") for d in (start, split))
-    artifacts, tables, windows = [], [], {}
+    artifacts, tables, windows, summaries = [], [], {}, {}
     status = "success"
     for grain, (key, _) in GRAINS.items():
         period = RecentPeriod(kind="recent", **{key: getattr(spec, key)})
@@ -64,6 +64,7 @@ def build_report_analysis(lot_cd, spec):
         section = _render_period_report(args, data, report_tests=tests)
         artifacts.extend(section.artifacts)
         windows[grain] = data.window
+        summaries[grain] = section.scope["report_summary"]
         tables.extend(t.model_copy(update={"table_id": f"{grain}_{t.table_id}"}) for t in section.tables)
         if section.status != "success":
             status = "partial"
@@ -76,8 +77,8 @@ def build_report_analysis(lot_cd, spec):
     return ToolResult(status=status, artifacts=[*artifacts, *scatter, *maps], tables=[*tables, *scatter_tables],
         summary=f"{lot_cd} · {', '.join(tests)} · {base.isoformat()} 기준 · 기간표 {len(windows)}개. "
                 f"산점도와 BIN 맵 비교: 직전 {previous_week} ({start}~{split - timedelta(days=1)}), "
-                f"최근 {current_week} ({split}~{base}). 표, 산점도, 검사별 BIN 맵은 artifact_refs 순서로 표시한다.",
+                f"최근 {current_week} ({split}~{base}). 기간별 수치와 Δ는 report_summary에서 인용한다. 표, 산점도, 검사별 BIN 맵은 artifact_refs 순서로 표시한다.",
         scope={"lot_cd": lot_cd, "tests": tests, "as_of": base.isoformat(), "windows": windows,
-               "comparison": {"previous_week": previous_week, "current_week": current_week,
+               "report_summary": summaries, "comparison": {"previous_week": previous_week, "current_week": current_week,
                               "start": start.isoformat(), "split": split.isoformat(),
                               "end_exclusive": end.isoformat()}, "scatter": trend, "bins": bins})

@@ -127,6 +127,7 @@ class ExecutionContext:
     protected_seconds: float = 0
     parent_invocation_id: str = ""
     session_kernels: object | None = None
+    web_scheduling_enabled: bool = False
     web_map_jobs_enabled: bool = False
 
     def __post_init__(self):
@@ -386,5 +387,5 @@ class ToolExecutor:
             "duration_s": duration}, event_key=obs.invocation_id + ":finished", epoch=run["epoch"])
         for artifact in obs.artifact_refs:
             if artifact.get("output_path"):
-                continue  # Delivered as a file card in the final reply.
+                continue  # The registered output is delivered by the chat download card.
             await store.event(run["run_id"], "artifact", artifact, event_key="artifact:" + artifact["artifact_id"], epoch=run["epoch"])

@@ -123,6 +123,17 @@ describe('manage_connections routing outside guided onboarding', () => {
 
 
 describe('local MCP receipts', () => {
+  it.each(['object', 'json'])('renders a %s receipt after completion', format => {
+    const Fallback = MESSAGE_PARTS_COMPONENTS.tools.Fallback
+    const receipt = {local_mcp: true, ok: true, servers: [{name: 'yfd_echo'}]}
+    render(<I18nProvider configClient={null} initialLocale="en">
+      <SessionViewProvider value={view(SESSION_ID, STORED_ID)}>
+        <Fallback {...props()} status={{type: 'complete'}} result={format === 'json' ? JSON.stringify(receipt) : receipt} />
+      </SessionViewProvider>
+    </I18nProvider>)
+    expect(screen.getByLabelText('Local MCP result').textContent).toContain('yfd_echo')
+  })
+
   it.each(['list', 'install', 'update', 'remove', 'enable', 'error'])('renders settled %s JSON', action => {
     const Fallback = MESSAGE_PARTS_COMPONENTS.tools.Fallback
     const result = action === 'error'

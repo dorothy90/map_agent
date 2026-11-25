@@ -307,6 +307,12 @@ def test_byte_upload_enforces_private_result_permissions(monkeypatch, tmp_path):
     monkeypatch.setattr("harness.isolation.backend.asyncio.create_subprocess_exec", local_spawn)
     path = Path(asyncio.run(backend.upload_bytes(b"a\n1\n")))
 
+    source = tmp_path / "large.csv"
+    data = "번호,이름\n".encode() * 40000
+    source.write_bytes(data)
+    with source.open("rb") as stream:
+        uploaded = Path(asyncio.run(backend.upload_file(stream)))
+    assert uploaded.read_bytes() == data
     assert stat.S_IMODE(backend.results_dir.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(backend.results_dir.stat().st_mode) == 0o700
     assert stat.S_IMODE(path.stat().st_mode) == 0o600

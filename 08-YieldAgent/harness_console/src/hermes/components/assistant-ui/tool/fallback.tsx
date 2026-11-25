@@ -19,7 +19,7 @@ import {
 
 import { useWebPresentation } from '../../../../web/presentation'
 import { WebTraceStep, type TraceState } from '../../../../web/execution-trace'
-import { toolStepLabel, toolArgumentSummary } from '../../../../web/tool-summary'
+import { toolStepLabel, toolArgumentSummary, resolveToolDisplay } from '../../../../web/tool-summary'
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { MarkdownImage } from '@/components/assistant-ui/markdown-text'
@@ -370,6 +370,8 @@ function ToolRunningMeta({ seconds, toolCallId = '' }: { seconds: number; toolCa
 function ToolEntry({ part }: ToolEntryProps) {
   const web = useWebPresentation()
   const webArgs = parseMaybeObject(part.args)
+  const { name: displayName, args: displayArgs } = resolveToolDisplay(part.toolName, webArgs)
+  const inputArgs = Object.fromEntries(Object.entries(displayArgs).filter(([key]) => !['context', 'hermes_tool_labels'].includes(key)))
   const { t } = useI18n()
   const copy = t.assistant.tool
   const statusCopy = t.statusStack
@@ -521,7 +523,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     (Boolean(view.stdout || view.stderr) ||
       (view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
       (view.status === 'notice' && Boolean(view.detail)) ||
-      (view.status !== 'error' && Boolean(view.detail) && !detailMatchesTitle && !detailMatchesSubtitle))
+      (view.status !== 'error' && Boolean(view.detail) && !detailMatchesTitle && (web || !detailMatchesSubtitle)))
 
   const renderDetailAsCode =
     view.status !== 'error' &&
@@ -628,7 +630,7 @@ function ToolEntry({ part }: ToolEntryProps) {
         aria-expanded={open} disabled={!isPending && !hasExpandableContent && !Object.keys(webArgs).length}
         onClick={() => setToolDisclosureOpen(rowDisclosureId, !open)}>
         <span className="web-trace-icon" aria-hidden="true">{isPending ? '' : state === 'error' ? '!' : state === 'stopped' ? '–' : '✓'}</span>
-        <strong>{toolStepLabel(toolName)}</strong><code>{toolName}</code>
+        <strong>{toolStepLabel(displayName)}</strong><code>{displayName}</code>
         <span className="web-tool-state">{isPending ? '실행 중' : state === 'error' ? '오류' : state === 'stopped' ? '중지됨' : '완료'}
           {isPending ? ` · ${Math.floor(elapsed)}s` : view.durationLabel ? ` · ${view.durationLabel}` : ''}</span>
         <span aria-hidden="true">{open ? '⌄' : '›'}</span>
@@ -691,7 +693,7 @@ function ToolEntry({ part }: ToolEntryProps) {
       {open && (
         <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
           {web && !showPayload && <div className="web-trace-input">
-            {toolArgumentSummary(webArgs) || (Object.keys(webArgs).length ? clampForDisplay(JSON.stringify(webArgs)) : '입력 인자 없음')}
+            {toolArgumentSummary(inputArgs) || (Object.keys(inputArgs).length ? clampForDisplay(JSON.stringify(inputArgs)) : '입력 인자 없음')}
           </div>}
           {copyAction.text && (
             <CopyButton

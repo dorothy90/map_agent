@@ -1,6 +1,6 @@
 # 목표 기반 Yield Harness
 
-웹 채팅과 모델 평가는 고정된 Hermes 원본의 `AIAgent.run_conversation`으로 실행한다. [채팅 진입점](hermes_chat.py)이 사용자별 프로필과 실행을 연결하고 [도구 등록](native_tools.py)이 같은 프로세스의 Hermes 레지스트리에 업무 도구를 추가한다.
+웹 채팅과 모델 평가는 모두 고정된 Hermes 원본의 `AIAgent.run_conversation`으로 실행한다. [채팅 진입점](hermes_chat.py)이 사용자별 프로필과 실행을 연결하고 [도구 등록](native_tools.py)이 같은 프로세스의 Hermes 레지스트리에 업무 도구를 추가한다.
 
 [2026-10-31 이식 안내](INTERNAL_MIGRATION_2026_10_31.md)와 [기존 이식 문서](MIGRATION.md)는 과거 구성의 참고 기록이다. 현재 실행·도구·격리 계약은 이 README를 따른다.
 
@@ -94,7 +94,7 @@ Hermes/native가 유일한 실행 경로다. 이전 standalone supervisor 서버
 
 웹 채팅의 `yield` 도구 묶음은 `query_db`, `list_tables`, `read_result`, `render_yield_table`, `load_wafer_maps`, `run_python`으로 구성된다. 각 핸들러는 현재 사용자의 세션과 실행에 연결된 `ToolExecutor`를 호출한다. 도구를 추가할 때는 `harness/tools/registry.py`의 `domain_registry()`에 정의를 등록한다. 기존 MCP 서버는 별도로 실행할 수 있다.
 
-일반 채팅에서는 Hermes의 스킬, 메모리, 같은 프로필의 대화 검색, 사용자 질문도 사용한다. 완성한 파일을 `execute_code`의 `publish_directory`에 저장하면 현재 직원의 채팅에서 다운로드할 수 있다. 합성 평가도 같은 채팅 실행기를 사용하며, 입력 자료를 세션 결과에 저장하고 허용된 도구 범위를 실행에 지정한다.
+일반 채팅에서는 Hermes의 스킬, 메모리, 같은 프로필의 대화 검색, 사용자 질문도 사용한다. 표와 차트는 도구 응답의 `artifact_refs[].markdown`으로 표시한다. 다운로드할 완성 파일은 `run_python`의 `publish_directory` 바로 아래에 저장한다. 실행이 성공하면 각 파일을 현재 세션에 등록한다. 도구가 반환하는 `artifact_refs[].media`는 Hermes 첨부 카드의 다운로드 버튼으로 표시된다. 다운로드 시 사용자와 세션을 확인하고 저장된 바이트를 스트리밍한다. 파일 확장자가 없어도 같은 경로를 사용한다. 합성 평가도 같은 채팅 실행기를 사용하며, 입력 자료를 세션 결과에 저장하고 허용된 도구 범위를 실행에 지정한다.
 
 웹 채팅은 Hermes 기본 검색 설정에 따라 `todo_list`를 필요할 때 찾아 쓰고, `delegate_task`, `read_file`, `search_files`와 공급자가 지원하는 `vision_analyze`를 모델에 직접 제공한다. 위임한 수율 조회도 원래 대화의 실행에 결과를 저장한다.
 

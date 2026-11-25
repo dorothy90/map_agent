@@ -162,3 +162,28 @@
 .hermes-web .web-trace-progress { padding:8px 4px; }
 .hermes-web .web-trace-progress .web-answer-author { margin-bottom:0; }
 .hermes-web .web-trace-live-note, .hermes-web .web-trace-note { margin:4px 0 8px 30px; color:#55594f; font-size:13px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
+
+.hermes-web .wafer-item-card {
+  width: min(100%, 32rem);
+  margin: 0.5rem 0 1rem;
+  overflow: hidden;
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  font-size: 0.875rem;
+}
+.wafer-item-card header, .wafer-item-card dl > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.wafer-item-card header { padding: 0.75rem 1rem; background: #edf3ed; color: #294535; }
+.wafer-item-card header strong, .wafer-item-card dt { overflow-wrap: anywhere; }
+.wafer-item-card header span { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wafer-item-card p { padding: 0.65rem 1rem 0; color: var(--muted-foreground); }
+.wafer-item-card dl { margin: 0.25rem 1rem; max-height: 13rem; overflow-y: auto; }
+.wafer-item-card dl > div { padding: 0.45rem 0; }
+.wafer-item-card dl > div + div { border-top: 1px solid var(--border); }
+.wafer-item-card dd { text-align: right; font-variant-numeric: tabular-nums; }

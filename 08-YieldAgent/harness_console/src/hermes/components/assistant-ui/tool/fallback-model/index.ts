@@ -1,3 +1,4 @@
+import { parseMcpToolName, resolveToolDisplay } from '../../../../../web/tool-summary'
 import { stripAnsi } from '@hermes/shared/ansi'
 
 import { type ToolTitleKey, translateNow } from '@/i18n'
@@ -256,7 +257,8 @@ function toolMeta(name: string): ToolMeta {
     }
   }
 
-  const action = titleForTool(name)
+  const mcp = parseMcpToolName(name)
+  const action = mcp ? `${mcp.server} / ${mcp.tool}` : titleForTool(name)
   const prefix = PREFIX_META.find(p => name.startsWith(p.prefix))
 
   if (prefix) {
@@ -891,12 +893,13 @@ function fallbackDetailText(args: unknown, result: unknown): string {
     return resultContext
   }
 
-  if (argContext) {
-    return argContext
+  if (result !== undefined) {
+    const summary = formatToolResultSummary(result) || minimalValueSummary(result)
+    if (summary) return summary
   }
 
-  if (result !== undefined) {
-    return formatToolResultSummary(result) || minimalValueSummary(result)
+  if (argContext) {
+    return argContext
   }
 
   return formatToolResultSummary(args) || minimalValueSummary(args)
@@ -1221,7 +1224,7 @@ function toolDetailText(
     return cronjobDetail(argsRecord, resultRecord)
   }
 
-  return fallbackDetailText(argsRecord, resultRecord)
+  return fallbackDetailText(argsRecord, part.result)
 }
 
 export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string; text: string } {
@@ -1492,7 +1495,9 @@ export function toolPreviewOutcome(part: ToolPart): { previewTarget: string; sta
 }
 
 export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
-  const argsRecord = parseMaybeObject(part.args)
+  const display = resolveToolDisplay(part.toolName, parseMaybeObject(part.args))
+  part = { ...part, toolName: display.name, args: display.args }
+  const argsRecord = display.args
   const resultRecord = toolResultRecord(part)
   const meta = toolMeta(part.toolName)
   const status = toolStatus(part, resultRecord)

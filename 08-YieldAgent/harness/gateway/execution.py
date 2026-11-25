@@ -44,14 +44,14 @@ def string(value):
     return isinstance(value, str) and bool(value)
 
 
-def submit_values(params):
+def submit_values(params, *, skill_only=False):
     # H/gateway/session_controls.py:750-771; canonical_sessions.py:205-237.
     allowed = ('submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
                'surface', 'voice_context', 'interrupted', 'voice_turn', 'display_kind',
                'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch')
     fields(params, ('session_id', 'text'), allowed)
     identity = params.get('submission_id') or params.get('input_id')
-    if not string(identity) or not isinstance(params['text'], str) or not params['text'].strip():
+    if not string(identity) or not isinstance(params['text'], str) or (not skill_only and not params['text'].strip()):
         raise RpcError('invalid_params')
     for key in ('queued', 'finite', 'unattended', 'interrupted', 'voice_turn', 'clarify_batch'):
         if key in params and type(params[key]) is not bool:
@@ -129,14 +129,14 @@ class Execution:
         # the referenced Mongo run. Never store a second, potentially stale state.
         return value
 
-    async def submit(self, session_id, params):
+    async def submit(self, session_id, params, *, web_schedule_job_id=None, web_schedule_skills=None, web_schedule_options=None):
         await self._session(session_id, params)
-        identity, text = submit_values(params)
+        identity, text = submit_values(params, skill_only=bool(web_schedule_job_id and web_schedule_skills))
         key = self._scope(session_id, request_id=identity)
         # A same-ID retry can repair a missing receipt without launching again.
         run = await self.store.runs.find_one(key)
         if run is not None:
-            if run['query'] != text:
+            if run['query'] != text or run.get('web_schedule_job_id') != web_schedule_job_id:
                 raise RpcError('admission_conflict')
             if run['status'] != 'created':
                 return await self._receipt_for_run(session_id, run)
@@ -145,7 +145,8 @@ class Execution:
         deadline = time.monotonic() + 5
         for attempt in range(100):
             try:
-                run = await self.controller.start(self.principal_id, session_id, identity, text)
+                options = {'web_schedule_job_id': web_schedule_job_id, 'web_schedule_skills': web_schedule_skills, **({'web_schedule_options': web_schedule_options} if web_schedule_options else {})} if web_schedule_job_id is not None else {}
+                run = await self.controller.start(self.principal_id, session_id, identity, text, **options)
                 run = await self.store.get_run(self.principal_id, run['run_id'])
                 return await self._receipt_for_run(session_id, run)
             except Conflict:
@@ -157,7 +158,7 @@ class Execution:
                     if run is not None and run['request_id'] != identity:
                         raise RpcError('session_busy') from None
                 if run is not None:
-                    if run['query'] != text:
+                    if run['query'] != text or run.get('web_schedule_job_id') != web_schedule_job_id:
                         raise RpcError('admission_conflict') from None
                     if run['status'] != 'created':
                         return await self._receipt_for_run(session_id, run)

@@ -320,11 +320,11 @@ class HarnessStore:
         blob = await self.blobs.open_download_stream(ObjectId(artifact_id))
         return {"result_id": record["observation"]["result_id"], **ref}, await blob.read()
 
-    async def start_run(self, principal_id, session_id, request_id, query, *, execution_kind="harness", ready=True, engine="hermes"):
+    async def start_run(self, principal_id, session_id, request_id, query, *, execution_kind="harness", ready=True, engine="hermes", web_schedule_job_id=None, web_schedule_skills=None, web_schedule_options=None):
         key = {"principal_id": principal_id, "session_id": session_id, "request_id": request_id}
         old = await self.runs.find_one(key)
         if old:
-            if old["query"] != query:
+            if old["query"] != query or old.get("web_schedule_job_id") != web_schedule_job_id:
                 raise Conflict("Request ID already used")
             return old
         run_id = str(uuid.uuid4())
@@ -333,6 +333,11 @@ class HarnessStore:
             "execution_kind": execution_kind, "ready": ready, "engine": engine,
             "status": "created", "active": True, "epoch": 0, "lease_until": 0.0, "created_at": now(),
             "events": [], "goal_revision": 1, "usage": {"tools": 0, "models": 0, "tokens": 0, "active_seconds": 0.0}}
+        if web_schedule_job_id is not None:
+            record["web_schedule_job_id"] = web_schedule_job_id
+            record["web_schedule_skills"] = list(web_schedule_skills or ())
+            if web_schedule_options:
+                record["web_schedule_options"] = dict(web_schedule_options)
         if engine == "hermes":
             record["artifact_delivery"] = ARTIFACT_DELIVERY
             if execution_kind in ("harness", "gateway"):
@@ -341,7 +346,7 @@ class HarnessStore:
             await self.runs.insert_one(record)
         except DuplicateKeyError:
             old = await self.runs.find_one(key)
-            if old and old["query"] == query:
+            if old and old["query"] == query and old.get("web_schedule_job_id") == web_schedule_job_id:
                 return old
             raise Conflict("Session has an active run") from None
         return record

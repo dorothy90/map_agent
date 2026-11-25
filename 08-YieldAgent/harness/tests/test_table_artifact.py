@@ -51,6 +51,13 @@ def test_render_yield_table_saves_html_and_returns_artifact_ref(fake_period_repo
         async def read(self):
             return self.data
 
+        async def readchunk(self):
+            data, self.data = self.data, b""
+            return data
+
+        def close(self):
+            self.data = b""
+
     class Blobs:
         def __init__(self):
             self.data = {}

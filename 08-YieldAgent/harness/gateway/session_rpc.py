@@ -115,23 +115,39 @@ class SessionRPC:
                                          'tool_call_id': call_id, 'args': args})
             previous_native = None
             for run in runs:
-                messages.append({'role': 'user', 'text': run['query']})
+                text = '예약한 작업 자동 실행' if run.get('web_schedule_job_id') else run['query']
+                messages.append({'role': 'user', 'text': text})
                 # Clarify is intentionally absent from native_messages. Its durable
                 # completion is the transcript evidence, scoped to this run/turn and
                 # placed before later host tools so reopen matches the live card order.
                 clarify_ids = set()
                 tool_statuses = {}
+                local_mcp_results = {}
+                mcp_results = {}
+                saved_items = {}
                 for event in run.get('events', []):
                     payload = event.get('payload', {})
                     if event.get('type') != 'tool_finished':
                         continue
                     tool_id = payload.get('tool_id') or payload.get('invocation_id')
                     result = payload.get('result')
+                    if (tool_id and payload.get('name') == 'manage_connections'
+                            and isinstance(result, dict) and result.get('local_mcp') is True):
+                        local_mcp_results[tool_id] = result
+                    elif (tool_id and isinstance(payload.get('name'), str)
+                            and payload['name'].startswith('mcp__') and 'result' in payload):
+                        mcp_results[tool_id] = result
                     status = result.get('status') if isinstance(result, dict) else None
                     if payload.get('is_error') is True:
                         status = 'error'
                     if tool_id and status in ('success', 'partial', 'empty', 'error', 'cancelled'):
                         tool_statuses[tool_id] = status
+                    if (tool_id and status == 'success' and payload.get('name') in ('kanban_create', 'kanban_comment')
+                            and isinstance(result.get('wafer_item'), dict)):
+                        saved_items[tool_id] = {
+                            'role': 'tool', 'name': payload['name'], 'tool_call_id': tool_id,
+                            'content': json.dumps({'status': status, 'wafer_item': result['wafer_item']},
+                                                  ensure_ascii=False)}
                     if payload.get('name') != 'clarify':
                         continue
                     if not tool_id or tool_id in clarify_ids or 'result' not in payload:
@@ -189,17 +205,56 @@ class SessionRPC:
                         elif item.get('role') == 'tool':
                             call_id = item.get('tool_call_id')
                             call_id = call_id if isinstance(call_id, str) else ''
+                            if saved_item := saved_items.pop(call_id, None):
+                                messages.append(saved_item)
+                                continue
                             name, args = tool_calls.get(call_id,
                                 (item.get('tool_name') or item.get('name') or 'tool', {}))
                             name = name if isinstance(name, str) and name else 'tool'
+                            if name == 'tool_call':
+                                calls = args.get('calls', [args])
+                                inner = calls[0] if isinstance(calls, list) and len(calls) == 1 else None
+                                if (isinstance(inner, dict) and isinstance(inner.get('name'), str)
+                                        and inner['name'].startswith('mcp__')):
+                                    name = inner['name']
+                                    args = inner.get('arguments', {})
+                                    if isinstance(args, str):
+                                        try:
+                                            args = json.loads(args)
+                                        except ValueError:
+                                            args = {}
+                                    args = args if isinstance(args, dict) else {}
                             preview = json.dumps(args, ensure_ascii=False, separators=(',', ':')) if args else ''
                             if len(preview) > 80:
                                 preview = preview[:77] + '...'
                             message = {'role': 'tool', 'name': name or 'tool', 'context': preview,
                                        'tool_call_id': call_id, 'args': args}
-                            if call_id in tool_statuses:
+                            content = item.get('content')
+                            if name == 'manage_connections':
+                                try:
+                                    receipt = json.loads(content) if isinstance(content, str) else content
+                                except ValueError:
+                                    receipt = None
+                                if not isinstance(receipt, dict) or receipt.get('local_mcp') is not True:
+                                    receipt = local_mcp_results.get(call_id)
+                                if receipt is not None:
+                                    message['content'] = json.dumps(receipt, ensure_ascii=False)
+                            elif name.startswith('mcp__'):
+                                raw = content if content is not None else mcp_results.get(call_id)
+                                if isinstance(raw, str):
+                                    if raw.startswith('<untrusted_tool_result ') and raw.rstrip().endswith('</untrusted_tool_result>'):
+                                        body_start = raw.find('\n\n')
+                                        end_tag = raw.rfind('\n</untrusted_tool_result>')
+                                        if body_start != -1 and end_tag > body_start:
+                                            raw = raw[body_start + 2:end_tag]
+                                    message['content'] = raw.encode('utf-8')[:64 * 1024].decode('utf-8', errors='ignore')
+                                elif raw is not None:
+                                    message['content'] = json.dumps(raw, ensure_ascii=False).encode('utf-8')[:64 * 1024].decode('utf-8', errors='ignore')
+                            if 'content' not in message and call_id in tool_statuses:
                                 message['content'] = json.dumps({'status': tool_statuses[call_id]})
                             messages.append(message)
+                # A deferred invocation has its own ID inside the native tool_call batch.
+                messages.extend(saved_items.values())
                 answer = verified_answer_with_artifacts(run)
                 if answer is not None:
                     message = {'role': 'assistant', 'text': answer, 'interim': False}
@@ -234,6 +289,8 @@ class SessionRPC:
         """Shared WS/REST allowlist; raw session metadata is never returned."""
         value = {k: row[k] for k in ('id', 'started_at', 'source')}
         value['title'] = row.get('title') or ''
+        if 'web_project' in row:
+            value['web_project'] = row['web_project']
         value['message_count'] = len(await self.history(row['id']))
         return value
 

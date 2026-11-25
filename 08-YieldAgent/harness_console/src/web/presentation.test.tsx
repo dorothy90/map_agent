@@ -1,4 +1,5 @@
-import { cleanup, isInaccessible, render, screen } from '@testing-library/react'
+import type { ToolCallMessagePart } from '@assistant-ui/react'
+import { cleanup, fireEvent, isInaccessible, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { Thread } from '@/components/assistant-ui/thread'
 import { assistantMessage, ThreadRuntime, stubThreadEnvironment, stubThreadViewportSize } from '@/components/assistant-ui/test-utils'
@@ -33,4 +34,26 @@ it('shows compact tools and moves the matching report title and subtitle to its 
 it('summarizes only supplied structured arguments', () => {
  expect(toolArgumentSummary({table:'DF_ALL_PARA_PRB',filters:[{column:'LOT_CD',op:'=',value:'4SS'}]})).toBe('DF_ALL_PARA_PRB · LOT_CD=4SS')
  expect(toolArgumentSummary({})).toBe('')
+})
+
+it.each(['direct', 'bridge', 'legacy'])('expands %s MCP rows with identity, input and result', mode => {
+ setShowToolActivityFromConfig(true)
+ const base = assistantMessage()
+ if (base.role !== 'assistant') throw new Error('Expected assistant fixture')
+ const name = 'mcp__yfd_echo__echo'
+ const inner = {text: 'hello', context: 'input preview', hermes_tool_labels: [{kind: 'mcp', app: 'yfd_echo', text: 'Echo', name: 'echo'}]}
+ const args: ToolCallMessagePart['args'] = mode === 'direct' ? inner : mode === 'bridge' ? {calls: [{name, arguments: inner}]} : {name, arguments: inner}
+ const message: typeof base = {...base, content: [{type: 'tool-call', toolCallId: `mcp-${mode}`, toolName: mode === 'direct' ? name : 'tool_call', args, argsText: JSON.stringify(args), result: 'echo:hello'}]}
+ const {container} = render(<main className="hermes-web"><WebPresentationProvider><ThreadRuntime messages={[message]}><Thread/></ThreadRuntime></WebPresentationProvider></main>)
+ fireEvent.click(container.querySelector<HTMLButtonElement>('.web-trace-summary')!)
+ const row = container.querySelector<HTMLButtonElement>('.web-tool-row')!
+ expect(row).not.toBeNull()
+ expect(row.textContent).toContain('MCP · yfd_echo / echo')
+ expect(row.textContent).toContain(name)
+ fireEvent.click(row)
+ expect(isInaccessible(screen.getByText('echo:hello'))).toBe(false)
+ const input = container.querySelector('.web-trace-input')!
+ expect(input.textContent).toContain('hello')
+ expect(input.textContent).not.toContain('context')
+ expect(input.textContent).not.toContain('hermes_tool_labels')
 })

@@ -584,3 +584,15 @@ describe('buildToolView memory status', () => {
     expect(view.subtitle).toContain('Memory is full')
   })
 })
+
+describe('MCP tool results', () => {
+  it.each([
+    ['mcp__yfd_echo__echo', { text: 'hello', context: 'input preview' }],
+    ['tool_call', { calls: [{ name: 'mcp__yfd_echo__echo', arguments: { text: 'hello', context: 'input preview' } }] }],
+    ['tool_call', { name: 'mcp__yfd_echo__echo', arguments: { text: 'hello', context: 'input preview' } }]
+  ])('shows the MCP identity and result for %s', (toolName, args) => {
+    const view = buildToolView(part({ toolName: toolName as string, args, result: 'echo:hello' }), '')
+    expect(view.title).toContain('yfd_echo / echo')
+    expect(view.detail).toBe('echo:hello')
+  })
+})

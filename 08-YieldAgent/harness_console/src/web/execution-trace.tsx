@@ -6,6 +6,7 @@ import { $currentUsage, $turnStartedAt } from '@/store/session'
 import { createPortal } from 'react-dom'
 import { toolEntryDisclosureId } from '@/components/assistant-ui/tool/fallback-model/targets'
 import { useWebPresentation } from './presentation'
+import { WaferItemCards } from './wafer-item-card'
 
 export type TraceState = 'running' | 'done' | 'error' | 'stopped'
 const labels = { running: '실행 중', done: '완료', error: '오류', stopped: '중지됨' }
@@ -133,6 +134,7 @@ function ExecutionTrace({ indices, children }: ScopeProps) {
       </div>
     </section>
     {children}
+    <WaferItemCards messages={messages} indices={indices}/>
   </TraceContext.Provider>
 }
 

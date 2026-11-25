@@ -2,14 +2,15 @@
 from functools import wraps
 
 
-def configure_web_delegation():
+def configure_web_delegation(schedule_toolsets=None):
     # Each chat worker owns a fresh interpreter and exactly one authenticated run.
     from gateway.session_finite import finite_turn_scope
     from tools import delegate_tool, delegate_tool_tasks, delegate_tool_toolsets
 
     def child_toolsets(parent, requested, role):
         enabled, disabled = delegate_tool_toolsets._resolve_child_toolsets(parent, requested, role)
-        allowed = [name for name in enabled if name in {'yield', 'web_shared_files'}]
+        allowed = [name for name in enabled if name in {'yield', 'web_shared_files'}
+                   and (schedule_toolsets is None or name in schedule_toolsets)]
         return allowed, disabled
 
     def child_images(tasks, images):

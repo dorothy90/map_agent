@@ -23,13 +23,23 @@ class RunController:
         self.owner = str(uuid.uuid4())
         self.closing = False
         self.recovery_task = None
+        self.web_scheduler = None
         self.web_map_jobs_enabled = False
 
-    async def start(self, principal_id, session_id, request_id, query):
+    def web_scheduling_enabled(self, principal_id):
+        return self.web_scheduler is not None and self.web_scheduler.principal in (None, principal_id)
+
+    async def start(self, principal_id, session_id, request_id, query, *, web_schedule_job_id=None, web_schedule_skills=None, web_schedule_options=None):
         async with self.store.session_lock(principal_id, session_id):
+            if web_schedule_job_id is not None and not await self.store.db.gateway_sessions.find_one({
+                    "principal_id": principal_id, "id": session_id, "deleted": {"$ne": True},
+                    "ended_at": None}, {"_id": 1}):
+                raise LookupError("Scheduled chat is unavailable")
             if await self.store.runs.find_one({"principal_id": principal_id, "session_id": session_id, "steer_pending": {"$exists": True}}):
                 raise Conflict("A goal change is being recovered")
-            run = await self.store.start_run(principal_id, session_id, request_id, query, engine=self.settings.engine)
+            run = await self.store.start_run(principal_id, session_id, request_id, query, engine=self.settings.engine,
+                                             web_schedule_job_id=web_schedule_job_id,
+                                             web_schedule_skills=web_schedule_skills, web_schedule_options=web_schedule_options)
         await self.launch(run["run_id"])
         return run
 
@@ -114,6 +124,7 @@ class RunController:
         heartbeat.add_done_callback(stop_on_heartbeat_failure)
         try:
             context = ExecutionContext(self.store, self.settings, run, session_kernels=self.kernels,
+                web_scheduling_enabled=self.web_scheduling_enabled(run['principal_id']),
                 web_map_jobs_enabled=self.web_map_jobs_enabled)
             await self.store.event(run["run_id"], "run_started", {"query": run["query"],
                 "goal_revision": run["goal_revision"], "engine": "hermes"})

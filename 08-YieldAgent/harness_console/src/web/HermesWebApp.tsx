@@ -1,4 +1,4 @@
-import { ArrowDown, Layers, PanelLeft, Plug, SquarePen, Search } from 'lucide-react'
+import { ArrowDown, Folder, Layers, PanelLeft, Plug, SquarePen, Search } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@nanostores/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -95,10 +95,16 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
  const [now,setNow]=useState(Date.now())
  useEffect(() => {const timer=setInterval(() => setNow(Date.now()),30000);return () => clearInterval(timer)},[])
 
- const groups:Record<'오늘'|'이전 대화',{session:SessionInfo;label:string}[]>={'오늘':[],'이전 대화':[]}
+ const groups=new Map<string,{title:string;project:boolean;rows:{session:SessionInfo;label:string}[]}>()
  for(const session of visibleSessions){
   const label=displaySessionLabel(session,labels[sessionLabelKey(session)])
-  if(matchesSessionLabel(label,query ?? ''))groups[sessionDayGroup(session,now)].push({session,label})
+  if(!matchesSessionLabel(label,query ?? ''))continue
+  const project=(session as SessionInfo & {web_project?:{id:string;name:string}}).web_project
+  const title=project?.name ?? sessionDayGroup(session,now)
+  const key=project ? 'project:'+project.id : title
+  const group=groups.get(key) ?? {title,project:Boolean(project),rows:[]}
+  group.rows.push({session,label})
+  groups.set(key,group)
  }
  useEffect(() => {
   document.title=(showingMcp ? 'MCP 서버' : showingSkills ? '스킬' : title)+' · 수율 분석'
@@ -176,8 +182,8 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
    <div className="web-session-list">
     {listError && <p role="alert">세션 목록을 불러오지 못했습니다. <button onClick={() => void actions.refreshSessions()}>다시 시도</button></p>}
     {failed && <button onClick={retry}>대화 제목 다시 불러오기</button>}
-    {Object.entries(groups).map(([group,rows]) => rows.length>0 && <section key={group} aria-label={group}>
-     <h2 className="web-list-heading">{group}</h2>
+    {Array.from(groups,([id,{title,project,rows}]) => <section key={id} aria-label={project ? '프로젝트 '+title : title}>
+     <h2 className="web-list-heading">{project && <Folder size={13} aria-hidden="true"/>}{title}</h2>
      {rows.map(({session,label}) => <WebSessionRow key={sessionLabelKey(session)} label={label} selected={!showingSettings && session.id===actions.selectedStoredSessionId} disabled={!ready}
       onSelect={() => {setDraftTitle(null);setDrawerOpen(false);navigate(sessionRoute(session.id))}}
       onArchive={async () => {
@@ -196,7 +202,7 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
        setSessions(rows => rows.map(row => sessionLabelKey(row)===sessionLabelKey(session) ? {...row,title:result.title} : row))
        if($sessionsLoading.get())void actions.refreshSessions()
       }}/>)}</section>)}
-    {query && !groups['오늘'].length && !groups['이전 대화'].length && <p className="web-list-heading">불러온 대화에서 일치하는 대화가 없습니다.</p>}
+    {query && !groups.size && <p className="web-list-heading">불러온 대화에서 일치하는 대화가 없습니다.</p>}
     {actions.hasMoreSessions && <button className="web-load-more" disabled={!ready || listLoading} onClick={() => void actions.loadMoreSessions()}>이전 대화 더 보기</button>}
    </div>
   </nav>

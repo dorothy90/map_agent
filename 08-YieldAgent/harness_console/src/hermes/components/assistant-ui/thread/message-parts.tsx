@@ -195,7 +195,7 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return <ThemeToolPart {...props} />
   }
 
-  if (toolLabels(props.args).length > 0) {
+  if (toolLabels(props.args).some(label => label.kind === 'connector')) {
     return <ConnectorExecution {...props} />
   }
 

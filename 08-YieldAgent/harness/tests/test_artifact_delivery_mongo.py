@@ -5,9 +5,8 @@ from types import SimpleNamespace
 import uuid
 from urllib.parse import quote
 
-import pytest
-
 import httpx
+import pytest
 from fastapi import FastAPI, Request
 
 from harness.gateway.events import SessionEvents, project_run_event
@@ -37,11 +36,12 @@ def test_selected_artifacts_survive_gridfs_http_replay_history_and_legacy_sse():
                 {'title': 'HTML report', 'mime': 'text/html', 'data': '<h1>Selected report</h1>'},
                 {'title': 'Deck', 'mime': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
                  'data': b'fixture-pptx'},
+                {'title': '맵.xlsx', 'mime': 'application/octet-stream', 'data': b'PK\x03\x04'},
             ]
             observation = await store.put_result('owner', session_id,
                 {'tool_name': 'render_maps', 'run_id': run['run_id'], 'invocation_id': 'maps'}, [], files)
             projected = observation.model_view()['artifact_refs']
-            assert len(projected) == 9
+            assert len(projected) == 10
             answer = '\n\n'.join(['Selected final outputs.', *(ref['markdown'] for ref in projected[5:])])
             review = {'tool_name': 'verify_answer', 'scope': {'verdict': 'pass'},
                 'validated_arguments': candidate_digest(answer)}
@@ -88,6 +88,8 @@ def test_selected_artifacts_survive_gridfs_http_replay_history_and_legacy_sse():
                     if ref['mime'] == 'text/html':
                         assert get.headers['content-disposition'] == 'inline'
                         assert "sandbox allow-scripts; frame-ancestors 'self'" in get.headers['content-security-policy']
+                    elif ref['mime'] == 'application/octet-stream':
+                        assert get.headers['content-disposition'] == "attachment; filename*=UTF-8''" + quote('맵.xlsx')
                     else:
                         assert get.headers['content-disposition'] == 'attachment'
                 wrong_session = await client.get('/harness/artifacts/' + projected[0]['artifact_id'],

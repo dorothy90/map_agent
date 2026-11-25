@@ -71,3 +71,17 @@ it('restores the original viewer when a later page is incomplete', async () => {
   expect((await screen.findByTitle('원본')).getAttribute('sandbox')).toBe('allow-scripts')
   expect(screen.queryByRole('figure')).toBeNull()
 })
+
+it('opens a saved matrix without paging through its coordinate tables', async () => {
+  const fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const path = new URL(String(input), 'http://localhost').pathname
+    if (path !== '/harness/sessions/example') throw Error('Unnecessary coordinate request')
+    return Response.json({ session_id: 'example', runs: [{ observations: [{
+      ...observation, scope: { map_aggregate: { matrix: { rows: { field: 'FLOW_ID' }, columns: { field: 'WF_ID' } } } },
+    }] }] })
+  })
+  vi.stubGlobal('fetch', fetch)
+  render(<WaferMapGallery src={src} title="맵"><iframe title="행렬" src={src}/></WaferMapGallery>)
+  await screen.findByTitle('행렬')
+  expect(fetch).toHaveBeenCalledTimes(1)
+})

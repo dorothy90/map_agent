@@ -1,12 +1,13 @@
 """Hermes web download transport, scoped to immutable Y-Agent output references."""
-import asyncio
 import secrets
 import time
+from functools import partial
 from urllib.parse import quote
 
 from bson import ObjectId
 from fastapi import HTTPException
 from gridfs.errors import NoFile
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from .session_store import MongoSessionStore
@@ -73,20 +74,33 @@ async def serve(services, request, principal):
     if len(parts) != 5:
         raise HTTPException(404, "Output unavailable")
     _, _, run_id, result_id, _ = parts
-    try:
-        observation = await store.observation(principal.user_id, sid, result_id)
-    except PermissionError:
-        raise HTTPException(404, "Output unavailable") from None
-    ref = next((r for r in observation.artifact_refs if r.get("output_path") == path), None)
-    if observation.run_id != run_id or ref is None:
-        raise HTTPException(404, "Output unavailable")
-    try:
-        blob = await store.blobs.open_download_stream(ObjectId(ref["artifact_id"]))
-    except NoFile:
-        raise HTTPException(404, "Output unavailable") from None
-    title, mime, length = ref['title'], ref.get('mime'), blob.length
+    if run_id == 'kanban':
+        from ..native_hermes import profile_path
+        from ..web_kanban_attachments import open_download
+
+        try:
+            attachment, blob = await run_in_threadpool(open_download, profile_path(principal.user_id),
+                                                       store.db.name, path)
+        except (LookupError, ValueError):
+            raise HTTPException(404, "Output unavailable") from None
+        title, mime, length = attachment['filename'], attachment['content_type'], attachment['size']
+        read_chunk = partial(run_in_threadpool, blob.read, 128 * 1024)
+    else:
+        try:
+            observation = await store.observation(principal.user_id, sid, result_id)
+        except PermissionError:
+            raise HTTPException(404, "Output unavailable") from None
+        ref = next((r for r in observation.artifact_refs if r.get("output_path") == path), None)
+        if observation.run_id != run_id or ref is None:
+            raise HTTPException(404, "Output unavailable")
+        try:
+            blob = await store.blobs.open_download_stream(ObjectId(ref["artifact_id"]))
+        except NoFile:
+            raise HTTPException(404, "Output unavailable") from None
+        title, mime, length = ref['title'], ref.get('mime'), blob.length
+        read_chunk = blob.readchunk
     if issue or request.method == "HEAD":
-        await asyncio.to_thread(blob.close)
+        await run_in_threadpool(blob.close)
     if issue:
         return JSONResponse({"ticket": services.download_tickets.mint(scope)}, headers={"Cache-Control": "no-store"})
     headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(title, safe='')}",
@@ -100,9 +114,9 @@ async def serve(services, request, principal):
 
     async def chunks():
         try:
-            while chunk := await blob.readchunk():
+            while chunk := await read_chunk():
                 yield chunk
         finally:
-            await asyncio.to_thread(blob.close)
+            await run_in_threadpool(blob.close)
 
     return StreamingResponse(chunks(), headers=headers, media_type=mime)
