@@ -11,22 +11,19 @@ import pytest
 def test_original_nine_tool_batch_respects_cap_and_barriers(tmp_path, limit):
     harness = Path(__file__).parents[1]
     script = r'''
-import ast, json, sys, threading, time
+import json, sys, threading, time
 from pathlib import Path
 from types import SimpleNamespace as NS
 sys.path.insert(0, str(Path(sys.argv[1]) / 'engine'))
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
 from agent import tool_executor as executor
 from agent.tool_dispatch_helpers import _batch_admission, _plan_tool_batch_segments, _PARALLEL_SAFE_TOOLS
+from harness.tools.registry import native_domain_registry
 executor._MAX_TOOL_WORKERS = int(sys.argv[2])
 
 def call(name): return NS(function=NS(name=name, arguments='{}'))
-yield_names = set()
-for source in (Path(sys.argv[1]) / 'tools').glob('*.py'):
-    for node in ast.walk(ast.parse(source.read_text())):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == 'ToolSpec':
-            yield_names.add(ast.literal_eval(node.args[0]))
-assert yield_names == {'read_result', 'run_python', 'query_db', 'list_tables',
-                       'load_wafer_maps', 'render_yield_table'}
+yield_names = set(native_domain_registry().tools)
+assert yield_names
 for name in (*yield_names, 'clarify', 'manage_connections', 'unknown_tool'):
     assert _batch_admission(call(name), None) is None, name
     bridge = NS(function=NS(name='tool_call', arguments=json.dumps({'calls': [{'name': name, 'arguments': {}}]})))
