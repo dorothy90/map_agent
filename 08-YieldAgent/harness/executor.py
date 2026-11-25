@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from langchain_core.messages import convert_to_openai_messages
 from .config import Settings
 from .store import Conflict, BudgetExceeded
-from .types import now
+from .types import StreamedResultTable, ToolObservation, now
 
 
 class ToolAuthenticationError(RuntimeError):
@@ -127,6 +127,7 @@ class ExecutionContext:
     protected_seconds: float = 0
     parent_invocation_id: str = ""
     session_kernels: object | None = None
+    web_map_jobs_enabled: bool = False
 
     def __post_init__(self):
         if self.active_at_start is None:
@@ -291,6 +292,7 @@ class ToolExecutor:
         observation = {"run_id": run["run_id"], "invocation_id": call_id, "tool_name": name, "validated_arguments": args,
             "provenance": {"executed_at": now(), "source_system": name, "query_fingerprint": fingerprint, "data_origin": "live"}}
         rows, artifacts, tables = [], [], []
+        stored_result = None
         try:
             if spec is None:
                 raise ValueError("Unknown tool")
@@ -316,11 +318,17 @@ class ToolExecutor:
                         raise
                     await asyncio.sleep(delay)
                     await ctx.check()
-            rows, artifacts, tables = result.rows, result.artifacts, result.tables
-            observation.update(status=result.status or ("success" if rows or artifacts or any(t.rows for t in tables) else "empty"), summary=result.summary,
-                scope=result.scope, source_result_ids=result.source_result_ids,
-                page=result.page.model_dump() if result.page else None)
-            observation["provenance"]["data_origin"] = result.data_origin
+            if isinstance(result, ToolObservation):
+                if (result.principal_id, result.session_id, result.run_id, result.invocation_id, result.tool_name) != (
+                        run["principal_id"], run["session_id"], run["run_id"], call_id, name):
+                    raise PermissionError("Map result does not belong to this invocation")
+                stored_result = result
+            else:
+                rows, artifacts, tables = result.rows, result.artifacts, result.tables
+                observation.update(status=result.status or ("success" if rows or artifacts or any(t.rows for t in tables) else "empty"), summary=result.summary,
+                    scope=result.scope, source_result_ids=result.source_result_ids,
+                    page=result.page.model_dump() if result.page else None)
+                observation["provenance"]["data_origin"] = result.data_origin
         except (Conflict, asyncio.CancelledError):
             raise
         except Exception as exc:
@@ -348,13 +356,17 @@ class ToolExecutor:
         try:
             await ctx.check()
         except BaseException:
+            for table in tables:
+                if isinstance(table, StreamedResultTable):
+                    table.source.close()
             for artifact in artifacts:
-                if artifact.get("generated_file"):
-                    artifact["data"].close()
+                for field in ("data", "matrix_panels"):
+                    if callable(getattr(artifact.get(field), "close", None)):
+                        artifact[field].close()
             raise
         observation['provenance'].update(elapsed_seconds=round(time.monotonic() - started, 3),
             parent_invocation_id=ctx.parent_invocation_id or None)
-        obs = await store.put_result(run["principal_id"], run["session_id"], observation, rows, artifacts,
+        obs = stored_result or await store.put_result(run["principal_id"], run["session_id"], observation, rows, artifacts,
             **({'tables': tables} if tables else {}))
         await store.finish_invocation(run["run_id"], call_id, obs, run["epoch"])
         await self.publish(obs, run)

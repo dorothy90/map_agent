@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import nullcontext
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -59,7 +60,7 @@ def test_unknown_measurement_reports_only_db_candidates_without_changing_request
 
 def test_explicit_and_unbounded_periods_need_no_oracle_anchor(monkeypatch):
     monkeypatch.setattr(maps, "_connection", lambda: pytest.fail("unexpected Oracle query"))
-    monkeypatch.setattr(maps, "_load", lambda args, source_id: maps._filters(args))
+    monkeypatch.setattr(maps, "_load", lambda args, source_id, **kwargs: maps._filters(args))
     args = maps.LoadWaferMapsInput(lot_ids=["A"], all_time=True)
     where, _ = maps._query_maps(args, "source", "Asia/Seoul")
     assert "END_TM" not in where
@@ -110,15 +111,16 @@ def test_aggregate_dispatches_one_native_call_and_binds_only_its_requested_windo
         assert (product, oper, weeks) == ("A", "STAGE", 4)
         return datetime(2025, 12, 15), datetime(2026, 1, 8)
 
-    def aggregate(args, source_id):
+    def aggregate(args, source_id, *, spool_dir=None):
+        assert spool_dir is None
         assert args.start_time == datetime(2025, 12, 15) and args.end_time == datetime(2026, 1, 8)
         assert args.lot_cd == "A" and args.oper == "STAGE" and args.recent_weeks == 4
         assert args.aggregate.group_oper == "INSPECTION"
         return maps.ToolResult(summary=source_id)
 
-    async def execute(fn, *params):
+    async def execute(fn, *params, **kwargs):
         calls.append(fn)
-        return fn(*params)
+        return fn(*params, **kwargs)
 
     monkeypatch.setattr(maps, "recent_map_window", window)
     monkeypatch.setattr(map_aggregate, "aggregate_wafer_maps", aggregate)
@@ -127,3 +129,34 @@ def test_aggregate_dispatches_one_native_call_and_binds_only_its_requested_windo
     result = asyncio.run(maps.load_wafer_maps(args, ctx))
     assert calls == [maps._query_maps]
     assert result.summary == str(uuid.uuid5(uuid.NAMESPACE_URL, "r:i"))
+
+
+def test_saved_item_map_selection_cannot_mix_in_external_members():
+    item = {"wafer_item_id": "t_saved", "oper": "PT1H TEST"}
+    assert maps.LoadWaferMapsInput(**item).wafer_item_id == "t_saved"
+    for extra in ({"lot_ids": ["A"]}, {"wf_ids": [8]},
+                  {"wafer_groups": [{"label": "other", "lot_id": "A", "wf_ids": [8]}]},
+                  {"aggregate": {"group_by": "all"}}):
+        with pytest.raises(ValueError, match="wafer_item_id"):
+            maps.LoadWaferMapsInput(**item, **extra)
+
+
+def test_saved_item_with_unknown_test_returns_the_selected_wafers_actual_inspections(monkeypatch, tmp_path):
+    from harness import web_kanban
+
+    item = dict(id="t_saved", wafer_groups=[dict(label="edge", lot_id="L", wf_ids=[7])],
+                added_wafer_groups=[], oper="short name", lot_cd="product")
+    monkeypatch.setattr(web_kanban, "read_wafer_item", lambda *args: item)
+    monkeypatch.setattr(maps, "_open_map_source", lambda args: nullcontext((
+        iter(()), {}, {"lot_ids": [], "wf_ids": []})))
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [("Probe Hot",), ("Probe Cold",)]
+    conn = MagicMock()
+    conn.__enter__.return_value.cursor.return_value.__enter__.return_value = cursor
+    monkeypatch.setattr(maps, "_connection", lambda: conn)
+    with pytest.raises(ValueError, match="Probe Hot.*Probe Cold"):
+        maps._query_maps(maps.LoadWaferMapsInput(wafer_item_id="t_saved"), "source", "Asia/Seoul",
+                         (tmp_path, "db"))
+    sql, binds = cursor.execute.call_args.args
+    assert "DISTINCT OPER_DET_DESC" in sql
+    assert binds == {"group_lot_0": "L", "group_wf_0_0": 7, "lot_cd": "product"}

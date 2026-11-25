@@ -52,3 +52,22 @@ def test_many_groups_remain_selectable_without_creating_axes_for_every_group():
     assert buttons[-1]['label'] == 'lot-79'
     assert buttons[-1]['args'][0]['y'] == [[79]]
     assert buttons[-1]['args'][0]['z'] == [[[1]]]
+
+
+def test_saved_wafer_item_plot_marks_only_added_lot_wafer_pairs():
+    from harness.tools.map_bin_plot import grouped_binmaps
+
+    groups = [{'label': 'Edge', 'lot_id': lot, 'wf_ids': [1, 2, 3]} for lot in ['A', 'B']]
+    added = [{'lot_id': 'B', 'wf_ids': [1, 3]}]
+    dies = [dict(lot_id=g['lot_id'], wf_id=wf, oper='PT1H TEST', measurement_id=g['lot_id'] + str(wf),
+                 start_tm='start', end_tm='end', row=-1, col=4, left_bin='A', right_bin='B')
+            for g in groups for wf in g['wf_ids']]
+    artifact, _ = grouped_binmaps(dies, groups, 'source', added_groups=added)
+    traces, layout = _plot(artifact['data'])
+    assert len(traces) == 6
+    assert layout['xaxis']['domain'] == layout['xaxis4']['domain']
+    assert layout['yaxis']['domain'] == layout['yaxis3']['domain']
+    assert layout['yaxis']['domain'] != layout['yaxis4']['domain']
+    assert [a['text'] for a in layout['annotations'] if '신규' in a['text']] == [
+        'B · W01 · 신규', 'B · W03 · 신규']
+    assert 'Edge' in artifact['title'] and '6장' in artifact['title']

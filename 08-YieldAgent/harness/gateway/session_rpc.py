@@ -210,6 +210,8 @@ class SessionRPC:
                     if duration_s is not None:
                         message['duration_s'] = duration_s
                     messages.append(message)
+                messages.extend({'role': 'assistant', 'text': e['payload']['text'], 'interim': False}
+                                for e in run.get('events', []) if e.get('type') == 'map_notice_complete')
         return messages
 
     async def info(self, sid):

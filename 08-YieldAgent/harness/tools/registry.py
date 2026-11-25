@@ -102,3 +102,11 @@ def domain_registry():
     for register in (python, query_db, list_tables, load_wafer_maps, table_artifact):
         register(registry)
     return registry
+
+
+def native_domain_registry():
+    from .lot_history import register
+
+    registry = domain_registry()
+    register(registry)
+    return registry

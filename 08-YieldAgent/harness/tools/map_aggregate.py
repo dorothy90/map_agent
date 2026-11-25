@@ -10,6 +10,7 @@ from pydantic import Field, model_validator
 from bin_mapping import PASS_BIN
 from ..native_verification import WAFER_MAP_CONTRACT_VERSION
 from ..types import Contract, ResultTable
+from .map_matrix import MapMatrix, matrix_sql, resolve_matrix, resolve_operation
 from .registry import ToolResult
 
 
@@ -21,7 +22,7 @@ _LEGEND_COLUMNS = {
 
 class CummapAggregation(Contract):
     group_by: Literal['all', 'lot', 'wafer', 'product', 'test', 'day', 'week', 'month',
-                      'recipe', 'equipment', 'chamber', 'stepper_recipe'] = Field(default='all', description=(
+                      'recipe', 'equipment', 'chamber', 'stepper_recipe'] | None = Field(default=None, description=(
         'One cumulative map per distinct value of this dimension. For process history select recipe '
         '(RCP, DF_WF_LEGEND.RECIPE_ID), equipment (EQP_ID), chamber (EQP_CH), or stepper_recipe '
         '(STEPPER_RECIPE_ID) and supply group_oper. Other dimensions use MAP rows directly; '
@@ -32,34 +33,38 @@ class CummapAggregation(Contract):
                      'including any apparent misspelling. The tool matches DF_WF_LEGEND.OPER_DET_DESC '
                      'case-insensitively or OPER_ID exactly within the selected product. Only if it reports '
                      'no unique matching process, consult the product’s process list before retrying with a corrected value.'))
+    matrix: MapMatrix | None = Field(default=None, description=(
+        'For a two-dimensional cumulative map, set the row and column axes using eligible MAP or '
+        'process-history fields. Each observed pair produces one cumulative map. Omit group_by and group_oper.'))
     selected_bins: list[str] = Field(default_factory=list,
         description='Optional exact combined MAP bin strings (left_bin + right_bin) to count. Empty counts all defined failures.')
 
     @model_validator(mode='after')
     def validate_group(self):
+        if self.matrix is not None:
+            if self.group_by is not None or self.group_oper is not None:
+                raise ValueError('Use matrix alone or group_by with its applicable group_oper.')
+            return self
+        if self.group_by is None:
+            self.group_by = 'all'
         if (self.group_by in _LEGEND_COLUMNS) != bool(self.group_oper and self.group_oper.strip()):
             raise ValueError('Supply group_oper for a manufacturing-process group only.')
         return self
 
 
-def _group_query(cursor, args):
+def _group_query(cursor, args, matrix=None):
     from .load_wafer_maps import _filters
 
     spec = args.aggregate
     where, binds = _filters(args)
     base = f'(SELECT * FROM MAP WHERE {where or "1=1"}) m'
+    if matrix is not None:
+        return matrix_sql(base, binds, matrix)
     joins = ''
     variants = '1'
     if spec.group_by in _LEGEND_COLUMNS:
         operation_filter = 'LOT_CD = :lot_cd' if args.lot_cd else '1=1'
-        operation_binds = {'lot_cd': args.lot_cd} if args.lot_cd else {}
-        cursor.execute(f'''SELECT DISTINCT OPER_ID FROM DF_WF_LEGEND WHERE {operation_filter}
-            AND (OPER_ID = :requested_oper OR UPPER(OPER_DET_DESC) = UPPER(:requested_oper))''',
-            dict(operation_binds, requested_oper=spec.group_oper.strip()))
-        operations = cursor.fetchmany(2)
-        if len(operations) != 1 or not operations[0][0]:
-            raise ValueError('group_oper needs one matching DF_WF_LEGEND process. Specify its exact OPER_ID or name.')
-        binds['legend_oper_id'] = operations[0][0]
+        binds['legend_oper_id'] = resolve_operation(cursor, spec.group_oper, args.lot_cd)
         field = _LEGEND_COLUMNS[spec.group_by]
         joins = f'''LEFT JOIN (SELECT LOT_CD, LOT_ID, WF_ID, MIN({field}) AS group_id,
                         COUNT(DISTINCT {field}) AS variants
@@ -81,7 +86,8 @@ def _group_query(cursor, args):
                FROM {base} {joins}''', binds
 
 
-def _summarize(rows, spec, patterns, source_result_id, *, lot_ids=(), wf_ids=()):
+def _summarize(rows, spec, patterns, source_result_id, *, lot_ids=(), wf_ids=(), matrix=None,
+               spool_dir=None, render_matrix=False):
     from .load_wafer_maps import _measurement_id, _parse_payload
 
     compiled = {pair: {name: re.compile(expr) for name, expr in definitions.items()}
@@ -98,6 +104,10 @@ def _summarize(rows, spec, patterns, source_result_id, *, lot_ids=(), wf_ids=())
         if not any(rule.fullmatch(symbol) for rule in definitions.values()):
             raise ValueError(f'No defined fail bin matches MAP symbol {symbol!r} for {pair}.')
         return 1
+
+    if matrix:
+        from .map_matrix_counts import summarize_matrix
+        return summarize_matrix(rows, spec, is_fail, source_result_id, matrix, lot_ids, wf_ids, spool_dir, render_matrix)
 
     seen, wafers = set(), set()
     group_wafers = defaultdict(set)
@@ -137,8 +147,9 @@ def _summarize(rows, spec, patterns, source_result_id, *, lot_ids=(), wf_ids=())
             count[1] += is_fail(pair, left + right)
 
     for group in sorted(coordinates):
+        group_coordinates = coordinates.pop(group)
         observed = failed = 0
-        for (y, x), (n, k) in sorted(coordinates[group].items()):
+        for (y, x), (n, k) in sorted(group_coordinates.items()):
             cells.append(dict(**evidence, group_id=group, row=y, col=x, observation_count=n,
                               fail_count=k, fail_rate=k/n))
             observed += n
@@ -172,13 +183,14 @@ def _summarize(rows, spec, patterns, source_result_id, *, lot_ids=(), wf_ids=())
                       status=status)
 
 
-def aggregate_wafer_maps(args, source_result_id='oracle:MAP'):
+def aggregate_wafer_maps(args, source_result_id='oracle:MAP', *, spool_dir=None):
     from .load_wafer_maps import _connection, _configure_cursor, _filters, _load_symbol_patterns
     from .map_aggregate_plot import cummap_artifact
 
     with _connection() as connection, connection.cursor() as cursor:
         _configure_cursor(cursor)
-        sql, binds = _group_query(cursor, args)
+        matrix = resolve_matrix(cursor, args) if args.aggregate.matrix else None
+        sql, binds = _group_query(cursor, args, matrix)
         if args.lot_cd and args.oper:
             dimensions = [(args.lot_cd, args.oper)]
         else:
@@ -189,9 +201,10 @@ def aggregate_wafer_maps(args, source_result_id='oracle:MAP'):
         cursor.execute(sql, binds)
         columns = [entry[0].lower() for entry in cursor.description]
         result = _summarize((dict(zip(columns, values)) for values in cursor), args.aggregate, patterns,
-                            source_result_id, lot_ids=args.lot_ids, wf_ids=args.wf_ids)
+                            source_result_id, lot_ids=args.lot_ids, wf_ids=args.wf_ids, matrix=matrix,
+                            spool_dir=spool_dir, render_matrix=bool(matrix))
     result.scope['filters'] = args.model_dump(mode='json', exclude={'max_measurements', 'max_dies', 'measurement_offset'})
     tables = {t.table_id: t.rows for t in result.tables}
-    if tables['wafer_map_cells']:
+    if not matrix and tables['wafer_map_cells']:
         result.artifacts.append(cummap_artifact(tables['wafer_map_cells'], tables['wafer_map_groups']))
     return result

@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>웨이퍼 누적 맵</title>
+<style>
+:root { color-scheme: light; font: 14px/1.45 system-ui, sans-serif; color: #283738; background: #fff }
+* { box-sizing: border-box }
+body { margin: 0; padding: 10px 4px 14px }
+header, nav, .legend { display: flex; align-items: center; flex-wrap: wrap; gap: 8px }
+header { justify-content: space-between }
+h1, h2, p { margin: 0 }
+h1 { font-size: 16px; overflow-wrap: anywhere }
+p, .legend, nav { color: #526567; font-size: 12px }
+#scope { margin-top: 3px; overflow-wrap: anywhere }
+#coverage { margin: 7px 0 }
+#coverage strong { color: #804815; font-weight: 550 }
+button { font: inherit; color: inherit; background: white; border: 1px solid #cfdbd8; border-radius: 7px; cursor: pointer; padding: 4px 10px }
+button:hover { background: #f0f5f4 }
+button:focus-visible, [tabindex]:focus-visible { outline: 2px solid #306b78; outline-offset: -2px }
+button:disabled { opacity: .5; cursor: default }
+.legend { margin: 9px 0; justify-content: flex-end }
+.legend i { background: linear-gradient(to right, #dcefe6, #87c6bb, #4187a0, #514576); width: 66px; height: 6px; border-radius: 9px }
+#viewport { overflow: auto; max-height: 560px; container-type: inline-size; min-height: 80px; border: 1px solid #dfe7e4; border-radius: 8px }
+table { border-spacing: 0; font-variant-numeric: tabular-nums; width: max-content; min-width: 100% }
+th, td { border-right: 1px solid #e5ece9; border-bottom: 1px solid #e5ece9; text-align: center; padding: 5px }
+th { background: #f4f8f6; font-size: 12px; font-weight: 550 }
+thead th { position: sticky; top: 0; z-index: 2 }
+tbody th, thead th:first-child { position: sticky; left: 0; z-index: 1; max-width: 150px; padding: 8px; overflow-wrap: anywhere }
+thead th:first-child { z-index: 3 }
+td { padding: 3px }
+.tile { display: grid; place-items: center; width: 100%; padding: 3px; border: 0 }
+canvas { display: block }
+.tile canvas { width: clamp(32px, calc((100cqw - 100px) / var(--columns) - 15px), 100px); height: auto }
+.dense small { display: none }
+small, .empty { color: #627473; font-size: 11px }
+nav { margin: 6px 0 }
+nav:empty { display: none }
+dialog { border: 1px solid #cfdbd8; border-radius: 12px; padding: 16px; color: inherit; max-width: calc(100vw - 20px); max-height: 92vh; overflow: auto }
+dialog::backdrop { background: #172d3680 }
+dialog header { gap: 16px }
+dialog h2 { font-size: 15px }
+dialog canvas { margin: 8px auto; width: min(360px, 85vw, 55vh); height: auto }
+dialog p { font-variant-numeric: tabular-nums }
+</style>
+</head>
+<body>
+<header><h1 id="axes"></h1><button type="button" id="transpose">행·열 바꾸기</button></header>
+<p id="scope"></p>
+<p id="coverage"></p>
+<div class="legend" aria-label="모든 맵의 공통 색상 범위">좌표별 불량률 <span>0%</span><i></i><span>100%</span></div>
+<nav id="pages" aria-label="행과 열 페이지"></nav>
+<div id="viewport" tabindex="0" role="region" aria-label="행과 열로 정리한 웨이퍼 누적 맵"><table><thead></thead><tbody></tbody></table></div>
+<dialog aria-labelledby="detail-title"><header><h2 id="detail-title"></h2><button id="close" type="button">닫기</button></header>
+<canvas width="600" height="600" aria-label="확대한 좌표별 불량률"></canvas><p id="detail-summary"></p><p id="coordinate"></p></dialog>
+<script type="application/json" id="matrix-data"><!-- MATRIX_DATA --></script>
+<script>
+'use strict';
+const data = JSON.parse(document.querySelector('#matrix-data').textContent);
+const number = new Intl.NumberFormat('ko-KR');
+const rate = new Intl.NumberFormat('ko-KR', { style: 'percent', maximumFractionDigits: 2 });
+const doc = selector => document.querySelector(selector);
+const el = (tag, text) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; return node; };
+const key = (a, b) => JSON.stringify([a, b]);
+const index = new Map(data.groups.map(group => [key(group.row_value, group.column_value), group]));
+const buckets = {day:'일', iso_week:'ISO 주', month:'월'};
+const caption = axis => axis.field + (axis.bucket ? ' (' + buckets[axis.bucket] + ')' : '');
+const source = axis => [axis.source === 'map' ? 'MAP' : 'DF_WF_LEGEND', axis.operation_name || axis.operation].filter(Boolean).join(' · ');
+const axes = [data.matrix.rows, data.matrix.columns];
+const axisValues = data.axis_values;
+const cov = data.coverage;
+doc('#coverage').append(el('span', '측정 ' + number.format(cov.included_measurement_count) + ' / ' + number.format(cov.measurement_count) + '건 포함'));
+const excluded = [[cov.missing_history_measurements, '공정 이력 없음'],[cov.missing_value_measurements,'필드 값 없음'],[cov.conflicting_group_measurements,'복수 귀속']];
+for (const [n, label] of excluded) if (n) doc('#coverage').append(el('strong',' · ' + label + ' ' + number.format(n) + '건'));
+for (const [field, label] of [['lot_ids','LOT'], ['wf_ids','웨이퍼 번호'], ['lot_wafers','LOT·웨이퍼 조합']]) {
+  const n = cov.missing_requests?.[field];
+  if (n) doc('#coverage').append(el('strong',' · 요청한 ' + label + ' ' + number.format(n) + '개 미조회'));
+}
+if (cov.source_exhausted === false) doc('#coverage').append(el('strong',' · 조회 미완료'));
+const dialog = doc('dialog');
+doc('#close').onclick = () => dialog.close();
+const colors = [[220,239,230],[135,198,187],[65,135,160],[81,69,118]];
+const palette = Array.from({length: 256}, (_, n) => {
+  const pos = n / 255 * 3, idx = Math.min(2, Math.floor(pos));
+  return 'rgb(' + colors[idx].map((x,i) => Math.round(x+(colors[idx+1][i]-x)*(pos-idx))).join(',') + ')';
+});
+const [minRow,minCol,maxRow,maxCol] = data.bounds;
+const h = maxRow-minRow+1, w = maxCol-minCol+1;
+// Transfer only visible, adjacent slices; keep compressed panels for local zoom and transpose.
+const maxRead = 1024 * 1024;
+const cache = new Map(), pending = new Map(), waiting = [];
+let cacheBytes = 0, scheduled = false;
+if (data.packed) {
+  if (window.parent !== window) window.parent.postMessage({type:'yield-matrix-ready'}, '*');
+  else {
+    const viewer = new URL('/', location.href);
+    viewer.searchParams.set('matrix_viewer',location.pathname + location.search);
+    const open = el('a', '대화형 맵 열기'); open.href = viewer.href;
+    doc('#viewport').before(open);
+    location.replace(viewer.href);
+  }
+}
+function readRange(offset, length) {
+  return new Promise((resolve, reject) => {
+    const channel = new MessageChannel();
+    channel.port1.onmessage = event => {
+      channel.port1.close();
+      const bytes = event.data?.bytes;
+      if (bytes instanceof ArrayBuffer && bytes.byteLength === length) resolve(new Uint8Array(bytes));
+      else reject(Error('Panel unavailable'));
+    };
+    window.parent.postMessage({type:'yield-matrix-panel',offset,length}, '*', [channel.port2]);
+  });
+}
+function remember(group, bytes) {
+  cache.set(group,bytes);
+  cacheBytes += bytes.length;
+  while (cacheBytes > 12 * maxRead && cache.size) {
+    const oldest = cache.keys().next().value;
+    cacheBytes -= cache.get(oldest).length;
+    cache.delete(oldest);
+  }
+}
+async function readBatch(batch) {
+  const start = batch[0].group.offset;
+  const last = batch[batch.length-1].group;
+  const length = last.offset + last.length - start;
+  try {
+    const bytes = new Uint8Array(length);
+    for (let pos=0;pos<length;pos+=maxRead) {
+      bytes.set(await readRange(start+pos, Math.min(maxRead,length-pos)), pos);
+    }
+    for (const item of batch) {
+      const begin = item.group.offset - start;
+      const slice = bytes.slice(begin, begin + item.group.length);
+      remember(item.group,slice);
+      item.resolve(slice);
+    }
+  } catch (error) {
+    for (const item of batch) item.reject(error);
+  } finally {
+    for (const item of batch) pending.delete(item.group);
+  }
+}
+function dispatch() {
+  scheduled = false;
+  const items = waiting.splice(0).sort((a,b)=>a.group.offset-b.group.offset);
+  let batch = [];
+  for (const item of items) {
+    const last = batch[batch.length-1];
+    if (last && (item.group.offset !== last.group.offset + last.group.length ||
+        item.group.offset + item.group.length - batch[0].group.offset > maxRead)) {
+      void readBatch(batch); batch = [];
+    }
+    batch.push(item);
+  }
+  if (batch.length) void readBatch(batch);
+}
+function panelBytes(group) {
+  if (!data.packed) return Uint8Array.from(atob(group.points), c => c.charCodeAt(0));
+  if (cache.has(group)) {
+    const bytes = cache.get(group); cache.delete(group); cache.set(group,bytes); return bytes;
+  }
+  if (!pending.has(group)) {
+    pending.set(group,new Promise((resolve,reject)=>waiting.push({group,resolve,reject})));
+    if (!scheduled) { scheduled = true; queueMicrotask(dispatch); }
+  }
+  return pending.get(group);
+}
+async function unpack(group) {
+  const bytes = await panelBytes(group);
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+  return new Response(stream).json();
+}
+function geometry(canvas) {
+  const side = (canvas.width-4)/Math.max(w,h);
+  return {side, left:(canvas.width-w*side)/2, top:(canvas.height-h*side)/2};
+}
+function draw(canvas, points) {
+  const ctx = canvas.getContext('2d'), {side,left,top} = geometry(canvas);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  for (let i=0; i<points.length; i+=4) {
+    const y=points[i], x=points[i+1], failed=points[i+2], n=points[i+3];
+    ctx.fillStyle = palette[Math.round(failed/n*255)];
+    ctx.fillRect(left+(x-minCol)*side,top+(y-minRow)*side,side,side);
+  }
+}
+let flipped = false, rowStart = 0, colStart = 0, observer;
+function detail(group) {
+  const names = [group.row_value,group.column_value];
+  if (flipped) names.reverse();
+  doc('#detail-title').textContent = names.join(' × ');
+  doc('#detail-summary').textContent = number.format(group.wafer_count)+'장 · 측정 '+number.format(group.measurement_count)+'건 · 불량 '+number.format(group.fail_count)+' / 관측 '+number.format(group.observation_count)+'회';
+  const canvas = dialog.querySelector('canvas');
+  canvas.onpointermove = null;
+  canvas.getContext('2d').clearRect(0,0,canvas.width,canvas.height);
+  doc('#coordinate').textContent = '좌표 위에 커서를 올려 집계값을 확인하세요.';
+  dialog.showModal();
+  const token = Symbol();
+  canvas.renderToken = token;
+  unpack(group).then(points => {
+    if (canvas.renderToken !== token) return;
+    draw(canvas,points);
+    const counts = new Map();
+    for(let i=0;i<points.length;i+=4) counts.set(key(points[i],points[i+1]),[points[i+2],points[i+3]]);
+    canvas.onpointermove = e => {
+      const rect=canvas.getBoundingClientRect(), {side,left,top}=geometry(canvas);
+      const col=Math.floor(((e.clientX-rect.left)*canvas.width/rect.width-left)/side)+minCol;
+      const row=Math.floor(((e.clientY-rect.top)*canvas.height/rect.height-top)/side)+minRow;
+      const pair=counts.get(key(row,col));
+      doc('#coordinate').textContent = '행 '+row+' · 열 '+col+' · '+(pair ? '불량 '+pair[0]+' / 관측 '+pair[1]+' ('+rate.format(pair[0]/pair[1])+')' : '좌표 관측 없음');
+    };
+  }).catch(() => { doc('#coordinate').textContent = '맵 좌표를 표시할 수 없습니다.'; });
+}
+function thumb(group) {
+  const btn = el('button'), canvas = el('canvas');
+  canvas.width=148; canvas.height=148; canvas.setAttribute('aria-hidden','true');
+  btn.className='tile'; btn.type='button';
+  btn.setAttribute('aria-label', [group.row_value,group.column_value].join(' × ')+' 맵 확대');
+  btn.append(canvas, el('small',number.format(group.wafer_count)+'장 · '+(group.observation_count ? rate.format(group.fail_count/group.observation_count) : '좌표 관측 없음')));
+  btn.onclick=()=>detail(group);
+  canvas.group=group; observer.observe(canvas);
+  return btn;
+}
+function paging(label, start, size, length, jump) {
+  if (length <= size) return;
+  const prev=el('button','이전 '+label), next=el('button','다음 '+label);
+  prev.disabled=start===0; next.disabled=start+size>=length;
+  prev.onclick=()=>jump(start-size); next.onclick=()=>jump(start+size);
+  doc('#pages').append(prev,el('span',label+' '+(start+1)+'–'+Math.min(start+size,length)+' / '+length),next);
+}
+function render() {
+  if (observer) observer.disconnect();
+  observer = new IntersectionObserver(entries => {
+    for (const entry of entries) if (entry.isIntersecting) {
+      const canvas = entry.target;
+      observer.unobserve(canvas);
+      unpack(canvas.group).then(points => { if (canvas.isConnected) draw(canvas,points); })
+        .catch(() => { if (canvas.isConnected) canvas.replaceWith(el('span','좌표 표시 실패')); });
+    }
+  }, {root:null,rootMargin:'0px'});
+  const a = flipped ? 1 : 0, b = 1-a, rowAxis = axes[a], colAxis = axes[b];
+  const rows = axisValues[a], cols = axisValues[b];
+  doc('#axes').textContent = caption(rowAxis)+' × '+caption(colAxis);
+  doc('#scope').textContent = '행 '+source(rowAxis)+' · 열 '+source(colAxis)+' · '+number.format(rows.length)+'행 × '+number.format(cols.length)+'열';
+  doc('#pages').replaceChildren();
+  paging('행',rowStart,32,rows.length,n=>{rowStart=n;render();});
+  paging('열',colStart,32,cols.length,n=>{colStart=n;render();});
+  const head = el('tr'); head.append(el('th',caption(rowAxis)+' ↓'));
+  const visibleCols = cols.slice(colStart,colStart+32);
+  doc('table').style.setProperty('--columns', Math.max(1,visibleCols.length));
+  doc('table').classList.toggle('dense', visibleCols.length>12);
+  for (const col of visibleCols) { const th=el('th',col); th.scope='col'; head.append(th); }
+  doc('thead').replaceChildren(head);
+  const body = new DocumentFragment();
+  for (const row of rows.slice(rowStart,rowStart+32)) {
+    const tr=el('tr'), th=el('th',row); th.scope='row'; tr.append(th);
+    for (const col of visibleCols) {
+      const group=index.get(flipped?key(col,row):key(row,col));
+      const td=el('td');
+      if (group) td.append(thumb(group));
+      else { td.className='empty'; td.textContent='측정 없음'; }
+      tr.append(td);
+    }
+    body.append(tr);
+  }
+  if (!rows.length) {
+    const tr=el('tr'); tr.append(el('td','분류된 측정 없음')); body.append(tr);
+  }
+  doc('tbody').replaceChildren(body);
+  doc('#viewport').scrollTo(0,0);
+}
+doc('#transpose').onclick=()=>{flipped=!flipped;rowStart=colStart=0;render();};
+render();
+if (window.parent!==window) new ResizeObserver(()=>window.parent.postMessage({type:'yield-table-height',height:Math.ceil(document.body.getBoundingClientRect().height)},'*')).observe(document.body);
+</script>
+</body>
+</html>

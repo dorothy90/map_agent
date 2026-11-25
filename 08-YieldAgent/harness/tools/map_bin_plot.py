@@ -32,7 +32,7 @@ def _trace(dies, label):
         hovertemplate='행 %{y} · 열 %{x}<br>좌측 BIN %{customdata[0]} · 우측 BIN %{customdata[1]}<extra></extra>')
 
 
-def grouped_binmaps(die_rows, groups, source_id):
+def grouped_binmaps(die_rows, groups, source_id, *, added_groups=None):
     measurements = defaultdict(list)
     for _, rows in groupby(die_rows, key=itemgetter('measurement_id')):
         dies = list(rows)
@@ -44,7 +44,9 @@ def grouped_binmaps(die_rows, groups, source_id):
             for dies in measurements[group['lot_id'], wf]:
                 selected[dies[0]['measurement_id']] = dies
 
-    columns = min(2, max(len(selected) for selected in panels.values()))
+    is_saved_item = added_groups is not None
+    added = {(group['lot_id'], wf) for group in (added_groups or []) for wf in group['wf_ids']}
+    columns = min(3 if is_saved_item else 2, max(len(selected) for selected in panels.values()))
     titles, traces, members, manifest = [], [], [], []
     for label, selected in panels.items():
         if not selected:
@@ -55,13 +57,16 @@ def grouped_binmaps(die_rows, groups, source_id):
             position = len(titles)
             traces.append((position // columns + 1, position % columns + 1, _trace(dies, label)))
             title = f"{escape(label)} · {escape(d['lot_id'])} #{d['wf_id']}"
+            if is_saved_item:
+                title = f"{escape(d['lot_id'])} · W{int(d['wf_id']):02d}"
+                if (d['lot_id'], d['wf_id']) in added:
+                    title += ' · 신규'
             if len(measurements[d['lot_id'], d['wf_id']]) > 1:
                 title += f"<br>{escape(str(d['oper']))} · {escape(str(d['end_tm']))}"
             titles.append(title)
             members.append(dict(**evidence, source_result_id=source_id, lot_id=d['lot_id'],
                                 wf_id=d['wf_id'], measurement_id=identity))
-        if len(titles) % columns:
-            titles.append('')
+        titles.extend([''] * (-len(titles) % columns))
         manifest.append(dict(**evidence, map_type='binmap', grouping_mode='selection_set',
             member_count=len(selected), measurement_policy='All distinct MAP measurements, including retests',
             numerator_mode='defined_fail_bins', numerator_bins_json='[]', source_result_ids_json=json.dumps([source_id])))
@@ -76,6 +81,9 @@ def grouped_binmaps(die_rows, groups, source_id):
         autorange='reversed', constrain='domain', showgrid=False, zeroline=False))
     operations = list(dict.fromkeys(d['oper'] for d in die_rows if d['oper']))
     title = f"{' · '.join(operations)} 웨이퍼 맵".strip()
+    if is_saved_item:
+        wafer_count = len({(m['lot_id'], m['wf_id']) for m in members})
+        title = f"{groups[0]['label']} · {title} · {wafer_count}장"
     figure.update_layout(title=escape(title), template='plotly_white', autosize=True, height=120 + rows * 320,
         margin=dict(l=40, r=30, t=95, b=35), coloraxis=dict(cmin=-0.5, cmax=3.5, colorscale=scale,
             colorbar=dict(tickvals=[0, 1, 2, 3], ticktext=['통과', '좌측 불량', '우측 불량', '양측 불량'],

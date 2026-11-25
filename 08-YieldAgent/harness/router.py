@@ -295,6 +295,18 @@ async def read_result(result_id: str, session_id: str, request: Request, offset:
         raise HTTPException(422, str(exc)) from None
 
 
+@router.get("/harness/artifacts/{artifact_id}/matrix-panels")
+async def matrix_panels(artifact_id: str, session_id: str, request: Request, offset: int, length: int):
+    try:
+        data = await controller(request).store.matrix_panel_range(principal(request), session_id, artifact_id, offset, length)
+    except PermissionError:
+        raise HTTPException(404, "Matrix not found") from None
+    except ValueError:
+        raise HTTPException(416, "Invalid matrix panel range") from None
+    return StreamingResponse(data, media_type="application/octet-stream",
+                             headers={"Content-Length": str(length), "Cache-Control": "private, no-store"})
+
+
 @router.api_route("/harness/artifacts/{artifact_id}", methods=["GET", "HEAD"])
 async def artifact(artifact_id: str, session_id: str, request: Request):
     try:

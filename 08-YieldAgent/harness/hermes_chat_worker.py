@@ -94,7 +94,7 @@ async def chat(request, emit, waiters=None):
     from harness.web_mcp_tools import attach_employee_mcp_toolsets, shutdown_employee_mcp_tools
     from harness.native_budget import install_http_budget
     from harness.store import HarnessStore
-    from harness.tools.registry import domain_registry
+    from harness.tools.registry import native_domain_registry
     from harness.instructions import web_turn_instructions
     from harness.chat_tool_helpers import constrain_session_search, engine_provider, observe_skill_reads
     from tools import skills_tool, session_search_tool
@@ -118,7 +118,14 @@ async def chat(request, emit, waiters=None):
         run = await store.fence(request['run_id'], request['epoch'])
         if any(run[key] != request[key] for key in ('principal_id', 'session_id')):
             raise PermissionError('Hermes chat ownership changed')
-        ctx = ExecutionContext(store, settings, run)
+        chat_row = None
+        if not run.get('web_schedule_job_id'):
+            chat_row = await store.db.gateway_sessions.find_one({
+                'principal_id': run['principal_id'], 'id': run['session_id'],
+                'deleted': {'$ne': True}}, {'ended_at': 1})
+        can_group_chats = chat_row is not None
+        ctx = ExecutionContext(store, settings, run, web_map_jobs_enabled=(
+            can_group_chats and request.get("web_map_jobs_enabled") is True))
         loop = asyncio.get_running_loop()
         agent = None
         stopping = False
@@ -145,7 +152,7 @@ async def chat(request, emit, waiters=None):
                 agent.interrupt()
 
         loop.add_signal_handler(signal.SIGTERM, interrupt)
-        executor = ChatToolExecutor(domain_registry(), ctx)
+        executor = ChatToolExecutor(native_domain_registry(), ctx)
         code_enabled = settings.web_python_enabled
         allowed = set(executor.registry.tools if settings.native_allowed_tools is None else settings.native_allowed_tools)
         allowed.difference_update({'run_python', 'execute_code'})

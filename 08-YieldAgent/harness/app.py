@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Request
 from .config import LocalIsolationSettings, SeatbeltIsolationSettings, Settings
 from .control import RunController
 from .isolation.backend import prepare_isolated_run
+from .map_jobs import supervise_map_jobs
 from .runtime.process import ProcessRuntime
 from .router import router
 from .store import HarnessStore
@@ -22,12 +23,17 @@ async def lifespan(app):
     store = HarnessStore(settings.mongo_uri, settings.mongo_db)
     await store.setup()
     app.state.harness = RunController(store, settings)
+    app.state.harness.web_map_jobs_enabled = True
     await app.state.harness.recover()
     app.state.harness.recovery_task = asyncio.create_task(app.state.harness.watch_recovery())
+    map_jobs = asyncio.create_task(supervise_map_jobs(store, settings,
+        principal=getattr(app.state, "map_job_principal", None)))
     try:
         yield
     finally:
         await app.state.harness.close()
+        map_jobs.cancel()
+        await asyncio.gather(map_jobs, return_exceptions=True)
     store.client.close()
 
 

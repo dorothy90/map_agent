@@ -157,6 +157,10 @@ def project_run_event(run, event):
     kind, payload = event['type'], event.get('payload') or {}
     if kind in ('message.delta', 'message.interim', 'message.complete', 'commentary'):
         return None
+    if kind == 'map_notice_start':
+        return {'type': 'message.start', 'payload': {}}
+    if kind == 'map_notice_complete':
+        return {'type': 'message.complete', 'payload': {'text': payload['text'], 'status': 'complete'}}
     if kind == 'run_finished':
         answer = verified_answer_with_artifacts(run)
         if answer is not None:

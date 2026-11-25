@@ -18,7 +18,7 @@ type Observation = {
   result_id: string
   tables: { table_id: string; complete: boolean }[]
   artifact_refs: { artifact_id: string; mime: string }[]
-  scope?: { map_aggregate?: { group_by?: string } }
+  scope?: { map_aggregate?: { group_by?: string; matrix?: object } }
 }
 
 async function fetchJson(path: string, query: URLSearchParams, signal: AbortSignal) {
@@ -88,6 +88,7 @@ export async function readWaferMaps(src: string, signal: AbortSignal): Promise<W
       if (!observation) continue
       const complete = new Set(observation.tables?.filter(table => table.complete).map(table => table.table_id))
       if (observation.tool_name !== 'load_wafer_maps' || !complete.has('wafer_map_groups') || !complete.has('wafer_map_cells')) return null
+      if (observation.scope?.map_aggregate?.matrix) return null
       const [groups, cells] = await Promise.all([
         readTable<GroupRow>(sessionId, observation.result_id, 'wafer_map_groups', signal),
         readTable<CellRow>(sessionId, observation.result_id, 'wafer_map_cells', signal),

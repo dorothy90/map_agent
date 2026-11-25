@@ -27,7 +27,7 @@ from pydantic import BaseModel
 import oracledb
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 logger = logging.getLogger("yield_agent.common")
 

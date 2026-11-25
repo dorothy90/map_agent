@@ -23,6 +23,7 @@ class RunController:
         self.owner = str(uuid.uuid4())
         self.closing = False
         self.recovery_task = None
+        self.web_map_jobs_enabled = False
 
     async def start(self, principal_id, session_id, request_id, query):
         async with self.store.session_lock(principal_id, session_id):
@@ -112,7 +113,8 @@ class RunController:
 
         heartbeat.add_done_callback(stop_on_heartbeat_failure)
         try:
-            context = ExecutionContext(self.store, self.settings, run, session_kernels=self.kernels)
+            context = ExecutionContext(self.store, self.settings, run, session_kernels=self.kernels,
+                web_map_jobs_enabled=self.web_map_jobs_enabled)
             await self.store.event(run["run_id"], "run_started", {"query": run["query"],
                 "goal_revision": run["goal_revision"], "engine": "hermes"})
             from .hermes_chat import run_chat

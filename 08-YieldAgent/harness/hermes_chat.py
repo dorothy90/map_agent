@@ -54,7 +54,8 @@ async def run_chat(context):
         config['shared_yield_dir'] = str(shared)
     config.update(api_key=settings.api_key.get_secret_value(), mongo_db=store.db.name)
     request = {'run_id': run_id, 'epoch': epoch, 'principal_id': principal, 'session_id': session,
-               'settings': config, 'request_context': request_context}
+               'settings': config, 'request_context': request_context,
+               'web_map_jobs_enabled': getattr(context, 'web_map_jobs_enabled', False)}
     env = {k: os.environ[k] for k in ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
            'ORACLE_USER', 'ORACLE_PASSWORD', 'ORACLE_DSN', 'ORACLE_CALL_TIMEOUT_MS') if k in os.environ}
     env.update(HOME=str(profile), HERMES_HOME=str(profile), HERMES_DISABLE_LAZY_INSTALLS='1',

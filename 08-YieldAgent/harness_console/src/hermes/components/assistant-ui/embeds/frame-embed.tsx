@@ -1,5 +1,6 @@
 'use client'
 
+import { matrixArtifactPath, serveMatrixPanel } from '../../../../web/matrix-panel-bridge'
 import { useWebPresentation } from '../../../../web/presentation'
 
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
@@ -25,13 +26,20 @@ export function YieldTableArtifactFrame({ children, src, title, subtitle }: { ch
   const web = useWebPresentation()
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [reported, setReported] = useState<{ src: string; height: number } | null>(null)
+  const [matrixSrc, setMatrixSrc] = useState('')
+  const viewerHref = matrixSrc === src ? '/?' + new URLSearchParams({ matrix_viewer: src }) : src
   const height = reported?.src === src ? reported.height : null
 
   useEffect(() => {
+    const controller = new AbortController()
     const onMessage = (event: MessageEvent) => {
-      if (event.source !== frameRef.current?.contentWindow || !isYieldTableHeightMessage(event.data)) {
+      if (!frameRef.current?.contentWindow || event.source !== frameRef.current.contentWindow) return
+      if (event.data?.type === 'yield-matrix-panel' && event.ports[0]) {
+        void serveMatrixPanel(src, event.data, event.ports[0], controller.signal)
         return
       }
+      if (event.data?.type === 'yield-matrix-ready' && matrixArtifactPath(src)) setMatrixSrc(src)
+      if (!isYieldTableHeightMessage(event.data)) return
 
       setReported({
         src,
@@ -40,11 +48,14 @@ export function YieldTableArtifactFrame({ children, src, title, subtitle }: { ch
     }
 
     window.addEventListener('message', onMessage)
-    return () => window.removeEventListener('message', onMessage)
+    return () => {
+      window.removeEventListener('message', onMessage)
+      controller.abort()
+    }
   }, [src])
 
   if (web) return <span className="web-report-section">
-    <span className="web-report-heading"><span role="heading" aria-level={3}>{title}</span><a className="web-report-link" href={src} target="_blank" rel="noopener noreferrer">원본 열기</a></span>
+    <span className="web-report-heading"><span role="heading" aria-level={3}>{title}</span><a className="web-report-link" href={viewerHref} target="_blank" rel="noopener noreferrer">원본 열기</a></span>
     {subtitle && <span className="web-report-subtitle">{subtitle}</span>}
     <span className="web-report-scroll"><iframe className="yield-table-artifact-frame" loading="lazy" ref={frameRef} sandbox="allow-scripts" src={src} style={{height:height ?? 720}} title={title}/></span>
   </span>
@@ -56,7 +67,7 @@ export function YieldTableArtifactFrame({ children, src, title, subtitle }: { ch
       {children}
       <a
         className="ref ml-2"
-        href={src}
+        href={viewerHref}
         rel="noopener noreferrer"
         target="_blank"
       >

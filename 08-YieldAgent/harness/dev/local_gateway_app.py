@@ -96,10 +96,12 @@ def create_app(*, base_app=None, user=None, services_factory=None):
 
     @asynccontextmanager
     async def lifespan(app):
+        principal_user = user or os.environ.get('HARNESS_PRINCIPAL')
+        if not principal_user or not principal_user.strip():
+            raise RuntimeError('HARNESS_PRINCIPAL must be configured')
+        if production:
+            base_app.state.map_job_principal = principal_user
         async with base_app.router.lifespan_context(base_app):
-            principal_user = user or os.environ.get('HARNESS_PRINCIPAL')
-            if not principal_user or not principal_user.strip():
-                raise RuntimeError('HARNESS_PRINCIPAL must be configured')
             app.state.principal_user = principal_user
             ctrl = getattr(base_app.state, 'harness', None)
             if production:

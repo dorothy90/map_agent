@@ -31,6 +31,15 @@ def test_domain_tool_registry_exposes_yield_handlers():
     assert registry.tools["list_tables"].eager is True
 
 
+def test_lot_history_is_a_read_only_native_domain_tool():
+    from harness.tools.registry import domain_registry, native_domain_registry
+
+    native = native_domain_registry()
+    assert set(native.tools) - set(domain_registry().tools) == {"query_lot_history"}
+    assert native.tools["query_lot_history"].read_only
+    assert any(tool["function"]["name"] == "query_lot_history" for tool in native.model_tools())
+
+
 def test_engine_session_search_reads_profile_state_db(tmp_path):
     engine = Path(__file__).parents[1] / "engine"
     profile = tmp_path / "profile"

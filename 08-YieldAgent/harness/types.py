@@ -42,6 +42,13 @@ class ResultTable(Contract):
     missing_reason: str | None = None
 
 
+class StreamedResultTable(ResultTable):
+    # Only built by the Oracle reader. Tool-supplied ResultTable payloads cannot select a host file.
+    source: Any = Field(exclude=True)
+    source_digest: str
+    total_rows: int = Field(ge=0)
+
+
 class ResultPage(Contract):
     table_id: str = Field(min_length=1)
     source_total_rows: int = Field(ge=0)
@@ -79,6 +86,7 @@ class TableRef(Contract):
     complete: bool
     missing_reason: str | None = None
     data_ref: str
+    data_format: Literal["json", "jsonl"] = "json"
 
 
 class ToolObservation(Contract):
@@ -132,7 +140,7 @@ class ToolObservation(Contract):
         for table in self.tables:
             is_page = self.page is not None and table.table_id == self.page.table_id
             limit = self.page.limit if is_page else _preview_limit(table.total_rows)
-            entry = {**table.model_dump(mode="json", exclude={"data_ref"}),
+            entry = {**table.model_dump(mode="json", exclude={"data_ref", "data_format"}),
                 "preview_rows": [] if self.status == "error" else table.preview_rows[:limit],
                 "truncated": table.total_rows > min(len(table.preview_rows), limit)}
             if contract := projections.get(table.table_id):

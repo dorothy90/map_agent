@@ -15,7 +15,7 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from .artifact_delivery import ARTIFACT_DELIVERY
-from .types import ResultPage, ResultTable, TableRef, ToolObservation, now
+from .types import ResultPage, ResultTable, StreamedResultTable, TableRef, ToolObservation, now
 
 
 class Conflict(RuntimeError):
@@ -52,6 +52,7 @@ class HarnessStore:
         await self.runs.create_index([("principal_id", 1), ("session_id", 1)], unique=True, partialFilterExpression={"active": True})
         await self.calls.create_index([("run_id", 1), ("invocation_id", 1)], unique=True)
         await self.results.create_index("result_id", unique=True)
+        await self.db.map_jobs.create_index([("status", 1), ("delivery", 1), ("created_at", 1)])
 
     @asynccontextmanager
     async def session_lock(self, principal_id, session_id):
@@ -70,8 +71,8 @@ class HarnessStore:
         finally:
             await self.db.harness_sessions.update_one({**key, "lock_owner": owner}, {"$unset": {"lock_owner": "", "lock_until": ""}})
 
-    async def put_result(self, principal_id, session_id, observation, rows, artifacts, *, tables=None):
-        publication = asyncio.create_task(self._put_result(principal_id, session_id, observation, rows, artifacts, tables=tables))
+    async def put_result(self, principal_id, session_id, observation, rows, artifacts, *, tables=None, result_key=None):
+        publication = asyncio.create_task(self._put_result(principal_id, session_id, observation, rows, artifacts, tables=tables, result_key=result_key))
         try:
             return await asyncio.shield(publication)
         except asyncio.CancelledError:
@@ -80,23 +81,27 @@ class HarnessStore:
             await asyncio.gather(publication, return_exceptions=True)
             raise
         finally:
+            for table in tables or ():
+                if isinstance(table, StreamedResultTable):
+                    table.source.close()
             for artifact in artifacts:
-                if artifact.get("generated_file"):
-                    artifact["data"].close()
+                for field in ("data", "matrix_panels"):
+                    if callable(getattr(artifact.get(field), "close", None)):
+                        artifact[field].close()
 
-    async def _put_result(self, principal_id, session_id, observation, rows, artifacts, *, tables=None):
+    async def _put_result(self, principal_id, session_id, observation, rows, artifacts, *, tables=None, result_key=None):
         if rows and tables:
             raise ValueError("rows and tables cannot both be supplied")
         if tables is None or not tables:
             complete = observation.get("status", "success") in ("success", "empty")
             tables = [ResultTable(table_id="default", title=observation.get("tool_name", "Result"),
                 rows=rows, complete=complete, missing_reason=None if complete else "Source result is partial or unsuccessful")]
-        tables = [ResultTable.model_validate(json.loads(json.dumps(
+        tables = [table if isinstance(table, StreamedResultTable) else ResultTable.model_validate(json.loads(json.dumps(
             table.model_dump() if isinstance(table, ResultTable) else table,
             ensure_ascii=False, default=str, allow_nan=False))) for table in tables]
         if len({table.table_id for table in tables}) != len(tables):
             raise ValueError("Duplicate table_id")
-        result_id = str(uuid.uuid5(uuid.NAMESPACE_URL, observation["run_id"] + ":" + observation["invocation_id"]))
+        result_id = str(uuid.uuid5(uuid.NAMESPACE_URL, observation["run_id"] + ":" + (result_key or observation["invocation_id"])))
         old = await self.results.find_one({"result_id": result_id})
         if old:
             if old["principal_id"] != principal_id or old["session_id"] != session_id:
@@ -109,8 +114,9 @@ class HarnessStore:
         try:
             table_refs = []
             for table in tables:
-                data_id = await self.blobs.upload_from_stream(result_id + ":" + table.table_id,
-                    json.dumps(table.rows, ensure_ascii=False, allow_nan=False).encode())
+                streamed = isinstance(table, StreamedResultTable)
+                content = table.source if streamed else json.dumps(table.rows, ensure_ascii=False, allow_nan=False).encode()
+                data_id = await self.blobs.upload_from_stream(result_id + ":" + table.table_id, content)
                 blob_ids.append(data_id)
                 is_page = page is not None and page.table_id == table.table_id
                 row_limit, byte_limit = (page.limit, 1024 * 1024) if is_page else (50, 32000)
@@ -125,15 +131,21 @@ class HarnessStore:
                     preview_bytes += row_bytes
                 table_refs.append(TableRef(table_id=table.table_id, title=table.title,
                     columns=list(dict.fromkeys([*table.columns, *(k for row in table.rows for k in row)])),
-                    total_rows=len(table.rows), preview_rows=preview, units=table.units,
+                    total_rows=table.total_rows if streamed else len(table.rows), preview_rows=preview, units=table.units,
+                    data_format="jsonl" if streamed else "json",
                     complete=table.complete, missing_reason=table.missing_reason, data_ref=str(data_id)))
             refs = []
+            matrix_panels = {}
             for artifact in artifacts:
                 content = artifact["data"]
                 if isinstance(content, str):
                     content = content.encode()
                 blob = await self.blobs.upload_from_stream(artifact.get("title", "artifact"), content)
                 blob_ids.append(blob)
+                if artifact.get("matrix_panels") is not None:
+                    panels_id = await self.blobs.upload_from_stream(result_id + ":matrix-panels", artifact["matrix_panels"])
+                    blob_ids.append(panels_id)
+                    matrix_panels[str(blob)] = panels_id
                 refs.append({"artifact_id": str(blob), "title": artifact.get("title", ""), "mime": artifact.get("mime", "text/html"), "result_id": result_id})
                 if artifact.get("generated_file"):
                     filename = quote(artifact["title"], safe="")
@@ -153,7 +165,7 @@ class HarnessStore:
                 obs.summary = obs.model_view()["summary"]
             metadata_attempted = True
             await self.results.insert_one({"result_id": result_id, "principal_id": principal_id, "session_id": session_id,
-                "checksum": hashlib.sha256(payload).hexdigest(), "observation": obs.model_dump(mode="json")})
+                "checksum": hashlib.sha256(payload).hexdigest(), "matrix_panels": matrix_panels, "observation": obs.model_dump(mode="json")})
             return obs
         except BaseException:
             if metadata_attempted:
@@ -165,6 +177,7 @@ class HarnessStore:
                 if saved:
                     winner = ToolObservation.model_validate(saved["observation"])
                     referenced = {winner.data_ref, *(t.data_ref for t in winner.tables), *(a["artifact_id"] for a in winner.artifact_refs)}
+                    referenced.update(str(blob) for blob in saved.get("matrix_panels", {}).values())
                     for blob in blob_ids:
                         if str(blob) not in referenced:
                             await self.blobs.delete(blob)
@@ -194,18 +207,41 @@ class HarnessStore:
         raise ValueError("Select table_id from: " + ", ".join(t.table_id for t in obs.tables))
 
     async def rows(self, principal_id, session_id, result_id, table_id=None):
-        obs = await self.observation(principal_id, session_id, result_id)
-        table = self._select_table(obs, table_id)
-        blob = await self.blobs.open_download_stream(ObjectId(table.data_ref))
-        return json.loads(await blob.read())
+        return [row async for row in self.iter_table_rows(principal_id, session_id, result_id, table_id)]
 
     async def iter_table_rows(self, principal_id, session_id, result_id, table_id=None):
         obs = await self.observation(principal_id, session_id, result_id)
         table = self._select_table(obs, table_id)
+        async for row in self._iter_table_rows(table):
+            yield row
+
+    async def _iter_table_rows(self, table, offset=0, limit=None):
+        if offset >= table.total_rows:
+            return
         blob = await self.blobs.open_download_stream(ObjectId(table.data_ref))
         try:
-            async for row in self._json_array_rows(blob):
-                yield row
+            if table.data_format == "json":
+                index = 0
+                async for row in self._json_array_rows(blob):
+                    if index >= offset:
+                        yield row
+                    index += 1
+                    if limit is not None and index >= offset + limit:
+                        return
+                return
+            pending, index = bytearray(), 0
+            while chunk := await blob.readchunk():
+                lines = chunk.split(b"\n")
+                for line in lines[:-1]:
+                    if index >= offset:
+                        pending.extend(line)
+                        yield json.loads(pending)
+                    pending.clear()
+                    index += 1
+                    if limit is not None and index >= offset + limit:
+                        return
+                if index >= offset:
+                    pending.extend(lines[-1])
         finally:
             await asyncio.to_thread(blob.close)
 
@@ -237,17 +273,41 @@ class HarnessStore:
             raise ValueError("Invalid page")
         obs = await self.observation(principal_id, session_id, result_id)
         table = self._select_table(obs, table_id)
-        rows = await self.rows(principal_id, session_id, result_id, table_id=table.table_id)
-        page = rows[offset:offset + limit]
+        page = [row async for row in self._iter_table_rows(table, offset, limit)]
         if columns is not None:
             if not set(columns).issubset(table.columns):
                 raise ValueError("Unknown column")
             page = [{k: row.get(k) for k in columns} for row in page]
         return {"result_id": result_id, "table_id": table.table_id, "title": table.title,
                 "columns": table.columns if columns is None else columns, "units": table.units,
-                "rows": page, "offset": offset, "total_rows": len(rows),
+                "rows": page, "offset": offset, "total_rows": table.total_rows,
                 "complete": table.complete, "missing_reason": table.missing_reason,
-                "truncated": offset > 0 or offset + limit < len(rows), "scope": obs.scope, "provenance": obs.provenance}
+                "truncated": offset > 0 or offset + limit < table.total_rows, "scope": obs.scope, "provenance": obs.provenance}
+
+    async def matrix_panel_range(self, principal_id, session_id, artifact_id, offset, length):
+        record = await self.results.find_one({"principal_id": principal_id, "session_id": session_id,
+            "observation.artifact_refs.artifact_id": artifact_id}, {"matrix_panels": 1})
+        panels_id = (record or {}).get("matrix_panels", {}).get(artifact_id)
+        if panels_id is None:
+            raise PermissionError("Matrix unavailable")
+        blob = await self.blobs.open_download_stream(panels_id)
+        if offset < 0 or length <= 0 or offset + length > blob.length:
+            await asyncio.to_thread(blob.close)
+            raise ValueError("Invalid matrix panel range")
+
+        async def chunks():
+            try:
+                blob.seek(offset)
+                remaining = length
+                while remaining:
+                    chunk = await blob.read(min(remaining, 256 * 1024))
+                    if not chunk:
+                        raise IOError("Incomplete matrix panel data")
+                    remaining -= len(chunk)
+                    yield chunk
+            finally:
+                await asyncio.to_thread(blob.close)
+        return chunks()
 
     async def artifact(self, principal_id, session_id, artifact_id):
         record = await self.results.find_one({"principal_id": principal_id, "session_id": session_id,

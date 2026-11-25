@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import json
 
 import pytest
@@ -143,11 +144,11 @@ def test_load_wafer_maps_returns_only_fact_summary_and_stored_die_table(monkeypa
     rows = [map_row()]
     monkeypatch.setattr(
         tool,
-        "_load_rows_and_patterns",
-        lambda args: (rows, {}, False, {"lot_ids": ["LOT1"], "wf_ids": [1]}),
+        "_open_map_source",
+        lambda args: nullcontext((iter(rows), {}, {"lot_ids": ["LOT1"], "wf_ids": [1]})),
     )
-    async def immediate(function, *args):
-        return function(*args)
+    async def immediate(function, *args, **kwargs):
+        return function(*args, **kwargs)
     monkeypatch.setattr(tool, "run_blocking", immediate)
     args = tool.LoadWaferMapsInput(lot_ids=["LOT1", "MISSING"], wf_ids=[1, 9], oper="PT1H TEST")
 
@@ -206,26 +207,26 @@ def test_database_loader_materializes_map_clob_before_reusing_cursor(monkeypatch
             self.description = []
             self.rows = []
 
-        def execute(self, sql, binds):
+        def execute(self, sql, binds=None):
             self.generation += 1
-            if "ROWNUM AS RN" in sql:
+            if "MAP_VAL_JSON" in sql:
                 self.description = [(name,) for name in (
                     "LOT_ID", "WF_ID", "LOT_CD", "OPER", "START_TM", "END_TM", "MAP_VAL_JSON",
                 )]
                 self.rows = [("LOT1", 1, "4SS", "PT1H TEST", "s", "e", Lob(self))]
             elif "SELECT DISTINCT" in sql:
-                self.rows = [("LOT1", 1)]
+                self.rows = [("LOT1", 1, "4SS", "PT1H TEST")]
             else:
                 self.rows = []
 
-        def fetchmany(self, _limit):
-            return self.rows
+        def __iter__(self):
+            return iter(self.rows)
 
         def fetchall(self):
             return self.rows
 
         def close(self):
-            pass
+            self.generation += 1
 
     class Connection:
         def __init__(self):
@@ -241,10 +242,10 @@ def test_database_loader_materializes_map_clob_before_reusing_cursor(monkeypatch
     monkeypatch.setattr(tool, "_connection", lambda: connection)
     args = tool.LoadWaferMapsInput(lot_ids=["LOT1"])
 
-    rows, patterns, has_more, found = tool._load_rows_and_patterns(args)
+    with tool._open_map_source(args) as (source, patterns, found):
+        rows = list(source)
     normalized = tool.normalize_map_rows(rows, symbol_patterns=patterns, max_measurements=10, max_dies=10)
 
-    assert has_more is False
     assert found == {"lot_ids": ["LOT1"], "wf_ids": [1]}
     assert normalized.die_rows[0]["bin"] == "AB"
 
@@ -285,7 +286,7 @@ def test_remembered_raw_maps_render_original_coordinates_and_report_missing_pair
     groups = [dict(label="one", lot_id="A", wf_ids=[1, 2]), dict(label="two", lot_id="B", wf_ids=[2])]
     rows = [map_row("A", 1), map_row("B", 2)]
     found = dict(lot_ids=["A", "B"], wf_ids=[1, 2])
-    monkeypatch.setattr(tool, "_load_rows_and_patterns", lambda args: (rows, {}, False, found))
+    monkeypatch.setattr(tool, "_open_map_source", lambda args: nullcontext((iter(rows), {}, found)))
     figures = []
     def capture(figure, **kwargs):
         figures.append(figure)
@@ -305,3 +306,58 @@ def test_remembered_raw_maps_render_original_coordinates_and_report_missing_pair
         assert actual == {(-2, 7): ["A", "B"], (3, -5): ["?", "?"]}
     tables = {table.table_id: table.rows for table in result.tables}
     assert validate_wafer_map_contract(tables, {"result": tables["wafer_map_dies"]})["verdict"] == "pass"
+
+
+def test_default_raw_lookup_keeps_reading_the_same_selection_past_first_page(monkeypatch, tmp_path):
+    import asyncio
+    import sqlite3
+    from types import SimpleNamespace
+
+    import harness.tools.load_wafer_maps as maps
+
+    class MapCursor(sqlite3.Cursor):
+        def execute(self, sql, binds=()):
+            if sql.upper().startswith("SET TRANSACTION READ ONLY"):
+                return super().execute("BEGIN")
+            return super().execute(sql, binds)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.close()
+
+    class MapConnection(sqlite3.Connection):
+        def cursor(self):
+            return super().cursor(MapCursor)
+
+    db_path = tmp_path / "maps.db"
+    with sqlite3.connect(db_path) as db:
+        db.execute("CREATE TABLE MAP (lot_id, wf_id, lot_cd, oper_det_desc, start_tm, end_tm, map_val_json)")
+        db.execute("CREATE TABLE DF_SYMBOL_BIN (lot_cd, process, param_nm, regex_pattern)")
+        values = [("A", i, "prod", "op", "s", "e", '{"MAP":["1,2,?,?"]}') for i in range(1, 204)]
+        db.executemany("INSERT INTO MAP VALUES (?, ?, ?, ?, ?, ?, ?)", [
+            *values, values[199], (*values[199][:4], "z-retest", *values[199][5:]),
+            ("other", 1, "prod", "op", "s", "e", '{"MAP":["1,2,A,B"]}'),
+            ("A", 9, "prod", "other", "s", "e", '{"MAP":["1,2,A,B"]}'),
+        ])
+
+    async def local(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(maps, "_connection", lambda: sqlite3.connect(db_path, factory=MapConnection))
+    monkeypatch.setattr(maps, "run_blocking", local)
+    args = maps.LoadWaferMapsInput(lot_ids=["A"], oper="op")
+    result = asyncio.run(maps.load_wafer_maps(args, SimpleNamespace()))
+    table = next(t for t in result.tables if t.table_id == "wafer_map_dies")
+    try:
+        assert result.status == "success" and table.complete
+        rows = [json.loads(line) for line in table.source] if hasattr(table, "source") else table.rows
+        assert {(r["lot_id"], r["wf_id"], r["oper"]) for r in rows} == {("A", n, "op") for n in range(1, 204)}
+        assert len({r["measurement_id"] for r in rows}) == len(rows) == 204
+        facts = result.scope["wafer_maps"]
+        assert (facts["wafer_count"], facts["measurement_count"], facts["duplicate_measurement_count"]) == (203, 204, 1)
+        assert not facts["truncated"] and facts["next_measurement_offset"] is None
+    finally:
+        if hasattr(table, "source"):
+            table.source.close()
