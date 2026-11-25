@@ -74,7 +74,7 @@ def _pinned_directory(stack, directory, access):
     for part in chain:
         handle = win32file.CreateFile(str(part), access if part == path else 0x80,
                                       win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE, None,
-                                      win32con.OPEN_EXISTING, win32con.FILE_FLAG_OPEN_REPARSE_POINT |
+                                      win32con.OPEN_EXISTING, win32file.FILE_FLAG_OPEN_REPARSE_POINT |
                                       win32con.FILE_FLAG_BACKUP_SEMANTICS, None)
         stack.callback(handle.Close)
         attrs = win32file.GetFileInformationByHandle(handle)[0]

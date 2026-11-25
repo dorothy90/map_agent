@@ -65,8 +65,12 @@ def test_cancelled_csv_copy_does_not_publish_partial_input(config):
         started = threading.Event()
         release = threading.Event()
         class StalledSource:
-            seek = source.seek
-            fileno = source.fileno
+            def seek(self, offset):
+                return source.seek(offset)
+
+            def fileno(self):
+                return source.fileno()
+
             def read(self, limit):
                 started.set()
                 assert release.wait(5)
@@ -99,9 +103,13 @@ def test_staged_programs_preserve_state_and_stream_excel(config, monkeypatch):
 
     def launch(*, cwd, argv, **kwargs):
         # Match the launcher's cwd/UTF-8 contract without simulating AppContainer.
-        return [sys.executable, "-I", "-c",
-                "import os,sys; os.chdir(sys.argv[1]); os.execv(sys.executable,[sys.executable,*sys.argv[2:]])",
-                str(cwd), *argv]
+        flags = ["-I", "-B", "-X", "utf8", "-u"]
+        assert argv[:len(flags)] == flags
+        # Run the staged script in this process: Windows execv starts a replacement
+        # process, which would release a wait on the parent before output is ready.
+        return [sys.executable, *flags, "-c",
+                "import os,runpy,sys; os.chdir(sys.argv[1]); sys.argv=sys.argv[2:]; "
+                "runpy.run_path(sys.argv[0],run_name='__main__')", str(cwd), *argv[len(flags):]]
     monkeypatch.setattr(windows_launcher, "command", launch)
 
     async def exercise():

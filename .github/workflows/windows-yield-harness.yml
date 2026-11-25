@@ -27,6 +27,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install service and dedicated analysis environments
+        id: install
         shell: pwsh
         run: |
           python -m pip install uv
@@ -34,7 +35,13 @@ jobs:
           uv sync --locked --python "$env:pythonLocation\python.exe"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           & .\08-YieldAgent\harness\isolation\setup_windows.ps1 -Python "$env:pythonLocation\python.exe"
-      - name: Verify Windows gateway and sandbox
+      - name: Verify native isolated Python and XLSX
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = (Resolve-Path 08-YieldAgent).Path
+          & .\.venv\Scripts\python.exe -m harness.evals.windows_isolation
+      - name: Verify Windows gateway and regression tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         shell: pwsh
         run: |
           $env:PYTHONPATH = (Resolve-Path 08-YieldAgent).Path
@@ -44,5 +51,3 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $tests = @(Get-ChildItem .\08-YieldAgent\harness\tests\test_windows*.py | ForEach-Object FullName)
           & $py -m pytest -q @tests
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          & $py -m harness.evals.windows_isolation
