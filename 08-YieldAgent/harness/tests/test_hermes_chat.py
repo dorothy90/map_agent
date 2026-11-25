@@ -16,7 +16,7 @@ from harness.control import RunController
 from harness.gateway.pending_controls import PendingControls
 from harness.gateway.session_rpc import SessionRPC
 from harness.gateway.session_store import MongoSessionStore
-from harness.instructions import load_domain_notes
+from harness.instructions import load_behavior_notes, load_domain_notes
 from harness.store import HarnessStore
 from harness.tools.registry import domain_registry
 from harness.web_cron_dispatch import gateway_schedule_lifespan
@@ -200,6 +200,7 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                 assert system_inputs[first_request:]
                 for system in system_inputs[first_request:]:
                     assert system.count(load_domain_notes()) == 1
+                    assert system.count(load_behavior_notes()) == 1
                     assert clock['requested_at'] in system and clock['timezone'] in system
                     assert f">= {local_cutoff.date()}T00:00:00" in system
                     assert f"<= {local_cutoff.isoformat()}" in system
