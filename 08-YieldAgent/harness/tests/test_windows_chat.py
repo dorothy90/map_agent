@@ -17,11 +17,13 @@ sys.path[:0] = sys.argv[1:3]
 from harness.hermes_chat_worker import WINDOWS_WEB_TOOLSETS
 from harness.native_tools import register_yield_tools
 from harness.tools.registry import native_domain_registry
+from run_agent import AIAgent
 from tools.registry import registry
 from model_tools import _select_tool_names
 from types import SimpleNamespace
 loop = asyncio.new_event_loop()
 try:
+    assert callable(AIAgent.run_conversation)
     executor = SimpleNamespace(registry=native_domain_registry(), execute=None)
     selected = set(executor.registry.tools) - {'run_python', 'execute_code'}
     names = register_yield_tools(registry, executor, loop, allowed=selected)

@@ -121,7 +121,10 @@ def ensure_private_root(root):
 
 class Job:
     def __init__(self):
-        self.handle = win32job.CreateJobObject(None, None)
+        # pywin32 311 requires a string here. The Win32 NULL name creates a private unnamed job.
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        create = _function(kernel, 'CreateJobObjectW', w.HANDLE, w.LPVOID, w.LPCWSTR)
+        self.handle = pywintypes.HANDLE(_check(create(None, None)))
         try:
             info = win32job.QueryInformationJobObject(self.handle, win32job.JobObjectExtendedLimitInformation)
             info['BasicLimitInformation']['LimitFlags'] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
