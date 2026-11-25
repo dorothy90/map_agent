@@ -73,7 +73,7 @@ APP_MODULES = {
 }
 TOOLS = {
     "registry":"도구 공개 스키마·실행 명세 묶음", "list_tables":"Oracle 테이블·컬럼 정보",
-    "query_db":"조회 전용 SQL과 원본 행/스키마 보존", "python_tools":"read_result·run_python 결과 읽기와 분석",
+    "query_db":"조회 전용 SQL과 원본 행/스키마 보존", "python_tools":"read_result 결과 읽기와 분석",
     "table_artifact":"render_yield_table 수율표 및 결과 링크",
     "map_matrix": "조회 결과의 행·열별 맵과 화면 템플릿", "map_matrix_counts": "맵 행렬 전체의 좌표별 계수 집계",
     "map_matrix_plot": "맵 행렬의 셀 표시", "map_page_result": "맵 결과 페이지와 이어 읽기",

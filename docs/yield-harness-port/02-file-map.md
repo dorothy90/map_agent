@@ -18,6 +18,12 @@
 
 `H/tools/registry.py:native_domain_registry`가 도구를 모은다. `H/native_tools.py:register_yield_tools`가 Hermes에 등록하고 `H/executor.py`가 사용자·세션에 맞춰 실행한다. MCP 서버를 띄워 도구를 노출하는 경로는 이번 일반 채팅의 진입점이 아니다.
 
+### 다른 에이전트에 MCP 도구 노출
+
+다른 에이전트에 도구를 노출할 때만 프로젝트 루트에서 `PYTHONPATH=08-YieldAgent .venv/bin/python -m harness.mcp_server`를 실행한다. `domain_registry`가 MCP에 여는 도구는 `list_tables`, `query_db`, `read_result`, `render_yield_table`, `load_wafer_maps`의 5개다. 웹 채팅의 `native_domain_registry`는 여기에 `query_lot_history`를 더해 전용 수율 도구 6개를 등록한다. MCP에는 `query_lot_history`와 별도 Hermes 도구인 `execute_code`가 없다. 같은 세션을 유지하려면 `HARNESS_MCP_SESSION_ID`를 쓴다.
+
+### 웹 채팅 도구와 구현 파일
+
 | 공개 이름 | 구현 파일 | 같이 확인할 의존성과 데이터 |
 |---|---|---|
 | list_tables | H/tools/list_tables.py | Oracle 딕셔너리와 앱 계정의 가시성. 실제로 읽을 수 있는 사내 테이블·뷰 기준과 비교 |
@@ -100,9 +106,13 @@ Ubuntu 백엔드에서 `HARNESS_SHARED_YIELD_DIR`에 공용 수율 자료 디렉
 
 | 경로 | 보존할 기능 |
 |---|---|
-| F/src/main.tsx → F/src/web/entry.tsx → HermesWebApp.tsx | 실제 웹 진입점, 세션 목록, 새 대화, 기존 채팅 화면 구성 |
+| F/src/main.tsx → F/src/web/entry.tsx → HermesWebApp.tsx | 실제 웹 진입점, 스트리밍, 세션 목록·재개, 새 대화, 기존 채팅 화면 구성 |
+| F/src/web/HermesWebApp.tsx, F/src/web/web.css | 여러 질문을 모은 clarify 카드, 실행 중지 |
+| F/src/hermes/components/assistant-ui/clarify/, F/src/hermes/components/assistant-ui/tool/approval.tsx | 확인 카드와 승인 카드. 확인 카드 UI는 조건 상속 커밋(`9ff7d746`)과 함께 옮긴다. |
+| F/src/web/McpServers.tsx | 직원이 연결하는 MCP 서버 페이지 |
+| F/src/web/entry.tsx, F/src/hermes/components/assistant-ui/embeds/frame-embed.tsx | 본문 수율 HTML 표 |
 | F/src/web/WebSessionRow.tsx, use-web-session-list.ts, session-labels.ts, sidebar.css | 사이드바의 세션 목록·제목·선택·로딩/실패 |
-| F/src/web/execution-trace.tsx, F/src/hermes/components/assistant-ui/thread/ 및 tool/ | 진행 중 설명, 완료 기록 접기, 보낸 메시지의 시간·복사 동작, 모델 응답 표시 순서 |
+| F/src/web/execution-trace.tsx, F/src/protocol/usage-tick.ts, F/src/hermes/components/assistant-ui/thread/ 및 tool/ | 도구 진행과 도구 카드, 토큰·시간 사용량, 완료 기록 접기, 보낸 메시지의 시간·복사 동작, 모델 응답 표시 순서 |
 | F/src/web/ProductPicker.tsx, SkillsCatalog.tsx, SkillsCatalog.css | DB 제품 선택, 프로필 스킬 목록과 새 스킬 진입 |
 | F/src/web/wafer-map-gallery.tsx, wafer-map-data.ts, web.css | 여러 맵의 표시와 확대, 응답 폭, 실제 산출물 연결 |
 | F/src/platform/, src/protocol/, src/hermes/ | 기존 Hermes UI 이식 코드와 수율 웹 호스트 어댑터. 이 폴더 전체를 미수정 원본으로 간주하지 않는다. |

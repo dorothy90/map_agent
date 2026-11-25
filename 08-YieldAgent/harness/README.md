@@ -92,7 +92,7 @@ Hermes/native가 유일한 실행 경로다. 이전 standalone supervisor 서버
 
 - `POST /runs`: `session_id`, `request_id`, `query`로 실행 생성. 같은 요청 ID의 중복 전송을 합친다.
 - `GET /runs/{run_id}`와 `GET /runs/{run_id}/events?after=...`: 현재 상태와 저장된 순서의 이벤트를 읽는다.
-- `POST /runs/{run_id}/cancel`: 도메인 프로세스·Python 컨테이너·자식 조사를 함께 중지한다.
+- `POST /runs/{run_id}/cancel`: 도메인 프로세스·격리된 Python kernel·자식 조사를 함께 중지한다.
 - `POST /runs/{run_id}/input`: `kind=input|steer`, `request_id`, `goal_revision`, `value`; 질문 답변에는 `interrupt_id`도 필요하다.
 - `/harness/results/{result_id}`와 `/harness/artifacts/{artifact_id}`: 같은 principal과 대화의 원본·산출물만 읽는다.
 

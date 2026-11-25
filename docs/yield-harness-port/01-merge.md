@@ -105,7 +105,7 @@ MERGE할 때는 예를 들어 `git diff --no-index -- "$DEST/08-YieldAgent/commo
 | 3. 데이터·도구 | harness/tools/registry.py, native_tools.py, executor.py, tools/query_db.py, list_tables.py, python_tools.py, table_artifact.py, load_wafer_maps.py, lot_history.py | 등록된 수율 도구 이름과 JSON 입력, 소유권, 표·산출물 결과를 유지. 응답의 result_id가 가리키는 전체 자료에서 요약. 필수 공용 파일은 FILES.tsv 참조 |
 | 4. 실행과 상태 | control.py, hermes_chat.py, hermes_chat_worker.py, store.py, runtime/, isolation/ | 새 채팅이 stock_chat 경로로 진입. 실제 사용자와 session/run에 결과 귀속, 모델 호출·취소·다중 턴 확인. 생성 Python은 격리 백엔드에서 실행 |
 | 5. API·인증 | app.py, router.py, gateway/auth.py, routes.py, services.py, manifest.json, dev/local_gateway_app.py | 사내 호스트가 신뢰하는 사용자 ID와 WS 연결 정책을 주입. 개인 개발용 고정 사용자 게이트웨이는 격리된 단일 사용자 테스트에 사용. 권한이 다른 두 실제 테스트 계정으로 세션·산출물 분리 확인 |
-| 6. UI | harness_console/src/main.tsx, src/web/entry.tsx, HermesWebApp.tsx, src/platform/, src/protocol/, src/hermes/, vite.config.ts | 운영 resolver, WebSocket 스트리밍, 세션 복구, 표·HTML 링크, 제품 선택, 스킬 목록. 서비스 라우트와 API 주소는 한 배포 대상으로 연결 |
+| 6. UI | harness_console/src/main.tsx, src/web/entry.tsx, HermesWebApp.tsx, src/platform/, src/protocol/, src/hermes/, vite.config.ts | 운영 resolver, WebSocket 스트리밍, 도구 카드, 세션 목록·재개, 중지, 여러 질문을 모은 clarify 카드, 승인 카드, MCP 서버 페이지, 본문 수율 HTML 표, 웨이퍼 맵 이미지, 토큰·시간 사용량, 제품 선택, 스킬 목록을 확인한다. 확인 카드 UI는 조건 상속 커밋(`9ff7d746`)과 함께 옮긴다. 서비스 라우트와 API 주소는 한 배포 대상으로 연결한다. |
 | 7. 업무 프로필과 데이터 | 03-runtime-data.md 및 profile-seed/ | 수율일보 등 선택 스킬 적용, 필요시 개인 메모/대화 복원. 회사 데이터로 표·산점도·맵을 DB와 대조 |
 | 8. 파일 검수 | 04-acceptance.md | ADD·KEEP·MERGE·HOLD 결정과 실제 변경 대조. 사내에서 이미 실행 가능한 경우에만 업무 동작도 확인 |
 

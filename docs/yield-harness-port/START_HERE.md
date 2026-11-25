@@ -5,10 +5,13 @@
 일반 채팅에서 Hermes가 직원 프로필의 대화 이력을 복원하고 도구를 호출하며 최종 답변을 작성한다. 백엔드는 직원별 접근 권한을 확인하고 전용 수율 도구 6개를 등록한다. 일반 웹 채팅에서는 Hermes 원본 자동 검색이 직원에게 허용된 도구를 불러온다. 공용 파일 읽기·검색·이미지 분석, 작업 위임, 할 일 목록도 Hermes로 실행한다. [공용 폴더 설정과 도구별 권한](02-file-map.md#shared-files) · [두 채팅 검증 기록](VERIFICATION.md#shared-files) [자동 검색과 공정명 처리 검증](VERIFICATION.md#native-discovery) · [GLM 후속 질문 화면](VERIFICATION.md#glm-map)
 
 Windows 개발 PC에서 새 채팅으로 맵 조회와 엑셀 다운로드를 검증할 때는 [Windows 실채팅 절차](06-windows-chat.md)를 따른다.
+Windows는 로컬 테스트 전용이며 운영 배포는 Ubuntu에서 `local` 백엔드와 `bwrap`을 사용한다.
 
 ## 이전 Windows 이식본에서 이어가기
 
-Windows 맵·엑셀 지원 버전(`f7232c7c`)까지 옮겼다면, 다음 기능 커밋(`9ff7d746`)의 차이는 채팅 조건 처리 파일 6개다. 같은 대화에서 사용자가 확정한 조건은 후속 질문에 이어 쓰고, 다른 대화에서 검색된 조건은 확인 카드에서 사용자가 선택한 뒤 조회에 쓴다.
+Windows 맵·엑셀 지원 버전(`f7232c7c`)까지 옮겼다면, 다음 기능 커밋(`9ff7d746`)의 차이는 채팅 조건 처리 파일 6개다. 같은 대화에서 사용자가 확정한 조건은 후속 질문에 이어 쓴다. 답변 첫 줄에 `이번 대화 기준: …`으로 이어받은 조건과 출처를 밝힌다. `session_search`로 다른 대화에서 찾은 조건은 확인 카드의 추천 선택지일 뿐이다. 사용자가 고르기 전에는 조회에 쓰지 않는다. 저수율이나 그룹 분할 기준은 현재 대화에서 확인되지 않았으면 항상 `clarify`로 묻는다.
+
+`9ff7d746`까지 옮겼다면 다음 커밋은 `cb58209b`다. 안 쓰는 `run_python`과 Docker 실행 경로를 제거한다. 웹 채팅의 Python은 Hermes 원본 `execute_code`와 `read_result(export_for_python=true)`를 사용한다. 운영 분석 격리는 Ubuntu의 `bwrap`이며, `runtime/container.py`와 `runtime/Dockerfile`은 더 이상 없다. 이 커밋을 포함한 HEAD를 이식할 때는 같은 커밋에서 다시 만든 `FILES.tsv`를 사용한다.
 
 | 사내에서 비교할 경로 (`08-YieldAgent/harness/` 기준) | 확인할 내용 |
 |---|---|
