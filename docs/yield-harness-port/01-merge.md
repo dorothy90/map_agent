@@ -79,6 +79,8 @@ Windows에서 출처의 모드는 Git 트리에서 읽는다. 대상의 비교�
 
 여기부터는 비교표 검토를 마친 뒤 진행한다. 사내 이식 브랜치에서 작업하고 이미 변경 중인 파일을 보존한다.
 
+Windows에서 실채팅까지 검증하려면 [Windows AppContainer 개발 환경](06-windows-chat.md)을 준비한다.
+
 **Windows는 개발 PC, Ubuntu는 실행 서버다.** Ubuntu의 기본 분석 방식은 `local`이다. 하네스가 현재 서비스 계정으로 시스템의 `/usr/bin/bwrap`을 직접 실행해 사용자별 파일과 네트워크를 분리한다. SSH 서비스·전용 계정·키, Docker, WSL 설치는 필요 없다. 자세한 실행 조건은 [Ubuntu 로컬 실행](../../08-YieldAgent/harness/isolation/README.ko.md)을 따른다.
 
 기존 사내 환경에서 `HARNESS_ISOLATION_BACKEND=ssh`를 명시했다면 `local`로 바꾼다. 배포 전 같은 Ubuntu 서비스 계정으로 [직원별 파일 격리 검사](04-acceptance.md#ubuntu-배포-전-직원별-파일-격리)를 통과해야 한다. 서버를 시작한 뒤 루프백 `/health/isolation`에서 `backend=local` 및 `sandbox=bwrap`이 나오는지 본다. 다음으로 새 채팅에서 실제 DB 조회와 생성 Python 실행을 확인한다. 개발용 고정 사용자 게이트웨이는 로컬 검증에 사용하고, 사내 서비스에는 인증된 사용자 ID를 전달하는 기존 게이트웨이를 연결한다.

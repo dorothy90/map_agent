@@ -38,6 +38,7 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTHONPATH = (Resolve-Path 08-YieldAgent).Path
+          $env:HARNESS_WINDOWS_TEST_PYTHON = Join-Path $env:LOCALAPPDATA 'YieldHarness\analysis-venv\Scripts\python.exe'
           $py = (Resolve-Path .venv\Scripts\python.exe).Path
           & $py -c "from harness.dev.local_gateway_app import app"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

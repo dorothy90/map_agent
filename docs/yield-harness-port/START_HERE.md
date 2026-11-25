@@ -4,6 +4,8 @@
 
 일반 채팅에서 Hermes가 직원 프로필의 대화 이력을 복원하고 도구를 호출하며 최종 답변을 작성한다. 백엔드는 직원별 접근 권한을 확인하고 전용 수율 도구 6개를 등록한다. 일반 웹 채팅에서는 Hermes 원본 자동 검색이 직원에게 허용된 도구를 불러온다. 공용 파일 읽기·검색·이미지 분석, 작업 위임, 할 일 목록도 Hermes로 실행한다. [공용 폴더 설정과 도구별 권한](02-file-map.md#shared-files) · [두 채팅 검증 기록](VERIFICATION.md#shared-files) [자동 검색과 공정명 처리 검증](VERIFICATION.md#native-discovery) · [GLM 후속 질문 화면](VERIFICATION.md#glm-map)
 
+Windows 개발 PC에서 새 채팅으로 맵 조회와 엑셀 다운로드를 검증할 때는 [Windows 실채팅 절차](06-windows-chat.md)를 따른다.
+
 ## 무엇을 열어야 하나
 
 [2026-11-25 이식 재검증](VERIFICATION.md#port-2026-11-25)에서는 실제 4SA 조회 1,200행, 수율일보의 표·산점도·BIN 맵과 업무 도구를 확인했다. 2026-11-24 실제 웹 채팅에서 수율 조회, 스킬 호출, 후속 질문을 확인했다. 도구 없는 모델 평가와 가상 자료 평가도 같은 Hermes 진입점에서 완료됐다. Ubuntu 직원별 파일 격리는 배포 전 필수 확인 항목이다. [웹 콘솔 정리 검증](VERIFICATION.md#unused-harness-cleanup) · [Hermes 실행 경로 검증](VERIFICATION.md#stock-only) · [Python 변수와 엑셀 다운로드 검증](VERIFICATION.md#web-python-delivery) · [Ubuntu 통과 기준](04-acceptance.md#ubuntu-배포-전-직원별-파일-격리)

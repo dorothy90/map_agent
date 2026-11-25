@@ -16,6 +16,10 @@
 
 이 명령은 `/runs`·결과·산출물 API를 제공한다. 웹 채팅에는 저장소에 포함된 `harness.dev.local_gateway_app`이 이 API와 Hermes 게이트웨이를 함께 연결한다.
 
+### Windows에서 웹 채팅 실행
+
+[Windows 개발용 실행과 맵·엑셀 검증](../../docs/yield-harness-port/06-windows-chat.md)에 따라 단일 사용자 게이트웨이와 Windows AppContainer 분석 실행기를 준비한다.
+
 ### Ubuntu 또는 macOS에서 웹 채팅 실행
 
 새 체크아웃에서 Python 3.11과 Node.js 22.12 이상을 사용한다. 개발 환경의 모델 공급자, Oracle, MongoDB, `HARNESS_PRINCIPAL` 설정을 환경 변수나 저장소 루트의 로컬 `.env`에 준비한다. 로컬 게이트웨이는 Ubuntu에서 `bwrap`, macOS에서 Seatbelt를 사용한다. [분석 실행 환경](isolation/README.ko.md)에서 OS별 준비와 확인 방법을 확인한다. 별도 검증 환경을 띄우면 전용 `HARNESS_MONGO_DB`, principal, 격리 작업 디렉터리를 사용한다. 사용자 스킬과 메모리는 프로필 데이터로 별도 보관한다.
