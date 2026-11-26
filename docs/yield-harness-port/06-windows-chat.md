@@ -34,7 +34,7 @@ $env:HARNESS_WEB_PORT = '61413'
 $service = (Resolve-Path .\.venv\Scripts\python.exe).Path
 & $service -m harness.evals.windows_isolation
 if ($LASTEXITCODE) { throw "Windows 분석 실행기 검증 실패" }
-& $service -m uvicorn harness.dev.local_gateway_app:app --host 127.0.0.1 --port 61402
+& $service -m uvicorn harness.dev.local_gateway_app:app --host 0.0.0.0 --port 61402
 ```
 
 첫 검사는 모델·DB 없이 제한 프로세스를 실제로 실행해 입력 CSV 읽기, 같은 채팅의 Python 변수 재사용, 픽셀과 좌표가 있는 한글 이름의 엑셀 생성·재개봉, 다른 채팅의 입력 접근 거부를 확인한다. 격리 확인에 실패하면 오류가 난 단계를 기록한다. 서버는 로컬 단일 프로세스로 실행한다.
@@ -48,7 +48,7 @@ npm ci
 if ($LASTEXITCODE) { throw "프론트 패키지 설치 실패" }
 $env:VITE_HARNESS_LOCAL_GATEWAY = '1'
 $env:HARNESS_GATEWAY_TARGET = 'http://127.0.0.1:61402'
-npm run dev -- --host 127.0.0.1 --port 61413 --strictPort
+npm run dev -- --host 0.0.0.0 --port 61413 --strictPort
 ```
 
 상태 응답에서 `backend=windows`와 `sandbox=appcontainer`를 확인한다. 브라우저에서 `http://127.0.0.1:61413`을 연다.

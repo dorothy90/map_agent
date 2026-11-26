@@ -1,7 +1,7 @@
-"""Loopback-only browser gateway for the local harness controller.
+"""Browser gateway for local harness development with LAN access.
 
 Login is handled upstream by the company platform. This local gateway does no
-login of its own: every local request runs as the fixed HARNESS_PRINCIPAL user,
+login of its own: every request runs as the fixed HARNESS_PRINCIPAL user,
 which keeps per-user folders and isolation working.
 """
 import logging
@@ -11,8 +11,8 @@ from pathlib import Path
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
-from starlette.responses import JSONResponse
+from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
 
 PROJECT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT))
@@ -24,15 +24,10 @@ sys.path.insert(0, str(PROJECT))
 from harness.dev.dotenv_load import load_existing_dotenv
 load_existing_dotenv(PROJECT, override=False)
 
-from harness.gateway.auth import AuthenticationFailure, Principal
+from harness.gateway.auth import Principal
 from harness.gateway.routes import build_gateway_router
 from harness.gateway.services import GatewayServices
 from harness.web_cron_dispatch import gateway_schedule_lifespan
-
-WEB_HOST = f"127.0.0.1:{int(os.getenv('HARNESS_WEB_PORT', '61313'))}"
-GATEWAY_HOST = f"127.0.0.1:{int(os.getenv('HARNESS_GATEWAY_PORT', '61302'))}"
-ORIGIN = f'http://{WEB_HOST}'
-HOSTS = frozenset((WEB_HOST, GATEWAY_HOST))
 
 
 class TicketLogRedaction(logging.Filter):
@@ -58,23 +53,15 @@ def install_ticket_log_redaction():
 install_ticket_log_redaction()
 
 
-def local_peer(connection):
-    return (connection.client is not None
-            and connection.client.host in ('127.0.0.1', '::1')
-            and connection.headers.get('host') in HOSTS)
-
-
 class FixedLocalPrincipal:
-    """PrincipalResolver for local use: every local connection is the configured user."""
+    """PrincipalResolver for local use: every connection is the configured user."""
 
     async def resolve(self, connection):
-        if not local_peer(connection):
-            raise AuthenticationFailure(403)
         connection.state.file_ticket_required = True
         return Principal(connection.app.state.principal_user)
 
     async def allows(self, websocket, principal):
-        return websocket.headers.get('origin') == ORIGIN
+        return True
 
     async def verify_and_consume(self, websocket, principal):
         # No login session to bind a ticket to; connecting is enough.
@@ -118,14 +105,11 @@ def create_app(*, base_app=None, user=None, services_factory=None):
             yield
 
     app = FastAPI(title='Yield local gateway', lifespan=lifespan, docs_url=None, redoc_url=None)
+    app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
     resolver = FixedLocalPrincipal()
 
     @app.middleware('http')
-    async def local_only(request, call_next):
-        if not local_peer(request):
-            return JSONResponse({'error': 'Local host only'}, status_code=403)
-        if request.method not in ('GET', 'HEAD', 'OPTIONS') and request.headers.get('origin') != ORIGIN:
-            return JSONResponse({'error': 'Origin rejected'}, status_code=403)
+    async def local_principal(request, call_next):
         request.state.principal_id = request.app.state.principal_user
         response = await call_next(request)
         response.headers['Cache-Control'] = 'no-store'

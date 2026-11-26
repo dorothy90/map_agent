@@ -49,8 +49,6 @@ def health():
 
 @app.get("/health/isolation")
 async def isolation_health(request: Request):
-    if request.client is None or request.client.host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(403, "local health check only")
     settings = request.app.state.harness.settings
     if isinstance(settings.isolation, WindowsIsolationSettings):
         run = "health-" + uuid.uuid4().hex
@@ -75,7 +73,7 @@ async def isolation_health(request: Request):
         prepare_isolated_run, settings.isolation, run_id, principal_id,
     )
     result = await ProcessRuntime(
-        isolation=settings.isolation, run_id=run_id, principal_id=principal_id,
+        isolation=settings.isolation, run_id=run_id, principal_id=principal_id, session_id="health",
     ).execute("print('health-worker-ok')", {}, timeout=60)
     if result.get("status") != "success":
         raise HTTPException(503, "isolated worker failed")

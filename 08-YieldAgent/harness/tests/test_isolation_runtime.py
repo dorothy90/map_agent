@@ -24,6 +24,24 @@ def isolation(tmp_path):
         launcher=launcher, sandbox="auto")
 
 
+def test_process_runtime_passes_session_id_to_backend(monkeypatch, tmp_path):
+    from harness.runtime.process import ProcessRuntime
+
+    calls = []
+    backend = object()
+
+    def capture(*args):
+        calls.append(args)
+        return backend
+
+    monkeypatch.setattr("harness.runtime.process.isolation_backend", capture)
+    config = isolation(tmp_path)
+    runtime = ProcessRuntime(isolation=config, run_id="run-1", principal_id="alice", session_id="session-1")
+
+    assert calls == [(config, "run-1", "alice", "session-1")]
+    assert runtime.isolated is backend
+
+
 def test_process_runtime_uses_only_isolated_backend(monkeypatch, tmp_path):
     from harness.runtime.process import ProcessRuntime
 

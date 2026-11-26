@@ -63,4 +63,5 @@ def test_preflight_uses_configured_isolation(monkeypatch, isolated_settings_env)
     assert results['python']['runtime'] == 'isolated'
     assert calls[0]['isolation'] is settings.isolation
     assert calls[0]['principal_id'] == settings.principal
+    assert calls[0]['session_id'] == 'preflight'
     assert calls[0]['run_id'].startswith('preflight-')

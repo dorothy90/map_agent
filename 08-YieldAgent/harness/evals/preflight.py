@@ -42,7 +42,7 @@ async def check():
         results["oracle"] = {"ok": False, "error_type": type(exc).__name__}
     try:
         runtime = ProcessRuntime(isolation=settings.isolation,
-            run_id="preflight-" + uuid.uuid4().hex, principal_id=settings.principal)
+            run_id="preflight-" + uuid.uuid4().hex, principal_id=settings.principal, session_id="preflight")
         result = await runtime.execute("emit_table(pd.DataFrame([{'value': 1}]))", {})
         results["python"] = {"ok": result["status"] == "success", "runtime": "isolated",
             "error": result.get("error")}

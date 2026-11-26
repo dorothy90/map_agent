@@ -20,7 +20,7 @@ export default defineConfig({
   plugins: [hermesSystemFonts(), react(), tailwindcss()],
   build: { rollupOptions: { output: { manualChunks: { markdown: ['react-markdown', 'remark-gfm', 'rehype-highlight'] } } } },
   server: {
-    host: '127.0.0.1', port: 5175, strictPort: true,
+    host: process.env.HARNESS_WEB_HOST || '0.0.0.0', port: 5175, strictPort: true,
     proxy: {
       '/api/auth/ws-ticket': { target: gatewayTarget, changeOrigin: true },
       '/harness/mcp': { target: gatewayTarget, changeOrigin: true },

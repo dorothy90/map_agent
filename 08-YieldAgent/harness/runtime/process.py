@@ -12,11 +12,11 @@ from .output_files import read_worker_output
 
 
 class ProcessRuntime:
-    def __init__(self, executable=None, *, isolation=None, run_id=None, principal_id=None):
+    def __init__(self, executable=None, *, isolation=None, run_id=None, principal_id=None, session_id=None):
         self.executable = executable or sys.executable
         self.isolated = None
         if isolation is not None:
-            self.isolated = isolation_backend(isolation, run_id, principal_id)
+            self.isolated = isolation_backend(isolation, run_id, principal_id, session_id)
 
     async def execute(self, code, datasets, timeout=60):
         if self.isolated is not None:
