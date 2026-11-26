@@ -1,18 +1,32 @@
 'use client'
 
 import { Kbd } from '@/components/ui/kbd'
+import { Tip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { bareChoice, RECOMMENDED_LABEL } from '@/store/clarify'
+import { useWebPresentation } from '../../../../../web/presentation'
 
 export const letterFor = (index: number): string => String.fromCharCode(65 + index)
 
 // The backend tags the agent's preferred option (`mark_recommended`); the card
 // renders the label in tertiary text so the option itself still reads first.
 export function ChoiceLabel({ choice }: { choice: string }) {
+  const web = useWebPresentation()
   const bare = bareChoice(choice)
 
   if (bare === choice) {
     return <>{choice}</>
+  }
+
+  if (web) {
+    return (
+      <>
+        <span>{bare}</span>
+        <Tip label="추천" side="bottom">
+          <span aria-label="추천" className="web-choice-recommended" role="img" />
+        </Tip>
+      </>
+    )
   }
 
   return (
@@ -91,9 +105,10 @@ export function ChoiceButton({
       type="button"
     >
       <KeyBadge char={char} preview={active} selected={Boolean(selected)} />
-      <span className="flex-1 wrap-anywhere">
+      <span className="web-choice-text flex-1 wrap-anywhere">
         <ChoiceLabel choice={choice} />
       </span>
+      {selected ? <span aria-hidden="true" className="web-clarify-check" /> : null}
     </button>
   )
 }

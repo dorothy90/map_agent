@@ -1,4 +1,4 @@
-import { useWebTraceMessage, WebAnswerAuthor } from '../../../../web/execution-trace'
+import { useWebTraceMessage, WebAnswerAuthor, WebTraceAction } from '../../../../web/execution-trace'
 import { useWebPresentation } from '../../../../web/presentation'
 import { disabledNative } from '@/pr9-disabled-native'
 import {
@@ -222,6 +222,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
 }) => {
   const messageId = useAuiState(s => s.message.id)
   const trace = useWebTraceMessage(messageId)
+  const webReply = useWebPresentation()
   const messageRuntime = useMessageRuntime()
   const threadRuntime = useThreadRuntime()
   const responseIds = useContext(ResponseMessageIds)
@@ -287,7 +288,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   // a value the hook already ignores. Capture it once, off the runtime, with
   // no subscription at all.
   const [initiallyRunning] = useState(() => messageRuntime.getState().status?.type === 'running')
-  const enterRef = useEnterAnimation(initiallyRunning, `assistant-message:${messageId}`)
+  const enterRef = useEnterAnimation(initiallyRunning && !webReply, `assistant-message:${messageId}`)
 
   // Double-click the reply to heart it (iMessage). Undefined while reactions
   // are off, so the root carries no listener at all.
@@ -302,6 +303,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
       hidden={trace?.archived && !collapsedNotice && !approval || undefined}
       data-approval-activity-only={approval && activityOnly ? '' : undefined}
       data-answer-id={messageId}
+      data-reply-enter={webReply && hasVisibleText && initiallyRunning || undefined}
       data-role="assistant"
       data-slot="aui_assistant-message-root"
       // Collapsed inter-agent rows never carried the tapback listener; keeping
@@ -1231,6 +1233,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
             <RefreshCwIcon className="size-3.5" />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
+        <WebTraceAction messageId={messageId} />
       </ActionBarPrimitive.Root>
       {/* ONE slot, Slack-style: the picker trigger and the landed reaction are
           the same element, so reacting never shifts layout. Empty → ☺, hidden
@@ -1362,5 +1365,5 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ dura
 
 function WebAnswerCopy(props: React.ComponentProps<typeof CopyButton>) {
  const web=useWebPresentation()
- return <CopyButton {...props} appearance={web ? 'inline' : 'icon'} buttonSize={web ? undefined : 'icon'} label={web ? '답변 복사' : props.label}/>
+ return <CopyButton {...props} appearance="icon" buttonSize={web ? 'icon-xs' : 'icon'} className={web ? 'aui-button-icon' : undefined} label={web ? '답변 복사' : props.label}/>
 }

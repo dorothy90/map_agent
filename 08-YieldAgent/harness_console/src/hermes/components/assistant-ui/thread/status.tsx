@@ -1,3 +1,5 @@
+import { ReplyProgress, replyPreparingLabel } from '../../../../web/YuriMascot'
+import { useWebTraceProgress } from '../../../../web/execution-trace'
 import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useEffect, useMemo, useState } from 'react'
@@ -251,6 +253,7 @@ export const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
   const { compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
   const web = useWebPresentation()
+  const traceProgress = useWebTraceProgress()
   const elapsed = useElapsedSeconds(!web, undefined, turnStartedAt)
   const hint = useStatusHint(compacting, drafting, providerWait)
   // Renderer-synthesized load bar: covers loads the backend's wait loop
@@ -258,13 +261,11 @@ export const ResponseLoadingIndicator: FC = () => {
   // the main request — triggered the autoload). A real wait frame wins.
   const localLoad = useLocalModelLoad(!hint)
 
+  if (web) return traceProgress ? null : <ReplyProgress label={hint || replyPreparingLabel} />
+
   return (
-    <StatusRow data-slot="aui_response-loading" label={hint || (web ? '응답 준비 중' : t.assistant.thread.loadingResponse)}>
-      {web ? (
-        <span className="web-typing-bubble" aria-hidden="true"><i/><i/><i/></span>
-      ) : (
-        <StatusPulse aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80" kind="opacity" />
-      )}
+    <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>
+      <StatusPulse aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80" kind="opacity" />
       {hint ? (
         <WaitHint hint={hint} />
       ) : localLoad ? (

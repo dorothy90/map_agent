@@ -105,12 +105,13 @@ export async function listSessions(
   limit = 40,
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
-  order: 'created' | 'recent' = 'recent'
+  order: 'created' | 'recent' = 'recent',
+  offset = 0
 ): Promise<PaginatedSessions> {
   const result = await hermesApi<PaginatedSessions>({
     ...profileScoped(),
     path:
-      `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
+      `/api/sessions?limit=${limit}&offset=${offset}&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
@@ -118,7 +119,7 @@ export async function listSessions(
   return {
     ...result,
     sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
-    offset: 0
+    offset
   }
 }
 

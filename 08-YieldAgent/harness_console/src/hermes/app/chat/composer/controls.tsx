@@ -1,4 +1,3 @@
-import { ArrowUp, Square as StopIcon } from 'lucide-react'
 import { useWebPresentation } from '../../../../web/presentation'
 import { useStore } from '@nanostores/react'
 
@@ -92,8 +91,8 @@ export function ComposerControls({
   const showStop = busy && !hasComposerPayload
 
   if (web) {
-    return <button className="web-send-button" type="submit" title={showStop ? '중지' : '보내기'} aria-label={showStop ? '중지' : '보내기'} data-web-stop={showStop || undefined} disabled={disabled || !canSubmit} onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}>
-      {showStop ? <StopIcon size={14} aria-hidden="true"/> : <ArrowUp size={18} aria-hidden="true"/>}
+    return <button className="web-send-button" type="submit" title={showStop ? '중지' : '보내기'} aria-label={showStop ? '중지' : '보내기'} data-web-stop={showStop || undefined} disabled={(!showStop && disabled) || !canSubmit} onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}>
+      {showStop ? <span className="web-stop-icon" aria-hidden="true"/> : <span className="web-send-icon" aria-hidden="true"/>}
     </button>
   }
 

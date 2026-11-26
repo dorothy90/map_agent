@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Command } from 'cmdk'
-import { Check, ChevronDown, Layers2, Search } from 'lucide-react'
+import { Check, ChevronDown, Search } from 'lucide-react'
 import { Popover } from 'radix-ui'
 import { useState, type RefObject } from 'react'
 
@@ -33,11 +33,11 @@ export function ProductPicker({ value, onChange, fetcher, container }: Props) {
   return <Popover.Root open={open} onOpenChange={next => { setOpen(next); setSearch('') }}>
     <Popover.Trigger asChild>
       <button type="button" className="web-product-trigger" aria-label={`분석 대상 제품, ${label}`}>
-        <Layers2 size={15} aria-hidden="true"/><span>{label}</span><ChevronDown size={13} aria-hidden="true"/>
+        <span className="web-product-icon" aria-hidden="true"/><span>{label}</span><ChevronDown size={13} aria-hidden="true"/>
       </button>
     </Popover.Trigger>
     <Popover.Portal container={container.current}>
-      <Popover.Content className="web-product-popup" aria-label="분석 대상 제품" align="start" sideOffset={7} collisionPadding={12}>
+      <Popover.Content className="web-product-popup yagent-popover" aria-label="분석 대상 제품" align="start" sideOffset={7} collisionPadding={12}>
         <Command label="제품 코드 검색" shouldFilter={false} loop>
           <div className="web-product-search">
             <Search size={15} aria-hidden="true"/>

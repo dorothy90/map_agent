@@ -7,6 +7,7 @@ import { useMemo, useRef, useState } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { $settledClarifyResults, type ClarifyRequest, sessionClarifyRequests } from '@/store/clarify'
+import { useWebClarifyOffset } from '../../../../web/execution-trace'
 
 import { selectMessageRunning } from '../tool/fallback-model'
 
@@ -52,6 +53,7 @@ function canonicalSiblingGroup(requests: ClarifyRequest[], requestId: string): C
 }
 
 function ClarifyToolLive(props: ToolCallMessagePartProps) {
+  const questionOffset = useWebClarifyOffset(props.toolCallId)
   // The tool row is in whichever session's transcript rendered it — read THAT
   // session's clarify (primary or tile), not the globally-active one.
   const sessionId = useStore(useSessionView().$runtimeId)
@@ -118,7 +120,7 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
       return null
     }
 
-    return <ClarifyToolStepper onAnswered={() => setAnswered(true)} requests={liveSiblings} />
+    return <ClarifyToolStepper onAnswered={() => setAnswered(true)} questionOffset={questionOffset} requests={liveSiblings} />
   }
 
   // The canonical request group has left the store (local submit or
@@ -146,6 +148,7 @@ function ClarifyToolLive(props: ToolCallMessagePartProps) {
   return (
     <ClarifyToolPending
       fromArgs={fromArgs}
+      questionOffset={questionOffset}
       onAnswered={() => setAnswered(true)}
       request={request}
       undelivered={undelivered}

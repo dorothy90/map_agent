@@ -2,17 +2,68 @@ import { JsonRpcGatewayClient } from '@hermes/shared'
 import { FakeWebSocket } from '../platform/fake-websocket'
 import { writeFileSync } from 'node:fs'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { HermesWebApp } from './HermesWebApp'
 import { WebHostAdapter } from '../platform/web-host'
 import { capabilityError, restCapabilityError } from '../platform/capability-gate'
 import { stubMenuDomApis } from '@/test/jsdom'
 import { stubThreadEnvironment } from '@/components/assistant-ui/test-utils'
 import { settleConfirm } from '@/store/confirm'
+import { $clarifyRequests } from '@/store/clarify'
 import { NEW_CHAT_ROUTE, sessionRoute } from '@/app/routes'
-import { $activeSessionId, $selectedStoredSessionId, $freshDraftReady } from '@/store/session'
+import { $activeSessionId, $selectedStoredSessionId, $freshDraftReady, $messages } from '@/store/session'
 stubThreadEnvironment()
-afterEach(() => {settleConfirm(false);cleanup();window.history.replaceState(null,'',`#${NEW_CHAT_ROUTE}`);vi.useRealTimers();vi.restoreAllMocks()})
+beforeEach(() => {
+ vi.stubGlobal('matchMedia', vi.fn((media:string) => ({
+  media,matches:media==='(prefers-reduced-motion: reduce)',addEventListener:vi.fn(),removeEventListener:vi.fn(),
+  addListener:vi.fn(),removeListener:vi.fn(),dispatchEvent:vi.fn(),onchange:null
+ })))
+})
+afterEach(() => {settleConfirm(false);cleanup();window.history.replaceState(null,'',`#${NEW_CHAT_ROUTE}`);vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllGlobals()})
+it('previews an unanswered question from the active chat while the desktop app is collapsed', async () => {
+ vi.useFakeTimers()
+ window.history.replaceState(null,'',`#${sessionRoute('saved')}`)
+ const setReplyPreview=vi.fn(async (show:boolean) => show ? {mascotOffsetX:160} : null)
+ vi.stubGlobal('yoriDesktop',{setExpanded:vi.fn(),setReplyPreview})
+ const host=new WebHostAdapter({rpcMode:'authority',location:{href:'http://localhost/'},reconnect:false})
+ vi.spyOn(host,'connect').mockResolvedValue()
+ vi.spyOn(host.gateway,'request').mockResolvedValue({session_id:'runtime',session_key:'saved',messages:[],running:false,info:{}})
+ vi.spyOn(host,'api').mockImplementation(async call => call.path.includes('/messages')
+  ? {messages:[{id:1,role:'user',content:'수율 알려줘'}]} : {sessions:[],total:0})
+ const stores=[$clarifyRequests,$activeSessionId,$selectedStoredSessionId,$freshDraftReady,$messages]
+ const restore=stores.map(store => {
+  const value=store.get()
+  return () => { (store as {set:(value:unknown)=>void}).set(value) }
+ })
+ try {
+  render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host}/>)
+  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
+  expect($activeSessionId.get()).toBe('runtime')
+  const question={qid:'lot',question:'제품 코드를 알려주세요.',choices:null,multiSelect:false}
+  const request={requestId:'prompt',sessionId:'runtime',questions:[question]}
+  await act(async () => {$clarifyRequests.set({other:{prompt:{...request,sessionId:'other'}}})})
+  expect(screen.queryByRole('button',{name:'추가 질문 열기'})).toBeNull()
+  await act(async () => {$clarifyRequests.set({runtime:{prompt:request}})})
+  const preview=screen.getByRole('button',{name:'추가 질문 열기'})
+  expect(preview.textContent).toBe(question.question)
+  expect(preview.style.getPropertyValue('--yuri-preview-head')).toBe('205px')
+  expect(setReplyPreview).toHaveBeenLastCalledWith(true)
+  fireEvent.click(preview)
+  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
+  expect(screen.queryByRole('button',{name:'추가 질문 열기'})).toBeNull()
+  expect(setReplyPreview).toHaveBeenLastCalledWith(false)
+  fireEvent.click(screen.getByRole('button',{name:'Y-Agent 대화창 접기'}))
+  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
+  expect(screen.getByRole('button',{name:'추가 질문 열기'})).toBeTruthy()
+  await act(async () => {$clarifyRequests.set({runtime:{prompt:{...request,lockedAnswers:{lot:'4SA'}}}})})
+  expect(screen.queryByRole('button',{name:'추가 질문 열기'})).toBeNull()
+  expect(setReplyPreview).toHaveBeenLastCalledWith(false)
+ } finally {
+  cleanup()
+  restore.forEach(reset => reset())
+ }
+})
+
 it('fails closed without a resolver', () => {
  const spy = vi.spyOn(WebHostAdapter.prototype,'connect')
  render(<HermesWebApp />)
@@ -40,6 +91,31 @@ it('shows connection pending before opening and audits 11 seconds', async () => 
  for (const [call] of api.mock.calls) expect(restCapabilityError(call.path,call.method ?? 'GET')).toBeNull()
 })
 
+it('unlocks new chats when the gateway reconnects after the first connection fails', async () => {
+ vi.useFakeTimers()
+ const resolveSocket=vi.fn(async () => ({url:'ws://localhost/api/ws'}))
+ resolveSocket.mockRejectedValueOnce(new Error('Gateway unavailable'))
+ const host=new WebHostAdapter({
+  rpcMode:'authority',location:{href:'http://localhost/'},getWebSocketConnection:resolveSocket,
+  reconnect:{jitter:false,baseDelayMs:10},socketFactory:url => new FakeWebSocket(url) as unknown as WebSocket
+ })
+ vi.spyOn(host,'api').mockResolvedValue({sessions:[],total:0})
+ render(<HermesWebApp resolver={resolveSocket} host={host}/>)
+ await act(async () => {await vi.advanceTimersByTimeAsync(0)})
+ expect(screen.getByRole('alert').textContent).toContain('연결에 실패했습니다.')
+ expect(screen.getByRole<HTMLButtonElement>('button',{name:'새 대화'}).disabled).toBe(true)
+ await act(async () => {
+  await vi.advanceTimersByTimeAsync(10)
+  FakeWebSocket.instances.at(-1)!.open()
+ })
+ expect(resolveSocket).toHaveBeenCalledTimes(2)
+ expect(screen.queryByText(/연결에 실패했습니다/)).toBeNull()
+ const newChat=screen.getByRole<HTMLButtonElement>('button',{name:'새 대화'})
+ expect(newChat.disabled).toBe(false)
+ fireEvent.click(newChat)
+ expect(screen.getByRole('heading',{name:'어떤 수율을 살펴볼까요?'})).toBeTruthy()
+})
+
 it('renders server sessions and only implemented calls after connection', async () => {
  vi.useFakeTimers()
  const host=new WebHostAdapter({rpcMode:'authority',location:{href:'http://localhost/'},reconnect:false})
@@ -49,7 +125,10 @@ it('renders server sessions and only implemented calls after connection', async 
  render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host}/>)
  await act(async () => {await vi.advanceTimersByTimeAsync(11000)})
  expect(screen.getByRole('button',{name:'Saved session'})).toBeTruthy()
- expect(screen.getByRole('heading',{name:'수율 분석'})).toBeTruthy()
+ expect(screen.getByRole('navigation',{name:'대화 목록'})).toBeTruthy()
+ expect(screen.queryByRole('heading',{name:'대화 목록'})).toBeNull()
+ expect(screen.getByRole('main').hasAttribute('data-yuri-wide')).toBe(true)
+ expect(screen.queryByRole('group',{name:'창 제어'})).toBeNull()
  expect(screen.getByRole('heading',{name:'이전 대화'})).toBeTruthy()
  expect(screen.queryByRole('textbox',{name:'불러온 대화 검색'})).toBeNull()
  fireEvent.click(screen.getByRole('button',{name:'사이드바 접기'}))
@@ -62,7 +141,7 @@ it('renders server sessions and only implemented calls after connection', async 
  fireEvent.change(screen.getByRole('textbox',{name:'불러온 대화 검색'}),{target:{value:'saved'}})
  expect(screen.getByRole('button',{name:'Saved session'}).title).toBe('Saved session')
  fireEvent.click(screen.getByRole('button',{name:'대화 검색'}))
- expect(screen.queryByRole('textbox',{name:'불러온 대화 검색'})).toBeNull()
+ expect(screen.getByRole('button',{name:'대화 검색'}).getAttribute('aria-expanded')).toBe('false')
  expect(screen.getByRole('button',{name:'Saved session'})).toBeTruthy()
  for(const [method] of request.mock.calls) expect(capabilityError(method,'authority')).toBeNull()
  for(const [call] of api.mock.calls) expect(restCapabilityError(call.path,call.method ?? 'GET')).toBeNull()
@@ -78,6 +157,7 @@ it('opens mobile search and returns keyboard focus when the drawer closes', asyn
   vi.spyOn(host,'api').mockResolvedValue({sessions:[],total:0})
   render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host}/>)
   await act(async () => {await vi.advanceTimersByTimeAsync(100)})
+  expect(screen.getByRole('main').hasAttribute('data-yuri-wide')).toBe(false)
   expect(screen.queryByRole('navigation')).toBeNull()
   fireEvent.keyDown(window,{key:'k',metaKey:true})
   const search=screen.getByRole('textbox',{name:'불러온 대화 검색'})
@@ -88,7 +168,7 @@ it('opens mobile search and returns keyboard focus when the drawer closes', asyn
   fireEvent.keyDown(document.activeElement!,{key:'Escape'})
   await act(async () => {await vi.advanceTimersByTimeAsync(20)})
   expect(screen.queryByRole('navigation')).toBeNull()
-  expect(screen.getByRole('button',{name:'사이드바 열기'})).toBe(document.activeElement)
+  expect(screen.getByRole('button',{name:'대화 목록 열기'})).toBe(document.activeElement)
  } finally {window.matchMedia=previous}
 })
 
@@ -136,7 +216,7 @@ it('routes a sidebar click through HashRouter, resumes and keeps selection until
  expect(screen.getByRole('button',{name:'표와 검증 결과'}).hasAttribute('aria-current')).toBe(false)
  expect($activeSessionId.get()).toBeNull()
  expect($freshDraftReady.get()).toBe(true)
- expect(screen.getByRole('heading',{name:'어떤 분석을 시작할까요?'})).toBeTruthy()
+ expect(screen.getByRole('heading',{name:'어떤 수율을 살펴볼까요?'})).toBeTruthy()
  expect(screen.queryByText('예시 질문')).toBeNull()
  stubMenuDomApis()
  const product=screen.getByRole('button',{name:'분석 대상 제품, 전체 제품'})
@@ -185,7 +265,7 @@ it.each(['', '저장된 오래된 제목'])('loads title then first-question hea
  vi.spyOn(host,'api').mockImplementation(async call => call.path.includes('/messages') ? {session_id:'old-session',messages:[{id:1,role:'user',content:'Older original question'}]} : {sessions:[],total:0})
  render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host}/>)
  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
- expect(screen.getByRole('heading',{name:serverTitle || 'Older original question'})).toBeTruthy()
+ expect(document.querySelector('.yuri-identity h2')?.getAttribute('title')).toBe(serverTitle || 'Older original question')
 })
 
 it('keeps the pushed title for a resumed off-page chat when its earlier title lookup finishes', async () => {
@@ -201,9 +281,9 @@ it('keeps the pushed title for a resumed off-page chat when its earlier title lo
   await act(async () => {socket.open()})
   const lookup=socket.request('session.title')!
   await act(async () => {socket.serverFrame({jsonrpc:'2.0',method:'event',params:{type:'session.title',session_id:'runtime',payload:{session_id:'off-page',title:'저수율 분석'}}})})
-  expect(screen.getByRole('heading',{name:'저수율 분석'})).toBeTruthy()
+  expect(document.querySelector('.yuri-identity h2')?.getAttribute('title')).toBe('저수율 분석')
   await act(async () => {socket.serverFrame({jsonrpc:'2.0',id:lookup.id,result:{title:'임시 제목'}})})
-  expect(screen.getByRole('heading',{name:'저수율 분석'})).toBeTruthy()
+  expect(document.querySelector('.yuri-identity h2')?.getAttribute('title')).toBe('저수율 분석')
  } finally {cleanup();host.close();FakeWebSocket.instances=[]}
 })
 
@@ -220,15 +300,21 @@ it.each(['save','cancel','empty','failure'])('inline rename: %s through the stor
   return {}
  })
  vi.spyOn(host.gateway,'request').mockResolvedValue({session_id:'runtime',session_key:'saved',messages:[],running:false,info:{}})
- const api=vi.spyOn(host,'api').mockImplementation(async call => call.path.includes('/messages') ? {messages:[{role:'user',content:'첫 질문'}]} : {sessions:[{id:'saved',title:'  기존 제목  ',message_count:1}],total:1})
+ const api=vi.spyOn(host,'api').mockImplementation(async call => call.path.includes('/messages')
+  ? {messages:[{role:'user',content:'첫 질문'}]}
+  : call.path.includes('archived=only') ? {sessions:[],total:0}
+  : {sessions:[{id:'saved',title:'  기존 제목  ',message_count:1}],total:1})
  render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host}/>)
  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
- expect(screen.getByRole('heading',{name:'기존 제목'}).title).toBe('기존 제목')
+ expect(document.querySelector('.yuri-identity h2')?.getAttribute('title')).toBe('기존 제목')
  const listReads=() => api.mock.calls.filter(([call]) => call.path.split('?')[0]==='/api/sessions').length
+ await act(async () => {await vi.advanceTimersByTimeAsync(100)})
  const reads=listReads()
  fireEvent.click(screen.getByRole('button',{name:'기존 제목 메뉴'}))
  fireEvent.click(screen.getByRole('menuitem',{name:'이름 바꾸기'}))
- const input=screen.getByRole('textbox',{name:'대화 이름'})
+ const input=screen.getByRole<HTMLInputElement>('textbox',{name:'대화 이름'})
+ expect(document.activeElement).toBe(input)
+ expect(input.selectionEnd).toBe(input.value.length)
  expect(input.getAttribute('maxlength')).toBe('100')
  fireEvent.change(input,{target:{value:mode==='empty' ? '   ' : '  새 제목  '}})
  fireEvent.keyDown(input,{key:mode==='cancel' ? 'Escape' : 'Enter'})
@@ -237,7 +323,7 @@ it.each(['save','cancel','empty','failure'])('inline rename: %s through the stor
  if(mode==='save' || mode==='failure')expect(calls).toEqual([['session.title',{session_id:'saved',title:'새 제목'}]])
  else expect(calls).toHaveLength(0)
  const label=mode==='save' ? '서버 정리 제목' : '기존 제목'
- expect(screen.getByRole('heading',{name:label}).title).toBe(label)
+ expect(document.querySelector('.yuri-identity h2')?.getAttribute('title')).toBe(label)
  if(mode!=='empty')expect(screen.getByRole('button',{name:label}).title).toBe(label)
  if(mode==='failure')expect(screen.getByRole('alert').textContent).toContain('이름을 바꾸지 못했습니다')
  if(mode==='empty'){
@@ -280,14 +366,15 @@ it('keeps a pushed auto-title and a subsequent manual rename across older list r
  const host=new WebHostAdapter({rpcMode:'authority',location:{href:'http://localhost/'},reconnect:false,socketFactory:url => new FakeWebSocket(url) as unknown as WebSocket})
  let title='기존 제목'
  const list=() => ({sessions:[{id:'never-opened',title,message_count:0}],total:100})
- const api=vi.spyOn(host,'api').mockImplementation(async () => list())
+ const api=vi.spyOn(host,'api').mockImplementation(async call => call.path.includes('archived=only') ? {sessions:[],total:0} : list())
  const flush=async () => {for(let i=0;i<30;i++)await Promise.resolve()}
  try {
   render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host}/>)
   await act(flush)
   const socket=FakeWebSocket.instances.at(-1)!
   await act(async () => {socket.open();await flush()})
-  expect(screen.getByRole('heading',{name:'새 대화'})).toBeTruthy()
+  expect(document.querySelector('.yuri-identity h2')?.getAttribute('title')).toBe('새 대화')
+  await act(flush)
   const deferList=async () => {
    const snapshot=list()
    let finish!:()=>void
@@ -319,7 +406,7 @@ it('keeps a pushed auto-title and a subsequent manual rename across older list r
   await act(async () => {socket.serverFrame({jsonrpc:'2.0',id:frames[0].id,result:{title,pending:false}});await flush()})
   await act(async () => {beforeRename();await flush()})
   expect(screen.getByRole('button',{name:'새 제목'}).title).toBe('새 제목')
-  expect(screen.getByRole('heading',{name:'새 대화'})).toBeTruthy()
+  expect(document.querySelector('.yuri-identity h2')?.getAttribute('title')).toBe('새 대화')
   expect(screen.queryByRole('alert')).toBeNull()
   expect(window.location.hash).toBe(`#${NEW_CHAT_ROUTE}`)
  } finally {cleanup();host.close();FakeWebSocket.instances=[]}
@@ -331,13 +418,32 @@ it.each(['archive','delete','cancel'])('session menu removes an open row after %
  window.history.replaceState(null,'',`#${sessionRoute('saved')}`)
  const host=new WebHostAdapter({rpcMode:'authority',location:{href:'http://localhost/'},reconnect:false})
  vi.spyOn(host,'connect').mockResolvedValue()
- const request=vi.spyOn(JsonRpcGatewayClient.prototype,'request').mockResolvedValue({})
+ let archived=false
+ const request=vi.spyOn(JsonRpcGatewayClient.prototype,'request').mockImplementation(async (method,params) => {
+  if(method==='session.archive'){
+   archived=params?.archived===true
+   return {archived,session_key:'saved'}
+  }
+  return {}
+ })
  vi.spyOn(host.gateway,'request').mockResolvedValue({session_id:'saved',session_key:'saved',messages:[],running:false,info:{}})
- vi.spyOn(host,'api').mockResolvedValue({sessions:[{id:'saved',title:'관리할 대화',message_count:0}, {id:'archived',title:'보관된 대화',archived:true}, {id:'deleted',title:'삭제된 대화',deleted:true}],total:3})
+ vi.spyOn(host,'api').mockImplementation(async call => {
+  const saved={id:'saved',title:'관리할 대화',message_count:0,archived}
+  const rows=call.path.includes('archived=only')
+   ? archived ? [saved] : []
+   : [...(archived ? [] : [saved]), {id:'archived',title:'보관된 대화',archived:true}, {id:'deleted',title:'삭제된 대화',deleted:true}]
+  return {sessions:rows,total:rows.length}
+ })
  render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host}/>)
  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
  expect(screen.queryByRole('button',{name:'보관된 대화'})).toBeNull()
  expect(screen.queryByRole('button',{name:'삭제된 대화'})).toBeNull()
+ const searchButton=screen.getByRole('button',{name:'대화 검색'})
+ fireEvent.click(searchButton)
+ const searchInput=screen.getByRole('textbox',{name:'불러온 대화 검색'})
+ expect(document.activeElement).toBe(searchInput)
+ fireEvent.keyDown(searchInput,{key:'Escape'})
+ expect(document.activeElement).toBe(searchButton)
  fireEvent.click(screen.getByRole('button',{name:'관리할 대화 메뉴'}))
  fireEvent.click(screen.getByRole('menuitem',{name:action==='archive' ? '보관' : '삭제'}))
  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
@@ -352,9 +458,21 @@ it.each(['archive','delete','cancel'])('session menu removes an open row after %
   expect(screen.getByRole('button',{name:'관리할 대화'})).toBeTruthy()
   expect(request.mock.calls.filter(([method]) => method==='session.delete')).toHaveLength(0)
  }else{
-  expect(request).toHaveBeenCalledWith(`session.${action}`,{session_id:'saved'})
-  expect(screen.queryByRole('button',{name:'관리할 대화'})).toBeNull()
+  expect(request).toHaveBeenCalledWith(`session.${action}`,{session_id:'saved',...(action==='archive' ? {archived:true} : {})})
+  expect(document.querySelector('.web-session-group:not(.web-archive-section) .web-session-select[aria-label="관리할 대화"]')).toBeNull()
   expect(window.location.hash).toBe(`#${NEW_CHAT_ROUTE}`)
   expect($activeSessionId.get()).toBeNull()
+ }
+ if(action==='archive'){
+  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
+  const archive=screen.getByRole('region',{name:'보관함'})
+  const archiveMenu=screen.getByRole('button',{name:'관리할 대화 메뉴'})
+  expect(archive.contains(archiveMenu)).toBe(true)
+  fireEvent.click(archiveMenu)
+  fireEvent.click(screen.getByRole('menuitem',{name:'보관 해제'}))
+  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
+  expect(request).toHaveBeenCalledWith('session.archive',{session_id:'saved',archived:false})
+  expect(screen.queryByRole('region',{name:'보관함'})).toBeNull()
+  expect(screen.getByRole('button',{name:'관리할 대화'})).toBeTruthy()
  }
 })

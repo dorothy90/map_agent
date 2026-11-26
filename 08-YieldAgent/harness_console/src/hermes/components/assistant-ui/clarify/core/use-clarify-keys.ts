@@ -35,7 +35,7 @@ export function useClarifyKeys({
   const questionIndex = Math.min(cursor.question, Math.max(questions.length - 1, 0))
   const active = questions[questionIndex]
   const choices = active?.choices ?? []
-  const otherRows = other ? 1 : 0
+  const otherRows = other || choices.length === 0 ? 1 : 0
   const row = Math.min(cursor.row, choices.length - 1 + otherRows)
 
   const focusQuestion = useCallback(
