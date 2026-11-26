@@ -12,6 +12,22 @@ from .events import observed_run_usage, verified_answer_with_artifacts
 from .execution import RpcError, string
 
 
+_STEER_FALLBACK_OPEN = '[OUT-OF-BAND USER MESSAGE'
+_STEER_FALLBACK_CLOSE = '[/OUT-OF-BAND USER MESSAGE]'
+
+
+def _extract_steer_text(content):
+    """Mirror Hermes' stable marker extraction without importing its runtime."""
+    start = content.find(_STEER_FALLBACK_OPEN)
+    if start == -1:
+        return None
+    start = content.find('\n', start)
+    if start == -1:
+        return None
+    end = content.find(_STEER_FALLBACK_CLOSE, start + 1)
+    return content[start + 1:end].strip() or None if end != -1 else None
+
+
 class NotConnected(Exception):
     pass
 
@@ -174,7 +190,14 @@ class SessionRPC:
                     for item in turn:
                         if not isinstance(item, dict):
                             continue
-                        if item.get('role') == 'assistant':
+                        if item.get('role') == 'user':
+                            content = item.get('content')
+                            if (isinstance(content, str) and (item.get('display_kind') == 'steer'
+                                    or _STEER_FALLBACK_OPEN in content)):
+                                text = _extract_steer_text(content)
+                                if text:
+                                    messages.append({'role': 'user', 'text': text})
+                        elif item.get('role') == 'assistant':
                             calls = item.get('tool_calls')
                             content = item.get('content')
                             text = content.strip() if isinstance(content, str) else ''

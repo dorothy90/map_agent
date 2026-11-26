@@ -719,6 +719,101 @@ def test_history_scopes_cumulative_native_tools_by_goal_request():
         assert [row['text'] for row in messages if row['role'] == 'user'] == ['original', 'latest edit']
 
 
+@pytest.mark.parametrize('metadata', [{'display_kind': 'steer'}, {}])
+def test_history_restores_steer_user_text_between_tools_on_reload(metadata):
+    services = MemoryServices()
+    with client_for(services) as client:
+        with client.websocket_connect('/gateway-m1/api/ws') as ws:
+            sid = call(ws, 'session.create')['result']['session_id']
+        services.runs.append({'principal_id': 'alice', 'session_id': sid, 'run_id': 'one',
+            'created_at': 1, 'query': 'question', 'active': False, 'status': 'completed',
+            'native_messages': [
+                {'role': 'user', 'content': 'question'},
+                {'role': 'assistant', 'tool_calls': [{'id': 'before', 'function': {'name': 'read_result'}}]},
+                {'role': 'tool', 'tool_call_id': 'before', 'content': 'first result'},
+                {'role': 'user', **metadata, 'content':
+                    '[OUT-OF-BAND USER MESSAGE — delivered once]\n  focus on the latest week  \n'
+                    '[/OUT-OF-BAND USER MESSAGE]'},
+                {'role': 'assistant', 'tool_calls': [{'id': 'after', 'function': {'name': 'read_result'}}]},
+                {'role': 'tool', 'tool_call_id': 'after', 'content': 'second result'},
+                {'role': 'assistant', 'content': 'answer'}]})
+
+        with client.websocket_connect('/gateway-m1/api/ws') as ws:
+            rows = call(ws, 'session.history', {'session_id': sid})['result']['messages']
+        assert [row['text'] for row in rows if row['role'] == 'user'] == [
+            'question', 'focus on the latest week']
+        assert [row.get('text', row.get('tool_call_id')) for row in rows] == [
+            'question', 'before', 'focus on the latest week', 'after']
+        assert all('OUT-OF-BAND' not in row.get('text', '') for row in rows)
+        restored = client.get(f'/gateway-m1/api/sessions/{sid}/messages').json()['messages']
+        assert [row['content'] for row in restored if row['role'] == 'user'] == [
+            'question', 'focus on the latest week']
+        assert restored[2] == {'role': 'user', 'content': 'focus on the latest week'}
+
+
+@pytest.mark.parametrize('content', [
+    '[OUT-OF-BAND USER MESSAGE]\n \n[/OUT-OF-BAND USER MESSAGE]',
+    '[OUT-OF-BAND USER MESSAGE]\nmissing close',
+    '[OUT-OF-BAND USER MESSAGE]',
+    'no marker', None, [], {'text': 'not a string'},
+])
+def test_history_skips_empty_or_malformed_steer_rows(content):
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        services.runs.append({'principal_id': 'alice', 'session_id': sid, 'run_id': 'one',
+            'created_at': 1, 'query': 'question', 'active': False, 'status': 'completed',
+            'native_messages': [
+                {'role': 'user', 'content': 'question'},
+                {'role': 'user', 'display_kind': 'steer', 'content': content},
+                {'role': 'user', 'content': 'ordinary goal prompt'}]})
+        rows = call(ws, 'session.history', {'session_id': sid})['result']['messages']
+        assert rows == [{'role': 'user', 'text': 'question'}]
+
+
+def test_history_restores_steer_and_carryover_query_once_each():
+    services = MemoryServices()
+    with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
+        sid = call(ws, 'session.create')['result']['session_id']
+        first = [
+            {'role': 'user', 'content': 'question'},
+            {'role': 'assistant', 'tool_calls': [{'id': 'first', 'function': {'name': 'read_result'}}]},
+            {'role': 'tool', 'tool_call_id': 'first', 'content': 'result'},
+            {'role': 'user', 'display_kind': 'steer', 'content':
+                '[OUT-OF-BAND USER MESSAGE]\nfocus on the latest week\n[/OUT-OF-BAND USER MESSAGE]'},
+            {'role': 'assistant', 'content': 'answer'}]
+        services.runs.extend([
+            {'principal_id': 'alice', 'session_id': sid, 'run_id': 'one', 'created_at': 1,
+                'query': 'question', 'active': False, 'status': 'completed', 'native_messages': first},
+            {'principal_id': 'alice', 'session_id': sid, 'run_id': 'two', 'created_at': 2,
+                'request_id': 'steer-carryover:one', 'query': 'also compare last month',
+                'active': False, 'status': 'completed', 'native_messages': first + [
+                    {'role': 'user', 'content': 'also compare last month'},
+                    {'role': 'assistant', 'content': 'comparison'}]}])
+        rows = call(ws, 'session.history', {'session_id': sid})['result']['messages']
+        assert [row['text'] for row in rows if row['role'] == 'user'] == [
+            'question', 'focus on the latest week', 'also compare last month']
+
+
+def test_history_steer_marker_literals_match_engine_contract():
+    import ast
+    from harness.gateway.session_rpc import _STEER_FALLBACK_OPEN, _STEER_FALLBACK_CLOSE
+
+    engine = Path(__file__).resolve().parents[1] / 'engine' / 'agent'
+    markers = {}
+    for filename in ('conversation_compression.py', 'prompt_builder.py'):
+        tree = ast.parse((engine / filename).read_text())
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id in (
+                            '_STEER_FALLBACK_OPEN', '_STEER_FALLBACK_CLOSE', 'STEER_MARKER_OPEN'):
+                        markers[target.id] = ast.literal_eval(node.value)
+    assert markers['_STEER_FALLBACK_OPEN'] == _STEER_FALLBACK_OPEN
+    assert markers['_STEER_FALLBACK_CLOSE'] == _STEER_FALLBACK_CLOSE
+    assert markers['STEER_MARKER_OPEN'].startswith(_STEER_FALLBACK_OPEN)
+
+
 def test_history_tolerates_malformed_stored_tool_metadata():
     services = MemoryServices()
     with client_for(services) as client, client.websocket_connect('/gateway-m1/api/ws') as ws:
