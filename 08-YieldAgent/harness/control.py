@@ -128,12 +128,18 @@ class RunController:
                 web_map_jobs_enabled=self.web_map_jobs_enabled)
             await self.store.event(run["run_id"], "run_started", {"query": run["query"],
                 "goal_revision": run["goal_revision"], "engine": "hermes"})
+            if run.get('steer_carryover_from') and await self.store.db.gateway_sessions.find_one({
+                    'principal_id': run['principal_id'], 'id': run['session_id'], 'deleted': {'$ne': True}}):
+                from .gateway.events import SessionEvents
+                # Publish the prior terminal and successor prompt before the
+                # worker can publish live answer deltas into the same log.
+                await SessionEvents(self.store, run['principal_id']).ingest(run['session_id'])
             from .hermes_chat import run_chat
             result = await run_chat(context)
             await context.check()
             stop_heartbeat()
             await self._save_context(run, result)
-            await self.store.finish(run["run_id"], run["epoch"], result["status"], result["answer"], result["stop_reason"])
+            await self._finish_chat(run, result)
         except LeaseLost:
             stop_heartbeat()
             # finish is epoch-fenced: an old worker cannot finish its successor.
@@ -162,6 +168,42 @@ class RunController:
             await self.store.runs.update_one({'_id': run['run_id'], 'epoch': run['epoch']},
                 {'$max': {'usage.active_seconds': run['usage']['active_seconds'] + time.monotonic() - run['started_monotonic']}})
 
+    async def _finish_chat(self, run, result):
+        successor = None
+        # Hold the admission lock across release and carryover admission. A
+        # browser queue may observe the terminal event during this window.
+        while True:
+            try:
+                async with self.store.session_lock(run['principal_id'], run['session_id']):
+                    finished = await self.store.finish(run['run_id'], run['epoch'],
+                        result['status'], result['answer'], result['stop_reason'])
+                    if not finished or finished['active'] or finished['status'] == 'cancelled':
+                        return
+                    successor = await self._settle_steer(finished)
+                break
+            except Conflict:
+                await asyncio.sleep(.05)
+        if successor:
+            await self.launch(successor['run_id'])
+
+    async def _settle_steer(self, run):
+        delivery = run.get('steer_delivery', {})
+        forwarded = set(delivery.get('forwarded_ids', []))
+        texts = [delivery['pending']] if delivery.get('pending') else []
+        # The inactive run's inbox is closed atomically by finish(), including
+        # steers accepted after the worker returned. Keep settlement durable
+        # until its deterministic successor is ready, so recovery can retry.
+        texts.extend(item['text'] for item in run.get('steer_inbox', []) if item['id'] not in forwarded)
+        successor = None
+        if texts and run['status'] != 'cancelled':
+            successor = await self.store.start_run(run['principal_id'], run['session_id'],
+                'steer-carryover:' + run['run_id'], '\n'.join(texts), ready=False, engine='hermes')
+            await self.store.runs.update_one({'_id': successor['run_id']}, {'$set': {
+                'steer_carryover_from': run['run_id'], 'ready': True}})
+        await self.store.runs.update_one({'_id': run['run_id'], 'epoch': run['epoch'], 'active': False},
+                                         {'$unset': {'steer_delivery': ''}})
+        return successor
+
     async def _save_context(self, run, result):
         if "native_messages" in result:
             await self.store.runs.update_one({"_id": run["run_id"], "epoch": run["epoch"], "status": "running"},
@@ -171,6 +213,8 @@ class RunController:
             "observations": result.get("observations", []), "result_ids": result.get("result_ids", []),
             "context_memory": memory_snapshot(result), "completion_review": result.get("completion_review", {}),
             "validation_issues": result.get("validation_issues", []),
+            "steer_delivery": {"pending": result.get("pending_steer"),
+                               "forwarded_ids": result.get("steer_forwarded_ids", [])},
             "answer_text": result.get("answer_text", result.get("answer", ""))}, "$unset": {"resume_input": ""}})
 
     async def cancel(self, principal_id, run_id):
@@ -182,7 +226,12 @@ class RunController:
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        else:
+        elif (not run.get('owner') or run['owner'] == self.owner or run.get('status') == 'waiting_user'
+              or run.get('lease_until', 0) < time.time()
+              or run.get('gateway_unknown_resolution') == run['epoch']):
+            # A different executor observes cancelling at its heartbeat and
+            # finishes after its worker exits. Preserve explicit unknown-run
+            # resolution, which requires a generation-fenced acknowledgement.
             await self.store.finish(run_id, run["epoch"], "cancelled", "작업을 중지했습니다.", "user_cancelled")
         return await self.store.get_run(principal_id, run_id)
 
@@ -246,6 +295,16 @@ class RunController:
         return await self.store.get_run(run["principal_id"], next_run["run_id"])
 
     async def recover(self):
+        async for run in self.store.runs.find({'execution_kind': 'harness', 'engine': 'hermes',
+                'active': False, 'steer_delivery': {'$exists': True}}):
+            try:
+                async with self.store.session_lock(run['principal_id'], run['session_id']):
+                    current = await self.store.get_run(run['principal_id'], run['run_id'])
+                    successor = await self._settle_steer(current) if 'steer_delivery' in current else None
+                if successor:
+                    await self.launch(successor['run_id'])
+            except Conflict:
+                continue
         async for run in self.store.runs.find({"execution_kind": "harness", "runtime_version": "harness/v2",
                 "engine": {"$ne": "hermes"}, "active": True,
                 "status": {"$in": ["created", "running", "waiting_user"]}, "lease_until": {"$lt": time.time()}}):

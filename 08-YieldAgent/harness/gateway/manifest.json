@@ -776,7 +776,7 @@
       "classification": "implemented",
       "reason": "m1_implementation_target",
       "feature": "config.get",
-      "detail": "채팅에 필요한 비밀 없는 서버 고정 설정 projection만",
+      "detail": "사용자별 busy 설정만",
       "policy_source": "m1_plan_codex.log:6130",
       "source": [
         "apps/shared/src/gateway-contract.generated.ts:6055",
@@ -791,7 +791,7 @@
           "classification": "implemented",
           "feature": "config.get",
           "reason": "m1_implementation_target",
-          "detail": "채팅에 필요한 비밀 없는 서버 고정 설정 projection만",
+          "detail": "사용자별 busy 설정만",
           "policy_source": "m1_plan_codex.log:6130",
           "projection": "principal_owned_server_allowlisted_no_secrets"
         },
@@ -803,7 +803,7 @@
           "classification": "implemented",
           "feature": "config.get",
           "reason": "m1_implementation_target",
-          "detail": "비밀 없는 고정 설정 projection",
+          "detail": "사용자별 busy 설정 읽기",
           "policy_source": "m1_plan_codex.log:6225",
           "projection": "principal_owned_server_allowlisted_no_secrets"
         }
@@ -811,11 +811,11 @@
     },
     {
       "name": "config.set",
-      "classification": "stub",
-      "reason": "deferred_milestone",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
       "feature": "config.set",
-      "detail": "설정 변경/상세 화면 유예; 모델·provider 변경은 계속 거부",
-      "policy_source": "m1_plan_codex.log:6131",
+      "detail": "사용자별 busy 설정만",
+      "policy_source": "m1_plan_codex.log:6130",
       "source": [
         "apps/shared/src/gateway-contract.generated.ts:6057",
         "apps/shared/src/gateway-contract.generated.ts:6787"
@@ -826,21 +826,21 @@
           "schema": "{ params: ConfigSetParams; result: ConfigSetResult }",
           "params": "ConfigSetParams",
           "result": "ConfigSetResult",
-          "classification": "stub",
+          "classification": "implemented",
           "feature": "config.set",
-          "reason": "deferred_milestone",
-          "detail": "설정 변경/상세 화면 유예; 모델·provider 변경은 계속 거부",
-          "policy_source": "m1_plan_codex.log:6131"
+          "reason": "m1_implementation_target",
+          "detail": "사용자별 busy 설정만",
+          "policy_source": "m1_plan_codex.log:6130"
         },
         "authority": {
           "source": "apps/shared/src/gateway-contract.generated.ts:6787",
           "schema": "{ params: CanonicalConfigSetParams; result: ConfigSetResult }",
           "params": "CanonicalConfigSetParams",
           "result": "ConfigSetResult",
-          "classification": "stub",
+          "classification": "implemented",
           "feature": "config.set",
-          "reason": "deferred_milestone",
-          "detail": "개인 설정 유예; 제한 키 변경 거부",
+          "reason": "m1_implementation_target",
+          "detail": "사용자별 busy 설정만 변경",
           "policy_source": "m1_plan_codex.log:6226"
         }
       }
@@ -4556,7 +4556,6 @@
           "detail": "채팅 제출·admission·receipt",
           "policy_source": "m1_plan_codex.log:6169",
           "denied_actions": [
-            "steer",
             "redirect",
             "queue_edit"
           ]
@@ -4572,7 +4571,6 @@
           "detail": "제출·취소·ACK 유실 복구",
           "policy_source": "m1_plan_codex.log:6231",
           "denied_actions": [
-            "steer",
             "redirect",
             "queue_edit"
           ]
@@ -5725,10 +5723,10 @@
     },
     {
       "name": "session.steer",
-      "classification": "unsupported",
-      "reason": "disabled_by_policy",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
       "feature": "session.steer",
-      "detail": "동일 실행 steer 비활성",
+      "detail": "활성 실행에 steer 등록",
       "policy_source": "m1_plan_codex.log:6190",
       "source": [
         "apps/shared/src/gateway-contract.generated.ts:6401",
@@ -5740,10 +5738,10 @@
           "schema": "{ params: SessionCorrectionParams; result: SessionCorrectionResult }",
           "params": "SessionCorrectionParams",
           "result": "SessionCorrectionResult",
-          "classification": "unsupported",
+          "classification": "implemented",
           "feature": "session.steer",
-          "reason": "disabled_by_policy",
-          "detail": "동일 실행 steer 비활성",
+          "reason": "m1_implementation_target",
+          "detail": "활성 실행에 steer 등록",
           "policy_source": "m1_plan_codex.log:6190"
         },
         "authority": {
@@ -5751,10 +5749,10 @@
           "schema": "{ params: CanonicalCorrectionParams; result: CanonicalCorrectionResult }",
           "params": "CanonicalCorrectionParams",
           "result": "CanonicalCorrectionResult",
-          "classification": "unsupported",
+          "classification": "implemented",
           "feature": "session.steer",
-          "reason": "disabled_by_policy",
-          "detail": "동일 실행 steer·셸 비활성",
+          "reason": "m1_implementation_target",
+          "detail": "활성 실행에 steer 등록",
           "policy_source": "m1_plan_codex.log:6240"
         }
       }
@@ -6186,7 +6184,7 @@
           "classification": "unsupported",
           "feature": "shell.exec",
           "reason": "disabled_by_policy",
-          "detail": "동일 실행 steer·셸 비활성",
+          "detail": "셸 비활성",
           "policy_source": "m1_plan_codex.log:6240"
         }
       }

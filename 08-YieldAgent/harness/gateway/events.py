@@ -172,6 +172,9 @@ def project_run_event(run, event):
         return {'type': kind, 'payload': {'status': run.get('status')}}
     if kind in ('reasoning.delta', 'reasoning.available', 'thinking.delta', 'status.update'):
         return {'type': kind, 'payload': {'kind': 'status', 'text': '', 'status': 'running'}}
+    if kind == 'run_started' and run.get('steer_carryover_from'):
+        return {'type': 'message.start', 'payload': {
+            'status': 'running', 'carryover_text': run['query'], 'carryover_id': run['run_id']}}
     if kind in ('reasoning', 'thinking', 'agent.print', 'message.start', 'progress', 'run_started'):
         return {'type': kind, 'payload': {'status': 'running'}}
     if kind == 'tool_started':
@@ -194,6 +197,7 @@ def project_run_event(run, event):
             projected['duration_s'] = duration
         return {'type': 'tool.complete', 'payload': projected}
     fields = {
+        'steer.accepted': ('text',),
         'tool.start': ('tool_id', 'name', 'args', 'context'),
         'tool.complete': ('tool_id', 'name', 'args', 'result', 'summary', 'duration_s'),
         'tool.generating': ('name',),

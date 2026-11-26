@@ -1,6 +1,6 @@
 {
   "upstream": "5894e750",
-  "source_sha256": "4b85b97035d61a1c86886fe3432e2d86028031fcbc4407d999e29c821a9044a5",
+  "source_sha256": "824b4b3c875e57cfb22c222475f349b96d5bc158f00c3561f42c81ce028290b2",
   "rpc": {
     "a2a.forward": {
       "classification": "unsupported",
@@ -371,18 +371,18 @@
       }
     },
     "config.set": {
-      "classification": "stub",
-      "reason": "deferred_milestone",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
       "feature": "config.set",
       "modes": {
         "legacy": {
-          "classification": "stub",
-          "reason": "deferred_milestone",
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
           "feature": "config.set"
         },
         "authority": {
-          "classification": "stub",
-          "reason": "deferred_milestone",
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
           "feature": "config.set"
         }
       }
@@ -2779,18 +2779,18 @@
       }
     },
     "session.steer": {
-      "classification": "unsupported",
-      "reason": "disabled_by_policy",
+      "classification": "implemented",
+      "reason": "m1_implementation_target",
       "feature": "session.steer",
       "modes": {
         "legacy": {
-          "classification": "unsupported",
-          "reason": "disabled_by_policy",
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
           "feature": "session.steer"
         },
         "authority": {
-          "classification": "unsupported",
-          "reason": "disabled_by_policy",
+          "classification": "implemented",
+          "reason": "m1_implementation_target",
           "feature": "session.steer"
         }
       }

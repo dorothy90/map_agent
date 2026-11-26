@@ -2880,6 +2880,13 @@ catalog: CatalogTranslations
   }
 
   composer: {
+    busyInput: {
+      label: string
+      steer: string
+      queue: string
+      interrupt: string
+      saveFailed: string
+    }
     message: string
     wakingProfile: (profile: string) => string
     placeholderStarting: string

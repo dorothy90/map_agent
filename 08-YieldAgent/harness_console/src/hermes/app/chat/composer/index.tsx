@@ -1,3 +1,4 @@
+import { useWebPresentation } from '../../../../web/presentation'
 import { ComposerPrimitive } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import {
@@ -189,7 +190,9 @@ export function ChatBar({
     [gateway]
   )
 
-  const busyInputMode = useBusyInputMode({
+  const web = useWebPresentation()
+  const { mode: busyInputMode, setMode: setBusyInputMode } = useBusyInputMode({
+    principalScoped: web,
     sessionId: sessionId ?? null,
     storedSessionId: queueSessionKey ?? null,
     requestGateway: requestBusyConfig
@@ -1122,6 +1125,8 @@ export function ChatBar({
 
   const controls = (
     <ComposerControls
+      busyMode={busyInputMode}
+      onBusyModeChange={setBusyInputMode}
       autoSpeak={autoSpeak}
       busy={busy}
       busyAction={busyAction}

@@ -161,7 +161,7 @@ it('routes a sidebar click through HashRouter, resumes and keeps selection until
  const before=request.mock.calls.length
  fireEvent.click(product)
  await act(async () => {await vi.advanceTimersByTimeAsync(100)})
- const searchBox=screen.getByRole('combobox')
+ const searchBox=screen.getByPlaceholderText('제품 코드 검색')
  fireEvent.change(searchBox,{target:{value:'test'}})
  fireEvent.click(screen.getByRole('option',{name:'TEST-X'}))
  expect(product.textContent).toBe('TEST-X')
@@ -330,7 +330,8 @@ it('keeps a pushed auto-title and a subsequent manual rename across older list r
   fireEvent.change(input,{target:{value:'  새 제목  '}})
   fireEvent.keyDown(input,{key:'Enter'})
   await act(flush)
-  const frames=socket.sent.map(value => JSON.parse(value))
+  // The composer also reads the busy-input preference; only the rename is under test.
+  const frames=socket.sent.map(value => JSON.parse(value)).filter(frame => frame.method !== 'config.get')
   expect(frames.map(frame => frame.method)).toEqual(['session.title'])
   expect(frames[0].params).toEqual({session_id:'never-opened',title:'새 제목'})
   title='새 제목'

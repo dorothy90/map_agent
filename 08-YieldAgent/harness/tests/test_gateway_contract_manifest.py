@@ -158,8 +158,11 @@ def test_individual_delete_and_queue_policies_are_preserved(manifest):
         assert rpc[name]['classification'] == 'stub'
     assert rpc['session.delete']['modes']['legacy']['classification'] == 'stub'
     assert rpc['session.delete']['modes']['authority']['classification'] == 'implemented'
-    for name in ['session.steer', 'session.redirect']:
-        assert rpc[name]['classification'] == 'unsupported'
+    for mode in ('legacy', 'authority'):
+        for name in ('session.steer', 'config.get', 'config.set'):
+            assert rpc[name]['modes'][mode]['classification'] == 'implemented'
+        assert rpc['session.redirect']['modes'][mode]['classification'] == 'unsupported'
+    assert rpc['prompt.submit']['modes']['authority']['denied_actions'] == ['redirect', 'queue_edit']
     routes = {r['name']: r for r in manifest['routes']}
     assert routes['DELETE /api/sessions/{session_id}']['classification'] == 'stub'
 
@@ -200,7 +203,7 @@ def test_http_mcp_denies_stdio_and_sse_without_reclassification(manifest):
 
 def test_classification_counts(manifest):
     sections = {
-        'rpc': (manifest['rpc'], (41, 55, 187)),
+        'rpc': (manifest['rpc'], (43, 54, 186)),
         'events': (manifest['events'], (35, 9, 42)),
         'server_requests': (manifest['server_requests'], (2, 2, 12)),
         'http': ([r for r in manifest['routes'] if r['method'] != 'WEBSOCKET'], (23, 71, 190)),

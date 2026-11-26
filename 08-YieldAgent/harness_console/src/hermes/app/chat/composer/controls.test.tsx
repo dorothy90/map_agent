@@ -256,3 +256,12 @@ describe('web controls', () => {
    expect(button.getAttribute('type')).toBe('submit')
  })
 })
+
+it('offers all three busy modes in the web composer', () => {
+  const setMode = vi.fn().mockResolvedValue(undefined)
+  renderControls({ busy: true, busyMode: 'steer', onBusyModeChange: setMode }, true)
+  const select = screen.getByRole<HTMLSelectElement>('combobox', { name: 'While a run is active' })
+  expect(Array.from(select.options, option => option.value)).toEqual(['steer', 'queue', 'interrupt'])
+  fireEvent.change(select, { target: { value: 'queue' } })
+  expect(setMode).toHaveBeenCalledWith('queue')
+})

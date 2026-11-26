@@ -5,7 +5,7 @@ export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 export function normalizeBusyInputMode(value: unknown): BusyInputMode {
   const mode = typeof value === 'string' ? value.trim().toLowerCase() : ''
 
-  return mode === 'steer' || mode === 'queue' ? mode : 'interrupt'
+  return mode === 'interrupt' || mode === 'queue' ? mode : 'steer'
 }
 
 export function busyInputOwnerKey(connectionId?: string | null, profile?: string | null): string {

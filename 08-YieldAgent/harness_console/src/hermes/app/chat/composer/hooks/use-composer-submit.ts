@@ -1,6 +1,8 @@
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useLayoutEffect, useRef } from 'react'
 
+import { useWebPresentation } from '../../../../../web/presentation'
+
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
@@ -99,6 +101,7 @@ export function useComposerSubmit({
   takeDraftRetry
 }: UseComposerSubmitArgs) {
   const paneVisible = usePaneVisible()
+  const web = useWebPresentation()
   const scope = useComposerScope()
   const surfaceId = useComposerSurfaceId()
   const { t } = useI18n()
@@ -474,7 +477,12 @@ export function useComposerSubmit({
     const canonical = serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)
 
     const keep = () => {
-      if (!activeQueueSessionKey) {
+      if (web && mode === 'interrupt') {
+        stashAt(submittedScope, frozen.displayText, [])
+        if (activeQueueSessionKeyRef.current === submittedScope) {
+          loadIntoComposer(frozen.displayText, [])
+        }
+      } else if (!activeQueueSessionKey) {
         loadIntoComposer(frozen.displayText, [])
         stashAt(submittedScope, frozen.displayText, [])
       } else if (canonical) {

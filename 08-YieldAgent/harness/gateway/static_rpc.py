@@ -12,7 +12,7 @@ from .execution import RpcError
 from .session_rpc import NotConnected
 
 
-STATIC_METHODS = frozenset({'config.get', 'model.options', 'profiles.list',
+STATIC_METHODS = frozenset({'model.options', 'profiles.list',
     'tools.list', 'tools.show', 'toolsets.list', 'i18n.catalog', 'i18n.languages', 'paste.collapse'})
 
 

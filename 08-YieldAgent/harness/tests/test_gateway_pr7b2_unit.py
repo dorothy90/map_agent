@@ -15,7 +15,7 @@ from harness.tests.test_gateway_pr7b_unit import MemoryServices, call, client_fo
 PREFIX = '/gateway-m1'
 CONNECTED = {'/api/sessions', '/api/profiles/sessions', '/api/profiles/active',
              '/api/health', '/api/status'}
-STATIC = ('config.get', 'model.options', 'profiles.list', 'tools.list', 'tools.show',
+STATIC = ('model.options', 'profiles.list', 'tools.list', 'tools.show',
           'toolsets.list', 'i18n.catalog', 'i18n.languages', 'paste.collapse')
 MANIFEST = json.loads((Path(__file__).parents[1] / 'gateway/manifest.json').read_text())
 

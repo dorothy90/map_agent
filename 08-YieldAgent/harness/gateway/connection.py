@@ -13,14 +13,14 @@ import anyio
 from starlette.websockets import WebSocketDisconnect
 
 from .events import event_frame, replay_gap
-from .execution import RpcError
+from .execution import RpcError, unsupported
 from .session_rpc import NotConnected, SessionRPC, validate
 from .static_rpc import STATIC_METHODS, static_rpc
 from .unsupported import rpc_rejection
 
 
-EXECUTION_METHODS = frozenset({'prompt.submit', 'prompt.receipt', 'prompt.cancel',
-    'prompt.resolve_unknown', 'session.interrupt', 'session.status', 'session.events.since',
+EXECUTION_METHODS = frozenset({'config.get', 'config.set', 'prompt.submit', 'prompt.receipt', 'prompt.cancel',
+    'prompt.resolve_unknown', 'session.interrupt', 'session.steer', 'session.status', 'session.events.since',
     'clarify.respond', 'clarify.lock', 'approval.respond', 'approval.pending', 'request.answer'})
 LIFECYCLE_METHODS = frozenset({'session.create', 'session.resume', 'session.activate',
                               'session.close', 'session.detach'})
@@ -225,6 +225,11 @@ class GatewayConnection:
             raise NotConnected()
         if method not in EXECUTION_METHODS and method not in SESSION_METHODS:
             raise NotConnected()  # Deferred RPCs must not even open the store.
+        if method in ('config.get', 'config.set'):
+            if not isinstance(params.get('key'), str):
+                raise RpcError('invalid_params')
+            if params['key'] != 'busy':
+                unsupported(method)
         scope = await self.context()
         if method not in EXECUTION_METHODS:
             return await SessionRPC(scope, self).dispatch(method, params)
@@ -319,6 +324,12 @@ class GatewayConnection:
                             sub.sequence = result['latest_seq']
                             sub.ready = False
                             break
+                        carryover_id = item['payload'].get('carryover_id') if item['type'] == 'message.start' else None
+                        if carryover_id:
+                            bound = self.run_bindings.get(sid)
+                            active = await execution._active(sid)
+                            if active and active['run_id'] == carryover_id and self.run_bindings.get(sid) == bound:
+                                self.bind_run(sid, active)
                         await self.send(event_frame(item))
                         sub.sequence = item['seq']
             if self.mode == 'legacy' and self.server_requests:

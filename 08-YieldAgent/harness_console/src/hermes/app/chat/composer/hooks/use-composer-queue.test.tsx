@@ -232,6 +232,28 @@ describe('useComposerQueue park integration', () => {
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
   })
 
+  it('keeps the FIFO head when the first idle observation races backend busy', async () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })!
+    const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'second' })!
+    const { hook, onSubmit } = renderQueueHook({ busy: true })
+    onSubmit.mockResolvedValueOnce(false)
+
+    hook.rerender({ busy: false })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(getQueuedPrompts(SESSION_KEY).map(({ id }) => id)).toEqual([first.id, second.id])
+
+    await waitFor(() => {
+      expect(onSubmit.mock.calls.map(([text]) => text)).toEqual(['first', 'first'])
+      expect(getQueuedPrompts(SESSION_KEY).map(({ id }) => id)).toEqual([second.id])
+    }, { timeout: 2500 })
+    expect(onSubmit.mock.calls[0]?.[1]?.submission_id).toBe(first.id)
+    expect(onSubmit.mock.calls[1]?.[1]?.submission_id).toBe(first.id)
+
+    hook.rerender({ busy: true })
+    hook.rerender({ busy: false })
+    await waitFor(() => expect(onSubmit.mock.calls.map(([text]) => text)).toEqual(['first', 'first', 'second']))
+  })
+
   it('holds a parked queue at the idle settle (the Stop edge)', async () => {
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'halted' })
     parkQueuedPrompts(SESSION_KEY)

@@ -43,7 +43,10 @@ def valid(message):
     elif kind == 'reply':
         return 'result' in message
     elif kind == 'control':
-        return isinstance(message.get('action'), str)
+        action = message.get('action')
+        if action == 'steer':
+            return all(isinstance(message.get(key), str) and message[key].strip() for key in ('id', 'text'))
+        return isinstance(action, str)
     else:
         required = {'skill_read': {'name': str, 'resource': str, 'sha256': str},
             'session_title': {'title': str, 'source': str},

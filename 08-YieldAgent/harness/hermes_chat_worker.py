@@ -209,7 +209,7 @@ def refresh_web_tool_pin(db, session, saved, tools, web_schema_names):
             db.update_session_tool_names(session, {**pin, 'tools': refreshed})
 
 
-async def chat(request, emit, waiters=None):
+async def chat(request, emit, waiters=None, control_stream=None):
     from harness.config import Settings
     from harness.instructions import web_turn_instructions
     from harness.executor import ExecutionContext, ToolExecutor
@@ -239,6 +239,25 @@ async def chat(request, emit, waiters=None):
     from agent.title_generator import wait_for_title_upgrades
     from agent import tool_executor
     from agent.secret_scope import reset_secret_scope
+    from harness import native_ipc as ipc
+
+    steer_lock = threading.Lock()
+    steer_entries = []
+    steer_target = None
+    accepting_steers = True
+
+    def on_control(message):
+        if message['action'] != 'steer':
+            return
+        with steer_lock:
+            if accepting_steers:
+                text = message['text'].strip()
+                steer_entries.append((message['id'], text))
+                if steer_target is not None:
+                    steer_target.steer(text)
+
+    if control_stream is not None:
+        threading.Thread(target=ipc.receive, args=(control_stream, waiters, on_control), daemon=True).start()
 
     settings = Settings.model_validate(request['settings'])
     tool_executor._MAX_TOOL_WORKERS = min(tool_executor._MAX_TOOL_WORKERS, settings.parallel_tool_limit)
@@ -500,7 +519,7 @@ async def chat(request, emit, waiters=None):
             emit({'type': 'commentary', 'content': visible_web_text(text), 'already_streamed': already_streamed})
 
         def converse():
-            nonlocal agent
+            nonlocal agent, accepting_steers, steer_target, late_steer
             instructions = web_turn_instructions(request['request_context'], code_enabled=code_enabled,
                                                  kanban_enabled=can_use_kanban)
             enabled = web_toolsets
@@ -540,16 +559,29 @@ async def chat(request, emit, waiters=None):
                 query = turn_query(run, prior_output)
                 if run['epoch'] > 1 and history and history[-1]['role'] == 'user':
                     adopt_unanswered_turn(history, query, agent)
+                with steer_lock:
+                    steer_target = agent
+                    for _, text in steer_entries:
+                        agent.steer(text)
                 return agent.run_conversation(query,
                                               conversation_history=history,
                                               title_user_message='' if manual_title or scheduled else run['query'])
             finally:
+                with steer_lock:
+                    accepting_steers = False
+                    # A steer accepted after Hermes's own finalizer drain is
+                    # still buffered on the agent; hand it back with the rest.
+                    late_steer = agent._drain_pending_steer()
                 if manual_title and not saved:
                     sync_manual_title()
                 wait_for_title_upgrades(timeout=min(10.0, ctx.remaining_seconds()))
                 agent.close()
 
+        late_steer = None
         result = await asyncio.to_thread(converse)
+        # Every steer the worker accepted was delivered by Hermes, returned as
+        # pending_steer, or drained late above; carry the undelivered ones over.
+        pending_steer = '\n'.join(text for text in (result.get('pending_steer'), late_steer) if text) or None
         status = result_status(result)
         answer = visible_web_text(result.get('final_response') or '').strip()
         # Files placed in publish_directory were explicitly submitted for delivery.
@@ -567,6 +599,8 @@ async def chat(request, emit, waiters=None):
         totals = budget.snapshot()
         return {'answer': answer, 'answer_text': answer, 'status': status,
                 'stop_reason': budget.exhausted_reason or result.get('turn_exit_reason') or status,
+                'pending_steer': pending_steer,
+                'steer_forwarded_ids': [entry_id for entry_id, _ in steer_entries],
                 'native_messages': display_history(result.get('messages', [])),
                 'native_usage': {'api_calls': totals['models'], 'input_tokens': totals['input_tokens'],
                                  'output_tokens': totals['output_tokens'], 'total_tokens': totals['tokens']}}
@@ -595,9 +629,10 @@ if __name__ == '__main__':
     from hermes_cli.plugins_discovery import suppress_plugin_discovery
     with suppress_plugin_discovery():
         from harness import native_ipc as ipc
-        request = json.loads(sys.stdin.buffer.readline())
+        # Read the request and IPC from one buffered stream so the request
+        # reader cannot prefetch and strand a control sent during startup.
+        control_stream = os.fdopen(os.dup(0), 'rb')
+        request = json.loads(control_stream.readline())
         waiters = ipc.Waiters()
-        threading.Thread(target=ipc.receive, args=(os.fdopen(os.dup(0), 'rb'), waiters, lambda _: None),
-                         daemon=True).start()
-        result = asyncio.run(chat(request, emit, waiters))
+        result = asyncio.run(chat(request, emit, waiters, control_stream))
     emit({'type': 'result', 'result': result})

@@ -165,6 +165,21 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     vi.restoreAllMocks()
   })
 
+  it('opens a carried steer as a separate user turn and ignores replay of its start', async () => {
+    await mountHarness()
+    emit({ payload: {}, session_id: SID, type: 'message.start' })
+    emit({ payload: { text: 'first answer' }, session_id: SID, type: 'message.complete' })
+    const start: GatewayEvent = { payload: { carryover_text: 'carried question', carryover_id: 'next-run' },
+      session_id: SID, type: 'message.start' }
+    emit(start)
+    emit(start)
+    emit({ payload: { text: 'answer to the correction' }, session_id: SID, type: 'message.complete' })
+
+    expect(transcript().slice(-3)).toEqual([
+      'assistant:first answer', 'user:carried question', 'assistant:answer to the correction'
+    ])
+  })
+
   it('orders pre-steer output → steer → post-steer output → settled reply', async () => {
     await mountHarness()
 

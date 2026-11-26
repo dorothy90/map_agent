@@ -84,6 +84,8 @@ async def run_chat(context):
     audit = None
     process = None
     messages = None
+    steer_task = None
+    stdin_lock = asyncio.Lock()
     tool_starts = {}
     prepared = False
     job = None
@@ -117,6 +119,28 @@ async def run_chat(context):
             process.stdin.write(json.dumps(request, ensure_ascii=False).encode() + b'\n')
             await process.stdin.drain()
 
+            async def send(message):
+                async with stdin_lock:
+                    process.stdin.write(ipc.encode(message).encode())
+                    await process.stdin.drain()
+
+            async def forward_steers():
+                sent = set()
+                while True:
+                    try:
+                        current = await store.runs.find_one(
+                            {'_id': run_id, 'epoch': epoch, 'status': 'running'}, {'steer_inbox': 1})
+                        for entry in (current or {}).get('steer_inbox', []):
+                            if entry['id'] not in sent:
+                                await send(ipc.control('steer', id=entry['id'], text=entry['text']))
+                                sent.add(entry['id'])
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    except Exception:
+                        logging.getLogger(__name__).warning('Could not forward Hermes steer', exc_info=True)
+                    await asyncio.sleep(.25)
+
+            steer_task = asyncio.create_task(forward_steers())
             result = None
             messages = coalesced_worker_messages(process.stdout, context.remaining_seconds)
             async for message in messages:
@@ -135,8 +159,7 @@ async def run_chat(context):
                     response = dict(obs.scope.get('execute_code') or {'status': 'error', 'error': obs.summary})
                     view = obs.model_view()
                     response.update(result_id=obs.result_id, artifact_refs=view['artifact_refs'], tables=view['tables'])
-                    process.stdin.write(ipc.encode(ipc.reply(message['call_id'], response)).encode())
-                    await process.stdin.drain()
+                    await send(ipc.reply(message['call_id'], response))
                     continue
                 if kind == 'result':
                     result = message['result']
@@ -206,6 +229,8 @@ async def run_chat(context):
                     await store.runs.update_one({'_id': run_id, 'epoch': epoch, 'status': 'running'},
                         {'$set': {'usage.models': usage.get('models', 0) + message['models'],
                                   'usage.tokens': usage.get('tokens', 0) + message['tokens']}})
+            steer_task.cancel()
+            await asyncio.gather(steer_task, return_exceptions=True)
             process.stdin.close()
             if await process.wait() or result is None:
                 raise RuntimeError('Hermes chat worker exited without a completed response')
@@ -216,6 +241,9 @@ async def run_chat(context):
                 'native_engine': {'name': 'NousResearch/hermes-agent', 'commit': UPSTREAM_COMMIT,
                                   'entrypoint': 'stock_chat', 'history_source': 'hermes_session_db'}}
     finally:
+        if steer_task is not None and not steer_task.done():
+            steer_task.cancel()
+            await asyncio.gather(steer_task, return_exceptions=True)
         if messages is not None:
             await messages.aclose()
         if process is not None and not process.stdin.is_closing():

@@ -25,22 +25,26 @@ afterEach(() => {
   $gatewayState.set('closed')
 })
 
-it('canonical busy policy is session scoped even with a cached global mode', async () => {
+it('canonical busy policy reads once per principal and updates after config.set', async () => {
   $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=fixture' } as never)
   $gatewayState.set('open')
-  $busyInputConfig.set({ owner: JSON.stringify(['', 'default']), connection: $connection.get(), mode: 'queue' })
-  let resolveNext!: (result: { value: string }) => void
-  const request = vi.fn().mockResolvedValueOnce({ value: 'steer' }).mockImplementationOnce(() => new Promise(resolve => { resolveNext = resolve }))
-  const h = renderHook(({ sessionId }) => useBusyInputMode({ sessionId, storedSessionId: null, requestGateway: request }), { initialProps: { sessionId: 'first' } })
+  const request = vi.fn().mockResolvedValue({ value: 'queue' })
+  const hook = renderHook(({ sessionId }) => useBusyInputMode({
+    sessionId, storedSessionId: null, requestGateway: request, principalScoped: true
+  }), { initialProps: { sessionId: 'first' } })
 
   try {
-    await waitFor(() => expect(h.result.current).toBe('steer'))
-    h.rerender({ sessionId: 'second' })
-    expect(h.result.current).toBeNull()
-    await act(async () => resolveNext({ value: 'interrupt' }))
-    expect(h.result.current).toBe('interrupt')
-    expect(request).toHaveBeenLastCalledWith('config.get', { key: 'busy', session_id: 'second' })
-  } finally { h.unmount(); $connection.set(null) }
+    await waitFor(() => expect(hook.result.current.mode).toBe('queue'))
+    hook.rerender({ sessionId: 'second' })
+    expect(hook.result.current.mode).toBe('queue')
+    await act(() => hook.result.current.setMode('interrupt'))
+    expect(hook.result.current.mode).toBe('interrupt')
+    expect($busyInputConfig.get()?.mode).toBe('interrupt')
+    expect(request.mock.calls).toEqual([
+      ['config.get', { key: 'busy' }],
+      ['config.set', { key: 'busy', value: 'interrupt' }]
+    ])
+  } finally { hook.unmount(); $connection.set(null) }
 })
 
 it('recovers a transient busy policy read without reconnecting', async () => {
@@ -51,7 +55,7 @@ it('recovers a transient busy policy read without reconnecting', async () => {
 
   try {
     await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
-    expect(hook.result.current).toBe('steer')
+    expect(hook.result.current.mode).toBe('steer')
     expect(request).toHaveBeenCalledTimes(2)
   } finally { hook.unmount(); vi.useRealTimers() }
 })
@@ -91,11 +95,11 @@ it('uses only the current owner config and ignores a late response from the prev
     useBusyInputMode({ sessionId: 'runtime', storedSessionId: null, requestGateway: request })
   )
 
-  expect(hook.result.current).toBeNull()
+  expect(hook.result.current.mode).toBe('steer')
   act(() => $activeGatewayProfile.set('other'))
-  await waitFor(() => expect(hook.result.current).toBe('steer'))
+  await waitFor(() => expect(hook.result.current.mode).toBe('steer'))
   await act(async () => resolveOld({ value: 'queue' }))
-  expect(hook.result.current).toBe('steer')
+  expect(hook.result.current.mode).toBe('steer')
   act(() =>
     $busyInputConfig.set({
       owner: JSON.stringify([$connection.get()?.connectionId ?? '', 'other']),
@@ -103,7 +107,19 @@ it('uses only the current owner config and ignores a late response from the prev
       mode: 'queue'
     })
   )
-  expect(hook.result.current).toBe('queue')
+  expect(hook.result.current.mode).toBe('queue')
   act(() => $busyInputConfig.set({ owner: 'foreign-owner', connection: $connection.get(), mode: 'interrupt' }))
-  expect(hook.result.current).toBe('steer')
+  expect(hook.result.current.mode).toBe('steer')
+})
+
+it('defaults to steer when the principal has no saved preference', async () => {
+  $gatewayState.set('open')
+  const request = vi.fn().mockResolvedValue({})
+  const hook = renderHook(() => useBusyInputMode({
+    sessionId: null, storedSessionId: null, requestGateway: request, principalScoped: true
+  }))
+  expect(hook.result.current.mode).toBe('steer')
+  await act(async () => { await Promise.resolve() })
+  expect(request).toHaveBeenCalledExactlyOnceWith('config.get', { key: 'busy' })
+  expect(hook.result.current.mode).toBe('steer')
 })

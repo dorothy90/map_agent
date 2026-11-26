@@ -78,6 +78,8 @@ export type ChatMessage = {
 }
 
 export type GatewayEventPayload = {
+  carryover_id?: string
+  carryover_text?: string
   /** Unix seconds supplied by tests/newer gateways; the desktop falls back to
    * its local receipt clock when older gateways omit it. */
   timestamp?: number

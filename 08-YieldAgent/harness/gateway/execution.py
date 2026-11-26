@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import time
+import uuid
 
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
@@ -57,7 +58,7 @@ def submit_values(params, *, skill_only=False):
         if key in params and type(params[key]) is not bool:
             raise RpcError('invalid_params')
     for key in allowed:
-        if key not in ('submission_id', 'input_id', 'clarify_batch') and params.get(key) not in (None, False, '', []):
+        if key not in ('submission_id', 'input_id', 'queued', 'clarify_batch') and params.get(key) not in (None, False, '', []):
             unsupported('prompt.submit.' + key)
     return identity, params['text']
 
@@ -194,6 +195,58 @@ class Execution:
             if run['status'] == 'created':
                 await self._cancel_run(run, statuses=['created'])
         return await self.receipt(session_id, params)
+
+    async def busy_config(self, params, *, write):
+        fields(params, ('key', 'value') if write else ('key',), ('session_id',))
+        if params['key'] != 'busy':
+            unsupported('config.set' if write else 'config.get')
+        settings = self.store.db.gateway_settings
+        key = {'_id': self.principal_id}
+        if write:
+            value = params['value']
+            if value not in ('steer', 'queue', 'interrupt'):
+                raise RpcError('invalid_params')
+            await settings.update_one(key, {'$set': {'busy': value}}, upsert=True)
+            return {'value': value}
+        row = await settings.find_one(key)
+        return {'value': row.get('busy', 'steer') if row else 'steer'}
+
+    async def steer(self, session_id, params, *, mode='authority', expected_run_id=None):
+        await self._session(session_id, params)
+        fields(params, ('session_id', 'text'), ('execution_generation',) if mode == 'authority' else ())
+        text = params['text']
+        if not isinstance(text, str) or not text.strip() or len(text) > 8000:
+            raise RpcError('invalid_params')
+        run = await self._active(session_id)
+        available = {'$in': ['created', 'running']}
+        if run is None or run['status'] not in available['$in']:
+            raise RpcError('execution_not_ready')
+        if expected_run_id is not None and expected_run_id != run['run_id']:
+            raise await self._stale_generation(session_id)
+        fence = {'_id': run['_id'], 'active': True, 'status': available}
+        if 'execution_generation' in params:
+            generation = params['execution_generation']
+            if type(generation) is not int or generation < 0:
+                raise RpcError('invalid_params')
+            if generation != run['epoch']:
+                raise await self._stale_generation(session_id)
+            if expected_run_id is None and await self.store.runs.count_documents(self._scope(session_id)) > 1:
+                raise await self._stale_generation(session_id)
+            fence['epoch'] = generation
+        entry = {'id': str(uuid.uuid4()), 'text': text, 'at': time.time()}
+        event = {'run_id': run['run_id'], 'type': 'steer.accepted', 'payload': {'text': text},
+                 'event_id': entry['id']}
+        # Record the inbox entry and its event together, including on a created run.
+        changed = await self.store.runs.update_one(
+            fence, [{'$set': {
+                'steer_inbox': {'$concatArrays': [{'$ifNull': ['$steer_inbox', []]}, {'$literal': [entry]}]},
+                'events': {'$concatArrays': ['$events', [{'$mergeObjects': [
+                    {'$literal': event}, {'sequence': {'$add': [{'$size': '$events'}, 1]}}
+                ]}]]},
+            }}])
+        if not changed.matched_count:
+            raise RpcError('execution_not_ready')
+        return {'status': 'queued'}
 
     async def _stale_generation(self, session_id):
         # H/session_controls.py:782-786: return fresh owner fences, not the
@@ -454,6 +507,10 @@ class Execution:
             elif method == 'approval.respond':
                 value = (await self.respond(session_id, params, kind='approval') if mode == 'authority'
                          else await self.approval_respond_legacy(session_id, params))
+            elif method in ('config.get', 'config.set'):
+                value = await self.busy_config(params, write=method == 'config.set')
+            elif method == 'session.steer':
+                value = await self.steer(session_id, params, mode=mode, expected_run_id=expected_run_id)
             elif method == 'session.interrupt':
                 value = await self.interrupt(session_id, params, mode=mode, expected_run_id=expected_run_id)
             elif method == 'session.events.since':

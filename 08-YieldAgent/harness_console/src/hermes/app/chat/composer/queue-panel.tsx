@@ -1,3 +1,4 @@
+import { useWebPresentation } from '../../../../web/presentation'
 import { useState } from 'react'
 
 import { StatusRow } from '@/components/chat/status-row'
@@ -51,6 +52,7 @@ export function QueuePanel({
   parked
 }: QueuePanelProps) {
   const { t } = useI18n()
+  const web = useWebPresentation()
   const c = t.composer
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
 
@@ -170,6 +172,7 @@ export function QueuePanel({
 
   return (
     <StatusSection
+      defaultCollapsed={!web}
       accessory={
         parked ? (
           <Tip label={c.queueResumeTip}>

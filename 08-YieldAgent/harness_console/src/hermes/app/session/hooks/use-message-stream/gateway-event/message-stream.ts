@@ -2,7 +2,7 @@ import { type BillingBlock, mergeUsage } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -23,7 +23,17 @@ import { lightDesktopMessagingCompletion } from '@/store/session-unread'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
+import { appendMidTurnUserMessage } from '../../use-prompt-actions/rewind'
+
 import type { GatewayEventContext } from './types'
+
+function explicitCarryover(id: unknown, text: unknown) {
+  if (typeof id !== 'string' || !id || typeof text !== 'string' || !text) {
+    return null
+  }
+
+  return { id: `carryover:${id}`, role: 'user' as const, parts: [textPart(text)] }
+}
 
 function firstBillingLine(text: string): string {
   return (text || '').split('\n')[0]?.trim() ?? ''
@@ -146,6 +156,13 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       return true
     }
 
+    const carryoverId = payload?.carryover_id
+    const carryoverText = payload?.carryover_text
+    const carryover = explicitCarryover(carryoverId, carryoverText)
+    if (carryover && sessionStateByRuntimeIdRef.current.get(sessionId)?.messages.some(row => row.id === carryover.id)) {
+      return true
+    }
+
     // Turn-boundary orphan drop (#119543): when no turn is live, anything
     // still queued belongs to a turn that already ended (a delta reordered
     // behind its own complete or heartbeat). Flushing it would seed a bubble
@@ -180,7 +197,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       console.debug('[turn-accept-latency]', { sessionId, ms: Date.now() - seededAt })
     }
 
-    updateSessionState(sessionId, state => {
+    updateSessionState(sessionId, previous => {
+      const state = carryover ? appendMidTurnUserMessage(previous, { ...carryover, timestamp: occurredAt }) : previous
+
       // If the user clicked Stop (cancelRun set interrupted=true), don't
       // let a stale message.start from a chained turn (goal follow-up,
       // completion drain) or an in-flight LLM response re-arm busy.
@@ -188,7 +207,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       // may not have propagated yet, so its events are stale. The turn's
       // finally block will emit session.info with running=false to clear
       // busy for real once the agent loop actually exits.
-      if (state.interrupted) {
+      if (state.interrupted && !carryover) {
         return state
       }
 

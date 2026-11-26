@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { ArrowUp, Square as StopIcon } from 'lucide-react'
 import { useWebPresentation } from '../../../../web/presentation'
 import { useStore } from '@nanostores/react'
@@ -10,6 +11,8 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
+import { type BusyInputMode, normalizeBusyInputMode } from '@/store/busy-input-mode'
+import { notifyError } from '@/store/notifications'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
@@ -41,6 +44,7 @@ export function ComposerControls({
   autoSpeak,
   busy,
   busyAction,
+  busyMode,
   canSubmit,
   cardWaiting = false,
   compactModelPill = false,
@@ -52,6 +56,7 @@ export function ComposerControls({
   minimal = false,
   state,
   voiceStatus,
+  onBusyModeChange,
   onDictate,
   onQueue,
   onSteer,
@@ -60,6 +65,7 @@ export function ComposerControls({
   autoSpeak: boolean
   busy: boolean
   busyAction: 'interrupt' | 'steer' | 'queue' | 'stop'
+  busyMode?: BusyInputMode | null
   canSubmit: boolean
   /** A card parked on the session takes typed text as its answer, so queueing that text would leave the card waiting. */
   cardWaiting?: boolean
@@ -72,6 +78,7 @@ export function ComposerControls({
   minimal?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
+  onBusyModeChange?: (mode: BusyInputMode) => Promise<void>
   onDictate: () => void
   onQueue: () => void
   onSteer?: () => void
@@ -92,9 +99,12 @@ export function ComposerControls({
   const showStop = busy && !hasComposerPayload
 
   if (web) {
-    return <button className="web-send-button" type="submit" title={showStop ? '중지' : '보내기'} aria-label={showStop ? '중지' : '보내기'} data-web-stop={showStop || undefined} disabled={disabled || !canSubmit} onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}>
-      {showStop ? <StopIcon size={14} aria-hidden="true"/> : <ArrowUp size={18} aria-hidden="true"/>}
-    </button>
+    return <div className="web-composer-actions">
+      {onBusyModeChange && <WebBusyModeSelect disabled={disabled} mode={busyMode ?? 'steer'} onChange={onBusyModeChange} />}
+      <button className="web-send-button" type="submit" title={showStop ? '중지' : '보내기'} aria-label={showStop ? '중지' : '보내기'} data-web-stop={showStop || undefined} disabled={disabled || !canSubmit} onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}>
+        {showStop ? <StopIcon size={14} aria-hidden="true"/> : <ArrowUp size={18} aria-hidden="true"/>}
+      </button>
+    </div>
   }
 
   const showQueueButton = queueButtonVisible(busy, busyAction, hasComposerPayload, cardWaiting)
@@ -430,5 +440,35 @@ function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolea
         {wake.listening && !pausedForVoice ? <Ear className={iconSize.sm} /> : <EarOff className={iconSize.sm} />}
       </Button>
     </Tip>
+  )
+}
+
+
+function WebBusyModeSelect({ disabled, mode, onChange }: {
+  disabled: boolean
+  mode: BusyInputMode
+  onChange: (mode: BusyInputMode) => Promise<void>
+}) {
+  const [saving, setSaving] = useState(false)
+  const { t } = useI18n()
+  const c = t.composer.busyInput
+
+  return (
+    <select
+      aria-label={c.label}
+      className="web-busy-mode"
+      disabled={disabled || saving}
+      onChange={event => {
+        const value = normalizeBusyInputMode(event.currentTarget.value)
+        setSaving(true)
+        void onChange(value).catch(error => notifyError(error, c.saveFailed)).finally(() => setSaving(false))
+      }}
+      title={c.label}
+      value={mode}
+    >
+      <option value="steer">{c.steer}</option>
+      <option value="queue">{c.queue}</option>
+      <option value="interrupt">{c.interrupt}</option>
+    </select>
   )
 }

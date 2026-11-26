@@ -46,7 +46,7 @@ def test_connected_ping_and_manifest_policy():
             assert call(ws, 'shell.exec')['error']['code'] == -32004
             assert call(ws, 'session.delete')['error']['code'] == -32004
             assert call(ws, 'not.real')['error']['code'] == -32601
-            assert call(ws, 'config.get')['error']['code'] == -32005
+            assert call(ws, 'config.get', {'key': 'model'})['error']['code'] == -32004
 
 import asyncio
 from copy import deepcopy

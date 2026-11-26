@@ -3268,6 +3268,13 @@ export const en: Translations = {
   },
 
   composer: {
+    busyInput: {
+      label: 'While a run is active',
+      steer: 'Steer',
+      queue: 'Queue',
+      interrupt: 'Stop and send',
+      saveFailed: 'Could not save busy input mode'
+    },
     message: 'Message',
     wakingProfile: profile => `Waking up ${profile}…`,
     placeholderStarting: 'Starting Hermes...',

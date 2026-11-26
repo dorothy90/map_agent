@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import type { GatewayRequester } from '@/app/contrib/types'
 import {
@@ -8,7 +8,6 @@ import {
   busyInputOwnerKey,
   normalizeBusyInputMode
 } from '@/store/busy-input-mode'
-import { serverOwnsComposerQueue } from '@/store/composer-queue'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState, knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { requestForSessionProfile } from '@/store/session-request-router'
@@ -17,18 +16,20 @@ import { sessionTileOwnerRoute } from '@/store/session-states'
 export function useBusyInputMode({
   sessionId,
   storedSessionId,
-  requestGateway
+  requestGateway,
+  principalScoped = false
 }: {
   sessionId: string | null
   storedSessionId: string | null
   requestGateway: GatewayRequester
-}): BusyInputMode | null {
+  principalScoped?: boolean
+}) {
   const config = useStore($busyInputConfig)
   const connection = useStore($connection)
   const profile = useStore($activeGatewayProfile)
   const gatewayState = useStore($gatewayState)
 
-  const route = storedSessionId
+  const route = !principalScoped && storedSessionId
     ? (sessionTileOwnerRoute(storedSessionId) ?? knownSessionOwner(ownerLookupSessionRows(), storedSessionId))
     : undefined
 
@@ -37,20 +38,30 @@ export function useBusyInputMode({
   const targetProfile = route && typeof route === 'object' ? route.targetProfile : undefined
   const owner = busyInputOwnerKey(connectionId, targetProfile || ownerProfile)
 
-  const [loaded, setLoaded] = useState<{ owner: string; connection: typeof connection; sessionId: string; mode: BusyInputMode } | null>(
+  const requestSessionId = principalScoped ? null : sessionId
+  const [loaded, setLoaded] = useState<{ owner: string; connection: typeof connection; sessionId: string | null; mode: BusyInputMode } | null>(
     null
   )
 
-  const canonical = serverOwnsComposerQueue(sessionId ?? storedSessionId)
-  const configured = !canonical && config?.owner === owner && config.connection === connection ? config.mode : null
+  const configured = config?.owner === owner && config.connection === connection ? config.mode : null
+  const setMode = useCallback(async (mode: BusyInputMode) => {
+    const ownerRoute = principalScoped ? undefined
+      : connectionId ? { connectionId, profile: ownerProfile, targetProfile } : ownerProfile
+    await requestForSessionProfile(ownerRoute, requestGateway, 'config.set', { key: 'busy', value: mode })
+
+    if ($connection.get() === connection) {
+      $busyInputConfig.set({ owner, connection, mode })
+    }
+  }, [connection, connectionId, owner, ownerProfile, principalScoped, requestGateway, targetProfile])
 
   useEffect(() => {
-    if (configured !== null || !sessionId || gatewayState !== 'open') {
+    if (configured !== null || (!requestSessionId && !principalScoped) || gatewayState !== 'open') {
       return
     }
 
     let cancelled = false
-    const ownerRoute = connectionId ? { connectionId, profile: ownerProfile, targetProfile } : ownerProfile
+    const ownerRoute = principalScoped ? undefined
+      : connectionId ? { connectionId, profile: ownerProfile, targetProfile } : ownerProfile
     let retryTimer: ReturnType<typeof setTimeout> | undefined
     let attempts = 0
 
@@ -58,16 +69,18 @@ export function useBusyInputMode({
       attempts += 1
       void requestForSessionProfile<{ value?: unknown }>(ownerRoute, requestGateway, 'config.get', {
         key: 'busy',
-        session_id: sessionId
+        ...(requestSessionId && { session_id: requestSessionId })
       })
         .then(result => {
-          if (!cancelled && result && Object.hasOwn(result, 'value')) {
-            setLoaded({ owner, connection, sessionId, mode: normalizeBusyInputMode(result.value) })
+          if (!cancelled) {
+            setLoaded({ owner, connection, sessionId: requestSessionId, mode: normalizeBusyInputMode(result?.value) })
           }
         })
         .catch(() => {
           // A failed read must not strand busy Enter on an otherwise healthy socket.
-          if (!cancelled && attempts < 3) {retryTimer = setTimeout(load, 1000 * attempts)}
+          if (!cancelled && attempts < 3) {
+            retryTimer = setTimeout(load, 1000 * attempts)
+          }
         })
     }
 
@@ -78,6 +91,7 @@ export function useBusyInputMode({
       clearTimeout(retryTimer)
     }
   }, [
+    principalScoped,
     configured,
     connection,
     connectionId,
@@ -85,13 +99,12 @@ export function useBusyInputMode({
     owner,
     ownerProfile,
     requestGateway,
-    sessionId,
+    requestSessionId,
     targetProfile
   ])
 
-  if (gatewayState !== 'open') {
-    return null
-  }
-
-  return configured ?? (loaded?.owner === owner && loaded.connection === connection && loaded.sessionId === sessionId ? loaded.mode : null)
+  const loadedMode = loaded?.owner === owner && loaded.connection === connection && loaded.sessionId === requestSessionId
+    ? loaded.mode
+    : 'steer'
+  return { mode: gatewayState === 'open' ? configured ?? loadedMode : null, setMode }
 }

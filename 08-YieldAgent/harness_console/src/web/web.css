@@ -74,6 +74,8 @@
 .hermes-web [data-slot="composer-fade"]>div:has(>[class*="grid-area:input"]) { grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"input controls"; align-items:end; gap:12px; }
 .hermes-web [data-slot="composer-fade"] [class*="grid-area:menu"] { display:none; }
 .hermes-web [data-slot="composer-fade"] [contenteditable] { min-height:34px; padding:5px 0; font-size:15px; line-height:24px; }
+.hermes-web .web-composer-actions { display:flex; align-items:center; gap:8px; }
+.hermes-web .web-busy-mode { max-width:8rem; padding:4px; border:0; color:inherit; background:transparent; font-size:0.75rem; }
 .hermes-web [data-slot="composer-fade"] .web-send-button { display:grid; place-items:center; width:34px; height:34px; padding:0; border:0; border-radius:50%; background:#212220; color:#fff; }
 .hermes-web [data-slot="composer-fade"] .web-send-button:disabled { background:#ebebe8; color:#949590; }
 .hermes-web [data-slot="composer-fade"] .web-send-button:focus-visible { outline:2px solid #535550; outline-offset:2px; }

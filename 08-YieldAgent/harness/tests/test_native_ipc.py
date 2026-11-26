@@ -94,3 +94,11 @@ def test_tool_event_roundtrip():
     assert ipc.decode(ipc.encode(start)) == start
     assert ipc.decode(ipc.encode(done)) == done
     assert not ipc.valid({**start, 'args': 'not-a-dict'})
+
+
+def test_steer_control_requires_an_inbox_id_and_text():
+    ipc = ipc_module()
+    message = ipc.control('steer', id='input-1', text='focus on product A')
+    assert ipc.decode(ipc.encode(message)) == message
+    assert not ipc.valid(ipc.control('steer', text='focus on product A'))
+    assert not ipc.valid(ipc.control('steer', id='input-1', text='   '))

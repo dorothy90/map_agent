@@ -13,6 +13,7 @@ import pytest
 from harness import hermes_chat, native_hermes
 from harness.config import Settings
 from harness.control import RunController
+from harness.gateway.execution import Execution
 from harness.gateway.pending_controls import PendingControls
 from harness.gateway.session_rpc import SessionRPC
 from harness.gateway.session_store import MongoSessionStore
@@ -54,6 +55,8 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
     second_prompt = 'same session follow-up'
     answer = 'stored value 7921'
     answered_history = []
+    steered_requests = []
+    steer_text = 'Use the stored result for this check.'
     local_media = 'MEDIA:/private/tmp/local.png'
     source_id = None
     entered, release = threading.Event(), threading.Event()
@@ -68,6 +71,8 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                 self.send_error(404)
                 return
             messages = request['messages']
+            if steer_text in str(messages[-1].get('content')):
+                steered_requests.append(messages)
             if messages[-1].get('content') == second_prompt:
                 answered_history.append(messages)
             if messages[-1].get('content') == 'cancel this turn':
@@ -190,6 +195,12 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                         while not (row := await pending.pending_prompts.find_one({
                             'run_id': run['run_id'], 'status': 'pending'})):
                             await asyncio.sleep(.05)
+                    execution = Execution(controller, principal, profile_id='default')
+                    assert await execution.steer(session, {
+                        'session_id': session, 'text': steer_text,
+                    }) == {'status': 'queued'}
+                    # Let the worker's independent inbox poll forward the input while clarify is blocked.
+                    await asyncio.sleep(.75)
                     await pending.respond(session, row['execution_generation'], row['authority_ids'][0],
                                           {'answer': '4SA'}, 'clarify')
                 await controller.tasks[run['run_id']]
@@ -215,6 +226,8 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                 assert local_media not in json.dumps(saved['native_messages'])
                 title_events = [e['payload'] for e in saved['events'] if e['type'] == 'session.title']
                 if query != second_prompt:
+                    assert [e['payload'] for e in saved['events'] if e['type'] == 'steer.accepted'] == [
+                        {'text': steer_text}]
                     first_turn_tool_sets = len(seen_tools)
                     for cid, name in [('mcp-status', 'manage_connections'), ('mcp-echo', 'mcp__yfd_echo__echo')]:
                         tool_events = [e for e in saved['events'] if e.get('payload', {}).get('tool_id') == cid]
@@ -241,6 +254,11 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                     await sessions.set_session_title(session, 'My chosen title')
                     # Resume a pre-search pin with a narrower employee allowlist.
                     with sqlite3.connect(native_hermes.profile_path(principal) / 'state.db') as db:
+                        steer_rows = db.execute(
+                            "SELECT role, content FROM messages WHERE session_id = ? AND display_kind = 'steer'",
+                            (session,)).fetchall()
+                        assert len(steer_rows) == 1 and steer_rows[0][0] == 'user'
+                        assert steer_text in steer_rows[0][1]
                         old_direct = [tool for name, tool in seen_tools[0].items()
                                       if name not in {'tool_search', 'tool_describe', 'tool_call'}]
                         pin = {'version': 'previous', 'tools': old_direct + domain_registry().model_tools()}
@@ -257,6 +275,10 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
                               if m.get('role') == 'tool' and m.get('tool_call_id') == 'mcp-status']
             assert local_receipts and json.loads(local_receipts[0]['content'])['local_mcp'] is True
             assert title_requests == ['read the stored result']
+            assert len(steered_requests) == 1
+            next_request = steered_requests[0]
+            assert next_request[-1]['role'] == 'user' and steer_text in next_request[-1]['content']
+            assert next_request[-2]['role'] == 'tool' and next_request[-2]['tool_call_id'] == 'scope-call'
             assert len(answered_history) == 1
             prior = answered_history[0]
             assert any(answer in str(m['content']) for m in prior if m['role'] == 'assistant')
@@ -264,6 +286,8 @@ def test_stock_chat_reads_native_tool_in_authenticated_session(monkeypatch, tmp_
             assert len(selected) == 1
             assert json.loads(selected[0]['content'])['responses'][0]['user_response'] == '4SA'
             assert all('_row_id' not in m for m in prior)
+            steer_rows = [m for m in prior if m['role'] == 'user' and steer_text in str(m['content'])]
+            assert len(steer_rows) == 1
             scope = SimpleNamespace(sessions=sessions, execution=SimpleNamespace(store=store, principal_id=principal))
             transcript = await SessionRPC(scope, SimpleNamespace(mode='authority')).history(session)
             mcp_rows = [m for m in transcript if m.get('name') == 'mcp__yfd_echo__echo']

@@ -50,7 +50,7 @@ def rpc_policy(name, mode):
     if name == 'plugins.manage':
         result['denied_actions'] = ['code_install', 'code_update', 'code_execute']
     if name == 'prompt.submit':
-        result['denied_actions'] = ['steer', 'redirect', 'queue_edit']
+        result['denied_actions'] = ['redirect', 'queue_edit']
     if name in {'config.get', 'model.options', 'profiles.list', 'tools.list', 'tools.show', 'toolsets.list'}:
         result['projection'] = 'principal_owned_server_allowlisted_no_secrets'
     return result

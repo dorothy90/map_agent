@@ -733,7 +733,9 @@ export function usePromptActions({
     [copy.sttDisabled, sttEnabled]
   )
 
-  const cancelRun = useCallback(async () => {
+  const interruptRun = useCallback(async (
+    waitForIdle?: (sessionId: string, result: unknown) => Promise<void>
+  ): Promise<boolean> => {
     // Read from the ref, not the closure-captured `activeSessionId`. The
     // actions bag is a stable ref mutated in place (Object.assign on each
     // ContribWiring render), and ChatRoutesSurface is memoized on that stable
@@ -745,9 +747,11 @@ export function usePromptActions({
     // always reflects the current session — same pattern submitText uses.
     const sessionId = activeSessionIdRef.current
 
-    const releaseBusy = () => {
-      setMutableRef(busyRef, false)
-      setBusy(false)
+    const releaseBusy = (stoppedSessionId = sessionId) => {
+      if (activeSessionIdRef.current === stoppedSessionId) {
+        setMutableRef(busyRef, false)
+        setBusy(false)
+      }
     }
 
     setAwaitingResponse(false)
@@ -757,7 +761,7 @@ export function usePromptActions({
       releaseBusy()
       setMessages(finalizeStoppedMessages($messages.get()))
 
-      return
+      return false
     }
 
     // Frontend busy clears immediately; gateway wind-down can lag. Mark so a
@@ -799,7 +803,7 @@ export function usePromptActions({
     clearClarifyRequest(undefined, sessionId)
 
     try {
-      await withSessionNotFoundResume(
+      const stopped = await withSessionNotFoundResume(
         sessionId,
         selectedStoredSessionIdRef.current,
         liveId => requestGateway('session.interrupt', { session_id: liveId }),
@@ -811,12 +815,19 @@ export function usePromptActions({
           }
         }
       )
-      releaseBusy()
+      await waitForIdle?.(stopped.sessionId, stopped.result)
+      releaseBusy(stopped.sessionId)
+      return true
     } catch (err) {
       releaseBusy()
       notifyError(err, copy.stopFailed)
+      return false
     }
   }, [activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState])
+
+  const cancelRun = useCallback(async () => {
+    await interruptRun()
+  }, [interruptRun])
 
   // The desktop steering action is an immediate correction: the core cancels
   // model generation and rebuilds the live turn with displayed reasoning and
@@ -1490,6 +1501,7 @@ export function usePromptActions({
     handleThreadMessagesChange,
     handoffSession,
     injectHiddenPrompt,
+    interruptRun,
     reloadFromMessage,
     restoreToMessage,
     redirectPrompt,

@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { HashRouter, useLocation, useNavigate } from 'react-router'
 import { routeSessionId, sessionRoute } from '@/app/routes'
 import { isSlashCommandText } from '@/lib/chat-runtime'
-import { I18nProvider } from '@/i18n'
+import { I18nProvider, registerAppLocale } from '@/i18n'
 import { ChatRuntimeBoundary } from '@/app/chat'
 import { ChatBar } from '@/app/chat/composer'
 import { PRIMARY_SESSION_VIEW, SessionViewProvider } from '@/app/chat/session-view'
@@ -31,6 +31,24 @@ import { WebSessionRow } from './WebSessionRow'
 import { useWebSession } from './use-web-session'
 export type ConnectionResolver = NonNullable<WebHostOptions['getWebSocketConnection']>
 export interface HermesWebOptions { resolver?:ConnectionResolver; fetcher?:typeof fetch; host?:WebHostAdapter }
+registerAppLocale('ko', {
+  endonym: '한국어',
+  englishName: 'Korean',
+  translations: {
+    composer: {
+      busyInput: {
+        label: '실행 중 입력 방식',
+        steer: '진행 방향 조정',
+        queue: '대기열에 추가',
+        interrupt: '중지 후 보내기',
+        saveFailed: '실행 중 입력 방식을 저장하지 못했습니다.'
+      },
+      queued: count => `대기 ${count}건`,
+      queuedPaused: count => `대기 ${count}건 · 일시정지`
+    }
+  }
+})
+
 const browserFetch:typeof fetch = (...args) => globalThis.fetch(...args)
 export function HermesWebApp({resolver,fetcher=browserFetch,host:injected}:HermesWebOptions) {
  const [client]=useState(() => new QueryClient({defaultOptions:{queries:{retry:false,refetchOnWindowFocus:false}}}))
@@ -214,13 +232,13 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
    {showingSkills && <SkillsCatalog fetcher={fetcher} onCreate={createSkill}/>}
    {showingMcp && <McpServersPage fetcher={fetcher} container={shell}/>}
    <WebPresentationProvider>
-   <SessionViewProvider value={PRIMARY_SESSION_VIEW}><ChatRuntimeBoundary busy={actions.busy} suppressMessages={false} onCancel={actions.cancelRun} onEdit={actions.editMessage} onReload={actions.reloadFromMessage} onThreadMessagesChange={actions.handleThreadMessagesChange}>
+   <SessionViewProvider value={PRIMARY_SESSION_VIEW}><ChatRuntimeBoundary busy={actions.busy} suppressMessages={false} onCancel={actions.stopWebRun} onEdit={actions.editMessage} onReload={actions.reloadFromMessage} onThreadMessagesChange={actions.handleThreadMessagesChange}>
     <div className="web-chat-stage" hidden={showingSettings}>
     {isNewChat && <section className="web-empty-state" aria-labelledby="web-welcome">
      <h2 id="web-welcome">어떤 분석을 시작할까요?</h2>
     </section>}
-    <div className="hermes-web-thread" hidden={isNewChat}><Thread gateway={host.gateway} sessionId={actions.activeSessionId} sessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun}/></div>
-    <div className="hermes-web-composer">{(pending>0 || actions.busy) && <div className="web-runline">{pending>0 && <span>● 추가 비교를 위해 답변을 기다리고 있어요.</span>}{actions.busy && <button className="web-extra-stop" onClick={actions.cancelRun}>중지</button>}</div>}<ChatBar freshDraftKey={freshDraftKey} gateway={host.gateway} busy={actions.busy} disabled={!ready || gatewayState!=='open'} sessionId={actions.activeSessionId} queueSessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun}
+    <div className="hermes-web-thread" hidden={isNewChat}><Thread gateway={host.gateway} sessionId={actions.activeSessionId} sessionKey={actions.selectedStoredSessionId} onCancel={actions.stopWebRun}/></div>
+    <div className="hermes-web-composer">{(pending>0 || actions.busy) && <div className="web-runline">{pending>0 && <span>● 추가 비교를 위해 답변을 기다리고 있어요.</span>}{actions.busy && <button className="web-extra-stop" onClick={actions.stopWebRun}>중지</button>}</div>}<ChatBar freshDraftKey={freshDraftKey} gateway={host.gateway} busy={actions.busy} disabled={!ready || gatewayState!=='open' || actions.replacing} sessionId={actions.activeSessionId} queueSessionKey={actions.selectedStoredSessionId} onCancel={actions.cancelRun}
       contextControl={<>{isNewChat && <ProductPicker value={product} onChange={setProduct} fetcher={fetcher} container={shell}/>}<McpComposerButton fetcher={fetcher} container={shell} onManage={openMcp}/></>}
       onSubmit={async (draft, ...rest) => {
        const text=isNewChat && product && !isSlashCommandText(draft) ? `${product} 제품 기준으로, ${draft}` : draft
@@ -235,7 +253,7 @@ function WebChat({host,fetcher}:{host:WebHostAdapter;fetcher:typeof fetch}) {
         if(id && firstText===text.trim()){remember($sessions.get().find(session => session.id===id) ?? {id} as SessionInfo,text);setDraftTitle({text,sessionId:id})}
        } else if(fresh)setDraftTitle(null)
        return sent
-      }} onSteer={actions.steerPrompt}
+      }} onSteer={actions.steerWebPrompt}
       state={{model:{model:'',provider:'',canSwitch:false},tools:{enabled:false,label:''},voice:{enabled:false,active:false}}}/></div>
     </div>
    </ChatRuntimeBoundary></SessionViewProvider></WebPresentationProvider>
