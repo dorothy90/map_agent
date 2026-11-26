@@ -1,0 +1,31 @@
+사내 이식 브랜치에서 수율 하네스 이식을 이어서 진행해. 사내 자료·로그·화면은 외부로 보내지 마.
+
+원본은 https://github.com/dorothy90/map_agent.git 의 브랜치 codex/goal-driven-harness, 커밋 e45242bc7d9a7199be9ed6378e53c109585d89db 만 사용해. 브랜치의 다른 HEAD를 따라가지 마. 사내 시작 커밋은 별도로 기록해. 사내 레포 밖에 클론한 참조 폴더의 HEAD가 이 커밋인지 확인한 뒤, 그 커밋의 docs/yield-harness-port/START_HERE.md, 01-merge.md, 04-acceptance.md, 06-windows-chat.md와 FILES.tsv를 사용해.
+
+참조 폴더에서 다음이 성공하기 전에는 사내 소스를 반영하지 마.
+
+python3 docs/yield-harness-port/build_kit.py verify-tree --root <참조폴더> --inventory <참조폴더>/docs/yield-harness-port/FILES.tsv --git-checkout
+
+실패하면 멈추고 원인을 보고해. 목록을 임의로 다시 만들지 마.
+
+이전에 35af50f4 부근까지 옮겼다면, 남은 원본 변경은 cb58209b와 설명서·목록 갱신인 e45242bc다. cb58209b는 안 쓰는 run_python과 Docker 실행 경로를 제거한다. 웹 채팅의 Python은 execute_code와 read_result(export_for_python=true)다. START_HERE의 조건 처리 파일 6개는 9ff7d746의 일부분이니 포함 여부만 확인하고, 그 6개만 가져오면 끝난 것으로 보지 마. 사내에 남은 구형 run_python이나 runtime/container.py, runtime/Dockerfile 호출자가 있으면 일괄 삭제하지 말고 보고해.
+
+기존 프론트 설계, 사내 인증, 직원별 권한, DB 연결, 사내 도구는 보존해. Hermes 엔진 핀은 5894e750c3dba980d43b25aa29e3958149ba2c61이다. 다른 버전 엔진 파일을 섞지 마. 캡처·더미 DB·개인 프로필·운영 키는 복사하거나 적재하지 마.
+
+비교표에서 인증, 프론트 설계, 직원별 권한, DB 연결, 엔진 핀을 바꿔야 하는 MERGE나 충돌이 있으면 그 파일은 HOLD로 두고 근거와 함께 보고해. 그 밖의 ADD/KEEP과 독립적인 MERGE는 같은 작업에서 계속 진행해.
+
+Windows 실채팅 검증은 06-windows-chat.md를 따른다. WSL·Docker·SSH 없이 로컬 서버를 실행해. 먼저 harness.evals.windows_isolation을 실행하고, /health/isolation에서 backend=windows와 sandbox=appcontainer를 확인한 뒤에만 채팅을 진행해. 격리를 Docker, WSL, 샌드박스 없는 Python으로 우회하지 마. 사전 검사가 실패하거나 준비할 수 없으면 그 항목은 실패로, 그 때문에 실행하지 못한 엑셀·Python 파일 검증은 차단으로 원인과 함께 적어. 통과로 적지 마.
+
+사전 검사가 통과하면 새 채팅에 “4SA 웨이퍼 맵 보여줘”를 보내고, 실제 DB에 있는 LOT·웨이퍼·검사를 고른 뒤 load_wafer_maps 인자와 화면 좌표·BIN을 DB와 대조해. 같은 채팅에 “그 맵을 엑셀에 넣어줘. 같은 시트나 별도 시트에 좌표와 BIN도 넣어줘.”라고 보내. execute_code 호출 후 화면의 다운로드 버튼을 직접 누르고, 받은 .xlsx를 실제로 열어 이미지·식별 조건·좌표 행 수·BIN을 DB와 대조해. 다른 채팅의 세션 ID로 그 다운로드 URL을 요청해 거부되는지 확인하고, 분석 중 취소 후 자식 프로세스가 끝나며 다음 질문에 답할 수 있는지도 확인해.
+
+채팅 조건은 04-acceptance.md와 behavior.md를 기준으로 검증해. 같은 채팅의 후속 질문에서 이어받은 조건이 실제 도구 인자와 답변 첫 줄 `이번 대화 기준: …`에 나타나는지 확인해. 새 채팅에 “이전 채팅에서 본 맵 조건을 찾아 다시 그려줘”를 보내, 확인 카드가 나온 뒤에만 대상 조회가 시작되는지 봐. 선택지용 메타데이터 조회와 대상 load_wafer_maps, render_yield_table, 분석 대상 query_db는 구분하고, 확인 전에는 대상 조회를 하면 안 된다. 선택 후 도구 인자가 선택한 조건과 일치하는지도 기록해. 저수율이나 그룹 분할 기준이 확인되지 않았으면 임의 임계값을 쓰지 않고 clarify로 묻는지 확인해. clarify가 시간 초과, 취소, 빈 응답이거나 필수 답이 빠지면 대상 조회 없이 턴이 끝나는지 확인해.
+
+기존 사내 기능의 대표 시나리오도 실행해서 결과를 남겨.
+
+Ubuntu 직원 격리 검사는 실제 Ubuntu 서비스 계정에서 실행해 종료 코드 0과 `1 passed`를 받았을 때만 통과로 적어. Windows 결과로 대체하지 마. 실행하지 못했으면 배포 전 확인 항목(미검증)으로 남겨.
+
+이번 필수 Windows 검증은 위 맵·엑셀 경로와 조건·저수율 확인이다. 실행하지 않은 예약, 로컬 MCP, 위임, Unix 개인·공용 파일 등은 미검증으로 남겨. 통과로 적지 마.
+
+판정은 통과, 실패, 미검증, 차단만 사용해. 통과는 실제 실행으로 기대 동작을 확인한 경우, 실패는 실행했으나 기대를 벗어난 경우, 미검증은 범위 밖이거나 실행하지 않은 경우, 차단은 격리·권한·환경 같은 선행 조건 때문에 진행할 수 없는 경우다. 이식한 파일, 보류한 충돌, 테스트 결과, 실제 채팅 캡처, 참조 커밋, 사내 시작·완료 커밋, 모델 ID, 채팅·실행 ID, 기대값과 실측값을 사내 기록에 남겨.
+
+검토한 변경만 사내 이식 브랜치에 커밋해. 기본 브랜치 병합과 운영 배포는 하지 마. 내가 검토한 뒤 진행할게.
