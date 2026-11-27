@@ -20,6 +20,8 @@ npm run dev
 
 Vite는 `/api/ws`, `/gateway-m1`, `/harness/sessions`, `/harness/results`, `/harness/artifacts`를 `HARNESS_GATEWAY_TARGET`(기본 `http://127.0.0.1:8001`)으로 프록시합니다. 기존 API 프록시도 유지합니다. `vite preview`는 빌드 미리보기용입니다.
 
+웹과 데스크톱 앱은 같은 프론트엔드를 사용합니다. 웹은 650px보다 넓은 화면에서 최대화 앱과 같은 분할 레이아웃을 열고, 그 이하에서는 대화 목록을 오버레이로 표시합니다. 운영 웹에는 `npm run build`로 생성한 `dist/`를 인증 게이트웨이와 함께 제공합니다.
+
 ## 기능과 연결
 
 - Hermes Thread와 ChatBar를 통한 메시지 전송, 스트리밍, 중지 및 후속 요청

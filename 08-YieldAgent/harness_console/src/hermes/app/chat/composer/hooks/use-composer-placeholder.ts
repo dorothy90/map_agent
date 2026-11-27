@@ -1,7 +1,9 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { useWebPresentation } from '../../../../../web/presentation'
 import { useI18n } from '@/i18n'
+import { $clarifyRequests, clarifyRequestsForSession } from '@/store/clarify'
 import { resetBrowseState } from '@/store/composer-input-history'
 
 import { pickPlaceholder } from '../composer-utils'
@@ -22,6 +24,12 @@ interface UseComposerPlaceholderOptions {
 export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: UseComposerPlaceholderOptions): string {
   const { t } = useI18n()
   const web = useWebPresentation()
+  useStore($clarifyRequests)
+  const waitingForClarify =
+    web &&
+    clarifyRequestsForSession(sessionId ?? null).some(request =>
+      request.questions.some(q => !Object.hasOwn(request.lockedAnswers ?? {}, q.qid))
+    )
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
 
@@ -56,6 +64,7 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
   // flaky network doesn't block drafting; only submit/backend actions stay
   // disabled until the gateway is open again.
   if (web) {
+    if (waitingForClarify) return '추가 비교를 위해 답변을 기다리고 있어요'
     return sessionId ? '수율에 대해 물어보세요' : '수율이나 웨이퍼에 대해 질문하세요'
   }
   return disabled

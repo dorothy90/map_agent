@@ -2,8 +2,11 @@
 
 import { matrixArtifactPath, serveMatrixPanel } from '../../../../web/matrix-panel-bridge'
 import { useWebPresentation } from '../../../../web/presentation'
+import { OpenOriginalLink } from '../../../../web/OpenOriginalLink'
 
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from 'react'
+
+import { isHarnessArtifactUrl } from '@/lib/media'
 
 import type { FrameEmbed } from './providers/types'
 import { ScrollGate } from './scroll-gate'
@@ -20,6 +23,13 @@ function isYieldTableHeightMessage(data: unknown): data is { type: 'yield-table-
 
   const message = data as Record<string, unknown>
   return message.type === 'yield-table-height' && typeof message.height === 'number' && Number.isFinite(message.height)
+}
+
+function embeddedArtifactSource(src: string): string {
+  const url = new URL(src, window.location.href)
+  if (url.origin !== window.location.origin || !isHarnessArtifactUrl(url.pathname)) return src
+  url.searchParams.set('embedded', 'true')
+  return url.pathname + url.search + url.hash
 }
 
 export function YieldTableArtifactFrame({ children, src, title, subtitle }: { children: ReactNode; src: string; title: string; subtitle?: string }) {
@@ -55,9 +65,9 @@ export function YieldTableArtifactFrame({ children, src, title, subtitle }: { ch
   }, [src])
 
   if (web) return <span className="web-report-section">
-    <span className="web-report-heading"><span role="heading" aria-level={3}>{title}</span><a className="web-report-link" href={viewerHref} target="_blank" rel="noopener noreferrer">원본 열기</a></span>
+    <span className="web-report-heading"><span role="heading" aria-level={3}>{title}</span><OpenOriginalLink href={viewerHref}/></span>
     {subtitle && <span className="web-report-subtitle">{subtitle}</span>}
-    <span className="web-report-scroll"><iframe className="yield-table-artifact-frame" loading="lazy" ref={frameRef} sandbox="allow-scripts" src={src} style={{height:height ?? 720}} title={title}/></span>
+    <span className="web-report-scroll"><iframe className="yield-table-artifact-frame" loading="lazy" ref={frameRef} sandbox="allow-scripts" src={embeddedArtifactSource(src)} style={{height:height ?? 720}} title={title}/></span>
   </span>
 
   return (

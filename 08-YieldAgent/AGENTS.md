@@ -1,5 +1,9 @@
 # 08-YieldAgent Architecture
 
+## Y-Agent frontend
+
+- Follow the [typography guide](docs/y-agent-typography.md) for text styles and the [design system](docs/y-agent-design-system.md) for unified glass, card surface, and neutral palette tokens in the web and desktop console. Reuse the existing CSS variables when adding UI.
+
 ## Goal-driven harness v2 (2026-09-19)
 
 `harness/` contains the new runtime behind `HARNESS_ENABLED` for new sessions.

@@ -307,6 +307,32 @@ describe('ClarifyTool choice selection', () => {
 })
 
 describe('ClarifyTool keyboard navigation', () => {
+  it('shows only the supplied choices in Y-Agent and keeps the free-text prompt editable', () => {
+    const choices = ['staging', '기타 직접 입력']
+    $activeSessionId.set('session-1')
+    setClarifyRequest({
+      questions: [
+        { choices, multiSelect: false, qid: 'q0', question: 'Which deployment target?' },
+        { choices: null, multiSelect: false, qid: 'q1', question: 'Add a note' }
+      ],
+      requestId: 'clarify-live',
+      sessionId: 'session-1'
+    })
+    renderClarify(<WebPresentationProvider><ClarifyTool {...liveClarifyProps(choices)} /></WebPresentationProvider>)
+
+    expect(screen.getByRole('button', { name: /기타 직접 입력/ })).toBeTruthy()
+    expect(screen.queryByPlaceholderText(/Other/)).toBeNull()
+    const staging = screen.getByRole('button', { name: /staging/ })
+    fireEvent.keyDown(window, { key: 'ArrowUp' })
+    expect(screen.getByRole('button', { name: /기타 직접 입력/ }).getAttribute('aria-current')).toBe('true')
+    fireEvent.click(staging)
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+    const freeText = screen.getByPlaceholderText('Type your answer…') as HTMLTextAreaElement
+    fireEvent.change(freeText, { target: { value: 'next question only' } })
+    expect(freeText.value).toBe('next question only')
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+  })
+
   it('cycles through choices and Other with the arrow keys', () => {
     renderLiveClarify()
 
@@ -1441,21 +1467,22 @@ describe('ClarifyTool canonical per-question batch', () => {
     )
 
     renderClarify(web ? <WebPresentationProvider>{tree}</WebPresentationProvider> : tree)
-    expect(screen.getByText(web ? '질문 1 / 2' : '1/2')).toBeTruthy()
+    expect(screen.getByText(web ? '질문 1' : '1/2')).toBeTruthy()
     expect(document.querySelectorAll('form[data-clarify-stepper]')).toHaveLength(1)
     expect(document.querySelector('[data-clarify-batch-question="q1"]')).toBeTruthy()
     expect(document.querySelector('[data-clarify-batch-question="q2"]')).toBeNull()
+    if (web) expect(screen.queryByPlaceholderText(/Other/)).toBeNull()
 
     const productChoice = screen.getByRole('button', { name: /4SS/ })
     fireEvent.click(productChoice)
 
     fireEvent.click(screen.getByRole('button', { name: '다음 →' }))
-    expect(screen.getByText(web ? '질문 2 / 2' : '2/2')).toBeTruthy()
+    expect(screen.getByText(web ? '질문 2' : '2/2')).toBeTruthy()
     expect(document.querySelector('[data-clarify-batch-question="q1"]')).toBeNull()
     expect(document.querySelector('[data-clarify-batch-question="q2"]')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: '← 이전' }))
-    expect(screen.getByText(web ? '질문 1 / 2' : '1/2')).toBeTruthy()
+    expect(screen.getByText(web ? '질문 1' : '1/2')).toBeTruthy()
     expect(screen.getByRole('button', { name: /4SS/ }).getAttribute('aria-pressed')).toBe('true')
 
     fireEvent.click(screen.getByRole('button', { name: '다음 →' }))
@@ -1481,7 +1508,10 @@ describe('ClarifyTool canonical per-question batch', () => {
       expect(document.querySelector('form[data-clarify-stepper]')).toBeNull()
       expect(document.querySelectorAll('[data-clarify-settled]')).toHaveLength(2)
     })
-    expect(Array.from(document.querySelectorAll('[data-clarify-answer]')).map(row => row.textContent)).toEqual([
+    const answerSelector = web
+      ? '[data-clarify-answer] [data-selected="true"] .web-choice-text'
+      : '[data-clarify-answer]'
+    expect(Array.from(document.querySelectorAll(answerSelector)).map(row => row.textContent)).toEqual([
       '4SS',
       '2026-Q4'
     ])

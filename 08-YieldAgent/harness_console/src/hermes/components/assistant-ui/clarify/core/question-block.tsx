@@ -4,6 +4,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import type { ClarifyQuestion } from '@/store/clarify'
+import { useWebPresentation } from '../../../../../web/presentation'
 
 import { ChoiceButton, KeyBadge, letterFor, OPTION_ROW_CLASS } from './choice-row'
 import { CLARIFY_TEXTAREA_CLASS } from './shell'
@@ -31,6 +32,7 @@ export function QuestionBlock({
   staged
 }: QuestionBlockProps) {
   const { t } = useI18n()
+  const web = useWebPresentation()
   const copy = t.assistant.clarify
   const choices = question.choices ?? []
   const otherActive = cursor === choices.length
@@ -39,14 +41,15 @@ export function QuestionBlock({
     <div
       className="grid gap-1"
       data-clarify-batch-question={question.qid}
+      data-clarify-multi={question.multiSelect ? 'true' : undefined}
       onFocus={onActivate}
       onPointerDown={onActivate}
     >
       <div className="flex items-start gap-2">
-        <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
+        <span className="web-clarify-prompt flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
           {question.question}
         </span>
-        {choices.length > 0 ? (
+        {choices.length > 0 && !web ? (
           <span
             className="mt-px shrink-0 rounded-sm bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] text-(--ui-text-tertiary)"
             data-clarify-select-mode={question.multiSelect ? 'multi' : 'single'}
@@ -70,29 +73,31 @@ export function QuestionBlock({
               selected={staged.choices.includes(choice)}
             />
           ))}
-          <label
-            className={cn(OPTION_ROW_CLASS, 'items-center', otherActive && 'bg-(--chrome-action-hover)')}
-            data-highlighted={otherActive || undefined}
-          >
-            <KeyBadge
-              char={letterFor(choices.length)}
-              disabled={disabled}
-              preview={otherActive}
-              selected={Boolean(staged.draft.trim())}
-            />
-            <Textarea
-              aria-current={otherActive || undefined}
-              aria-keyshortcuts={cursor === null ? undefined : `${letterFor(choices.length)} ${choices.length + 1}`}
-              className={CLARIFY_TEXTAREA_CLASS}
-              disabled={disabled}
-              onChange={event => onDraft(event.target.value)}
-              onFocus={onOtherFocus}
-              placeholder={copy.other}
-              rows={1}
-              size="sm"
-              value={staged.draft}
-            />
-          </label>
+          {!web && (
+            <label
+              className={cn(OPTION_ROW_CLASS, 'items-center', otherActive && 'bg-(--chrome-action-hover)')}
+              data-highlighted={otherActive || undefined}
+            >
+              <KeyBadge
+                char={letterFor(choices.length)}
+                disabled={disabled}
+                preview={otherActive}
+                selected={Boolean(staged.draft.trim())}
+              />
+              <Textarea
+                aria-current={otherActive || undefined}
+                aria-keyshortcuts={cursor === null ? undefined : `${letterFor(choices.length)} ${choices.length + 1}`}
+                className={CLARIFY_TEXTAREA_CLASS}
+                disabled={disabled}
+                onChange={event => onDraft(event.target.value)}
+                onFocus={onOtherFocus}
+                placeholder={copy.other}
+                rows={1}
+                size="sm"
+                value={staged.draft}
+              />
+            </label>
+          )}
         </div>
       ) : (
         <Textarea

@@ -44,9 +44,11 @@ function answerFor(question: ClarifyQuestion, stage: Stage): string | null {
 /** One visible card for canonical sibling prompts (`base:q1`, `base:q2`, …). */
 export function ClarifyToolStepper({
   onAnswered,
+  questionOffset = 0,
   requests
 }: {
   onAnswered: () => void
+  questionOffset?: number
   requests: ClarifyRequest[]
 }) {
   const web=useWebPresentation()
@@ -185,6 +187,7 @@ export function ClarifyToolStepper({
     onClear: () => setStaged(current => ({ ...current, [currentRequest.requestId]: emptyStage })),
     onConfirm: finalStep ? () => void submitAll() : advance,
     onToggle: toggleChoice,
+    other: !web,
     questions: [question]
   })
   const canSubmit = requests.every(
@@ -200,60 +203,79 @@ export function ClarifyToolStepper({
       ref={formRef}
     >
       <ClarifyShell className="grid gap-3">
-        <div className="flex items-center gap-2">
-          <span className="shrink-0 text-[0.6875rem] font-medium leading-4 text-primary">
-            {web ? `질문 ${step + 1} / ${requests.length}` : `${step + 1}/${requests.length}`}
-          </span>
-          {!web && <div
-            aria-label={`${step + 1}/${requests.length}`}
-            aria-valuemax={requests.length}
-            aria-valuemin={1}
-            aria-valuenow={step + 1}
-            className="h-1 flex-1 overflow-hidden rounded-full bg-(--chrome-action-hover)"
-            role="progressbar"
-          >
-            <div
-              className="h-full rounded-full bg-primary transition-[width] duration-150"
-              style={{ width: `${((step + 1) / requests.length) * 100}%` }}
-            />
+        {web ? (
+          <div className="web-clarify-header flex items-center justify-between gap-2">
+            <span className="web-clarify-eyebrow">
+              <img alt="" aria-hidden="true" className="web-clarify-icon" src="/icons/clarify-flag.svg" />
+              <span>{`질문 ${questionOffset + step + 1}`}</span>
+            </span>
+            <span className="web-clarify-mode">
+              {(question.choices?.length ?? 0) > 0
+                ? question.multiSelect
+                  ? copy.multiSelectHint
+                  : copy.singleSelectHint
+                : '답변 대기'}
+            </span>
           </div>
-          }
-          {web ? <span className="web-clarify-status">답변 대기</span> : <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />}
-        </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="shrink-0 text-[0.6875rem] font-medium leading-4 text-primary">
+              {`${step + 1}/${requests.length}`}
+            </span>
+            <div
+              aria-label={`${step + 1}/${requests.length}`}
+              aria-valuemax={requests.length}
+              aria-valuemin={1}
+              aria-valuenow={step + 1}
+              className="h-1 flex-1 overflow-hidden rounded-full bg-(--chrome-action-hover)"
+              role="progressbar"
+            >
+              <div
+                className="h-full rounded-full bg-primary transition-[width] duration-150"
+                style={{ width: `${((step + 1) / requests.length) * 100}%` }}
+              />
+            </div>
+            <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
+          </div>
+        )}
 
         {web && step>0 && <p className="web-prior-answer">{requests.slice(0,step).map(request => answerFor(request.questions[0],staged[request.requestId] ?? emptyStage)).filter(Boolean).join(' · ')}</p>}
-        <QuestionBlock
-          cursor={keys.cursorRow}
-          disabled={submitting}
-          onActivate={() => keys.focusQuestion(0)}
-          onDraft={draftFor}
-          onOtherFocus={() => keys.onOtherFocus(0)}
-          onPick={choiceIndex => keys.pick(0, choiceIndex)}
-          question={question}
-          staged={stage}
-        />
+        <div className={web ? 'web-clarify-step-stage' : undefined} key={currentRequest.requestId}>
+          <QuestionBlock
+            cursor={keys.cursorRow}
+            disabled={submitting}
+            onActivate={() => keys.focusQuestion(0)}
+            onDraft={draftFor}
+            onOtherFocus={() => keys.onOtherFocus(0)}
+            onPick={choiceIndex => keys.pick(0, choiceIndex)}
+            question={question}
+            staged={stage}
+          />
+        </div>
       </ClarifyShell>
 
-      <div className="flex items-center justify-end gap-1">
+      <div className="web-clarify-actions flex items-center justify-end gap-1.5">
         {step > 0 ? (
           <Button
             aria-label={pagination.previousAria}
+            className={web ? 'web-clarify-skip' : undefined}
             disabled={submitting}
             onClick={() => setStep(current => current - 1)}
             size="xs"
             type="button"
-            variant="outline"
+            variant={web ? 'text' : 'outline'}
           >
             ← {pagination.previous}
           </Button>
         ) : null}
         {finalStep ? (
-          <Button disabled={submitting || !canSubmit} loading={submitting} size="xs" type="submit">
+          <Button className={web ? 'web-clarify-submit' : undefined} disabled={submitting || !canSubmit} loading={submitting} size="xs" type="submit">
             {copy.confirmAndContinueLabel}
           </Button>
         ) : (
           <Button
             aria-label={pagination.nextAria}
+            className={web ? 'web-clarify-submit' : undefined}
             disabled={submitting || currentAnswer === null}
             size="xs"
             type="submit"

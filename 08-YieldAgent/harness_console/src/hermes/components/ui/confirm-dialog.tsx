@@ -130,7 +130,10 @@ export function ConfirmDialog({
   return (
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
       <DialogContent
-        className="max-w-md"
+        bodyClassName="gap-0 p-0"
+        className="yagent-confirm-dialog max-w-[344px]"
+        overlayClassName="yagent-dialog-overlay"
+        showCloseButton={false}
         onKeyDown={event => {
           // Enter/Space confirm regardless of which button holds focus
           // (preventDefault stops a focused Cancel from swallowing it).
@@ -163,12 +166,13 @@ export function ConfirmDialog({
           </div>
         )}
 
-        <DialogFooter>
-          <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
+        <DialogFooter className="yagent-confirm-footer">
+          <Button className="yagent-dialog-btn-ghost" disabled={busy} onClick={onClose} type="button" variant="ghost">
             {resolvedCancelLabel}
           </Button>
           {secondaryAction && (
             <Button
+              className="yagent-dialog-btn-secondary"
               disabled={busy}
               onClick={() => {
                 secondaryAction.onClick()
@@ -181,6 +185,7 @@ export function ConfirmDialog({
             </Button>
           )}
           <Button
+            className={destructive ? 'yagent-dialog-btn-destructive' : 'yagent-dialog-btn-primary'}
             disabled={busy}
             onClick={() => void run()}
             ref={confirmRef}

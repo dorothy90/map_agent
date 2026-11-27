@@ -6,7 +6,6 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { MessageQuestion } from '@/lib/icons'
 import {
   bareChoice,
   type ClarifyQuestion,
@@ -19,10 +18,11 @@ import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
 import { forgetServerRequest } from '@/store/server-requests'
 import { requestForOwnedSession } from '@/store/session-states'
+import { useWebPresentation } from '../../../../web/presentation'
 
 import { ClarifyConfirmBar } from './core/confirm-bar'
 import { emptyStage, QuestionBlock } from './core/question-block'
-import { CLARIFY_ICON_CLASS, ClarifyShell } from './core/shell'
+import { ClarifyShell } from './core/shell'
 import { useClarifyKeys } from './core/use-clarify-keys'
 import type { ClarifyArgs } from './parse'
 import { handleClarifySubmitShortcut } from './submit-shortcut'
@@ -38,15 +38,18 @@ import { UndeliveredNotice } from './undelivered-notice'
 export function ClarifyToolPending({
   fromArgs,
   onAnswered,
+  questionOffset,
   request,
   undelivered
 }: {
   fromArgs?: ClarifyArgs
   onAnswered: () => void
+  questionOffset?: number
   request: ClarifyRequest | null
   undelivered: boolean
 }) {
   const { t } = useI18n()
+  const web = useWebPresentation()
   const copy = t.assistant.clarify
   const gateway = useStore($gateway)
 
@@ -279,6 +282,7 @@ export function ClarifyToolPending({
     onClear: clearStage,
     onConfirm: () => void confirmAll(),
     onToggle: toggleChoice,
+    other: !web,
     questions
   })
 
@@ -295,7 +299,7 @@ export function ClarifyToolPending({
   return (
     <form
       aria-busy={ready || undelivered ? undefined : 'true'}
-      className="my-1.5 grid gap-4"
+      className="web-clarify-form my-1.5 grid gap-3"
       data-clarify-batch={questions.length}
       data-clarify-batch-preview={ready ? undefined : ''}
       data-clarify-choices={ready ? questions[keys.activeQuestion]?.choices?.length || undefined : undefined}
@@ -309,11 +313,21 @@ export function ClarifyToolPending({
         </span>
       )}
       <ClarifyShell className="grid gap-3">
-        <div className="flex items-start gap-2">
-          <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
-            {questions.length === 1 ? copy.oneQuestion : copy.questionProgress(answeredCount, questions.length)}
+        <div className="web-clarify-header flex items-center justify-between gap-2">
+          <span className="web-clarify-eyebrow">
+            <img alt="" aria-hidden="true" className="web-clarify-icon" src="/icons/clarify-flag.svg" />
+            <span>{questionOffset !== undefined
+              ? `질문 ${questionOffset + keys.activeQuestion + 1}`
+              : questions.length === 1 ? copy.oneQuestion : copy.questionProgress(answeredCount, questions.length)}</span>
           </span>
-          <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
+          {questions.length === 1 && (questions[0].choices?.length ?? 0) > 0 && (
+            <span
+              className="web-clarify-mode"
+              data-clarify-select-mode={questions[0].multiSelect ? 'multi' : 'single'}
+            >
+              {questions[0].multiSelect ? copy.multiSelectHint : copy.singleSelectHint}
+            </span>
+          )}
         </div>
         {undelivered ? <UndeliveredNotice /> : null}
         {questions.map((question, index) => (
@@ -329,16 +343,15 @@ export function ClarifyToolPending({
             staged={stageFor(question.qid)}
           />
         ))}
+        {undelivered ? null : (
+          <ClarifyConfirmBar
+            canConfirm={canConfirm}
+            disabled={disabled}
+            onSkip={() => void cancelAll()}
+            submitting={submitting}
+          />
+        )}
       </ClarifyShell>
-
-      {undelivered ? null : (
-        <ClarifyConfirmBar
-          canConfirm={canConfirm}
-          disabled={disabled}
-          onSkip={() => void cancelAll()}
-          submitting={submitting}
-        />
-      )}
     </form>
   )
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
+import { OpenOriginalLink } from './OpenOriginalLink'
 import { readWaferMaps, type WaferMapGroup, type WaferMaps } from './wafer-map-data'
 import './wafer-map-gallery.css'
 
@@ -71,22 +72,23 @@ export function WaferMapGallery({ src, title, children }: { src: string; title: 
     return () => controller.abort()
   }, [src])
   if (maps === null) return <>{children}</>
-  const original = <a className="web-report-link" href={src} target="_blank" rel="noopener noreferrer">원본 열기</a>
+  const original = <OpenOriginalLink href={src}/>
   if (!maps) return <span className="wafer-map-loading"><span role="status">맵 불러오는 중…</span>{original}</span>
   const groupLabel = dimensions[maps.groupBy ?? '']
   const caption = groupLabel ? groupLabel + '별 누적 웨이퍼 맵' : title
   return <span className="wafer-map-gallery" role="figure" aria-label={caption}>
-    <span className="wafer-map-heading"><strong>{caption}</strong>
+    <span className="wafer-map-heading">
+      <strong>{caption}</strong>
       <span className="wafer-map-scale"><span>좌표별 불량률</span>{percent.format(maps.low)}
         {maps.low !== maps.high && <><i aria-hidden="true"/>{percent.format(maps.high)}</>}
       </span>
+      {original}
     </span>
     <span className="wafer-map-grid">{maps.groups.map(group =>
       <button className="wafer-map-tile" key={group.id} type="button" aria-label={group.id + ' 맵 확대'} onClick={event => setZoom({ group, trigger: event.currentTarget })}>
         <MapCanvas maps={maps} group={group} size={300}/>
         <strong>{group.id}</strong><small>{groupStats(group)}</small>
       </button>)}</span>
-    <span className="wafer-map-original">{original}</span>
     {zoom && <MapZoom maps={maps} {...zoom} dismiss={() => setZoom(null)}/>}
   </span>
 }

@@ -18,7 +18,7 @@ import {
 } from 'react'
 
 import { useWebPresentation } from '../../../../web/presentation'
-import { WebTraceStep, type TraceState } from '../../../../web/execution-trace'
+import { useWebTraceColumnCount, WebTraceStep, WebTraceTimingCell, type TraceState } from '../../../../web/execution-trace'
 import { toolStepLabel, toolArgumentSummary, resolveToolDisplay } from '../../../../web/tool-summary'
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
@@ -369,6 +369,7 @@ function ToolRunningMeta({ seconds, toolCallId = '' }: { seconds: number; toolCa
 
 function ToolEntry({ part }: ToolEntryProps) {
   const web = useWebPresentation()
+  const traceColumns = useWebTraceColumnCount()
   const webArgs = parseMaybeObject(part.args)
   const { name: displayName, args: displayArgs } = resolveToolDisplay(part.toolName, webArgs)
   const inputArgs = Object.fromEntries(Object.entries(displayArgs).filter(([key]) => !['context', 'hermes_tool_labels'].includes(key)))
@@ -613,6 +614,126 @@ function ToolEntry({ part }: ToolEntryProps) {
 
   const state: TraceState = isPending ? 'running' : view.status === 'error' ? 'error'
     : interrupted || result === undefined ? 'stopped' : 'done'
+  const stepLabel = toolStepLabel(displayName)
+  const statusLabel = isPending ? '실행 중' : state === 'error' ? '오류' : state === 'stopped' ? '중지됨' : '완료'
+  const durationLabel = isPending ? `${Math.floor(elapsed)}s` : view.durationLabel
+  const canExpand = isPending || hasExpandableContent || Object.keys(inputArgs).length > 0
+  const details = (web || open) && (
+    <div className={web ? 'web-trace-disclosure' : undefined} data-open={web ? open : undefined} aria-hidden={web && !open ? true : undefined} inert={web && !open ? true : undefined}>
+      <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
+        {web && !showPayload && <div className="web-trace-input">
+          {toolArgumentSummary(inputArgs) || (Object.keys(inputArgs).length ? clampForDisplay(JSON.stringify(inputArgs)) : '입력 인자 없음')}
+        </div>}
+        {copyAction.text && (
+          <CopyButton
+            appearance="inline"
+            className="absolute right-4 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-5 transition-opacity group-hover/tool-block:opacity-100 hover:opacity-100 focus-visible:opacity-100"
+            iconClassName="size-3"
+            label={copyAction.label}
+            showLabel={false}
+            side="left"
+            stopPropagation
+            text={copyAction.text}
+          />
+        )}
+        {part.toolName === 'terminal' && toolViewMode !== 'technical' && (
+          <TerminalTranscript command={view.terminalCommand} exitCode={view.terminalExitCode} />
+        )}
+        {view.imageUrl && (
+          <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
+            <MarkdownImage alt={copy.outputAlt} src={view.imageUrl} />
+          </div>
+        )}
+        {hasSearchHits && view.searchHits && (
+          <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
+            {view.searchQuery && (
+              <p className="mb-1 flex min-w-0 gap-1.5 wrap-anywhere">
+                <span className="shrink-0 font-medium text-(--ui-text-tertiary)">Search</span>
+                <span>{view.searchQuery}</span>
+              </p>
+            )}
+            {searchResultsLabel && <p className={TOOL_SECTION_LABEL_CLASS}>{searchResultsLabel}</p>}
+            <SearchResultsList hits={view.searchHits} />
+          </div>
+        )}
+        {showInlineDiff && (
+          <FileDiffPanel className="-mt-1.5" diff={view.inlineDiff} path={isFileEdit ? view.subtitle : undefined} />
+        )}
+        {showDetail &&
+          !showPayload &&
+          (view.status === 'error' ? (
+            detailSections.summary || detailSections.body ? (
+              <div className="max-w-full text-xs leading-relaxed text-destructive">
+                {detailSections.summary && (
+                  <LinkifiedText className="block font-medium" text={detailSections.summary} />
+                )}
+                {detailSections.body && (
+                  <pre
+                    className={cn(
+                      'max-h-56 overflow-auto whitespace-pre-wrap wrap-anywhere font-mono text-[0.7rem] leading-[1.55] text-(--ui-text-secondary)',
+                      detailSections.summary && 'mt-1.5'
+                    )}
+                  >
+                    {clampForDisplay(detailSections.body)}
+                  </pre>
+                )}
+              </div>
+            ) : null
+          ) : view.stdout || view.stderr ? (
+            // Stdout + stderr split: render both as labeled blocks. stderr
+            // is intentionally NOT painted destructive — many CLIs log
+            // informational output there.
+            <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
+              {view.detailLabel && <p className={TOOL_SECTION_LABEL_CLASS}>{view.detailLabel}</p>}
+              {view.stdout && (
+                <div className="space-y-0.5">
+                  {view.stderr && <p className={TOOL_SECTION_LABEL_CLASS}>stdout</p>}
+                  <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
+                    {view.rendersAnsi ? (
+                      <AnsiText text={clampForDisplay(view.stdout)} />
+                    ) : (
+                      clampForDisplay(view.stdout)
+                    )}
+                  </pre>
+                </div>
+              )}
+              {view.stderr && (
+                <div className={cn('space-y-0.5', view.stdout && 'mt-1.5')}>
+                  <p className={TOOL_SECTION_LABEL_CLASS}>stderr</p>
+                  <pre
+                    className={cn(
+                      TOOL_SECTION_PRE_CLASS,
+                      'whitespace-pre-wrap wrap-anywhere text-(--ui-text-tertiary)'
+                    )}
+                  >
+                    {view.rendersAnsi ? (
+                      <AnsiText text={clampForDisplay(view.stderr)} />
+                    ) : (
+                      clampForDisplay(view.stderr)
+                    )}
+                  </pre>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
+              {view.detailLabel && <p className={TOOL_SECTION_LABEL_CLASS}>{view.detailLabel}</p>}
+              {renderDetailAsCode ? (
+                <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
+                  {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.detail)} /> : clampForDisplay(view.detail)}
+                </pre>
+              ) : (
+                <CompactMarkdown
+                  className={cn(TOOL_SECTION_SURFACE_CLASS, 'wrap-anywhere')}
+                  text={clampForDisplay(view.detail)}
+                />
+              )}
+            </div>
+          ))}
+        {showPayload && <ToolPayloadDisclosure args={part.args} result={part.result} />}
+      </div>
+    </div>
+  )
   const row = (
     <div
       className={cn(
@@ -627,13 +748,13 @@ function ToolEntry({ part }: ToolEntryProps) {
       ref={enterRef}
     >
       {web && <button type="button" className="web-tool-row" data-tool-state={state}
-        aria-expanded={open} disabled={!isPending && !hasExpandableContent && !Object.keys(webArgs).length}
+        aria-expanded={open} disabled={!canExpand}
         onClick={() => setToolDisclosureOpen(rowDisclosureId, !open)}>
-        <span className="web-trace-icon" aria-hidden="true">{isPending ? '' : state === 'error' ? '!' : state === 'stopped' ? '–' : '✓'}</span>
-        <strong>{toolStepLabel(displayName)}</strong><code>{displayName}</code>
-        <span className="web-tool-state">{isPending ? '실행 중' : state === 'error' ? '오류' : state === 'stopped' ? '중지됨' : '완료'}
-          {isPending ? ` · ${Math.floor(elapsed)}s` : view.durationLabel ? ` · ${view.durationLabel}` : ''}</span>
-        <span aria-hidden="true">{open ? '⌄' : '›'}</span>
+        <span className="web-trace-icon" aria-hidden="true" />
+        <strong>{stepLabel}</strong><code>{displayName}</code>
+        <span className="web-tool-state">{statusLabel}</span>
+        <span className="web-tool-duration">{durationLabel}</span>
+        <img className="web-trace-chevron" src="/icons/chevron-right.svg" alt=""/>
       </button>}
       <div className={cn(web && 'web-tool-legacy-header', open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
@@ -690,123 +811,29 @@ function ToolEntry({ part }: ToolEntryProps) {
           </span>
         </DisclosureRow>
       </div>
-      {open && (
-        <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
-          {web && !showPayload && <div className="web-trace-input">
-            {toolArgumentSummary(inputArgs) || (Object.keys(inputArgs).length ? clampForDisplay(JSON.stringify(inputArgs)) : '입력 인자 없음')}
-          </div>}
-          {copyAction.text && (
-            <CopyButton
-              appearance="inline"
-              className="absolute right-4 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-5 transition-opacity group-hover/tool-block:opacity-100 hover:opacity-100 focus-visible:opacity-100"
-              iconClassName="size-3"
-              label={copyAction.label}
-              showLabel={false}
-              side="left"
-              stopPropagation
-              text={copyAction.text}
-            />
-          )}
-          {part.toolName === 'terminal' && toolViewMode !== 'technical' && (
-            <TerminalTranscript command={view.terminalCommand} exitCode={view.terminalExitCode} />
-          )}
-          {view.imageUrl && (
-            <div className="max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
-              <MarkdownImage alt={copy.outputAlt} src={view.imageUrl} />
-            </div>
-          )}
-          {hasSearchHits && view.searchHits && (
-            <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
-              {view.searchQuery && (
-                <p className="mb-1 flex min-w-0 gap-1.5 wrap-anywhere">
-                  <span className="shrink-0 font-medium text-(--ui-text-tertiary)">Search</span>
-                  <span>{view.searchQuery}</span>
-                </p>
-              )}
-              {searchResultsLabel && <p className={TOOL_SECTION_LABEL_CLASS}>{searchResultsLabel}</p>}
-              <SearchResultsList hits={view.searchHits} />
-            </div>
-          )}
-          {showInlineDiff && (
-            <FileDiffPanel className="-mt-1.5" diff={view.inlineDiff} path={isFileEdit ? view.subtitle : undefined} />
-          )}
-          {showDetail &&
-            !showPayload &&
-            (view.status === 'error' ? (
-              detailSections.summary || detailSections.body ? (
-                <div className="max-w-full text-xs leading-relaxed text-destructive">
-                  {detailSections.summary && (
-                    <LinkifiedText className="block font-medium" text={detailSections.summary} />
-                  )}
-                  {detailSections.body && (
-                    <pre
-                      className={cn(
-                        'max-h-56 overflow-auto whitespace-pre-wrap wrap-anywhere font-mono text-[0.7rem] leading-[1.55] text-(--ui-text-secondary)',
-                        detailSections.summary && 'mt-1.5'
-                      )}
-                    >
-                      {clampForDisplay(detailSections.body)}
-                    </pre>
-                  )}
-                </div>
-              ) : null
-            ) : view.stdout || view.stderr ? (
-              // Stdout + stderr split: render both as labeled blocks. stderr
-              // is intentionally NOT painted destructive — many CLIs log
-              // informational output there.
-              <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
-                {view.detailLabel && <p className={TOOL_SECTION_LABEL_CLASS}>{view.detailLabel}</p>}
-                {view.stdout && (
-                  <div className="space-y-0.5">
-                    {view.stderr && <p className={TOOL_SECTION_LABEL_CLASS}>stdout</p>}
-                    <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
-                      {view.rendersAnsi ? (
-                        <AnsiText text={clampForDisplay(view.stdout)} />
-                      ) : (
-                        clampForDisplay(view.stdout)
-                      )}
-                    </pre>
-                  </div>
-                )}
-                {view.stderr && (
-                  <div className={cn('space-y-0.5', view.stdout && 'mt-1.5')}>
-                    <p className={TOOL_SECTION_LABEL_CLASS}>stderr</p>
-                    <pre
-                      className={cn(
-                        TOOL_SECTION_PRE_CLASS,
-                        'whitespace-pre-wrap wrap-anywhere text-(--ui-text-tertiary)'
-                      )}
-                    >
-                      {view.rendersAnsi ? (
-                        <AnsiText text={clampForDisplay(view.stderr)} />
-                      ) : (
-                        clampForDisplay(view.stderr)
-                      )}
-                    </pre>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
-                {view.detailLabel && <p className={TOOL_SECTION_LABEL_CLASS}>{view.detailLabel}</p>}
-                {renderDetailAsCode ? (
-                  <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
-                    {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.detail)} /> : clampForDisplay(view.detail)}
-                  </pre>
-                ) : (
-                  <CompactMarkdown
-                    className={cn(TOOL_SECTION_SURFACE_CLASS, 'wrap-anywhere')}
-                    text={clampForDisplay(view.detail)}
-                  />
-                )}
-              </div>
-            ))}
-          {showPayload && <ToolPayloadDisclosure args={part.args} result={part.result} />}
-        </div>
-      )}
+      {details}
     </div>
   )
-  return web ? <WebTraceStep id={disclosureId} state={state}>{row}</WebTraceStep> : row
+  if (!web) return row
+
+  return <WebTraceStep id={disclosureId} state={state} fallback={row}>
+    <tr className="web-trace-step" data-tool-state={state}>
+      <td>
+        <button type="button" className="web-tool-row" aria-label={`${stepLabel}, ${displayName}`}
+          aria-expanded={canExpand ? open : undefined} disabled={!canExpand}
+          onClick={() => setToolDisclosureOpen(rowDisclosureId, !open)}>
+          <span className="web-trace-icon" aria-hidden="true" />
+          <span className="web-trace-stage-label"><strong>{stepLabel}</strong><code>{displayName}</code><span className="sr-only">{statusLabel}</span></span>
+          {canExpand && <img className="web-trace-chevron" src="/icons/chevron-right.svg" alt=""/>}
+        </button>
+      </td>
+      <WebTraceTimingCell id={disclosureId}/>
+      <td className="web-tool-duration">{durationLabel || '—'}</td>
+    </tr>
+    <tr className="web-trace-detail-row" aria-hidden={!open}>
+      <td colSpan={traceColumns} className="group/tool-block">{details}</td>
+    </tr>
+  </WebTraceStep>
 }
 
 interface TerminalTranscriptProps {
