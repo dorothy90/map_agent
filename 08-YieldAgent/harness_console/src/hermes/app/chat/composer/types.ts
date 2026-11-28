@@ -37,7 +37,7 @@ export interface ChatBarState {
 }
 
 export interface ChatBarProps {
-  contextControl?: ReactNode
+  contextControl?: ReactNode | ((busyModeControl: ReactNode) => ReactNode)
   busy: boolean
   disabled: boolean
   focusKey?: string | null

@@ -72,7 +72,9 @@ it('shows the progress mascot while preparing and again during tool activity', a
   const { container, rerender } = render(chat([question, pending]))
   const bubble = await within(container).findByRole('status', { name: '생각을 정리하는 중' })
   expect(bubble.querySelector('img')?.getAttribute('src')).toBe('/y-agent-reply-progress.png')
-  expect(bubble.textContent).toBe('생각을 정리하는 중…')
+  expect(bubble.querySelector('.web-reply-progress-label')?.textContent).toBe('생각을 정리하는 중…')
+  expect(bubble.querySelector('.web-reply-progress-meta')?.textContent).toBe('0초')
+  expect(bubble.querySelector('.web-reply-progress-meta > .web-reply-progress-chevron')).not.toBeNull()
 
   rerender(chat([question, reply('first', [{ type: 'text', text: '답변입니다.' }], true)]))
   await waitFor(() => expect(container.textContent).toContain('답변입니다.'))
@@ -103,7 +105,7 @@ it('shows incoming answer text outside the closed execution record after a tool 
   const tool = reply('lookup', [call('rows', 'query_db', '1 row')])
   const { container, rerender } = render(chat([question, tool, reply('answer', [], true)]))
   await within(container).findByRole('status', { name: '생각을 정리하는 중' })
-  expect(within(container).queryByRole('button', { name: '조회·계산 기록' })).toBeNull()
+  expect(within(container).getByRole('button', { name: '조회·계산 기록' }).closest('.web-reply-progress-row')).not.toBeNull()
   rerender(chat([question, tool, reply('answer', [{ type: 'text', text: '조회된 수율은' }], true)]))
   const draft = await within(container).findByText('조회된 수율은')
   expect(isInaccessible(draft)).toBe(false)
@@ -124,8 +126,18 @@ it('shows progress during tool calls and opens the finished record from the answ
   const { container, rerender } = render(chat([question, first, calculating]))
 
   await within(container).findByRole('status', { name: 'Python 실행 중' })
-  expect(screen.queryByRole('button', { name: '조회·계산 기록' })).toBeNull()
+  const liveTrigger = screen.getByRole('button', { name: '조회·계산 기록' })
+  expect(liveTrigger.closest('.web-reply-progress-row')).not.toBeNull()
+  expect(liveTrigger.querySelector('img')).toBeNull()
+  expect(liveTrigger.querySelector('.web-reply-progress-meta')?.textContent).toContain('도구 2건 (완료 1 · 실행 중 1)')
+  expect(liveTrigger.querySelector('.web-reply-progress-meta > .web-reply-progress-chevron')).not.toBeNull()
+  fireEvent.click(within(liveTrigger).getByText('Python 실행 중…'))
+  expect(liveTrigger.getAttribute('aria-expanded')).toBe('true')
   expect(screen.queryByRole('dialog')).toBeNull()
+  const liveSteps = await screen.findByRole('table', { name: '실행 단계' })
+  expect(await within(liveSteps).findByRole('button', { name: /run_python/ })).toBeTruthy()
+  fireEvent.click(liveTrigger)
+  expect(liveTrigger.getAttribute('aria-expanded')).toBe('false')
 
   const completed = reply('second', [
     { ...call('compute', 'run_python', { duration_s: 1.4 }), args: { output: 'report' } },
@@ -133,8 +145,11 @@ it('shows progress during tool calls and opens the finished record from the answ
     { type: 'text', text: '수율을 확인했습니다.' }
   ])
   rerender(chat([question, first, { ...completed, metadata: { ...completed.metadata, custom: { durationS: 159 } } }]))
-  const trigger = await screen.findByRole('button', { name: '조회·계산 기록' })
-  expect(trigger.closest('[data-slot=aui_msg-actions]')).not.toBeNull()
+  const trigger = await waitFor(() => {
+    const button = screen.getByRole('button', { name: '조회·계산 기록' })
+    expect(button.closest('[data-slot=aui_msg-actions]')).not.toBeNull()
+    return button
+  })
   expect(screen.queryByRole('dialog')).toBeNull()
   fireEvent.click(trigger)
   const dialog = await screen.findByRole('dialog', { name: '조회·계산 기록' })
@@ -218,13 +233,17 @@ it('preserves tool commentary in order without showing it as answer prose', asyn
   ], true)
   const { container, rerender } = render(chat([question, initial, second]))
   await within(container).findByRole('status', { name: 'Python 실행 중' })
-  expect(screen.queryByText(latest)).toBeNull()
+  expect(isInaccessible(screen.getByText(latest))).toBe(true)
 
   const settled = reply('comparison', [
     { type: 'text', text: latest }, call('calc', 'run_python', '0.71'), { type: 'text', text: answer }
   ])
   rerender(chat([question, initial, settled]))
-  const summary = await screen.findByRole('button', { name: '조회·계산 기록' })
+  const summary = await waitFor(() => {
+    const button = screen.getByRole('button', { name: '조회·계산 기록' })
+    expect(button.closest('[data-slot=aui_msg-actions]')).not.toBeNull()
+    return button
+  })
   expect(screen.getByText(answer)).toBeTruthy()
   expect(screen.queryByText(earlier)).toBeNull()
   fireEvent.click(summary)

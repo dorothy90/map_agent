@@ -3,17 +3,21 @@ import { Command } from 'cmdk'
 import { Check, ChevronDown, Search } from 'lucide-react'
 import { Popover } from 'radix-ui'
 import { useState, type RefObject } from 'react'
+import { useComposerFlyout } from './use-composer-flyout'
 
 interface Props {
+  menuRow?: boolean
   value: string
   onChange: (value: string) => void
   fetcher: typeof fetch
   container: RefObject<HTMLElement | null>
 }
 
-export function ProductPicker({ value, onChange, fetcher, container }: Props) {
+export function ProductPicker({ value, onChange, fetcher, container, menuRow }: Props) {
   const [open, setOpen] = useState(false)
+  const flyout = useComposerFlyout(open, Boolean(menuRow), 180, 'bottom')
   const [search, setSearch] = useState('')
+  const [highlight, setHighlight] = useState<string | null>(null)
   const catalog = useQuery({
     queryKey: ['yield-product-catalog'],
     enabled: open,
@@ -30,18 +34,20 @@ export function ProductPicker({ value, onChange, fetcher, container }: Props) {
     setOpen(false)
   }
   const label = value || '전체 제품'
-  return <Popover.Root open={open} onOpenChange={next => { setOpen(next); setSearch('') }}>
+  const activeOption = highlight ?? (query ? (codes[0] ? `product:${codes[0]}` : '') : (value ? `product:${value}` : 'all'))
+  return <Popover.Root open={open} onOpenChange={next => { setOpen(next); setSearch(''); setHighlight(null) }}>
     <Popover.Trigger asChild>
-      <button type="button" className="web-product-trigger" aria-label={`분석 대상 제품, ${label}`}>
-        <span className="web-product-icon" aria-hidden="true"/><span>{label}</span><ChevronDown size={13} aria-hidden="true"/>
+      <button ref={flyout.trigger} type="button" className={menuRow ? "web-composer-option" : "web-product-trigger"} aria-label={`분석 대상 제품, ${label}`}>
+        <span className="web-product-icon" aria-hidden="true"/><span>{label}</span>{menuRow ? <span className="web-option-chevron" aria-hidden="true"/> : <ChevronDown size={13} aria-hidden="true"/>}
       </button>
     </Popover.Trigger>
     <Popover.Portal container={container.current}>
-      <Popover.Content className="web-product-popup yagent-popover" aria-label="분석 대상 제품" align="start" sideOffset={7} collisionPadding={12}>
-        <Command label="제품 코드 검색" shouldFilter={false} loop>
+      <Popover.Content className="web-product-popup yagent-popover" aria-label="분석 대상 제품" align="start" side={flyout.side} sideOffset={7} collisionPadding={8}
+        collisionBoundary={flyout.collisionBoundary}>
+        <Command label="제품 코드 검색" value={activeOption} onValueChange={setHighlight} shouldFilter={false} loop>
           <div className="web-product-search">
             <Search size={15} aria-hidden="true"/>
-            <Command.Input placeholder="제품 코드 검색" value={search} onValueChange={setSearch}/>
+            <Command.Input placeholder="제품 코드 검색" value={search} onValueChange={text => { setSearch(text); setHighlight(null) }}/>
           </div>
           <Command.List label="제품 목록">
             {!query && <Command.Item value="all" onSelect={() => select('')}>

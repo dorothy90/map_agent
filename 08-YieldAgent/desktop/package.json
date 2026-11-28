@@ -1,6 +1,6 @@
 {
   "name": "yori-desktop-shell",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "main": "main.cjs",
   "scripts": {
@@ -12,5 +12,8 @@
     "electron-builder": "26.18.0"
   },
   "description": "Y-Agent desktop client",
-  "author": "Y-Agent"
+  "author": "Y-Agent",
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  }
 }

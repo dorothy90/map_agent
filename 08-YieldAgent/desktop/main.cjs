@@ -114,8 +114,10 @@ app.whenReady().then(() => {
     if (mouse.type !== 'mouseMove') resizeDiagnostic(mouse.type, { x: mouse.x, y: mouse.y, button: mouse.button });
   });
   window.webContents.on('cursor-changed', (event, type) => resizeDiagnostic('cursor', { cursor: type }));
+  const updater = app.isPackaged && process.platform === 'win32' ? require('./windows-update.cjs') : null;
   window.webContents.on('context-menu', () => {
     const actions = [{ label: 'Y-Agent 종료', click: () => app.quit() }];
+    if (updater) actions.unshift(updater.windowsUpdateMenuItem(window), { type: 'separator' });
     if (!opened) actions.unshift({
       label: '항상 위', type: 'checkbox', checked: mascotPinned,
       click: item => {

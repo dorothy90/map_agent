@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { McpComposerButton, McpServersPage } from './McpServers'
 
 const container = { current: null }
-afterEach(cleanup)
+afterEach(() => { cleanup(); localStorage.clear() })
 function setup(popover = false) {
   let servers = [
     { name: 'local', command: 'python', args: ['server.py'], env: {}, enabled: true, transport: 'stdio' },
@@ -32,19 +32,68 @@ function setup(popover = false) {
   return { fetcher, onManage, client }
 }
 
-it('renders real cards, counts, filtering, search and enabled mutations', async () => {
+it('renders short command + tool chips cards, counts, filtering, search, footer test action and enabled mutations', async () => {
   const { fetcher } = setup()
   await screen.findByRole('heading', { name: 'local' })
   await screen.findByText('명령을 찾을 수 없어요.')
+  expect(screen.queryByText('stdio')).toBeNull()
+  expect(screen.queryByText('연결됨')).toBeNull()
+  expect(screen.queryByText('제공 도구')).toBeNull()
+  expect(screen.queryByText('안 1')).toBeNull()
+  expect(screen.queryByRole('button', { name: '⋯' })).toBeNull()
+  expect(screen.getByText('python server.py')).toBeTruthy()
+  expect(screen.getByText('ping')).toBeTruthy()
+  expect(screen.getByText('도구 1개')).toBeTruthy()
+  expect(screen.getByRole('img', { name: '연결됨' })).toBeTruthy()
+  expect(screen.getByRole('img', { name: '꺼짐' })).toBeTruthy()
+  expect(screen.getByRole('img', { name: '오류' })).toBeTruthy()
+  const okTestBtn = screen.getByRole('button', { name: '테스트 완료' })
+  expect(okTestBtn.querySelector('.mcp-test-check')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '오류 · 재시도' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: '테스트' })).toBeTruthy()
+  const testCallsBefore = fetcher.mock.calls.filter(([url]) => String(url).endsWith('/local/test')).length
+  fireEvent.click(okTestBtn)
+  expect(screen.queryByRole('dialog')).toBeNull()
+  await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/local/test')).length).toBe(testCallsBefore + 1))
   expect(screen.getByRole('button', { name: '전체 3' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: '켜짐 2' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: '꺼짐 1' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: '오류 1' })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: '오류 1' }))
   expect(screen.queryByRole('heading', { name: 'local' })).toBeNull()
   expect(screen.getByRole('heading', { name: 'broken' })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: '전체 3' }))
-  fireEvent.change(screen.getByRole('searchbox', { name: '서버 검색' }), { target: { value: 'local' } })
+  const search = screen.getByRole<HTMLInputElement>('searchbox', { name: '서버 검색' })
+  expect(screen.queryByRole('button', { name: '검색어 지우기' })).toBeNull()
+  fireEvent.change(search, { target: { value: 'local' } })
+  expect(screen.queryByRole('heading', { name: 'off' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '검색어 지우기' }))
+  expect(search.value).toBe('')
+  expect(screen.getByRole('heading', { name: 'off' })).toBeTruthy()
+  fireEvent.change(search, { target: { value: 'local' } })
   expect(screen.queryByRole('heading', { name: 'off' })).toBeNull()
   fireEvent.click(screen.getByRole('switch', { name: 'local 사용' }))
+  expect(screen.queryByRole('dialog')).toBeNull()
   await waitFor(() => expect(fetcher).toHaveBeenCalledWith('/harness/mcp/servers/local/enabled', expect.objectContaining({ method: 'PUT', body: '{"enabled":false}' })))
+  await waitFor(() => expect(screen.getByRole('switch', { name: 'local 사용' }).getAttribute('aria-checked')).toBe('false'))
+  expect(screen.getByText('ping')).toBeTruthy()
+  expect(screen.getByText('도구 1개')).toBeTruthy()
+  const manualCallsBefore = fetcher.mock.calls.filter(([url]) => String(url).endsWith('/local/test')).length
+  fireEvent.click(screen.getByRole('button', { name: '테스트 완료' }))
+  await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/local/test')).length).toBe(manualCallsBefore + 1))
+})
+
+it('restores cached tools from localStorage for disabled servers across reload', async () => {
+  localStorage.setItem('yagent.mcp.probeCache.v1', JSON.stringify({
+    off: {
+      probe: { ok: true, tools: [{ name: 'mcp__off__inspect', description: 'Inspect tool' }], elapsed_ms: 15 },
+      updatedAt: Date.now() - 60_000,
+    },
+  }))
+  setup()
+  await screen.findByRole('heading', { name: 'off' })
+  expect(screen.getByText('inspect')).toBeTruthy()
+  expect(screen.getAllByText('도구 1개').length).toBeGreaterThanOrEqual(1)
 })
 
 it('adds a draft with args and env, tests it and displays discovered full tool names', async () => {
@@ -66,10 +115,14 @@ it('adds a draft with args and env, tests it and displays discovered full tool n
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 })
 
-it('edits immutable names and confirms deletion inline', async () => {
+it('opens edit modal on card click, shows cached test details, and confirms deletion inline', async () => {
   const { fetcher } = setup()
-  fireEvent.click(await screen.findByRole('button', { name: 'local 편집' }))
+  await screen.findByText('ping')
+  fireEvent.click(screen.getByRole('button', { name: 'local' }))
   const dialog = screen.getByRole('dialog')
+  expect(dialog.classList.contains('skill-dialog')).toBe(true)
+  expect(within(dialog).getByText('mcp__local__ping')).toBeTruthy()
+  expect(within(dialog).getByRole('button', { name: '연결 테스트' })).toBeTruthy()
   expect((within(dialog).getByLabelText('이름') as HTMLInputElement).readOnly).toBe(true)
   fireEvent.click(within(dialog).getByRole('button', { name: '삭제' }))
   expect(within(dialog).getByText('삭제할까요? 되돌릴 수 없어요.')).toBeTruthy()

@@ -8,7 +8,8 @@ if (deploymentUrl.protocol !== 'https:' || deploymentUrl.username || deploymentU
 module.exports = {
   appId: 'com.yagent.desktop',
   productName: 'Y-Agent',
-  files: ['main.cjs', 'preload.cjs', 'package.json'],
+  files: ['main.cjs', 'preload.cjs', 'windows-update.cjs', 'package.json'],
   extraMetadata: { deploymentUrl: deploymentUrl.href },
+  publish: { provider: 'generic', url: new URL('/desktop-updates/', deploymentUrl).href },
   win: { target: 'nsis' },
 };

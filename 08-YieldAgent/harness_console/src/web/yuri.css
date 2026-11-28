@@ -58,9 +58,10 @@ body:has(.hermes-web.yuri-glass),
   user-select: none;
 }
 .hermes-web .yuri-identity h2 { overflow: visible; font-size: var(--yagent-font-caption); color: #414147; }
-.hermes-web.yuri-glass:is([data-yuri-desktop], [data-yuri-wide]) :is(.web-header .web-sidebar-toggle, .web-brand .web-sidebar-toggle),
+.hermes-web.yuri-glass:is([data-yuri-desktop], [data-yuri-wide]) :is(.web-header .web-sidebar-toggle, .web-brand .web-sidebar-toggle, .web-composer-add),
 .hermes-web.yuri-glass:is([data-yuri-desktop], [data-yuri-wide]) .yuri-identity h2::before,
 .hermes-web.yuri-glass[data-yuri-desktop] .yuri-window-controls,
+.hermes-web.yuri-glass [data-slot="composer-fade"] .web-send-button:not([data-web-stop]),
 .hermes-web.yuri-glass:is([data-yuri-desktop], [data-yuri-wide]) [data-slot="composer-surface"] {
   color: #35373d;
   border: 1px solid var(--yagent-glass-border);
@@ -87,9 +88,9 @@ body:has(.hermes-web.yuri-glass),
   z-index: 2;
 }
 .hermes-web.yuri-glass:is([data-yuri-desktop], [data-yuri-wide]) .yuri-identity .yuri-mascot { z-index: 1; }
-.hermes-web.yuri-glass:is([data-yuri-desktop], [data-yuri-wide]) :is(.web-header .web-sidebar-toggle, .web-brand .web-sidebar-toggle) {
-  width: 34px;
-  height: 34px;
+.hermes-web.yuri-glass:is([data-yuri-desktop], [data-yuri-wide]) :is(.web-header .web-sidebar-toggle, .web-brand .web-sidebar-toggle, .web-composer-add) {
+  width: var(--web-composer-action-size, 34px);
+  height: var(--web-composer-action-size, 34px);
   border-radius: 50%;
   color: #777b85;
 }
@@ -119,8 +120,26 @@ body:has(.hermes-web.yuri-glass),
   color: #777b85;
   transition: background 140ms ease;
 }
-.hermes-web.yuri-glass[data-yuri-desktop] .yuri-window-control-btn:hover:not(:disabled) {
+.hermes-web.yuri-glass[data-yuri-desktop] .yuri-window-control-btn:hover:not(:disabled),
+.hermes-web.yuri-glass:is([data-yuri-desktop], [data-yuri-wide], [data-yuri-web]) .web-composer-add:hover {
   background: #eaeef580;
+}
+.hermes-web.yuri-glass [data-slot="composer-fade"] .web-send-button:not([data-web-stop]) {
+  background-color: #212220ed;
+  background-image: linear-gradient(180deg, #ffffff0d, transparent);
+  border-color: #232422;
+  box-shadow: inset 0 1px 1px #ffffff26, 0 2px 5px #21222026 !important;
+  color: #fff;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.hermes-web.yuri-glass [data-slot="composer-fade"] .web-send-button:not([data-web-stop]):disabled {
+  background-color: #efedf4d9;
+  border-color: var(--yagent-glass-border);
+  box-shadow: var(--yagent-glass-shadow) !important;
+  color: #696573;
+}
+.hermes-web.yuri-glass [data-slot="composer-fade"] .web-send-button:not([data-web-stop]):hover:enabled {
+  background-color: #292a28;
 }
 .hermes-web.yuri-glass .hermes-web-composer { background: transparent; }
 .hermes-web.yuri-glass .composer-human-message { background: #efedf4; color: #292432; }

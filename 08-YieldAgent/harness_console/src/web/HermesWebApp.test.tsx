@@ -52,6 +52,10 @@ it('previews an unanswered question from the active chat while the desktop app i
   await act(async () => {await vi.advanceTimersByTimeAsync(100)})
   expect(screen.queryByRole('button',{name:'추가 질문 열기'})).toBeNull()
   expect(setReplyPreview).toHaveBeenLastCalledWith(false)
+  expect(screen.queryByRole('button',{name:/답변할 질문/})).toBeNull()
+  expect(document.querySelector('.web-pending')).toBeNull()
+  expect(document.querySelector('.hermes-web-composer')?.hasAttribute('data-clarify-waiting')).toBe(true)
+  expect(screen.getByText(/추가 비교를 위해 답변을 기다리고 있어요\./)).toBeTruthy()
   fireEvent.click(screen.getByRole('button',{name:'Y-Agent 대화창 접기'}))
   await act(async () => {await vi.advanceTimersByTimeAsync(100)})
   expect(screen.getByRole('button',{name:'추가 질문 열기'})).toBeTruthy()
@@ -237,6 +241,8 @@ it('routes a sidebar click through HashRouter, resumes and keeps selection until
  expect(screen.getByRole('heading',{name:'어떤 수율을 살펴볼까요?'})).toBeTruthy()
  expect(screen.queryByText('예시 질문')).toBeNull()
  stubMenuDomApis()
+ const options=screen.getByRole('button',{name:'채팅 추가 옵션'})
+ fireEvent.click(options)
  const product=screen.getByRole('button',{name:'분석 대상 제품, 전체 제품'})
  const before=request.mock.calls.length
  fireEvent.click(product)
@@ -244,7 +250,14 @@ it('routes a sidebar click through HashRouter, resumes and keeps selection until
  const searchBox=screen.getByPlaceholderText('제품 코드 검색')
  fireEvent.change(searchBox,{target:{value:'test'}})
  fireEvent.click(screen.getByRole('option',{name:'TEST-X'}))
- expect(product.textContent).toBe('TEST-X')
+ expect(options.getAttribute('aria-expanded')).toBe('true')
+ const selectedProduct=screen.getByRole('button',{name:'분석 대상 제품, TEST-X'})
+ expect(selectedProduct.textContent).toBe('TEST-X')
+ fireEvent.click(selectedProduct)
+ expect(screen.getByRole('option',{name:/TEST-X/}).getAttribute('data-selected')).toBe('true')
+ expect(screen.getByRole('option',{name:'전체 제품'}).getAttribute('data-selected')).toBe('false')
+ fireEvent.click(selectedProduct)
+ fireEvent.click(options)
  expect(document.querySelector('[contenteditable="true"]')?.textContent).toBe('')
  expect(request.mock.calls).toHaveLength(before)
  expect(window.location.hash).toBe(`#${NEW_CHAT_ROUTE}`)
@@ -476,15 +489,22 @@ it.each(['archive','delete','cancel'])('session menu removes an open row after %
  if(action==='cancel'){
   expect(screen.getByRole('button',{name:'관리할 대화'})).toBeTruthy()
   expect(request.mock.calls.filter(([method]) => method==='session.delete')).toHaveLength(0)
- }else{
-  expect(request).toHaveBeenCalledWith(`session.${action}`,{session_id:'saved',...(action==='archive' ? {archived:true} : {})})
+ }else if(action==='delete'){
+  expect(request).toHaveBeenCalledWith('session.delete',{session_id:'saved'})
   expect(document.querySelector('.web-session-group:not(.web-archive-section) .web-session-select[aria-label="관리할 대화"]')).toBeNull()
   expect(window.location.hash).toBe(`#${NEW_CHAT_ROUTE}`)
   expect($activeSessionId.get()).toBeNull()
- }
- if(action==='archive'){
+ }else{
+  expect(request).toHaveBeenCalledWith('session.archive',{session_id:'saved',archived:true})
+  expect(document.querySelector('.web-session-group:not(.web-archive-section) .web-session-select[aria-label="관리할 대화"]')).toBeNull()
+  expect(window.location.hash).toBe(`#${sessionRoute('saved')}`)
+  expect($selectedStoredSessionId.get()).toBe('saved')
+  expect($activeSessionId.get()).toBe('saved')
+  expect(screen.getByRole('button',{name:'새 대화'}).hasAttribute('aria-current')).toBe(false)
   await act(async () => {await vi.advanceTimersByTimeAsync(100)})
   const archive=screen.getByRole('region',{name:'보관함'})
+  const archivedSelect=within(archive).getByRole('button',{name:'관리할 대화'})
+  expect(archivedSelect.getAttribute('aria-current')).toBe('page')
   const archiveMenu=screen.getByRole('button',{name:'관리할 대화 메뉴'})
   expect(archive.contains(archiveMenu)).toBe(true)
   fireEvent.click(archiveMenu)
@@ -492,8 +512,57 @@ it.each(['archive','delete','cancel'])('session menu removes an open row after %
   await act(async () => {await vi.advanceTimersByTimeAsync(100)})
   expect(request).toHaveBeenCalledWith('session.archive',{session_id:'saved',archived:false})
   expect(screen.queryByRole('region',{name:'보관함'})).toBeNull()
-  expect(screen.getByRole('button',{name:'관리할 대화'})).toBeTruthy()
+  expect(screen.getByRole('button',{name:'관리할 대화'}).getAttribute('aria-current')).toBe('page')
+  expect(window.location.hash).toBe(`#${sessionRoute('saved')}`)
  }
+})
+
+it('selects and opens a non-active chat inside the archive section when archived', async () => {
+ vi.useFakeTimers()
+ $freshDraftReady.set(false)
+ window.history.replaceState(null,'',`#${sessionRoute('other')}`)
+ const host=new WebHostAdapter({rpcMode:'authority',location:{href:'http://localhost/'},reconnect:false})
+ vi.spyOn(host,'connect').mockResolvedValue()
+ let archived=false
+ const request=vi.spyOn(JsonRpcGatewayClient.prototype,'request').mockImplementation(async (method,params) => {
+  if(method==='session.archive'){
+   archived=params?.archived===true
+   return {archived,session_key:'saved'}
+  }
+  return {}
+ })
+ vi.spyOn(host.gateway,'request').mockImplementation(async (_method,params) => {
+  const id=String(params?.session_id ?? 'other')
+  return {session_id:`runtime-${id}`,session_key:id,resumed:id,messages:[],running:false,info:{}}
+ })
+ vi.spyOn(host,'api').mockImplementation(async call => {
+  if(call.path.includes('/messages')){
+   const id=call.path.includes('/saved/') ? 'saved' : 'other'
+   return {session_id:id,messages:[{id:1,role:'user',content:id==='saved' ? '보관한 대화 내용' : '다른 대화 내용'}]}
+  }
+  const saved={id:'saved',title:'보관할 대화',message_count:1,archived}
+  const other={id:'other',title:'보고 있던 대화',message_count:1,archived:false}
+  const rows=call.path.includes('archived=only')
+   ? archived ? [saved] : []
+   : archived ? [other] : [other,saved]
+  return {sessions:rows,total:rows.length}
+ })
+ render(<HermesWebApp resolver={async () => ({url:'ws://localhost/api/ws'})} host={host}/>)
+ await act(async () => {await vi.advanceTimersByTimeAsync(100)})
+ expect(screen.getByRole('button',{name:'보고 있던 대화'}).getAttribute('aria-current')).toBe('page')
+ fireEvent.click(screen.getByRole('button',{name:'보관할 대화 메뉴'}))
+ fireEvent.click(screen.getByRole('menuitem',{name:'보관'}))
+ await act(async () => {await vi.advanceTimersByTimeAsync(100)})
+ expect(request).toHaveBeenCalledWith('session.archive',{session_id:'saved',archived:true})
+ expect(window.location.hash).toBe(`#${sessionRoute('saved')}`)
+ expect($selectedStoredSessionId.get()).toBe('saved')
+ expect($activeSessionId.get()).toBe('runtime-saved')
+ expect(screen.getByRole('button',{name:'새 대화'}).hasAttribute('aria-current')).toBe(false)
+ expect(screen.getByRole('button',{name:'보고 있던 대화'}).hasAttribute('aria-current')).toBe(false)
+ const archive=screen.getByRole('region',{name:'보관함'})
+ expect(within(archive).getByRole('button',{name:'보관할 대화'}).getAttribute('aria-current')).toBe('page')
+ expect(screen.getByText('보관한 대화 내용')).toBeTruthy()
+ expect(screen.queryByRole('heading',{name:'어떤 수율을 살펴볼까요?'})).toBeNull()
 })
 
 it('navigates to MCP settings from the sidebar and keeps the chat stage hidden', async () => {

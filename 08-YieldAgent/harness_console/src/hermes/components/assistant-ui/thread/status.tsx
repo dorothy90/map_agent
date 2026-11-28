@@ -1,5 +1,5 @@
-import { ReplyProgress, replyPreparingLabel } from '../../../../web/YuriMascot'
-import { useWebTraceProgress } from '../../../../web/execution-trace'
+import { replyPreparingLabel } from '../../../../web/YuriMascot'
+import { useWebTraceProgress, WebTraceProgressRow } from '../../../../web/execution-trace'
 import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useEffect, useMemo, useState } from 'react'
@@ -261,7 +261,7 @@ export const ResponseLoadingIndicator: FC = () => {
   // the main request — triggered the autoload). A real wait frame wins.
   const localLoad = useLocalModelLoad(!hint)
 
-  if (web) return traceProgress ? null : <ReplyProgress label={hint || replyPreparingLabel} />
+  if (web) return traceProgress ? null : <WebTraceProgressRow label={hint || replyPreparingLabel} />
 
   return (
     <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>

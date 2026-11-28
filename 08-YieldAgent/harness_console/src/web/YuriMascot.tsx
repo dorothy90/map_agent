@@ -16,9 +16,24 @@ export function YuriMascot({state}:{state:'idle'|'thinking'|'result'|'success'|'
 
 export const replyPreparingLabel = '생각을 정리하는 중'
 
-export function ReplyProgress({label}:{label:string}) {
+export function ReplyProgress({ label, meta, details }: {
+ label: string
+ meta?: string
+ details?: { id: string; open: boolean; toggle: () => void }
+}) {
+ const body = <span className="web-reply-progress-copy">
+  <span className="web-reply-progress-label">{label}…</span>
+  {meta && <span className="web-reply-progress-meta">
+   <span>{meta}</span>
+   {details && <span className="web-reply-progress-chevron" aria-hidden="true" />}
+  </span>}
+ </span>
  return <div className="web-reply-progress" data-slot="aui_response-loading" role="status" aria-label={label}>
   <img className="web-reply-progress-mascot" src="/y-agent-reply-progress.png" alt="" width={64} height={64}/>
-  <span className="web-reply-progress-label">{label}…</span>
+  {details ? <button type="button" className="web-trace-progress-toggle"
+   aria-label="조회·계산 기록" title="조회·계산 기록" aria-controls={details.id}
+   aria-expanded={details.open} onClick={details.toggle}>
+   {body}
+  </button> : body}
  </div>
 }

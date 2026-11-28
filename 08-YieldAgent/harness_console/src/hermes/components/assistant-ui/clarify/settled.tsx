@@ -97,8 +97,10 @@ export function ClarifyToolSettled(props: ToolCallMessagePartProps) {
                 </div>
               ) : (
                 <div className="web-clarify-answer" data-clarify-answer="" data-blank={blank ? 'true' : undefined}>
+                  <span className="web-choice-text flex-1 wrap-anywhere">
+                    {blank ? (row.unanswered && !cancelled ? copy.noAnswer : copy.skipped) : rawAnswers.join(', ')}
+                  </span>
                   {!blank && <span className="web-clarify-check" aria-label="선택됨" />}
-                  {blank ? (row.unanswered && !cancelled ? copy.noAnswer : copy.skipped) : rawAnswers.join(', ')}
                 </div>
               )}
             </div>

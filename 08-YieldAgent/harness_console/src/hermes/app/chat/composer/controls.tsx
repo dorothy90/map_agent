@@ -3,9 +3,11 @@ import { useWebPresentation } from '../../../../web/presentation'
 import { useStore } from '@nanostores/react'
 
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { useComposerFlyout } from '../../../../web/use-composer-flyout'
 import { triggerHaptic } from '@/lib/haptics'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -100,7 +102,7 @@ export function ComposerControls({
   if (web) {
     return <div className="web-composer-actions">
       {onBusyModeChange && <WebBusyModeSelect disabled={disabled} mode={busyMode ?? 'steer'} onChange={onBusyModeChange} />}
-      return <button className="web-send-button" type="submit" title={showStop ? '중지' : '보내기'} aria-label={showStop ? '중지' : '보내기'} data-web-stop={showStop || undefined} disabled={(!showStop && disabled) || !canSubmit} onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}>
+      <button className="web-send-button" type="submit" title={showStop ? '중지' : '보내기'} aria-label={showStop ? '중지' : '보내기'} data-web-stop={showStop || undefined} disabled={(!showStop && disabled) || !canSubmit} onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}>
         {showStop ? <span className="web-stop-icon" aria-hidden="true"/> : <span className="web-send-icon" aria-hidden="true"/>}
       </button>
     </div>
@@ -443,7 +445,7 @@ function WakeWordButton({ disabled, pausedForVoice = false }: { disabled: boolea
 }
 
 
-function WebBusyModeSelect({ disabled, mode, onChange }: {
+export function WebBusyModeSelect({ disabled, mode, onChange }: {
   disabled: boolean
   mode: BusyInputMode
   onChange: (mode: BusyInputMode) => Promise<void>
@@ -452,22 +454,31 @@ function WebBusyModeSelect({ disabled, mode, onChange }: {
   const { t } = useI18n()
   const c = t.composer.busyInput
 
+  const [open, setOpen] = useState(false)
+  const [container, setContainer] = useState<HTMLElement | null>(null)
+  const modes = ['steer', 'queue', 'interrupt'] as const
+  const flyout = useComposerFlyout(open, Boolean(container?.classList.contains('web-composer-options-menu')), 180)
+
   return (
-    <select
-      aria-label={c.label}
-      className="web-busy-mode"
-      disabled={disabled || saving}
-      onChange={event => {
-        const value = normalizeBusyInputMode(event.currentTarget.value)
-        setSaving(true)
-        void onChange(value).catch(error => notifyError(error, c.saveFailed)).finally(() => setSaving(false))
-      }}
-      title={c.label}
-      value={mode}
-    >
-      <option value="steer">{c.steer}</option>
-      <option value="queue">{c.queue}</option>
-      <option value="interrupt">{c.interrupt}</option>
-    </select>
+    <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild>
+        <button ref={flyout.trigger} type="button" aria-label={c.label} className="web-busy-mode" disabled={disabled || saving}
+          onPointerDown={event => setContainer(event.currentTarget.closest<HTMLElement>('.web-composer-options-menu, .hermes-web'))}
+          onFocus={event => setContainer(event.currentTarget.closest<HTMLElement>('.web-composer-options-menu, .hermes-web'))}>
+          <span className="web-steer-icon" aria-hidden="true"/>{c[mode]}<span className="web-option-chevron" aria-hidden="true"/>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="web-busy-mode-menu yagent-popover" portalContainer={container} side={flyout.side} align="start" sideOffset={7} collisionPadding={8}
+        collisionBoundary={flyout.collisionBoundary}>
+        <DropdownMenuRadioGroup value={mode} onValueChange={raw => {
+          const value = normalizeBusyInputMode(raw)
+          if (value === mode) return
+          setSaving(true)
+          void onChange(value).catch(error => notifyError(error, c.saveFailed)).finally(() => setSaving(false))
+        }}>
+          {modes.map(value => <DropdownMenuRadioItem key={value} value={value}>{c[value]}</DropdownMenuRadioItem>)}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

@@ -73,7 +73,6 @@
 .hermes-web .web-load-more { margin:8px 0; padding:6px 10px; color:#737373; font-size:var(--yagent-font-caption); }
 .hermes-web .web-header { display:flex; flex:none; height:58px; align-items:center; gap:8px; padding:0 27px; }
 .hermes-web .web-header h2 { flex:1; min-width:0; margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--yagent-font-ui); font-weight:580; }
-.hermes-web .web-pending { display:flex; align-items:center; gap:6px; border:1px solid #e5e5e5; padding:5px 10px; border-radius:16px; font-size:var(--yagent-font-caption); white-space:nowrap; }
 @media (hover:hover) and (pointer:fine) {
  .hermes-web .web-session:not(:hover):not(:focus-within) .web-session-more { position:absolute; right:0; opacity:0; }
 }
@@ -86,5 +85,4 @@
  .hermes-web .web-sidebar-backdrop { position:fixed; inset:0; z-index:30; background:#17171740; }
  .hermes-web .web-brand { padding-bottom:10px; }
  .hermes-web .web-header { padding:0 12px; }
- .hermes-web .web-pending { font-size:var(--yagent-font-caption); }
 }

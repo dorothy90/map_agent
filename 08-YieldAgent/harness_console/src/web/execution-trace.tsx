@@ -9,6 +9,7 @@ import { $currentUsage } from '@/store/session'
 import { createPortal } from 'react-dom'
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { toolEntryDisclosureId } from '@/components/assistant-ui/tool/fallback-model/targets'
 import { readClarifyArgs, readClarifyResult } from '@/components/assistant-ui/clarify/parse'
 import { useNewWebReply, useWebPresentation } from './presentation'
@@ -34,6 +35,10 @@ const TraceContext = createContext<{
   actionMessageId?: string
   timeAxis?: TimeAxis
   traceReady: boolean
+  inlineOpen: boolean
+  inlineId: string
+  toggleInline: () => void
+  toolSummary?: string
 } | null>(null)
 
 export function WebAnswerAuthor() {
@@ -70,7 +75,22 @@ function TraceTrigger({ standalone = false }: { standalone?: boolean }) {
 export function WebTraceAction({ messageId }: { messageId: string }) {
   const trace = useContext(TraceContext)
   if (trace?.actionMessageId !== messageId) return null
-  return trace.traceReady ? <TraceTrigger/> : <span className="web-trace-trigger" aria-hidden="true"/>
+  return trace.traceReady && !trace.live ? <TraceTrigger/> : <span className="web-trace-trigger" aria-hidden="true"/>
+}
+
+function formatKoreanElapsed(seconds: number) {
+  return seconds >= 60 ? `${Math.floor(seconds / 60)}분 ${seconds % 60}초` : `${seconds}초`
+}
+
+export function WebTraceProgressRow({ label }: { label: string }) {
+  const trace = useContext(TraceContext)
+  const sessionView = useSessionView()
+  const turnStartedAt = useStore(sessionView.$turnStartedAt) ?? undefined
+  const elapsed = useElapsedSeconds(true, trace?.live ? `web-trace:${trace.inlineId}` : undefined, turnStartedAt)
+  const meta = [formatKoreanElapsed(elapsed), trace?.toolSummary].filter(Boolean).join(' · ')
+  return <div className="web-reply-progress-row">
+    <ReplyProgress label={label} meta={meta} details={trace?.live ? { id:trace.inlineId, open:trace.inlineOpen, toggle:trace.toggleInline } : undefined}/>
+  </div>
 }
 
 export function WebTraceScope({ indices, children }: ScopeProps) {
@@ -164,6 +184,9 @@ function ExecutionTrace({ indices, children }: ScopeProps) {
   }, [])
   const [steps, setSteps] = useState(() => new Map<string, TraceState>())
   const [recordOpen, setRecordOpen] = useState(false)
+  const [inlineOpen, setInlineOpen] = useState(false)
+  const inlineId = useId()
+  const toggleInline = useCallback(() => setInlineOpen(open => !open), [])
   const newReplyId = useNewWebReply()
   const recordDescriptionId = useId()
   const titleRef = useRef<HTMLHeadingElement>(null)
@@ -301,16 +324,42 @@ function ExecutionTrace({ indices, children }: ScopeProps) {
     return { start, end: Math.max(start + 1, end), spans: projection.spans }
   }, [recordAvailable, projection.spans, messages, indices, duration])
   const columns = timeAxis ? 3 : 2
-  const context = useMemo(() => ({ targets, setStep, noteKeys: projection.noteKeys, archived: projection.archived, questions, active, live, progressVisible:showTailTyping, actionMessageId:hostMessageId, timeAxis, traceReady:recordAvailable }), [targets, setStep, projection, questions, active, live, showTailTyping, hostMessageId, timeAxis, recordAvailable])
+  const toolSummary = useMemo(() => {
+    if (steps.size === 0) return undefined
+    const parts = (['done', 'error', 'running', 'stopped'] as TraceState[])
+      .filter(state => counts[state] > 0)
+      .map(state => `${labels[state]} ${counts[state]}`)
+    return `도구 ${steps.size}건 (${parts.join(' · ')})`
+  }, [steps, counts.done, counts.error, counts.running, counts.stopped])
+  const context = useMemo(() => ({ targets, setStep, noteKeys: projection.noteKeys, archived: projection.archived, questions, active, live, progressVisible:showTailTyping, actionMessageId:hostMessageId, timeAxis, traceReady:recordAvailable, inlineOpen, inlineId, toggleInline, toolSummary }), [targets, setStep, projection, questions, active, live, showTailTyping, hostMessageId, timeAxis, recordAvailable, inlineOpen, inlineId, toggleInline, toolSummary])
   const statusSummary = (Object.keys(labels) as TraceState[]).filter(state => counts[state])
     .map(state => counts[state] + '건 ' + labels[state]).join(' · ')
+
+  const stepRows = <>
+          {projection.stepIds.map(id => <StepTarget key={id} id={id} setTarget={setTarget} columns={columns}
+            notes={projection.notes.filter(note => note.step === id)}/>)}
+          {projection.notes.some(note => !note.step) && <tbody>
+            {projection.notes.filter(note => !note.step).map(note => <ArchivedNote key={note.key} note={note} columns={columns}/>)}
+          </tbody>}
+  </>
 
   return <TraceContext.Provider value={context}>
     <Dialog open={recordAvailable && recordOpen} onOpenChange={setRecordOpen}>
       {showNew && <div className="web-new-reply-divider" role="separator" aria-label="새 답변"><span>NEW</span></div>}
       {children}
-      {showTailTyping && <ReplyProgress label={progressLabel} />}
-      {recordAvailable && !hostMessageId && <div className="web-trace-standalone"><TraceTrigger standalone/></div>}
+      {showTailTyping && <WebTraceProgressRow label={progressLabel} />}
+      {live && <div id={inlineId} className="web-live-trace web-trace-disclosure" data-open={inlineOpen}
+        aria-hidden={!inlineOpen || undefined} inert={!inlineOpen}>
+        <div>
+          {projection.stepIds.length || projection.notes.length
+            ? <table className="web-trace-steps" aria-label="실행 단계">
+              <colgroup><col/><col className="web-trace-time-column"/></colgroup>
+              {stepRows}
+            </table>
+            : <p className="web-trace-note">기록된 도구 실행이 아직 없어요.</p>}
+        </div>
+      </div>}
+      {recordAvailable && !live && !hostMessageId && <div className="web-trace-standalone"><TraceTrigger standalone/></div>}
       {recordAvailable && <DialogContent className="web-trace-dialog" bodyClassName="web-trace-dialog-body" aria-describedby={recordDescriptionId}
         onOpenAutoFocus={event => { event.preventDefault(); titleRef.current?.focus() }}>
         <header className="web-trace-dialog-header">
@@ -336,11 +385,7 @@ function ExecutionTrace({ indices, children }: ScopeProps) {
             </div></td>
             <td className="web-tool-duration">{seconds === undefined ? '—' : `${seconds}초`}</td>
           </tr></tbody>}
-          {projection.stepIds.map(id => <StepTarget key={id} id={id} setTarget={setTarget} columns={columns}
-            notes={projection.notes.filter(note => note.step === id)}/>)}
-          {projection.notes.some(note => !note.step) && <tbody>
-            {projection.notes.filter(note => !note.step).map(note => <ArchivedNote key={note.key} note={note} columns={columns}/>)}
-          </tbody>}
+          {stepRows}
         </table>
         {timeAxis && <div className="web-trace-legend" aria-label="시간 흐름 범례">
           <span><i/> 기록된 도구 실행</span><span><i/> 상세 기록 없는 구간</span>

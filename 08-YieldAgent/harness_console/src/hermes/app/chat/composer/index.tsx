@@ -60,7 +60,7 @@ import {
 } from './composer-utils'
 import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS } from './contrib'
-import { ComposerControls } from './controls'
+import { ComposerControls, WebBusyModeSelect } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
@@ -1123,10 +1123,15 @@ export function ChatBar({
     />
   )
 
+  const customContext = typeof contextControl === 'function'
+  const context = typeof contextControl === 'function'
+    ? contextControl(<WebBusyModeSelect disabled={disabled} mode={busyInputMode ?? 'steer'} onChange={setBusyInputMode}/>)
+    : contextControl
+
   const controls = (
     <ComposerControls
       busyMode={busyInputMode}
-      onBusyModeChange={setBusyInputMode}
+      onBusyModeChange={customContext ? undefined : setBusyInputMode}
       autoSpeak={autoSpeak}
       busy={busy}
       busyAction={busyAction}
@@ -1513,7 +1518,7 @@ export function ChatBar({
                       <ContribSlot area={COMPOSER_AREAS.leading} />
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>
-                    {contextControl && <div data-slot="composer-context">{contextControl}</div>}
+                    {context && <div data-slot="composer-context">{context}</div>}
                     {/* `justify-end` packs contributed actions and the send cluster
                       together on the right. The cluster must not carry its own
                       `ml-auto`: in the stacked layout the auto margin absorbs the
